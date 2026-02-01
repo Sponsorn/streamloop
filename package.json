@@ -1,0 +1,28 @@
+{
+  "name": "freeze-monitor",
+  "version": "1.0.0",
+  "description": "YouTube Playlist Stream Monitor for OBS",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server/index.ts",
+    "dev": "tsx watch src/server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:release": "node build/prepare-release.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "obs-websocket-js": "^5.0.6",
+    "pino": "^9.5.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.9.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

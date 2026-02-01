@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Freeze Monitor - Admin</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+
+  <!-- ===== SETUP WIZARD ===== -->
+  <div id="view-wizard" class="hidden">
+    <div class="wizard">
+      <h2>Freeze Monitor Setup</h2>
+      <p>Configure your YouTube playlist monitor. You can change these later from the dashboard.</p>
+
+      <form id="wizard-form">
+        <div class="form-group">
+          <label>YouTube Playlists *</label>
+          <div id="wiz-playlists-list"></div>
+          <button type="button" class="btn btn-secondary" onclick="addWizPlaylist()">+ Add Playlist</button>
+          <div class="hint">Playlist IDs from YouTube URLs (starts with PL). Videos play sequentially across playlists.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="wiz-source">OBS Browser Source Name *</label>
+          <input type="text" id="wiz-source" placeholder="Playlist Player" required>
+          <div class="hint">Exact name of the Browser Source in OBS that will show the player</div>
+        </div>
+
+        <div class="form-group">
+          <label for="wiz-obs-pass">OBS WebSocket Password</label>
+          <input type="password" id="wiz-obs-pass" placeholder="Optional">
+          <div class="hint">Leave blank if OBS WebSocket has no password set</div>
+        </div>
+
+        <div class="form-group">
+          <label for="wiz-discord">Discord Webhook URL</label>
+          <input type="url" id="wiz-discord" placeholder="https://discord.com/api/webhooks/...">
+          <div class="hint">Optional — receive notifications about errors and recovery actions</div>
+        </div>
+
+        <button type="submit" id="wiz-btn" class="btn btn-primary">Save & Start</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== DASHBOARD ===== -->
+  <div id="view-dashboard" class="hidden">
+    <div class="container">
+      <header>
+        <h1>Freeze Monitor</h1>
+        <div>
+          <span id="header-pill" class="status-pill pill-err">Loading</span>
+          <span id="uptime" class="uptime"></span>
+        </div>
+      </header>
+
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab active" data-tab="monitor">Monitor</button>
+        <button class="tab" data-tab="settings">Settings</button>
+      </div>
+
+      <!-- Monitor tab -->
+      <div id="panel-monitor" class="tab-panel">
+        <!-- Status cards -->
+        <div class="cards">
+          <div class="card">
+            <div class="card-label">Player</div>
+            <div class="card-value" id="player-status">-</div>
+          </div>
+          <div class="card">
+            <div class="card-label">OBS</div>
+            <div class="card-value" id="obs-status">-</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Recovery</div>
+            <div class="card-value" id="recovery-step">-</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Errors</div>
+            <div class="card-value" id="errors">-</div>
+          </div>
+        </div>
+
+        <!-- Now playing -->
+        <div class="section">
+          <div class="section-title">Now Playing</div>
+          <div class="now-playing">
+            <div class="np-item">
+              <div class="np-label">Playlist</div>
+              <div class="np-value" id="np-playlist">-</div>
+            </div>
+            <div class="np-item">
+              <div class="np-label">Video Index</div>
+              <div class="np-value" id="np-index">-</div>
+            </div>
+            <div class="np-item">
+              <div class="np-label">Video ID</div>
+              <div class="np-value" id="np-videoid">-</div>
+            </div>
+            <div class="np-item">
+              <div class="np-label">Current Time</div>
+              <div class="np-value" id="np-time">-</div>
+            </div>
+            <div class="np-item">
+              <div class="np-label">Last Updated</div>
+              <div class="np-value" id="np-updated">-</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Event log -->
+        <div class="section">
+          <div class="section-title">Event Log</div>
+          <div class="event-log" id="event-log">
+            <div class="event-empty">No events yet</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings tab -->
+      <div id="panel-settings" class="tab-panel hidden">
+        <div class="settings-panel">
+          <form id="settings-form">
+            <div class="form-group">
+              <label>YouTube Playlists</label>
+              <div id="set-playlists-list"></div>
+              <button type="button" class="btn btn-secondary" onclick="addSetPlaylist()">+ Add Playlist</button>
+            </div>
+            <div class="form-group">
+              <label for="set-source">OBS Browser Source Name</label>
+              <input type="text" id="set-source" required>
+            </div>
+            <div class="form-group">
+              <label for="set-obs-pass">OBS WebSocket Password</label>
+              <input type="password" id="set-obs-pass">
+            </div>
+            <div class="form-group">
+              <label for="set-discord">Discord Webhook URL</label>
+              <input type="url" id="set-discord">
+            </div>
+            <button type="submit" id="set-btn" class="btn btn-primary">Save Settings</button>
+          </form>
+        </div>
+
+        <!-- Autostart -->
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">Startup</div>
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-label">Run on Windows startup</div>
+              <div class="toggle-desc">Automatically start the monitor when Windows boots</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="autostart-toggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

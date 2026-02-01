@@ -1,0 +1,13 @@
+{
+  "playlists": [{ "id": "PLxxxxxxxxxxxxxxxx" }],
+  "obsBrowserSourceName": "Playlist Player",
+  "port": 3000,
+  "obsWebsocketUrl": "ws://127.0.0.1:4455",
+  "obsWebsocketPassword": "",
+  "discordWebhookUrl": "",
+  "heartbeatIntervalMs": 5000,
+  "heartbeatTimeoutMs": 15000,
+  "maxConsecutiveErrors": 3,
+  "stateFilePath": "./state.json",
+  "recoveryDelayMs": 5000
+}
