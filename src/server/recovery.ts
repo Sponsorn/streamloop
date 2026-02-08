@@ -101,6 +101,7 @@ export class RecoveryEngine {
       type: 'loadPlaylist',
       playlistId: playlist.id,
       index: savedState.videoIndex,
+      loop: this.config.playlists.length === 1,
     });
   }
 
@@ -227,7 +228,7 @@ export class RecoveryEngine {
     this.addEvent(`Playlist finished. Advancing to ${next + 1}/${this.config.playlists.length}: ${playlist.name || playlist.id}`);
     this.state.update({ playlistIndex: next, videoIndex: 0, videoId: '', currentTime: 0 });
     this.totalVideos = 0;
-    this.ws.send({ type: 'loadPlaylist', playlistId: playlist.id, index: 0 });
+    this.ws.send({ type: 'loadPlaylist', playlistId: playlist.id, index: 0, loop: this.config.playlists.length === 1 });
     this.consecutiveErrors = 0;
   }
 

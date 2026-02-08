@@ -113,7 +113,7 @@
     console.log('[WS] Server:', msg.type, msg);
     switch (msg.type) {
       case 'loadPlaylist':
-        loadPlaylist(msg.playlistId, msg.index);
+        loadPlaylist(msg.playlistId, msg.index, msg.loop);
         break;
       case 'retryCurrent':
         retryCurrent();
@@ -127,10 +127,10 @@
     }
   }
 
-  function loadPlaylist(playlistId, index) {
+  function loadPlaylist(playlistId, index, loop) {
     if (!player) {
       console.warn('[Player] Not ready yet, deferring loadPlaylist');
-      setTimeout(function () { loadPlaylist(playlistId, index); }, 500);
+      setTimeout(function () { loadPlaylist(playlistId, index, loop); }, 500);
       return;
     }
     player.loadPlaylist({
@@ -138,6 +138,7 @@
       listType: 'playlist',
       index: index || 0,
     });
+    player.setLoop(!!loop);
   }
 
   function retryCurrent() {

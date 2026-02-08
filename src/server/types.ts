@@ -48,6 +48,7 @@ export interface ServerLoadPlaylistMessage {
   type: 'loadPlaylist';
   playlistId: string;
   index: number;
+  loop: boolean;
 }
 
 export interface ServerRetryCurrentMessage {

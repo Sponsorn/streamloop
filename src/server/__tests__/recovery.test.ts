@@ -116,6 +116,7 @@ describe('RecoveryEngine', () => {
       type: 'loadPlaylist',
       playlistId: 'PL123',
       index: 5,
+      loop: true,
     });
   });
 
@@ -132,6 +133,7 @@ describe('RecoveryEngine', () => {
       type: 'loadPlaylist',
       playlistId: 'PLB',
       index: 3,
+      loop: false,
     });
   });
 
@@ -148,6 +150,7 @@ describe('RecoveryEngine', () => {
       type: 'loadPlaylist',
       playlistId: 'PLA',
       index: 0,
+      loop: true,
     });
   });
 
@@ -234,6 +237,7 @@ describe('RecoveryEngine', () => {
       type: 'loadPlaylist',
       playlistId: 'PLB',
       index: 0,
+      loop: false,
     });
     // State should be updated to playlist 1
     expect(state.update).toHaveBeenCalledWith({
@@ -261,6 +265,7 @@ describe('RecoveryEngine', () => {
       type: 'loadPlaylist',
       playlistId: 'PLonly',
       index: 0,
+      loop: true,
     });
   });
 
@@ -282,6 +287,7 @@ describe('RecoveryEngine', () => {
       type: 'loadPlaylist',
       playlistId: 'PLB',
       index: 0,
+      loop: false,
     });
   });
 
