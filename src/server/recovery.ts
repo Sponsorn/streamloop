@@ -297,7 +297,10 @@ export class RecoveryEngine {
 
   private resetRecovery() {
     if (this.recoveryStep !== RecoveryStep.None) {
-      logger.info({ previousStep: this.recoveryStep }, 'Recovery cancelled');
+      logger.info({ previousStep: this.recoveryStep }, 'Recovery resolved');
+      this.addEvent('Recovery resolved — playback resumed');
+      const currentState = this.state.get();
+      this.discord.notifyResume(currentState.videoIndex, currentState.videoId);
     }
     this.recoveryStep = RecoveryStep.None;
     this.clearRecoveryTimer();

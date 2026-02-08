@@ -11,6 +11,7 @@ import { OBSClient } from './obs-client.js';
 import { DiscordNotifier } from './discord.js';
 import { RecoveryEngine } from './recovery.js';
 import { createApiRouter } from './api.js';
+import { Updater } from './updater.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +48,23 @@ async function main() {
   let recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
   recovery.start();
 
+  // Updater
+  const updater = new Updater();
+
+  const triggerRestart = () => {
+    logger.info('Restart requested for update');
+    updater.stopAutoCheck();
+    recovery.stop();
+    state.flush();
+    playerWs.close();
+    obs.disconnect();
+    server.close(() => {
+      logger.info('Server closed for update restart');
+    });
+    // Exit code 75 signals START.bat to restart
+    setTimeout(() => process.exit(75), 2000);
+  };
+
   // API router — uses getters so reloaded components are always current
   const reloadConfig = async () => {
     const newConfig = loadConfig();
@@ -73,6 +91,8 @@ async function main() {
     getObs: () => obs,
     state,
     reloadConfig,
+    updater,
+    triggerRestart,
   });
   app.use('/api', apiRouter);
 
@@ -92,8 +112,13 @@ async function main() {
     await obs.connect();
   }
 
+  // Start auto-update check if enabled
+  if (config.autoUpdateCheck) {
+    updater.startAutoCheck(config.updateCheckIntervalMs);
+  }
+
   // Start HTTP server
-  server.listen(config.port, () => {
+  server.listen(config.port, '127.0.0.1', () => {
     logger.info({ port: config.port }, 'Server listening');
     logger.info(`Player URL: http://localhost:${config.port}`);
     logger.info(`Admin URL: http://localhost:${config.port}/admin`);
@@ -108,6 +133,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = () => {
     logger.info('Shutting down...');
+    updater.stopAutoCheck();
     recovery.stop();
     state.flush();
     playerWs.close();

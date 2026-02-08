@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { ZodError } from 'zod';
 import { saveConfig, isFirstRun, getConfigPath } from './config.js';
 import { logger } from './logger.js';
 import type { AppConfig } from './types.js';
@@ -8,6 +9,7 @@ import type { RecoveryEngine } from './recovery.js';
 import type { PlayerWebSocket } from './websocket.js';
 import type { OBSClient } from './obs-client.js';
 import type { StateManager } from './state.js';
+import type { Updater } from './updater.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
@@ -16,6 +18,8 @@ export interface ApiDependencies {
   getObs: () => OBSClient;
   state: StateManager;
   reloadConfig: () => Promise<void>;
+  updater: Updater;
+  triggerRestart: () => void;
 }
 
 const STARTUP_FOLDER = join(
@@ -52,6 +56,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const safe = {
       ...config,
       obsWebsocketPassword: config.obsWebsocketPassword ? '********' : '',
+      discordWebhookUrl: config.discordWebhookUrl ? '********' : '',
     };
     res.json(safe);
   });
@@ -59,9 +64,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.post('/config', (req, res) => {
     try {
       const body = req.body as Partial<AppConfig>;
-      // Don't overwrite password with the mask
+      // Don't overwrite masked credentials
       if (body.obsWebsocketPassword === '********') {
         delete body.obsWebsocketPassword;
+      }
+      if (body.discordWebhookUrl === '********') {
+        delete body.discordWebhookUrl;
       }
       const updated = saveConfig(body);
       logger.info('Config updated via API');
@@ -69,10 +77,19 @@ export function createApiRouter(deps: ApiDependencies): Router {
       deps.reloadConfig().catch((err) => {
         logger.error({ err }, 'Failed to reload after config update');
       });
-      res.json({ ok: true, config: { ...updated, obsWebsocketPassword: updated.obsWebsocketPassword ? '********' : '' } });
+      res.json({ ok: true, config: {
+        ...updated,
+        obsWebsocketPassword: updated.obsWebsocketPassword ? '********' : '',
+        discordWebhookUrl: updated.discordWebhookUrl ? '********' : '',
+      } });
     } catch (err) {
       logger.error({ err }, 'Failed to save config');
-      res.status(400).json({ error: String(err) });
+      if (err instanceof ZodError) {
+        const messages = err.issues.map(i => `${i.path.join('.')}: ${i.message}`);
+        res.status(400).json({ error: messages.join('; ') });
+      } else {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      }
     }
   });
 
@@ -106,6 +123,33 @@ export function createApiRouter(deps: ApiDependencies): Router {
     } catch (err) {
       logger.error({ err }, 'Failed to set autostart');
       res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // --- Update endpoints ---
+
+  router.get('/update/status', (_req, res) => {
+    res.json(deps.updater.getStatus());
+  });
+
+  router.post('/update/check', async (_req, res) => {
+    try {
+      const status = await deps.updater.checkForUpdate();
+      res.json(status);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  router.post('/update/apply', async (_req, res) => {
+    try {
+      await deps.updater.downloadAndApply();
+      res.json({ ok: true, message: 'Update applied, restarting...' });
+      // Trigger restart after sending response
+      setTimeout(() => deps.triggerRestart(), 1000);
+    } catch (err) {
+      logger.error({ err }, 'Failed to apply update');
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

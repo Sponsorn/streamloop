@@ -47,11 +47,26 @@
 
   <!-- ===== DASHBOARD ===== -->
   <div id="view-dashboard" class="hidden">
+    <!-- Connection lost banner -->
+    <div id="connection-lost" class="connection-lost-banner hidden">
+      <div class="connection-lost-content">
+        <span>Server unreachable — dashboard data may be stale</span>
+      </div>
+    </div>
+
+    <!-- Update banner -->
+    <div id="update-banner" class="update-banner hidden">
+      <div class="update-banner-content">
+        <span id="update-banner-text">A new version is available!</span>
+        <button id="update-btn" class="btn btn-update" onclick="handleUpdate()">Update Now</button>
+      </div>
+    </div>
+
     <div class="container">
       <header>
         <h1>Freeze Monitor</h1>
         <div>
-          <span id="header-pill" class="status-pill pill-err">Loading</span>
+          <span id="header-pill" class="status-pill pill-muted">Loading</span>
           <span id="uptime" class="uptime"></span>
         </div>
       </header>
@@ -163,6 +178,7 @@
     </div>
   </div>
 
+  <div id="toast-container" class="toast-container"></div>
   <script src="/admin/admin.js"></script>
 </body>
 </html>

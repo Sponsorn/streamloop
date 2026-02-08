@@ -99,4 +99,6 @@ export interface AppConfig {
   maxConsecutiveErrors: number;
   stateFilePath: string;
   recoveryDelayMs: number;
+  autoUpdateCheck: boolean;
+  updateCheckIntervalMs: number;
 }

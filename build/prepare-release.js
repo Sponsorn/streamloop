@@ -11,7 +11,7 @@
  */
 
 import { execSync } from 'child_process';
-import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, createWriteStream } from 'fs';
+import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, createWriteStream } from 'fs';
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 
@@ -79,7 +79,8 @@ async function main() {
 
   // Step 5: Create ZIP
   console.log('Creating ZIP archive...');
-  const zipPath = join(DIST, 'freeze-monitor.zip');
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  const zipPath = join(DIST, `freeze-monitor-v${pkg.version}.zip`);
   execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
 
   console.log(`\nRelease built successfully!`);

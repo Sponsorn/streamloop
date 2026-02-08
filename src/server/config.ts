@@ -12,9 +12,14 @@ const configSchema = z.object({
   discordWebhookUrl: z.string().default(''),
   heartbeatIntervalMs: z.number().int().positive().default(5000),
   heartbeatTimeoutMs: z.number().int().positive().default(15000),
-  stateFilePath: z.string().default('./state.json'),
+  stateFilePath: z.string().default('./state.json').refine(
+    (p) => !p.includes('..') && /^\.?[/\\]?[\w.\-]+\.json$/i.test(p),
+    { message: 'stateFilePath must be a simple filename like ./state.json' },
+  ),
   maxConsecutiveErrors: z.number().int().positive().default(3),
   recoveryDelayMs: z.number().int().positive().default(5000),
+  autoUpdateCheck: z.boolean().default(true),
+  updateCheckIntervalMs: z.number().int().positive().default(21600000),
 });
 
 let resolvedConfigPath = '';

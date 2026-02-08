@@ -5,6 +5,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 let currentView = 'loading'; // 'wizard' | 'dashboard'
 let pollTimer = null;
+let pollFailures = 0;
 
 // --- Initialization ---
 
@@ -103,7 +104,7 @@ async function loadWizardDefaults() {
     }
     $('#wiz-source').value = cfg.obsBrowserSourceName || '';
     $('#wiz-obs-pass').value = '';
-    $('#wiz-discord').value = cfg.discordWebhookUrl || '';
+    $('#wiz-discord').value = (cfg.discordWebhookUrl && cfg.discordWebhookUrl !== '********') ? cfg.discordWebhookUrl : '';
   } catch {
     addWizPlaylist('', '');
   }
@@ -119,7 +120,7 @@ async function handleWizardSubmit(e) {
 
   // Validation
   let valid = true;
-  if (playlists.length === 0) { valid = false; alert('Add at least one playlist.'); }
+  if (playlists.length === 0) { valid = false; showToast('Add at least one playlist.'); }
   if (!obsBrowserSourceName) { $('#wiz-source').classList.add('invalid'); valid = false; }
   else { $('#wiz-source').classList.remove('invalid'); }
 
@@ -138,7 +139,7 @@ async function handleWizardSubmit(e) {
     });
     showDashboard();
   } catch (err) {
-    alert('Failed to save: ' + err.message);
+    showToast('Failed to save: ' + err.message);
   } finally {
     $('#wiz-btn').disabled = false;
     $('#wiz-btn').textContent = 'Save & Start';
@@ -158,26 +159,46 @@ function stopPolling() {
 
 async function pollOnce() {
   try {
-    const [status, state, events] = await Promise.all([
+    const [status, state, events, updateStatus] = await Promise.all([
       api('/api/status'),
       api('/api/state'),
       api('/api/events'),
+      api('/api/update/status').catch(() => null),
     ]);
+    pollFailures = 0;
+    $('#connection-lost').classList.add('hidden');
     renderStatus(status);
     renderNowPlaying(state);
     renderEvents(events);
+    if (updateStatus) renderUpdateBanner(updateStatus);
   } catch (err) {
     console.error('Poll error:', err);
+    pollFailures++;
+    if (pollFailures >= 2) {
+      $('#connection-lost').classList.remove('hidden');
+      const pill = $('#header-pill');
+      pill.textContent = 'Disconnected';
+      pill.className = 'status-pill pill-err';
+    }
   }
 }
 
 // --- Rendering ---
 
+const RECOVERY_LABELS = {
+  none: 'Idle',
+  retryCurrent: 'Retrying Video',
+  refreshSource: 'Refreshing Source',
+  toggleVisibility: 'Toggling Source',
+  criticalAlert: 'Critical Alert',
+};
+
 function renderStatus(s) {
   // Status cards
   setCard('player-status', s.playerConnected ? 'Connected' : 'Disconnected', s.playerConnected ? 'ok' : 'err');
   setCard('obs-status', s.obsConnected ? 'Connected' : 'Disconnected', s.obsConnected ? 'ok' : 'err');
-  setCard('recovery-step', s.recoveryStep === 'none' ? 'Idle' : s.recoveryStep, s.recoveryStep === 'none' ? 'ok' : 'warn');
+  const recoveryLabel = RECOVERY_LABELS[s.recoveryStep] || s.recoveryStep;
+  setCard('recovery-step', recoveryLabel, s.recoveryStep === 'none' ? 'ok' : 'warn');
   setCard('errors', String(s.consecutiveErrors), s.consecutiveErrors === 0 ? 'ok' : 'warn');
 
   // Header pill
@@ -212,7 +233,12 @@ function setCard(id, text, cls) {
 
 function renderNowPlaying(s) {
   $('#np-index').textContent = s.videoIndex;
-  $('#np-videoid').textContent = s.videoId || '-';
+  const vidEl = $('#np-videoid');
+  if (s.videoId) {
+    vidEl.innerHTML = `<a href="https://www.youtube.com/watch?v=${escapeHtml(s.videoId)}" target="_blank" rel="noopener">${escapeHtml(s.videoId)}</a>`;
+  } else {
+    vidEl.textContent = '-';
+  }
   $('#np-time').textContent = formatTime(s.currentTime);
   $('#np-updated').textContent = s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : '-';
 }
@@ -243,7 +269,10 @@ async function loadSettings() {
     (cfg.playlists || []).forEach(p => addSetPlaylist(p.id, p.name || ''));
     $('#set-source').value = cfg.obsBrowserSourceName;
     $('#set-obs-pass').value = cfg.obsWebsocketPassword;
-    $('#set-discord').value = cfg.discordWebhookUrl;
+    $('#set-discord').value = cfg.discordWebhookUrl === '********' ? '' : cfg.discordWebhookUrl;
+    if (cfg.discordWebhookUrl === '********') {
+      $('#set-discord').placeholder = 'Discord webhook configured (leave blank to keep)';
+    }
     settingsLoaded = true;
   } catch (err) {
     console.error('Failed to load settings:', err);
@@ -254,14 +283,14 @@ async function handleSettingsSave(e) {
   e.preventDefault();
   const playlists = collectPlaylists('#set-playlists-list');
   if (playlists.length === 0) {
-    alert('Add at least one playlist.');
+    showToast('Add at least one playlist.');
     return;
   }
   const body = {
     playlists,
     obsBrowserSourceName: $('#set-source').value.trim(),
     obsWebsocketPassword: $('#set-obs-pass').value,
-    discordWebhookUrl: $('#set-discord').value.trim(),
+    discordWebhookUrl: $('#set-discord').value.trim() || '********',
   };
 
   try {
@@ -276,7 +305,7 @@ async function handleSettingsSave(e) {
     settingsLoaded = false;
     setTimeout(() => { $('#set-btn').textContent = 'Save Settings'; $('#set-btn').disabled = false; }, 1500);
   } catch (err) {
-    alert('Failed to save: ' + err.message);
+    showToast('Failed to save: ' + err.message);
     $('#set-btn').textContent = 'Save Settings';
     $('#set-btn').disabled = false;
   }
@@ -302,7 +331,7 @@ async function handleAutostartToggle() {
       body: JSON.stringify({ enabled }),
     });
   } catch (err) {
-    alert('Failed to set autostart: ' + err.message);
+    showToast('Failed to set autostart: ' + err.message);
     $('#autostart-toggle').checked = !enabled;
   }
 }
@@ -337,6 +366,84 @@ function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str;
   return d.innerHTML;
+}
+
+function showToast(message, type = 'error') {
+  const container = $('#toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 200);
+  }, 4000);
+}
+
+// --- Update banner ---
+
+function renderUpdateBanner(status) {
+  const banner = $('#update-banner');
+  const text = $('#update-banner-text');
+  const btn = $('#update-btn');
+
+  if (!status.updateAvailable) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  banner.classList.remove('hidden');
+
+  if (status.status === 'downloading') {
+    text.textContent = `Downloading v${status.latestVersion}...`;
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+  } else if (status.status === 'extracting') {
+    text.textContent = `Installing v${status.latestVersion}...`;
+    btn.disabled = true;
+    btn.textContent = 'Installing...';
+  } else if (status.status === 'ready') {
+    text.textContent = 'Update installed, restarting...';
+    btn.disabled = true;
+    btn.textContent = 'Restarting...';
+  } else if (status.status === 'error') {
+    text.textContent = `Update failed: ${status.error}`;
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  } else {
+    text.textContent = `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
+    btn.disabled = false;
+    btn.textContent = status.isDevMode ? 'Dev Mode' : 'Update Now';
+    if (status.isDevMode) btn.disabled = true;
+  }
+}
+
+async function handleUpdate() {
+  const btn = $('#update-btn');
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+
+  try {
+    await api('/api/update/apply', { method: 'POST' });
+    btn.textContent = 'Restarting...';
+    // Poll until server comes back
+    setTimeout(waitForRestart, 3000);
+  } catch (err) {
+    showToast('Update failed: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+  }
+}
+
+async function waitForRestart() {
+  try {
+    await api('/api/status');
+    // Server is back, reload page
+    window.location.reload();
+  } catch {
+    // Server still restarting, try again
+    setTimeout(waitForRestart, 2000);
+  }
 }
 
 // --- Boot ---

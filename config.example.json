@@ -9,5 +9,7 @@
   "heartbeatTimeoutMs": 15000,
   "maxConsecutiveErrors": 3,
   "stateFilePath": "./state.json",
-  "recoveryDelayMs": 5000
+  "recoveryDelayMs": 5000,
+  "autoUpdateCheck": true,
+  "updateCheckIntervalMs": 21600000
 }
