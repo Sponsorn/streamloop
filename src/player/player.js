@@ -60,6 +60,7 @@
         videoTitle: getVideoTitle(),
         playerState: player.getPlayerState(),
         currentTime: player.getCurrentTime() || 0,
+        videoDuration: player.getDuration() || 0,
       });
     }, HEARTBEAT_INTERVAL);
   }

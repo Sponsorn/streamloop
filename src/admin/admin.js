@@ -490,7 +490,7 @@ async function pollOnce() {
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
     renderStatus(status);
-    renderNowPlaying(state);
+    renderNowPlaying(state, status.totalVideos);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
   } catch (err) {
@@ -553,16 +553,18 @@ function setCard(id, text, cls) {
   el.className = 'card-value ' + cls;
 }
 
-function renderNowPlaying(s) {
+function renderNowPlaying(s, totalVideos) {
   $('#np-title').textContent = s.videoTitle || '-';
-  $('#np-index').textContent = s.videoIndex;
+  $('#np-index').textContent = totalVideos ? `${s.videoIndex + 1} / ${totalVideos}` : `${s.videoIndex + 1}`;
   const vidEl = $('#np-videoid');
   if (s.videoId) {
     vidEl.innerHTML = `<a href="https://www.youtube.com/watch?v=${escapeHtml(s.videoId)}" target="_blank" rel="noopener">${escapeHtml(s.videoId)}</a>`;
   } else {
     vidEl.textContent = '-';
   }
-  $('#np-time').textContent = formatTime(s.currentTime);
+  const timeStr = formatTime(s.currentTime);
+  const durationStr = s.videoDuration ? formatTime(s.videoDuration) : '--:--:--';
+  $('#np-time').textContent = `${timeStr} / ${durationStr}`;
   $('#np-updated').textContent = s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : '-';
 }
 
@@ -761,10 +763,11 @@ function formatDuration(ms) {
 }
 
 function formatTime(seconds) {
-  if (!seconds) return '0:00';
-  const m = Math.floor(seconds / 60);
+  if (!seconds) return '0:00:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
+  return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
 function escapeHtml(str) {

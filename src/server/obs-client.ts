@@ -1,5 +1,6 @@
-import { execFile } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { existsSync } from 'fs';
+import { basename, dirname } from 'path';
 import OBSWebSocket from 'obs-websocket-js';
 import type { AppConfig } from './types.js';
 import { logger } from './logger.js';
@@ -85,14 +86,26 @@ export class OBSClient {
       return;
     }
 
-    logger.info({ obsPath }, 'Launching OBS');
-    this.obsLaunched = true;
-    execFile(obsPath, { detached: true, stdio: 'ignore' }, (err) => {
+    // Check if OBS is still running before launching
+    const exeName = basename(obsPath);
+    exec(`tasklist /FI "IMAGENAME eq ${exeName}" /NH`, (err, stdout) => {
       if (err) {
-        logger.error({ err, obsPath }, 'Failed to launch OBS');
-        this.obsLaunched = false;
+        logger.error({ err }, 'Failed to check if OBS is running');
+        return;
       }
-    }).unref();
+      if (stdout.toLowerCase().includes(exeName.toLowerCase())) {
+        logger.info('OBS process still running, waiting for it to exit');
+        return;
+      }
+      logger.info({ obsPath }, 'Launching OBS');
+      this.obsLaunched = true;
+      execFile(obsPath, { cwd: dirname(obsPath), detached: true, stdio: 'ignore' }, (launchErr) => {
+        if (launchErr) {
+          logger.error({ err: launchErr, obsPath }, 'Failed to launch OBS');
+          this.obsLaunched = false;
+        }
+      }).unref();
+    });
   }
 
   private resolveObsPath(): string | null {

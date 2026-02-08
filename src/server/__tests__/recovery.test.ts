@@ -48,13 +48,14 @@ function mockWs() {
   };
 }
 
-function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: number; videoId: string; videoTitle: string; currentTime: number; updatedAt: string }> = {}) {
+function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: number; videoId: string; videoTitle: string; currentTime: number; videoDuration: number; updatedAt: string }> = {}) {
   const state = {
     playlistIndex: 0,
     videoIndex: 0,
     videoId: '',
     videoTitle: '',
     currentTime: 0,
+    videoDuration: 0,
     updatedAt: '',
     ...overrides,
   };
@@ -152,6 +153,7 @@ describe('RecoveryEngine', () => {
       videoTitle: 'Test Video',
       playerState: 1,
       currentTime: 99,
+      videoDuration: 300,
     });
 
     expect(state.update).toHaveBeenCalledWith({
@@ -159,6 +161,7 @@ describe('RecoveryEngine', () => {
       videoId: 'abc',
       videoTitle: 'Test Video',
       currentTime: 99,
+      videoDuration: 300,
     });
   });
 

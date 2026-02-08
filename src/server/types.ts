@@ -11,6 +11,7 @@ export interface PlayerHeartbeatMessage {
   videoTitle: string;
   playerState: number; // YT.PlayerState
   currentTime: number;
+  videoDuration: number;
 }
 
 export interface PlayerErrorMessage {
@@ -75,6 +76,7 @@ export interface PersistedState {
   videoId: string;
   videoTitle: string;
   currentTime: number;
+  videoDuration: number;
   updatedAt: string;
 }
 

@@ -129,6 +129,7 @@ export class RecoveryEngine {
           videoId: msg.videoId,
           videoTitle: msg.videoTitle,
           currentTime: msg.currentTime,
+          videoDuration: msg.videoDuration,
         });
         // YT.PlayerState.PAUSED === 2
         if (msg.playerState === 2) {
