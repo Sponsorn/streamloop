@@ -117,6 +117,7 @@ describe('RecoveryEngine', () => {
       playlistId: 'PL123',
       index: 5,
       loop: true,
+      startTime: 0,
     });
   });
 
@@ -134,6 +135,7 @@ describe('RecoveryEngine', () => {
       playlistId: 'PLB',
       index: 3,
       loop: false,
+      startTime: 0,
     });
   });
 
@@ -151,6 +153,7 @@ describe('RecoveryEngine', () => {
       playlistId: 'PLA',
       index: 0,
       loop: true,
+      startTime: 0,
     });
   });
 

@@ -4,7 +4,9 @@
 
   let ws = null;
   let player = null;
+  let playerReady = false;
   let heartbeatTimer = null;
+  let pendingSeekTime = 0;
   const HEARTBEAT_INTERVAL = 5000;
   const WS_RECONNECT_DELAY = 3000;
 
@@ -113,7 +115,7 @@
     console.log('[WS] Server:', msg.type, msg);
     switch (msg.type) {
       case 'loadPlaylist':
-        loadPlaylist(msg.playlistId, msg.index, msg.loop);
+        loadPlaylist(msg.playlistId, msg.index, msg.loop, msg.startTime);
         break;
       case 'retryCurrent':
         retryCurrent();
@@ -127,12 +129,13 @@
     }
   }
 
-  function loadPlaylist(playlistId, index, loop) {
-    if (!player) {
+  function loadPlaylist(playlistId, index, loop, startTime) {
+    if (!playerReady) {
       console.warn('[Player] Not ready yet, deferring loadPlaylist');
-      setTimeout(function () { loadPlaylist(playlistId, index, loop); }, 500);
+      setTimeout(function () { loadPlaylist(playlistId, index, loop, startTime); }, 500);
       return;
     }
+    pendingSeekTime = startTime || 0;
     player.loadPlaylist({
       list: playlistId,
       listType: 'playlist',
@@ -184,6 +187,7 @@
 
   function onPlayerReady() {
     console.log('[Player] Ready');
+    playerReady = true;
     // Server will send loadPlaylist after receiving 'ready' via WebSocket
   }
 
@@ -196,6 +200,14 @@
       videoId: getVideoId(),
       videoTitle: getVideoTitle(),
     });
+
+    // Seek to saved position after resume from crash
+    if (state === YT.PlayerState.PLAYING && pendingSeekTime > 0) {
+      var seekTo = pendingSeekTime;
+      pendingSeekTime = 0;
+      console.log('[Player] Seeking to saved position:', seekTo);
+      player.seekTo(seekTo, true);
+    }
 
     // Notify server when playlist is loaded (first CUED or PLAYING after load)
     if (state === YT.PlayerState.CUED || state === YT.PlayerState.PLAYING) {

@@ -88,8 +88,9 @@ export class RecoveryEngine {
   }
 
   private onPlayerConnect() {
-    logger.info('Player connected, sending playlist load');
-    this.addEvent('Player connected');
+    const resumeInfo = { videoIndex: this.state.get().videoIndex, currentTime: this.state.get().currentTime };
+    logger.info(resumeInfo, 'Player connected, sending playlist load');
+    this.addEvent(`Player connected — resuming video #${resumeInfo.videoIndex} at ${Math.floor(resumeInfo.currentTime)}s`);
     this.resetRecovery();
     this.lastHeartbeatAt = Date.now();
 
@@ -102,6 +103,7 @@ export class RecoveryEngine {
       playlistId: playlist.id,
       index: savedState.videoIndex,
       loop: this.config.playlists.length === 1,
+      startTime: savedState.currentTime || 0,
     });
   }
 
