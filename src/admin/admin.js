@@ -6,6 +6,10 @@ const $$ = (sel) => document.querySelectorAll(sel);
 let currentView = 'loading'; // 'wizard' | 'dashboard'
 let pollTimer = null;
 let pollFailures = 0;
+let lastHeartbeatAt = 0;
+let heartbeatIntervalMs = 5000;
+let heartbeatCountdownTimer = null;
+let playerConnected = false;
 
 // --- Initialization ---
 
@@ -477,6 +481,7 @@ function startPolling() {
 
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (heartbeatCountdownTimer) { clearInterval(heartbeatCountdownTimer); heartbeatCountdownTimer = null; }
 }
 
 async function pollOnce() {
@@ -536,6 +541,15 @@ function renderStatus(s) {
     pill.className = 'status-pill pill-err';
   }
 
+  // Heartbeat countdown
+  lastHeartbeatAt = s.lastHeartbeatAt;
+  heartbeatIntervalMs = s.heartbeatIntervalMs || 5000;
+  playerConnected = s.playerConnected;
+  updateHeartbeatPill();
+  if (!heartbeatCountdownTimer) {
+    heartbeatCountdownTimer = setInterval(updateHeartbeatPill, 1000);
+  }
+
   // Uptime
   $('#uptime').textContent = 'Uptime: ' + formatDuration(s.uptimeMs);
 
@@ -544,6 +558,26 @@ function renderStatus(s) {
     $('#np-playlist').textContent = `${s.playlistIndex + 1} of ${s.totalPlaylists}`;
   } else {
     $('#np-playlist').textContent = '1 of 1';
+  }
+}
+
+function updateHeartbeatPill() {
+  const pill = $('#heartbeat-pill');
+  if (!playerConnected) {
+    pill.style.display = 'none';
+    return;
+  }
+  pill.style.display = '';
+  const elapsed = Date.now() - lastHeartbeatAt;
+  const remaining = Math.max(0, heartbeatIntervalMs - elapsed);
+  const seconds = Math.ceil(remaining / 1000);
+  if (remaining > 0) {
+    pill.textContent = `Heartbeat: ${seconds}s`;
+    pill.className = 'status-pill pill-ok';
+  } else {
+    const overdue = Math.round(elapsed / 1000);
+    pill.textContent = `Heartbeat: ${overdue}s ago`;
+    pill.className = elapsed > heartbeatIntervalMs * 3 ? 'status-pill pill-err' : 'status-pill pill-warn';
   }
 }
 
@@ -642,6 +676,21 @@ async function handleSettingsSave(e) {
 }
 
 // --- OBS path helpers ---
+
+async function testDiscord() {
+  const resultEl = $('#discord-test-result');
+  resultEl.style.display = 'block';
+  resultEl.textContent = 'Sending test message...';
+  resultEl.className = 'obs-path-result';
+  try {
+    await api('/api/discord/test', { method: 'POST' });
+    resultEl.textContent = 'Test message sent! Check your Discord channel.';
+    resultEl.className = 'obs-path-result valid';
+  } catch (err) {
+    resultEl.textContent = err.message || 'Failed to send test message.';
+    resultEl.className = 'obs-path-result invalid';
+  }
+}
 
 async function detectObsPath() {
   const resultEl = $('#obs-path-result');

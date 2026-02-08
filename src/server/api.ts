@@ -10,6 +10,7 @@ import type { PlayerWebSocket } from './websocket.js';
 import type { OBSClient } from './obs-client.js';
 import type { StateManager } from './state.js';
 import type { Updater } from './updater.js';
+import type { DiscordNotifier } from './discord.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
@@ -20,6 +21,7 @@ export interface ApiDependencies {
   reloadConfig: () => Promise<void>;
   updater: Updater;
   triggerRestart: () => void;
+  getDiscord: () => DiscordNotifier;
 }
 
 const STARTUP_FOLDER = join(
@@ -39,6 +41,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       obsConnected: deps.getObs().isConnected(),
       recoveryStep: status.recoveryStep,
       lastHeartbeatAt: status.lastHeartbeatAt,
+      heartbeatIntervalMs: config.heartbeatIntervalMs,
       consecutiveErrors: status.consecutiveErrors,
       totalVideos: status.totalVideos,
       uptimeMs: status.uptimeMs,
@@ -160,6 +163,21 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return res.json({ valid: false, error: 'Doesn\'t look like an OBS executable' });
     }
     res.json({ valid: true });
+  });
+
+  // --- Discord test ---
+
+  router.post('/discord/test', async (_req, res) => {
+    const config = deps.getConfig();
+    if (!config.discordWebhookUrl) {
+      return res.status(400).json({ error: 'No Discord webhook URL configured' });
+    }
+    try {
+      await deps.getDiscord().send('Test notification from Freeze Monitor. If you see this, your webhook is working!', 'info');
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
   });
 
   // --- Update endpoints ---

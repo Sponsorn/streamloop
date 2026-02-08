@@ -1,6 +1,6 @@
-import { exec, execFile } from 'child_process';
-import { existsSync } from 'fs';
-import { basename, dirname } from 'path';
+import { exec, spawn } from 'child_process';
+import { existsSync, rmSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import OBSWebSocket from 'obs-websocket-js';
 import type { AppConfig } from './types.js';
 import { logger } from './logger.js';
@@ -97,15 +97,42 @@ export class OBSClient {
         logger.info('OBS process still running, waiting for it to exit');
         return;
       }
+      // Clear OBS crash sentinel so it doesn't prompt for safe mode
+      this.clearObsSentinel();
+
       logger.info({ obsPath }, 'Launching OBS');
       this.obsLaunched = true;
-      execFile(obsPath, { cwd: dirname(obsPath), detached: true, stdio: 'ignore' }, (launchErr) => {
-        if (launchErr) {
+      try {
+        const child = spawn(obsPath, ['--disable-shutdown-check'], {
+          cwd: dirname(obsPath),
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: false,
+        });
+        child.unref();
+        child.on('error', (launchErr) => {
           logger.error({ err: launchErr, obsPath }, 'Failed to launch OBS');
           this.obsLaunched = false;
-        }
-      }).unref();
+        });
+      } catch (launchErr) {
+        logger.error({ err: launchErr, obsPath }, 'Failed to spawn OBS');
+        this.obsLaunched = false;
+      }
     });
+  }
+
+  private clearObsSentinel() {
+    const appData = process.env.APPDATA;
+    if (!appData) return;
+    const sentinelPath = join(appData, 'obs-studio', '.sentinel');
+    try {
+      if (existsSync(sentinelPath)) {
+        rmSync(sentinelPath, { recursive: true, force: true });
+        logger.info('Cleared OBS crash sentinel');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to clear OBS crash sentinel');
+    }
   }
 
   private resolveObsPath(): string | null {

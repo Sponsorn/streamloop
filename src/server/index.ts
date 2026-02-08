@@ -97,6 +97,7 @@ async function main() {
     reloadConfig,
     updater,
     triggerRestart,
+    getDiscord: () => discord,
   });
   app.use('/api', apiRouter);
 

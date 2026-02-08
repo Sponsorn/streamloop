@@ -205,6 +205,7 @@
         <h1>Freeze Monitor</h1>
         <div>
           <span id="header-pill" class="status-pill pill-muted">Loading</span>
+          <span id="heartbeat-pill" class="status-pill pill-muted" style="display:none;">Heartbeat: -</span>
           <span id="uptime" class="uptime"></span>
         </div>
       </header>
@@ -327,7 +328,11 @@
             </div>
             <div class="form-group">
               <label for="set-discord">Discord Webhook URL</label>
-              <input type="url" id="set-discord">
+              <div class="obs-path-row">
+                <input type="url" id="set-discord">
+                <button type="button" class="btn btn-secondary btn-small" onclick="testDiscord()">Test</button>
+              </div>
+              <div id="discord-test-result" class="obs-path-result" style="display:none;"></div>
             </div>
             <button type="submit" id="set-btn" class="btn btn-primary">Save Settings</button>
           </form>
