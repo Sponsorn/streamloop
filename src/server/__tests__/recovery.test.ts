@@ -19,6 +19,10 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxConsecutiveErrors: 3,
     stateFilePath: './state.json',
     recoveryDelayMs: 5000,
+    obsAutoRestart: false,
+    obsPath: '',
+    autoUpdateCheck: true,
+    updateCheckIntervalMs: 21600000,
     ...overrides,
   };
 }
@@ -32,7 +36,7 @@ function mockWs() {
     onConnect: vi.fn((cb: Function) => { connectCb = cb; }),
     onDisconnect: vi.fn((cb: Function) => { disconnectCb = cb; }),
     send: vi.fn(),
-    isConnected: vi.fn(() => true),
+    isConnected: vi.fn(() => false),
     close: vi.fn(),
     _triggerMessage: (msg: any) => msgCb(msg),
     _triggerConnect: () => connectCb(),
@@ -44,11 +48,12 @@ function mockWs() {
   };
 }
 
-function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: number; videoId: string; currentTime: number; updatedAt: string }> = {}) {
+function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: number; videoId: string; videoTitle: string; currentTime: number; updatedAt: string }> = {}) {
   const state = {
     playlistIndex: 0,
     videoIndex: 0,
     videoId: '',
+    videoTitle: '',
     currentTime: 0,
     updatedAt: '',
     ...overrides,
@@ -144,6 +149,7 @@ describe('RecoveryEngine', () => {
       type: 'heartbeat',
       videoIndex: 3,
       videoId: 'abc',
+      videoTitle: 'Test Video',
       playerState: 1,
       currentTime: 99,
     });
@@ -151,6 +157,7 @@ describe('RecoveryEngine', () => {
     expect(state.update).toHaveBeenCalledWith({
       videoIndex: 3,
       videoId: 'abc',
+      videoTitle: 'Test Video',
       currentTime: 99,
     });
   });
@@ -252,7 +259,7 @@ describe('RecoveryEngine', () => {
     ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 5 });
 
     // Simulate ENDED (playerState 0) on last video (index 4)
-    ws._triggerMessage({ type: 'stateChange', playerState: 0, videoIndex: 4, videoId: 'last' });
+    ws._triggerMessage({ type: 'stateChange', playerState: 0, videoIndex: 4, videoId: 'last', videoTitle: '' });
 
     await vi.advanceTimersByTimeAsync(0);
 
@@ -272,7 +279,7 @@ describe('RecoveryEngine', () => {
 
     ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 3 });
 
-    ws._triggerMessage({ type: 'stateChange', playerState: 0, videoIndex: 2, videoId: 'last' });
+    ws._triggerMessage({ type: 'stateChange', playerState: 0, videoIndex: 2, videoId: 'last', videoTitle: '' });
 
     await vi.advanceTimersByTimeAsync(0);
 

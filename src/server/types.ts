@@ -8,6 +8,7 @@ export interface PlayerHeartbeatMessage {
   type: 'heartbeat';
   videoIndex: number;
   videoId: string;
+  videoTitle: string;
   playerState: number; // YT.PlayerState
   currentTime: number;
 }
@@ -24,6 +25,7 @@ export interface PlayerStateChangeMessage {
   playerState: number;
   videoIndex: number;
   videoId: string;
+  videoTitle: string;
 }
 
 export interface PlayerPlaylistLoadedMessage {
@@ -50,6 +52,10 @@ export interface ServerRetryCurrentMessage {
   type: 'retryCurrent';
 }
 
+export interface ServerResumeMessage {
+  type: 'resume';
+}
+
 export interface ServerSkipMessage {
   type: 'skip';
   index: number;
@@ -58,6 +64,7 @@ export interface ServerSkipMessage {
 export type ServerMessage =
   | ServerLoadPlaylistMessage
   | ServerRetryCurrentMessage
+  | ServerResumeMessage
   | ServerSkipMessage;
 
 // --- Persisted state ---
@@ -66,6 +73,7 @@ export interface PersistedState {
   playlistIndex: number;
   videoIndex: number;
   videoId: string;
+  videoTitle: string;
   currentTime: number;
   updatedAt: string;
 }
@@ -99,6 +107,8 @@ export interface AppConfig {
   maxConsecutiveErrors: number;
   stateFilePath: string;
   recoveryDelayMs: number;
+  obsAutoRestart: boolean;
+  obsPath: string;
   autoUpdateCheck: boolean;
   updateCheckIntervalMs: number;
 }

@@ -18,6 +18,8 @@ const configSchema = z.object({
   ),
   maxConsecutiveErrors: z.number().int().positive().default(3),
   recoveryDelayMs: z.number().int().positive().default(5000),
+  obsAutoRestart: z.boolean().default(false),
+  obsPath: z.string().default(''),
   autoUpdateCheck: z.boolean().default(true),
   updateCheckIntervalMs: z.number().int().positive().default(21600000),
 });

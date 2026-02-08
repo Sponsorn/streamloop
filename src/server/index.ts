@@ -33,6 +33,10 @@ async function main() {
   const adminDir = resolve(__dirname, '..', 'admin');
   app.use('/admin', express.static(adminDir));
 
+  // Now-playing overlay for OBS
+  const overlayDir = resolve(__dirname, '..', 'overlay');
+  app.use('/overlay', express.static(overlayDir));
+
   const server = createServer(app);
 
   // WebSocket

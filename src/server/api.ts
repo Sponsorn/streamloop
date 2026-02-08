@@ -42,6 +42,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
       consecutiveErrors: status.consecutiveErrors,
       totalVideos: status.totalVideos,
       uptimeMs: status.uptimeMs,
+      playlistIndex: status.playlistIndex,
+      totalPlaylists: status.totalPlaylists,
       firstRun: isFirstRun(config),
     });
   });
@@ -124,6 +126,40 @@ export function createApiRouter(deps: ApiDependencies): Router {
       logger.error({ err }, 'Failed to set autostart');
       res.status(500).json({ error: String(err) });
     }
+  });
+
+  // --- OBS path endpoints ---
+
+  const OBS_SEARCH_PATHS = [
+    'C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe',
+    'C:\\Program Files (x86)\\obs-studio\\bin\\64bit\\obs64.exe',
+  ];
+
+  router.post('/obs-path/detect', (_req, res) => {
+    for (const p of OBS_SEARCH_PATHS) {
+      if (existsSync(p)) {
+        return res.json({ found: true, path: p });
+      }
+    }
+    res.json({ found: false, path: '' });
+  });
+
+  router.post('/obs-path/validate', (req, res) => {
+    const { path } = req.body as { path: string };
+    if (!path || typeof path !== 'string') {
+      return res.json({ valid: false, error: 'No path provided' });
+    }
+    if (!existsSync(path)) {
+      return res.json({ valid: false, error: 'File not found' });
+    }
+    const lower = path.toLowerCase();
+    if (!lower.endsWith('.exe')) {
+      return res.json({ valid: false, error: 'Not an executable (.exe) file' });
+    }
+    if (!lower.includes('obs')) {
+      return res.json({ valid: false, error: 'Doesn\'t look like an OBS executable' });
+    }
+    res.json({ valid: true });
   });
 
   // --- Update endpoints ---

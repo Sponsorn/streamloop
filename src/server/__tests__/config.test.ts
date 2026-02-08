@@ -83,8 +83,11 @@ describe('loadConfig', () => {
 
 describe('isFirstRun', () => {
   it('returns true for default placeholder playlist', () => {
-    const cfg = loadConfig(undefined);
-    // loadConfig with default config.json has PLxxxxxxxxxxxxxxxx
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLxxxxxxxxxxxxxxxx' }],
+      obsBrowserSourceName: 'Source',
+    }));
+    const cfg = loadConfig(tmpConfig);
     expect(isFirstRun(cfg)).toBe(true);
   });
 

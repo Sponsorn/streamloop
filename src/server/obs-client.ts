@@ -1,13 +1,22 @@
+import { execFile } from 'child_process';
+import { existsSync } from 'fs';
 import OBSWebSocket from 'obs-websocket-js';
 import type { AppConfig } from './types.js';
 import { logger } from './logger.js';
+
+const DEFAULT_OBS_PATHS = [
+  'C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe',
+  'C:\\Program Files (x86)\\obs-studio\\bin\\64bit\\obs64.exe',
+];
 
 export class OBSClient {
   private obs = new OBSWebSocket();
   private config: AppConfig;
   private connected = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private reconnectDelay = 10000;
+  private reconnectDelay = 5000;
+  private failedReconnects = 0;
+  private obsLaunched = false;
   private onConnectCallback: (() => void) | null = null;
   private onDisconnectCallback: (() => void) | null = null;
 
@@ -18,6 +27,8 @@ export class OBSClient {
       if (this.connected) {
         logger.warn('OBS WebSocket disconnected');
         this.connected = false;
+        this.failedReconnects = 0;
+        this.obsLaunched = false;
         this.onDisconnectCallback?.();
         this.scheduleReconnect();
       }
@@ -40,11 +51,15 @@ export class OBSClient {
         this.config.obsWebsocketPassword || undefined,
       );
       this.connected = true;
-      this.reconnectDelay = 10000;
+      this.reconnectDelay = 5000;
+      this.failedReconnects = 0;
+      this.obsLaunched = false;
       logger.info('Connected to OBS WebSocket');
       this.onConnectCallback?.();
     } catch (err) {
       logger.error({ err }, 'Failed to connect to OBS WebSocket');
+      this.failedReconnects++;
+      this.tryLaunchObs();
       this.scheduleReconnect();
     }
   }
@@ -56,7 +71,40 @@ export class OBSClient {
       this.reconnectTimer = null;
       await this.connect();
     }, this.reconnectDelay);
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
+    this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30000);
+  }
+
+  private tryLaunchObs() {
+    if (!this.config.obsAutoRestart) return;
+    if (this.obsLaunched) return;
+    if (this.failedReconnects < 2) return; // Give OBS a chance to come back on its own
+
+    const obsPath = this.resolveObsPath();
+    if (!obsPath) {
+      logger.warn('obsAutoRestart enabled but OBS executable not found. Set obsPath in config.');
+      return;
+    }
+
+    logger.info({ obsPath }, 'Launching OBS');
+    this.obsLaunched = true;
+    execFile(obsPath, { detached: true, stdio: 'ignore' }, (err) => {
+      if (err) {
+        logger.error({ err, obsPath }, 'Failed to launch OBS');
+        this.obsLaunched = false;
+      }
+    }).unref();
+  }
+
+  private resolveObsPath(): string | null {
+    if (this.config.obsPath) {
+      if (existsSync(this.config.obsPath)) return this.config.obsPath;
+      logger.warn({ obsPath: this.config.obsPath }, 'Configured obsPath does not exist');
+      return null;
+    }
+    for (const p of DEFAULT_OBS_PATHS) {
+      if (existsSync(p)) return p;
+    }
+    return null;
   }
 
   onConnect(cb: () => void) { this.onConnectCallback = cb; }

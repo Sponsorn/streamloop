@@ -48,6 +48,10 @@ export class RecoveryEngine {
     this.ws.onConnect(() => this.onPlayerConnect());
     this.ws.onDisconnect(() => this.onPlayerDisconnect());
     this.startHeartbeatMonitor();
+    // If player is already connected (e.g. after config reload), send playlist now
+    if (this.ws.isConnected()) {
+      this.onPlayerConnect();
+    }
   }
 
   stop() {
@@ -105,6 +109,12 @@ export class RecoveryEngine {
     // Heartbeat monitor will trigger recovery
   }
 
+  private handlePaused() {
+    logger.info('Player paused, sending resume');
+    this.addEvent('Player paused — auto-resuming');
+    this.ws.send({ type: 'resume' });
+  }
+
   private handlePlayerMessage(msg: PlayerMessage) {
     switch (msg.type) {
       case 'ready':
@@ -117,8 +127,13 @@ export class RecoveryEngine {
         this.state.update({
           videoIndex: msg.videoIndex,
           videoId: msg.videoId,
+          videoTitle: msg.videoTitle,
           currentTime: msg.currentTime,
         });
+        // YT.PlayerState.PAUSED === 2
+        if (msg.playerState === 2) {
+          this.handlePaused();
+        }
         break;
 
       case 'stateChange':
@@ -126,10 +141,15 @@ export class RecoveryEngine {
         this.state.update({
           videoIndex: msg.videoIndex,
           videoId: msg.videoId,
+          videoTitle: msg.videoTitle,
         });
         // YT.PlayerState.PLAYING === 1
         if (msg.playerState === 1) {
           this.consecutiveErrors = 0;
+        }
+        // YT.PlayerState.PAUSED === 2
+        if (msg.playerState === 2) {
+          this.handlePaused();
         }
         // YT.PlayerState.ENDED === 0 — detect natural end of last video
         if (msg.playerState === 0 && this.totalVideos > 0

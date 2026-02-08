@@ -11,37 +11,175 @@
   <!-- ===== SETUP WIZARD ===== -->
   <div id="view-wizard" class="hidden">
     <div class="wizard">
-      <h2>Freeze Monitor Setup</h2>
-      <p>Configure your YouTube playlist monitor. You can change these later from the dashboard.</p>
+      <!-- Progress bar -->
+      <div class="wiz-progress">
+        <div class="wiz-progress-dot completed" data-step="1"><span class="wiz-dot-num">1</span><span class="wiz-dot-label">Welcome</span></div>
+        <div class="wiz-progress-line" data-after="1"></div>
+        <div class="wiz-progress-dot" data-step="2"><span class="wiz-dot-num">2</span><span class="wiz-dot-label">OBS WebSocket</span></div>
+        <div class="wiz-progress-line" data-after="2"></div>
+        <div class="wiz-progress-dot" data-step="3"><span class="wiz-dot-num">3</span><span class="wiz-dot-label">Browser Source</span></div>
+        <div class="wiz-progress-line" data-after="3"></div>
+        <div class="wiz-progress-dot" data-step="4"><span class="wiz-dot-num">4</span><span class="wiz-dot-label">Playlists</span></div>
+        <div class="wiz-progress-line" data-after="4"></div>
+        <div class="wiz-progress-dot" data-step="5"><span class="wiz-dot-num">5</span><span class="wiz-dot-label">Extras</span></div>
+        <div class="wiz-progress-line" data-after="5"></div>
+        <div class="wiz-progress-dot" data-step="6"><span class="wiz-dot-num">6</span><span class="wiz-dot-label">Finish</span></div>
+      </div>
 
-      <form id="wizard-form">
-        <div class="form-group">
-          <label>YouTube Playlists *</label>
-          <div id="wiz-playlists-list"></div>
-          <button type="button" class="btn btn-secondary" onclick="addWizPlaylist()">+ Add Playlist</button>
-          <div class="hint">Playlist IDs from YouTube URLs (starts with PL). Videos play sequentially across playlists.</div>
+      <!-- Step 1: Welcome -->
+      <div class="wiz-step" data-step="1">
+        <h2>Welcome to Freeze Monitor</h2>
+        <p>This app plays YouTube playlists in OBS and automatically recovers from freezes, errors, and failures.</p>
+        <div class="wiz-info-box">
+          <div class="wiz-info-title">What we'll set up:</div>
+          <ol class="wiz-checklist-preview">
+            <li>Connect to OBS via WebSocket</li>
+            <li>Create a Browser Source in OBS for the player</li>
+            <li>Add your YouTube playlists</li>
+            <li>Optional: Discord alerts &amp; Windows autostart</li>
+          </ol>
         </div>
-
-        <div class="form-group">
-          <label for="wiz-source">OBS Browser Source Name *</label>
-          <input type="text" id="wiz-source" placeholder="Playlist Player" required>
-          <div class="hint">Exact name of the Browser Source in OBS that will show the player</div>
+        <div class="wiz-info-box wiz-info-reminder">
+          <div class="wiz-info-title">Before you begin</div>
+          <p>Make sure OBS Studio is open and running. You'll need it for the next steps.</p>
         </div>
+      </div>
 
+      <!-- Step 2: OBS WebSocket -->
+      <div class="wiz-step hidden" data-step="2">
+        <h2>OBS WebSocket Connection</h2>
+        <p>Freeze Monitor talks to OBS through WebSocket. Let's make sure it's enabled.</p>
+        <div class="wiz-info-box">
+          <div class="wiz-info-title">In OBS, follow these steps:</div>
+          <ol class="wiz-instructions">
+            <li>Open OBS and go to <strong>Tools</strong> in the menu bar</li>
+            <li>Click <strong>WebSocket Server Settings</strong></li>
+            <li>Check <strong>Enable WebSocket Server</strong></li>
+            <li>The default port is <strong>4455</strong> &mdash; leave it as-is unless you changed it</li>
+            <li>If you set a password, enter it below. Otherwise leave it blank.</li>
+            <li>Click <strong>OK</strong> to save</li>
+          </ol>
+        </div>
         <div class="form-group">
           <label for="wiz-obs-pass">OBS WebSocket Password</label>
-          <input type="password" id="wiz-obs-pass" placeholder="Optional">
-          <div class="hint">Leave blank if OBS WebSocket has no password set</div>
+          <input type="password" id="wiz-obs-pass" placeholder="Leave blank if no password is set">
+          <div class="hint">Only needed if you enabled authentication in OBS WebSocket settings</div>
         </div>
+        <div class="wiz-test-row">
+          <button type="button" class="btn btn-secondary" id="wiz-test-obs" onclick="wizTestObs()">Test Connection</button>
+          <span class="wiz-test-result" id="wiz-obs-result"></span>
+        </div>
+      </div>
 
+      <!-- Step 3: OBS Browser Source -->
+      <div class="wiz-step hidden" data-step="3">
+        <h2>Create OBS Browser Source</h2>
+        <p>The player runs inside an OBS Browser Source. Let's create one.</p>
+        <div class="wiz-info-box">
+          <div class="wiz-info-title">In OBS, follow these steps:</div>
+          <ol class="wiz-instructions">
+            <li>In the <strong>Sources</strong> panel, click the <strong>+</strong> button</li>
+            <li>Choose <strong>Browser</strong></li>
+            <li>Name it (e.g. <strong>Playlist Player</strong>) and click OK</li>
+            <li>Set the <strong>URL</strong> to the address shown below</li>
+            <li>Set <strong>Width</strong> to <strong>1920</strong> and <strong>Height</strong> to <strong>1080</strong> (or match your canvas)</li>
+            <li>Click <strong>OK</strong> to create the source</li>
+          </ol>
+        </div>
+        <div class="wiz-copy-box">
+          <label>Player URL</label>
+          <div class="wiz-copy-row">
+            <code id="wiz-player-url"></code>
+            <button type="button" class="btn btn-secondary btn-small" onclick="wizCopyUrl()">Copy</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="wiz-source">OBS Browser Source Name</label>
+          <input type="text" id="wiz-source" placeholder="Playlist Player" value="Playlist Player">
+          <div class="hint">Enter the exact name you gave the Browser Source in OBS</div>
+        </div>
+        <div class="wiz-test-row">
+          <button type="button" class="btn btn-secondary" id="wiz-test-player" onclick="wizTestPlayer()">Check Player</button>
+          <span class="wiz-test-result" id="wiz-player-result"></span>
+        </div>
+      </div>
+
+      <!-- Step 4: YouTube Playlists -->
+      <div class="wiz-step hidden" data-step="4">
+        <h2>YouTube Playlists</h2>
+        <p>Add the YouTube playlists you want to play. Videos will play in order across all playlists.</p>
+        <div class="wiz-info-box">
+          <div class="wiz-info-title">Where to find a playlist ID</div>
+          <div class="wiz-url-diagram">
+            <code>youtube.com/playlist?list=<strong>PLxxxxxxxxxxxxxxxx</strong></code>
+          </div>
+          <p class="wiz-url-hint">Copy the part after <strong>list=</strong> &mdash; it starts with <strong>PL</strong></p>
+        </div>
+        <div class="form-group">
+          <label>Playlists</label>
+          <div id="wiz-playlists-list"></div>
+          <button type="button" class="btn btn-secondary" onclick="wizAddPlaylist()">+ Add Playlist</button>
+        </div>
+      </div>
+
+      <!-- Step 5: Optional Extras -->
+      <div class="wiz-step hidden" data-step="5">
+        <h2>Optional Extras</h2>
+        <p>These are completely optional. You can skip this step or set them up later in Settings.</p>
         <div class="form-group">
           <label for="wiz-discord">Discord Webhook URL</label>
           <input type="url" id="wiz-discord" placeholder="https://discord.com/api/webhooks/...">
-          <div class="hint">Optional — receive notifications about errors and recovery actions</div>
+          <div class="hint">Get notified about errors and recovery actions</div>
+          <details class="wiz-collapsible">
+            <summary>How do I create a Discord webhook?</summary>
+            <ol class="wiz-instructions">
+              <li>Open your Discord server and go to <strong>Server Settings</strong></li>
+              <li>Click <strong>Integrations</strong>, then <strong>Webhooks</strong></li>
+              <li>Click <strong>New Webhook</strong></li>
+              <li>Choose a channel for notifications and give it a name</li>
+              <li>Click <strong>Copy Webhook URL</strong> and paste it above</li>
+            </ol>
+          </details>
         </div>
+        <div class="wiz-toggle-row">
+          <div>
+            <div class="toggle-label">Run on Windows startup</div>
+            <div class="toggle-desc">Automatically start the monitor when Windows boots</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="wiz-autostart">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="wiz-optional-badge">Optional &mdash; you can configure these later</div>
+      </div>
 
-        <button type="submit" id="wiz-btn" class="btn btn-primary">Save & Start</button>
-      </form>
+      <!-- Step 6: Verify & Finish -->
+      <div class="wiz-step hidden" data-step="6">
+        <h2>Verify &amp; Finish</h2>
+        <p>Let's make sure everything is working. Your settings will be saved when you click Finish.</p>
+        <div class="wiz-verify-checklist" id="wiz-verify-list">
+          <div class="wiz-verify-item" data-check="config">
+            <span class="wiz-verify-icon" id="wiz-chk-config">&#9679;</span>
+            <span>Save configuration</span>
+          </div>
+          <div class="wiz-verify-item" data-check="obs">
+            <span class="wiz-verify-icon" id="wiz-chk-obs">&#9679;</span>
+            <span>OBS WebSocket connected</span>
+          </div>
+          <div class="wiz-verify-item" data-check="player">
+            <span class="wiz-verify-icon" id="wiz-chk-player">&#9679;</span>
+            <span>Player connected in OBS</span>
+          </div>
+        </div>
+        <div class="wiz-verify-status" id="wiz-verify-status"></div>
+      </div>
+
+      <!-- Navigation buttons -->
+      <div class="wiz-nav">
+        <button type="button" class="btn btn-secondary" id="wiz-back" onclick="wizBack()">Back</button>
+        <button type="button" class="btn btn-primary" id="wiz-next" onclick="wizNext()">Continue</button>
+      </div>
     </div>
   </div>
 
@@ -74,6 +212,7 @@
       <!-- Tabs -->
       <div class="tabs">
         <button class="tab active" data-tab="monitor">Monitor</button>
+        <button class="tab" data-tab="overlays">Overlays</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
 
@@ -107,6 +246,10 @@
               <div class="np-label">Playlist</div>
               <div class="np-value" id="np-playlist">-</div>
             </div>
+            <div class="np-item np-title-item">
+              <div class="np-label">Video Title</div>
+              <div class="np-value" id="np-title">-</div>
+            </div>
             <div class="np-item">
               <div class="np-label">Video Index</div>
               <div class="np-value" id="np-index">-</div>
@@ -135,6 +278,36 @@
         </div>
       </div>
 
+      <!-- Overlays tab -->
+      <div id="panel-overlays" class="tab-panel hidden">
+        <div class="section">
+          <div class="section-title">OBS Browser Source Overlays</div>
+          <p class="overlays-desc">Add these as Browser Sources in OBS to display information on your stream. Set the background to transparent in the source properties.</p>
+        </div>
+        <div class="overlay-card">
+          <div class="overlay-header">
+            <div>
+              <div class="overlay-name">Now Playing</div>
+              <div class="overlay-desc">Shows the current video title at the bottom of the screen</div>
+            </div>
+            <a class="btn btn-secondary btn-small" id="overlay-np-preview" target="_blank" rel="noopener">Preview</a>
+          </div>
+          <div class="overlay-url-row">
+            <label>Browser Source URL</label>
+            <div class="wiz-copy-row">
+              <code id="overlay-np-url"></code>
+              <button type="button" class="btn btn-secondary btn-small" onclick="copyOverlayUrl('overlay-np-url')">Copy</button>
+            </div>
+          </div>
+          <div class="overlay-settings">
+            <div class="overlay-setting">
+              <span class="overlay-setting-label">Recommended size:</span>
+              <span>1920 x 1080</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Settings tab -->
       <div id="panel-settings" class="tab-panel hidden">
         <div class="settings-panel">
@@ -158,6 +331,32 @@
             </div>
             <button type="submit" id="set-btn" class="btn btn-primary">Save Settings</button>
           </form>
+        </div>
+
+        <!-- OBS Auto-Restart -->
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">OBS Recovery</div>
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-label">Relaunch OBS on crash</div>
+              <div class="toggle-desc">Automatically restart OBS if it closes or crashes</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="obs-restart-toggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="form-group" style="margin-top: 12px;">
+            <label for="set-obs-path">OBS Executable Path</label>
+            <div class="obs-path-row">
+              <input type="text" id="set-obs-path" placeholder="Auto-detect (Program Files)">
+              <button type="button" class="btn btn-secondary btn-small" onclick="detectObsPath()">Detect</button>
+              <button type="button" class="btn btn-secondary btn-small" onclick="validateObsPath()">Validate</button>
+            </div>
+            <div class="obs-path-result" id="obs-path-result"></div>
+            <div class="hint">Should look like: <code>C:\Program Files\obs-studio\bin\64bit\obs64.exe</code></div>
+            <div class="hint">Leave blank to auto-detect from default install locations</div>
+          </div>
         </div>
 
         <!-- Autostart -->

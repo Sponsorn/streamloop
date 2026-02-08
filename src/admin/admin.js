@@ -28,7 +28,7 @@ function showWizard() {
   $('#view-wizard').classList.remove('hidden');
   $('#view-dashboard').classList.add('hidden');
   stopPolling();
-  loadWizardDefaults();
+  wizInitWizard();
 }
 
 function showDashboard() {
@@ -53,10 +53,6 @@ async function api(url, opts) {
 
 // --- Playlist row helpers ---
 
-function addWizPlaylist(id, name) {
-  addPlaylistRow('#wiz-playlists-list', id || '', name || '');
-}
-
 function addSetPlaylist(id, name) {
   addPlaylistRow('#set-playlists-list', id || '', name || '');
 }
@@ -75,76 +71,402 @@ function addPlaylistRow(containerSel, id, name) {
   container.appendChild(row);
 }
 
+function extractPlaylistId(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.hostname.includes('youtube.com') || url.hostname.includes('youtu.be')) {
+      const list = url.searchParams.get('list');
+      if (list) return list;
+      return null; // YouTube URL without a playlist
+    }
+  } catch { /* not a URL, treat as bare ID */ }
+  return raw;
+}
+
 function collectPlaylists(containerSel) {
   const rows = $$(containerSel + ' .playlist-row');
   const playlists = [];
+  let hasError = false;
   for (const row of rows) {
-    const id = row.querySelector('.pl-id').value.trim();
-    const name = row.querySelector('.pl-name').value.trim();
-    if (id) {
-      playlists.push(name ? { id, name } : { id });
+    const input = row.querySelector('.pl-id');
+    const raw = input.value.trim();
+    if (!raw) continue;
+    const id = extractPlaylistId(raw);
+    if (!id) {
+      input.classList.add('invalid');
+      showToast('That looks like a single video URL. Paste a playlist URL or a playlist ID (starts with PL).');
+      hasError = true;
+      continue;
     }
+    input.classList.remove('invalid');
+    const name = row.querySelector('.pl-name').value.trim();
+    playlists.push(name ? { id, name } : { id });
   }
+  if (hasError) return null;
   return playlists;
 }
 
-// --- Wizard ---
+// --- Wizard (multi-step onboarding) ---
 
-async function loadWizardDefaults() {
-  try {
-    const cfg = await api('/api/config');
-    const container = $('#wiz-playlists-list');
-    container.innerHTML = '';
+const WIZ_TOTAL_STEPS = 6;
+let wizStep = 1;
+const wizState = {
+  obsWebsocketPassword: '',
+  obsBrowserSourceName: 'Playlist Player',
+  playlists: [],
+  discordWebhookUrl: '',
+  autostart: false,
+};
+
+function wizInitWizard() {
+  // Load defaults from server config if available
+  api('/api/config').then(cfg => {
+    if (cfg.obsWebsocketPassword && cfg.obsWebsocketPassword !== '********') {
+      wizState.obsWebsocketPassword = cfg.obsWebsocketPassword;
+    }
+    if (cfg.obsBrowserSourceName) {
+      wizState.obsBrowserSourceName = cfg.obsBrowserSourceName;
+    }
+    if (cfg.discordWebhookUrl && cfg.discordWebhookUrl !== '********') {
+      wizState.discordWebhookUrl = cfg.discordWebhookUrl;
+    }
     const playlists = cfg.playlists || [];
     const hasReal = playlists.some(p => !p.id.includes('xxxxx'));
     if (hasReal) {
-      playlists.forEach(p => addWizPlaylist(p.id, p.name || ''));
-    } else {
-      addWizPlaylist('', '');
+      wizState.playlists = playlists;
     }
-    $('#wiz-source').value = cfg.obsBrowserSourceName || '';
-    $('#wiz-obs-pass').value = '';
-    $('#wiz-discord').value = (cfg.discordWebhookUrl && cfg.discordWebhookUrl !== '********') ? cfg.discordWebhookUrl : '';
-  } catch {
-    addWizPlaylist('', '');
+  }).catch(() => {});
+  // Set player URL
+  $('#wiz-player-url').textContent = window.location.origin;
+  wizGoTo(1);
+}
+
+function wizGoTo(step) {
+  // Collect data from current step before leaving
+  if (wizStep !== step) wizCollectStepData();
+  wizStep = step;
+  // Show/hide step panels
+  $$('.wiz-step').forEach(el => {
+    el.classList.toggle('hidden', Number(el.dataset.step) !== step);
+  });
+  // Update progress dots and lines
+  $$('.wiz-progress-dot').forEach(dot => {
+    const s = Number(dot.dataset.step);
+    dot.classList.remove('active', 'completed');
+    if (s === step) dot.classList.add('active');
+    else if (s < step) dot.classList.add('completed');
+  });
+  $$('.wiz-progress-line').forEach(line => {
+    const after = Number(line.dataset.after);
+    line.classList.toggle('completed', after < step);
+  });
+  // Update nav buttons
+  const backBtn = $('#wiz-back');
+  const nextBtn = $('#wiz-next');
+  backBtn.classList.toggle('invisible', step === 1);
+  if (step === WIZ_TOTAL_STEPS) {
+    nextBtn.textContent = 'Finish';
+  } else if (step === 1) {
+    nextBtn.textContent = 'Get Started';
+  } else {
+    nextBtn.textContent = 'Continue';
+  }
+  // Init step-specific UI
+  wizInitStep(step);
+}
+
+function wizNext() {
+  if (wizStep === WIZ_TOTAL_STEPS) {
+    runVerification();
+    return;
+  }
+  if (!wizValidateStep()) return;
+  wizGoTo(wizStep + 1);
+}
+
+function wizBack() {
+  if (wizStep > 1) wizGoTo(wizStep - 1);
+}
+
+function wizCollectStepData() {
+  switch (wizStep) {
+    case 2:
+      wizState.obsWebsocketPassword = $('#wiz-obs-pass').value;
+      break;
+    case 3:
+      wizState.obsBrowserSourceName = $('#wiz-source').value.trim();
+      break;
+    case 4: {
+      const pl = collectPlaylists('#wiz-playlists-list');
+      if (pl) wizState.playlists = pl;
+      break;
+    }
+    case 5:
+      wizState.discordWebhookUrl = $('#wiz-discord').value.trim();
+      wizState.autostart = $('#wiz-autostart').checked;
+      break;
   }
 }
 
-async function handleWizardSubmit(e) {
-  e.preventDefault();
+function wizInitStep(step) {
+  switch (step) {
+    case 2:
+      $('#wiz-obs-pass').value = wizState.obsWebsocketPassword;
+      $('#wiz-obs-result').textContent = '';
+      $('#wiz-obs-result').className = 'wiz-test-result';
+      break;
+    case 3:
+      $('#wiz-player-url').textContent = window.location.origin;
+      $('#wiz-source').value = wizState.obsBrowserSourceName;
+      $('#wiz-player-result').textContent = '';
+      $('#wiz-player-result').className = 'wiz-test-result';
+      break;
+    case 4: {
+      const container = $('#wiz-playlists-list');
+      container.innerHTML = '';
+      if (wizState.playlists.length > 0) {
+        wizState.playlists.forEach(p => wizAddPlaylist(p.id, p.name || ''));
+      } else {
+        wizAddPlaylist('', '');
+      }
+      break;
+    }
+    case 5:
+      $('#wiz-discord').value = wizState.discordWebhookUrl;
+      $('#wiz-autostart').checked = wizState.autostart;
+      break;
+    case 6:
+      // Reset verification icons
+      ['config', 'obs', 'player'].forEach(key => {
+        const icon = $(`#wiz-chk-${key}`);
+        icon.textContent = '\u25CF';
+        icon.className = 'wiz-verify-icon';
+      });
+      $('#wiz-verify-status').textContent = 'Click Finish to save your configuration and verify connections.';
+      $('#wiz-next').textContent = 'Finish';
+      $('#wiz-next').disabled = false;
+      break;
+  }
+}
 
-  const playlists = collectPlaylists('#wiz-playlists-list');
-  const obsBrowserSourceName = $('#wiz-source').value.trim();
-  const obsWebsocketPassword = $('#wiz-obs-pass').value;
-  const discordWebhookUrl = $('#wiz-discord').value.trim();
+function wizValidateStep() {
+  switch (wizStep) {
+    case 3: {
+      const source = $('#wiz-source').value.trim();
+      if (!source) {
+        $('#wiz-source').classList.add('invalid');
+        showToast('Enter the name of the Browser Source you created in OBS.');
+        return false;
+      }
+      $('#wiz-source').classList.remove('invalid');
+      return true;
+    }
+    case 4: {
+      const pl = collectPlaylists('#wiz-playlists-list');
+      if (pl === null) return false; // validation error already shown
+      wizState.playlists = pl;
+      if (wizState.playlists.length === 0) {
+        showToast('Add at least one playlist ID.');
+        return false;
+      }
+      return true;
+    }
+    default:
+      return true;
+  }
+}
 
-  // Validation
-  let valid = true;
-  if (playlists.length === 0) { valid = false; showToast('Add at least one playlist.'); }
-  if (!obsBrowserSourceName) { $('#wiz-source').classList.add('invalid'); valid = false; }
-  else { $('#wiz-source').classList.remove('invalid'); }
+function wizAddPlaylist(id, name) {
+  addPlaylistRow('#wiz-playlists-list', id || '', name || '');
+}
 
-  if (!valid) return;
+async function wizTestObs() {
+  const resultEl = $('#wiz-obs-result');
+  const btn = $('#wiz-test-obs');
+  resultEl.textContent = 'Testing...';
+  resultEl.className = 'wiz-test-result pending';
+  btn.disabled = true;
 
-  const body = { playlists, obsBrowserSourceName, discordWebhookUrl };
-  if (obsWebsocketPassword) body.obsWebsocketPassword = obsWebsocketPassword;
+  // Save just the OBS password to config (keeps placeholder playlist so isFirstRun stays true)
+  const password = $('#wiz-obs-pass').value;
+  try {
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ obsWebsocketPassword: password }),
+    });
+  } catch {
+    // Non-critical, continue with test
+  }
+
+  // Wait a moment for server to reconnect, then poll status
+  await sleep(2000);
+  try {
+    const status = await api('/api/status');
+    if (status.obsConnected) {
+      resultEl.textContent = 'Connected to OBS!';
+      resultEl.className = 'wiz-test-result success';
+    } else {
+      resultEl.textContent = 'Could not connect. Check OBS is open and WebSocket is enabled.';
+      resultEl.className = 'wiz-test-result failure';
+    }
+  } catch {
+    resultEl.textContent = 'Could not reach server.';
+    resultEl.className = 'wiz-test-result failure';
+  }
+  btn.disabled = false;
+}
+
+async function wizTestPlayer() {
+  const resultEl = $('#wiz-player-result');
+  const btn = $('#wiz-test-player');
+  resultEl.textContent = 'Checking...';
+  resultEl.className = 'wiz-test-result pending';
+  btn.disabled = true;
+
+  // Save the source name so server knows what to look for
+  const sourceName = $('#wiz-source').value.trim();
+  if (sourceName) {
+    try {
+      await api('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ obsBrowserSourceName: sourceName }),
+      });
+    } catch {
+      // Non-critical
+    }
+  }
+
+  await sleep(2000);
+  try {
+    const status = await api('/api/status');
+    if (status.playerConnected) {
+      resultEl.textContent = 'Player is connected!';
+      resultEl.className = 'wiz-test-result success';
+    } else {
+      resultEl.textContent = 'Player not detected. Make sure the Browser Source is active and the URL is correct.';
+      resultEl.className = 'wiz-test-result failure';
+    }
+  } catch {
+    resultEl.textContent = 'Could not reach server.';
+    resultEl.className = 'wiz-test-result failure';
+  }
+  btn.disabled = false;
+}
+
+function wizCopyUrl() {
+  const url = $('#wiz-player-url').textContent;
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Copied to clipboard!', 'success');
+  }).catch(() => {
+    // Fallback: select the text
+    const range = document.createRange();
+    range.selectNodeContents($('#wiz-player-url'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    showToast('Press Ctrl+C to copy', 'success');
+  });
+}
+
+async function runVerification() {
+  const nextBtn = $('#wiz-next');
+  const statusEl = $('#wiz-verify-status');
+  nextBtn.disabled = true;
+  nextBtn.textContent = 'Saving...';
+
+  // Collect final data
+  wizCollectStepData();
+
+  // Step 1: Save config
+  setVerifyIcon('config', 'spin');
+  statusEl.textContent = 'Saving configuration...';
+
+  const body = {
+    playlists: wizState.playlists,
+    obsBrowserSourceName: wizState.obsBrowserSourceName,
+    discordWebhookUrl: wizState.discordWebhookUrl,
+  };
+  if (wizState.obsWebsocketPassword) {
+    body.obsWebsocketPassword = wizState.obsWebsocketPassword;
+  }
 
   try {
-    $('#wiz-btn').disabled = true;
-    $('#wiz-btn').textContent = 'Saving...';
     await api('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    showDashboard();
+    setVerifyIcon('config', 'pass');
   } catch (err) {
-    showToast('Failed to save: ' + err.message);
-  } finally {
-    $('#wiz-btn').disabled = false;
-    $('#wiz-btn').textContent = 'Save & Start';
+    setVerifyIcon('config', 'fail');
+    statusEl.textContent = 'Failed to save: ' + err.message;
+    nextBtn.disabled = false;
+    nextBtn.textContent = 'Retry';
+    return;
   }
+
+  // Set autostart if requested
+  if (wizState.autostart) {
+    try {
+      await api('/api/autostart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+    } catch {
+      // Non-critical
+    }
+  }
+
+  // Step 2: Check connections (poll a few times)
+  setVerifyIcon('obs', 'spin');
+  setVerifyIcon('player', 'spin');
+  statusEl.textContent = 'Checking connections...';
+  nextBtn.textContent = 'Verifying...';
+
+  let obsOk = false;
+  let playerOk = false;
+  for (let i = 0; i < 5; i++) {
+    await sleep(2000);
+    try {
+      const status = await api('/api/status');
+      if (status.obsConnected) { obsOk = true; setVerifyIcon('obs', 'pass'); }
+      if (status.playerConnected) { playerOk = true; setVerifyIcon('player', 'pass'); }
+      if (obsOk && playerOk) break;
+    } catch {
+      // Ignore transient errors
+    }
+  }
+
+  if (!obsOk) setVerifyIcon('obs', 'fail');
+  if (!playerOk) setVerifyIcon('player', 'fail');
+
+  if (obsOk && playerOk) {
+    statusEl.textContent = 'Everything looks good!';
+  } else {
+    const issues = [];
+    if (!obsOk) issues.push('OBS WebSocket');
+    if (!playerOk) issues.push('Player');
+    statusEl.textContent = issues.join(' and ') + ' not connected. You can fix this later in Settings.';
+  }
+
+  nextBtn.disabled = false;
+  nextBtn.textContent = 'Go to Dashboard';
+  nextBtn.onclick = () => showDashboard();
 }
+
+function setVerifyIcon(key, state) {
+  const icon = $(`#wiz-chk-${key}`);
+  icon.className = 'wiz-verify-icon ' + state;
+  if (state === 'pass') icon.textContent = '\u2714';
+  else if (state === 'fail') icon.textContent = '\u2718';
+  else if (state === 'spin') icon.textContent = '\u25CF';
+  else icon.textContent = '\u25CF';
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // --- Dashboard polling ---
 
@@ -232,6 +554,7 @@ function setCard(id, text, cls) {
 }
 
 function renderNowPlaying(s) {
+  $('#np-title').textContent = s.videoTitle || '-';
   $('#np-index').textContent = s.videoIndex;
   const vidEl = $('#np-videoid');
   if (s.videoId) {
@@ -273,6 +596,8 @@ async function loadSettings() {
     if (cfg.discordWebhookUrl === '********') {
       $('#set-discord').placeholder = 'Discord webhook configured (leave blank to keep)';
     }
+    $('#obs-restart-toggle').checked = cfg.obsAutoRestart || false;
+    $('#set-obs-path').value = cfg.obsPath || '';
     settingsLoaded = true;
   } catch (err) {
     console.error('Failed to load settings:', err);
@@ -282,6 +607,7 @@ async function loadSettings() {
 async function handleSettingsSave(e) {
   e.preventDefault();
   const playlists = collectPlaylists('#set-playlists-list');
+  if (playlists === null) return; // validation error already shown
   if (playlists.length === 0) {
     showToast('Add at least one playlist.');
     return;
@@ -291,6 +617,8 @@ async function handleSettingsSave(e) {
     obsBrowserSourceName: $('#set-source').value.trim(),
     obsWebsocketPassword: $('#set-obs-pass').value,
     discordWebhookUrl: $('#set-discord').value.trim() || '********',
+    obsAutoRestart: $('#obs-restart-toggle').checked,
+    obsPath: $('#set-obs-path').value.trim(),
   };
 
   try {
@@ -308,6 +636,59 @@ async function handleSettingsSave(e) {
     showToast('Failed to save: ' + err.message);
     $('#set-btn').textContent = 'Save Settings';
     $('#set-btn').disabled = false;
+  }
+}
+
+// --- OBS path helpers ---
+
+async function detectObsPath() {
+  const resultEl = $('#obs-path-result');
+  resultEl.textContent = 'Searching...';
+  resultEl.className = 'obs-path-result';
+  try {
+    const res = await api('/api/obs-path/detect', { method: 'POST' });
+    if (res.found) {
+      $('#set-obs-path').value = res.path;
+      resultEl.textContent = 'Found: ' + res.path;
+      resultEl.className = 'obs-path-result valid';
+    } else {
+      resultEl.textContent = 'OBS not found in default locations. Enter the path manually.';
+      resultEl.className = 'obs-path-result invalid';
+    }
+  } catch {
+    resultEl.textContent = 'Detection failed.';
+    resultEl.className = 'obs-path-result invalid';
+  }
+}
+
+async function validateObsPath() {
+  const path = $('#set-obs-path').value.trim();
+  const resultEl = $('#obs-path-result');
+  if (!path) {
+    resultEl.textContent = 'No path entered. Auto-detect will be used.';
+    resultEl.className = 'obs-path-result';
+    return;
+  }
+  resultEl.textContent = 'Checking...';
+  resultEl.className = 'obs-path-result';
+  try {
+    const res = await api('/api/obs-path/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    if (res.valid) {
+      resultEl.textContent = 'Path is valid!';
+      resultEl.className = 'obs-path-result valid';
+      $('#set-obs-path').classList.remove('invalid');
+    } else {
+      resultEl.textContent = res.error;
+      resultEl.className = 'obs-path-result invalid';
+      $('#set-obs-path').classList.add('invalid');
+    }
+  } catch {
+    resultEl.textContent = 'Validation failed.';
+    resultEl.className = 'obs-path-result invalid';
   }
 }
 
@@ -336,12 +717,36 @@ async function handleAutostartToggle() {
   }
 }
 
+// --- Overlays tab ---
+
+function initOverlayUrls() {
+  const base = window.location.origin;
+  const npUrl = base + '/overlay';
+  $('#overlay-np-url').textContent = npUrl;
+  $('#overlay-np-preview').href = npUrl;
+}
+
+function copyOverlayUrl(codeId) {
+  const url = $(`#${codeId}`).textContent;
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Copied to clipboard!', 'success');
+  }).catch(() => {
+    const range = document.createRange();
+    range.selectNodeContents($(`#${codeId}`));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    showToast('Press Ctrl+C to copy', 'success');
+  });
+}
+
 // --- Tab switching ---
 
 function switchTab(tabName) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   $$('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + tabName));
   if (tabName === 'settings') loadSettings();
+  if (tabName === 'overlays') initOverlayUrls();
 }
 
 // --- Helpers ---
@@ -449,9 +854,6 @@ async function waitForRestart() {
 // --- Boot ---
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Wizard form
-  $('#wizard-form').addEventListener('submit', handleWizardSubmit);
-
   // Settings form
   $('#settings-form').addEventListener('submit', handleSettingsSave);
 

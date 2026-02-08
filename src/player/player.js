@@ -57,6 +57,7 @@
         type: 'heartbeat',
         videoIndex: player.getPlaylistIndex() || 0,
         videoId: getVideoId(),
+        videoTitle: getVideoTitle(),
         playerState: player.getPlayerState(),
         currentTime: player.getCurrentTime() || 0,
       });
@@ -81,6 +82,16 @@
     }
   }
 
+  function getVideoTitle() {
+    if (!player || typeof player.getVideoData !== 'function') return '';
+    try {
+      var data = player.getVideoData();
+      return (data && data.title) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
   // --- Server message handler ---
 
   function handleServerMessage(msg) {
@@ -91,6 +102,9 @@
         break;
       case 'retryCurrent':
         retryCurrent();
+        break;
+      case 'resume':
+        resumePlayback();
         break;
       case 'skip':
         skipTo(msg.index);
@@ -115,6 +129,11 @@
     if (!player) return;
     var index = player.getPlaylistIndex();
     player.playVideoAt(index);
+  }
+
+  function resumePlayback() {
+    if (!player) return;
+    player.playVideo();
   }
 
   function skipTo(index) {
@@ -157,6 +176,7 @@
       playerState: state,
       videoIndex: player.getPlaylistIndex() || 0,
       videoId: getVideoId(),
+      videoTitle: getVideoTitle(),
     });
 
     // Notify server when playlist is loaded (first CUED or PLAYING after load)
