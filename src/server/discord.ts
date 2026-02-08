@@ -3,7 +3,7 @@ import { logger } from './logger.js';
 
 type Level = 'info' | 'warn' | 'error';
 const LEVEL_PRIORITY: Record<Level, number> = { info: 0, warn: 1, error: 2 };
-const DEBOUNCE_MS = 30_000;
+const DEBOUNCE_MS = 5_000;
 
 interface EmbedField {
   name: string;

@@ -151,6 +151,16 @@ export class OBSClient {
   onDisconnect(cb: () => void) { this.onDisconnectCallback = cb; }
   isConnected(): boolean { return this.connected; }
 
+  async isStreaming(): Promise<boolean> {
+    if (!this.connected) return false;
+    try {
+      const { outputActive } = await this.obs.call('GetStreamStatus');
+      return outputActive;
+    } catch {
+      return false;
+    }
+  }
+
   /** Refresh browser source by toggling its URL with a cache-busting param. */
   async refreshBrowserSource(): Promise<boolean> {
     if (!this.connected) return false;

@@ -523,7 +523,9 @@ const RECOVERY_LABELS = {
 function renderStatus(s) {
   // Status cards
   setCard('player-status', s.playerConnected ? 'Connected' : 'Disconnected', s.playerConnected ? 'ok' : 'err');
-  setCard('obs-status', s.obsConnected ? 'Connected' : 'Disconnected', s.obsConnected ? 'ok' : 'err');
+  const obsLabel = !s.obsConnected ? 'Disconnected' : s.obsStreaming ? 'Streaming' : 'Not Live';
+  const obsLevel = !s.obsConnected ? 'err' : s.obsStreaming ? 'ok' : 'warn';
+  setCard('obs-status', obsLabel, obsLevel);
   const recoveryLabel = RECOVERY_LABELS[s.recoveryStep] || s.recoveryStep;
   setCard('recovery-step', recoveryLabel, s.recoveryStep === 'none' ? 'ok' : 'warn');
   setCard('errors', String(s.consecutiveErrors), s.consecutiveErrors === 0 ? 'ok' : 'warn');

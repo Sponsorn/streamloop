@@ -44,12 +44,16 @@ function maskConfig(config: AppConfig): Record<string, unknown> {
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
 
-  router.get('/status', (_req, res) => {
+  router.get('/status', async (_req, res) => {
     const config = deps.getConfig();
     const status = deps.getRecovery().getStatus();
+    const obs = deps.getObs();
+    const obsConnected = obs.isConnected();
+    const obsStreaming = obsConnected ? await obs.isStreaming() : false;
     res.json({
       playerConnected: deps.playerWs.isConnected(),
-      obsConnected: deps.getObs().isConnected(),
+      obsConnected,
+      obsStreaming,
       recoveryStep: status.recoveryStep,
       lastHeartbeatAt: status.lastHeartbeatAt,
       heartbeatIntervalMs: config.heartbeatIntervalMs,
