@@ -213,6 +213,54 @@ export class OBSClient {
     }
   }
 
+  /** Validate OBS state and start streaming if everything looks good. */
+  async startStreaming(): Promise<boolean> {
+    if (!this.connected) {
+      logger.warn('Cannot start stream: OBS not connected');
+      return false;
+    }
+
+    try {
+      // Check if already streaming
+      const { outputActive } = await this.obs.call('GetStreamStatus');
+      if (outputActive) {
+        logger.info('OBS is already streaming, no action needed');
+        return true;
+      }
+
+      // Verify the browser source exists in the current scene
+      const { currentProgramSceneName } = await this.obs.call('GetCurrentProgramScene');
+      const { sceneItems } = await this.obs.call('GetSceneItemList', {
+        sceneName: currentProgramSceneName,
+      });
+      const source = sceneItems.find((i: any) => i.sourceName === this.config.obsBrowserSourceName);
+      if (!source) {
+        logger.warn({ source: this.config.obsBrowserSourceName, scene: currentProgramSceneName },
+          'Cannot start stream: browser source not found in current scene');
+        return false;
+      }
+
+      // Check the source is enabled
+      const sceneItemId = source.sceneItemId as number;
+      const { sceneItemEnabled } = await this.obs.call('GetSceneItemEnabled', {
+        sceneName: currentProgramSceneName,
+        sceneItemId,
+      });
+      if (!sceneItemEnabled) {
+        logger.warn('Cannot start stream: browser source is disabled');
+        return false;
+      }
+
+      // All checks passed — start streaming
+      await this.obs.call('StartStream');
+      logger.info('Auto-started OBS stream');
+      return true;
+    } catch (err) {
+      logger.error({ err }, 'Failed to auto-start stream');
+      return false;
+    }
+  }
+
   async disconnect(): Promise<void> {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

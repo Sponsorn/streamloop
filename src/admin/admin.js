@@ -629,6 +629,7 @@ async function loadSettings() {
     $('#set-source').value = cfg.obsBrowserSourceName;
     $('#set-obs-pass').value = cfg.obsWebsocketPassword;
     $('#obs-restart-toggle').checked = cfg.obsAutoRestart || false;
+    $('#obs-stream-toggle').checked = cfg.obsAutoStream || false;
     $('#set-obs-path').value = cfg.obsPath || '';
     settingsLoaded = true;
   } catch (err) {
@@ -649,6 +650,7 @@ async function handleSettingsSave(e) {
     obsBrowserSourceName: $('#set-source').value.trim(),
     obsWebsocketPassword: $('#set-obs-pass').value,
     obsAutoRestart: $('#obs-restart-toggle').checked,
+    obsAutoStream: $('#obs-stream-toggle').checked,
     obsPath: $('#set-obs-path').value.trim(),
   };
 

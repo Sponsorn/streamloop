@@ -30,6 +30,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     stateFilePath: './state.json',
     recoveryDelayMs: 5000,
     obsAutoRestart: false,
+    obsAutoStream: false,
     obsPath: '',
     autoUpdateCheck: true,
     updateCheckIntervalMs: 21600000,

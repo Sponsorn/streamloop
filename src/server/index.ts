@@ -86,9 +86,14 @@ async function main() {
     // Reconnect OBS if settings changed
     obs.disconnect();
     obs = new OBSClient(config);
-    obs.onConnect(() => {
+    obs.onConnect(async () => {
       logger.info('OBS reconnected after config change');
       discord.notifyObsReconnect();
+      if (config.obsAutoStream && playerWs.isConnected()) {
+        setTimeout(async () => {
+          await obs.startStreaming();
+        }, 5000);
+      }
     });
     obs.onDisconnect(() => {
       logger.warn('OBS disconnected');
@@ -118,11 +123,19 @@ async function main() {
   app.use('/api', apiRouter);
 
   // Connect to OBS
-  obs.onConnect(() => {
+  obs.onConnect(async () => {
     logger.info('OBS connected, checking player status');
     discord.notifyObsReconnect();
     if (!playerWs.isConnected()) {
       logger.warn('Player not connected after OBS reconnect');
+    }
+    // Auto-start stream after OBS reconnect (e.g. after crash relaunch)
+    if (config.obsAutoStream && playerWs.isConnected()) {
+      // Give OBS a moment to fully initialize after connecting
+      setTimeout(async () => {
+        logger.info('Attempting auto-start stream');
+        await obs.startStreaming();
+      }, 5000);
     }
   });
 

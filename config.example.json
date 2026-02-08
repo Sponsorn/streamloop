@@ -33,6 +33,8 @@
   "maxConsecutiveErrors": 3,
   "stateFilePath": "./state.json",
   "recoveryDelayMs": 5000,
+  "obsAutoRestart": false,
+  "obsAutoStream": false,
   "autoUpdateCheck": true,
   "updateCheckIntervalMs": 21600000
 }

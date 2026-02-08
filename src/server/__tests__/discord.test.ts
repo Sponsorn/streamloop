@@ -46,6 +46,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     stateFilePath: './state.json',
     recoveryDelayMs: 5000,
     obsAutoRestart: false,
+    obsAutoStream: false,
     obsPath: '',
     autoUpdateCheck: true,
     updateCheckIntervalMs: 21600000,

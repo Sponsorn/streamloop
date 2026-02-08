@@ -141,6 +141,7 @@ export interface AppConfig {
   stateFilePath: string;
   recoveryDelayMs: number;
   obsAutoRestart: boolean;
+  obsAutoStream: boolean;
   obsPath: string;
   autoUpdateCheck: boolean;
   updateCheckIntervalMs: number;
