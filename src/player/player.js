@@ -49,6 +49,19 @@
     }
   }
 
+  function getNextVideoId() {
+    if (!player || typeof player.getPlaylist !== 'function') return '';
+    try {
+      var playlist = player.getPlaylist();
+      if (!playlist || playlist.length === 0) return '';
+      var currentIndex = player.getPlaylistIndex() || 0;
+      var nextIndex = currentIndex + 1;
+      return nextIndex < playlist.length ? playlist[nextIndex] : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
   function startHeartbeat() {
     stopHeartbeat();
     heartbeatTimer = setInterval(function () {
@@ -61,6 +74,7 @@
         playerState: player.getPlayerState(),
         currentTime: player.getCurrentTime() || 0,
         videoDuration: player.getDuration() || 0,
+        nextVideoId: getNextVideoId(),
       });
     }, HEARTBEAT_INTERVAL);
   }

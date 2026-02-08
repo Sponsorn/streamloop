@@ -4,7 +4,30 @@
   "port": 3000,
   "obsWebsocketUrl": "ws://127.0.0.1:4455",
   "obsWebsocketPassword": "",
-  "discordWebhookUrl": "",
+  "discord": {
+    "webhookUrl": "",
+    "botName": "",
+    "avatarUrl": "",
+    "rolePing": "",
+    "events": {
+      "error": true,
+      "skip": true,
+      "recovery": true,
+      "critical": true,
+      "resume": true,
+      "obsDisconnect": true,
+      "obsReconnect": true
+    },
+    "templates": {
+      "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+      "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+      "recovery": "Recovery action: **{step}**",
+      "critical": "**CRITICAL:** {message}",
+      "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+      "obsDisconnect": "OBS disconnected — attempting to reconnect",
+      "obsReconnect": "OBS reconnected"
+    }
+  },
   "heartbeatIntervalMs": 5000,
   "heartbeatTimeoutMs": 15000,
   "maxConsecutiveErrors": 3,

@@ -131,8 +131,8 @@ function wizInitWizard() {
     if (cfg.obsBrowserSourceName) {
       wizState.obsBrowserSourceName = cfg.obsBrowserSourceName;
     }
-    if (cfg.discordWebhookUrl && cfg.discordWebhookUrl !== '********') {
-      wizState.discordWebhookUrl = cfg.discordWebhookUrl;
+    if (cfg.discord && cfg.discord.webhookUrl && cfg.discord.webhookUrl !== '********') {
+      wizState.discordWebhookUrl = cfg.discord.webhookUrl;
     }
     const playlists = cfg.playlists || [];
     const hasReal = playlists.some(p => !p.id.includes('xxxxx'));
@@ -390,7 +390,7 @@ async function runVerification() {
   const body = {
     playlists: wizState.playlists,
     obsBrowserSourceName: wizState.obsBrowserSourceName,
-    discordWebhookUrl: wizState.discordWebhookUrl,
+    discord: { webhookUrl: wizState.discordWebhookUrl },
   };
   if (wizState.obsWebsocketPassword) {
     body.obsWebsocketPassword = wizState.obsWebsocketPassword;
@@ -628,10 +628,6 @@ async function loadSettings() {
     (cfg.playlists || []).forEach(p => addSetPlaylist(p.id, p.name || ''));
     $('#set-source').value = cfg.obsBrowserSourceName;
     $('#set-obs-pass').value = cfg.obsWebsocketPassword;
-    $('#set-discord').value = cfg.discordWebhookUrl === '********' ? '' : cfg.discordWebhookUrl;
-    if (cfg.discordWebhookUrl === '********') {
-      $('#set-discord').placeholder = 'Discord webhook configured (leave blank to keep)';
-    }
     $('#obs-restart-toggle').checked = cfg.obsAutoRestart || false;
     $('#set-obs-path').value = cfg.obsPath || '';
     settingsLoaded = true;
@@ -652,7 +648,6 @@ async function handleSettingsSave(e) {
     playlists,
     obsBrowserSourceName: $('#set-source').value.trim(),
     obsWebsocketPassword: $('#set-obs-pass').value,
-    discordWebhookUrl: $('#set-discord').value.trim() || '********',
     obsAutoRestart: $('#obs-restart-toggle').checked,
     obsPath: $('#set-obs-path').value.trim(),
   };
@@ -676,21 +671,6 @@ async function handleSettingsSave(e) {
 }
 
 // --- OBS path helpers ---
-
-async function testDiscord() {
-  const resultEl = $('#discord-test-result');
-  resultEl.style.display = 'block';
-  resultEl.textContent = 'Sending test message...';
-  resultEl.className = 'obs-path-result';
-  try {
-    await api('/api/discord/test', { method: 'POST' });
-    resultEl.textContent = 'Test message sent! Check your Discord channel.';
-    resultEl.className = 'obs-path-result valid';
-  } catch (err) {
-    resultEl.textContent = err.message || 'Failed to send test message.';
-    resultEl.className = 'obs-path-result invalid';
-  }
-}
 
 async function detectObsPath() {
   const resultEl = $('#obs-path-result');
@@ -768,6 +748,250 @@ async function handleAutostartToggle() {
   }
 }
 
+// --- Webhooks tab ---
+
+let webhookDefaults = null;
+let webhookSettingsLoaded = false;
+
+const EVENT_LABELS = {
+  error: 'Playback Error',
+  skip: 'Video Skip',
+  recovery: 'Recovery Action',
+  critical: 'Critical Alert',
+  resume: 'Playback Resumed',
+  obsDisconnect: 'OBS Disconnected',
+  obsReconnect: 'OBS Reconnected',
+};
+
+const EVENT_LEVELS = {
+  error: 'warn',
+  skip: 'warn',
+  recovery: 'warn',
+  critical: 'error',
+  resume: 'info',
+  obsDisconnect: 'warn',
+  obsReconnect: 'info',
+};
+
+const PREVIEW_SAMPLE_VARS = {
+  error: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', errorCode: 150, attempt: 2 },
+  skip: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', reason: 'Error 150 (unavailable/not embeddable)' },
+  recovery: { step: 'refreshSource' },
+  critical: { message: 'All recovery steps exhausted. Player may be unresponsive.' },
+  resume: { videoIndex: 4, videoId: 'abc123def' },
+  obsDisconnect: {},
+  obsReconnect: {},
+};
+
+async function loadWebhookSettings() {
+  if (webhookSettingsLoaded) return;
+  try {
+    const [cfg, defaults] = await Promise.all([
+      api('/api/config'),
+      api('/api/discord/defaults'),
+    ]);
+    webhookDefaults = defaults;
+    const discord = cfg.discord || {};
+
+    // Identity
+    $('#wh-url').value = discord.webhookUrl === '********' ? '' : (discord.webhookUrl || '');
+    if (discord.webhookUrl === '********') {
+      $('#wh-url').placeholder = 'Webhook configured (leave blank to keep)';
+    }
+    $('#wh-bot-name').value = discord.botName || '';
+    $('#wh-avatar-url').value = discord.avatarUrl || '';
+    $('#wh-role-ping').value = discord.rolePing || '';
+
+    // Events
+    const events = discord.events || {};
+    for (const key of Object.keys(EVENT_LABELS)) {
+      const el = $(`#wh-evt-${key}`);
+      if (el) el.checked = events[key] !== false;
+    }
+
+    // Templates
+    const templates = discord.templates || {};
+    buildTemplateEditors(defaults.templates, defaults.variables, templates);
+
+    // Preview
+    updatePreview();
+    webhookSettingsLoaded = true;
+  } catch (err) {
+    console.error('Failed to load webhook settings:', err);
+  }
+}
+
+function buildTemplateEditors(defaults, variables, current) {
+  const container = $('#wh-templates-container');
+  container.innerHTML = '';
+  for (const [key, label] of Object.entries(EVENT_LABELS)) {
+    const group = document.createElement('div');
+    group.className = 'wh-template-group';
+
+    const header = document.createElement('div');
+    header.className = 'wh-template-header';
+    header.innerHTML = `<span class="wh-template-label">${escapeHtml(label)}</span>`;
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'btn-reset';
+    resetBtn.textContent = 'Reset';
+    resetBtn.addEventListener('click', () => resetTemplate(key));
+    header.appendChild(resetBtn);
+    group.appendChild(header);
+
+    // Variable chips
+    const vars = variables[key] || [];
+    if (vars.length > 0) {
+      const chipsRow = document.createElement('div');
+      chipsRow.className = 'wh-chips';
+      for (const v of vars) {
+        const chip = document.createElement('span');
+        chip.className = 'wh-chip';
+        chip.textContent = `{${v}}`;
+        chip.addEventListener('click', () => insertVariable(key, v));
+        chipsRow.appendChild(chip);
+      }
+      group.appendChild(chipsRow);
+    }
+
+    // Textarea
+    const textarea = document.createElement('textarea');
+    textarea.className = 'wh-template-input';
+    textarea.id = `wh-tpl-${key}`;
+    textarea.value = current[key] || defaults[key] || '';
+    textarea.rows = 2;
+    textarea.addEventListener('input', () => updatePreview());
+    group.appendChild(textarea);
+
+    container.appendChild(group);
+  }
+}
+
+function insertVariable(eventType, varName) {
+  const textarea = $(`#wh-tpl-${eventType}`);
+  if (!textarea) return;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const text = textarea.value;
+  const insert = `{${varName}}`;
+  textarea.value = text.substring(0, start) + insert + text.substring(end);
+  textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+  textarea.focus();
+  updatePreview();
+}
+
+function resetTemplate(eventType) {
+  if (!webhookDefaults) return;
+  const textarea = $(`#wh-tpl-${eventType}`);
+  if (textarea) {
+    textarea.value = webhookDefaults.templates[eventType] || '';
+    updatePreview();
+  }
+}
+
+function updatePreview() {
+  const selectEl = $('#wh-preview-select');
+  if (!selectEl) return;
+  const eventType = selectEl.value;
+  const level = EVENT_LEVELS[eventType] || 'info';
+  const emoji = { info: '\u2139\uFE0F', warn: '\u26A0\uFE0F', error: '\uD83D\uDEA8' };
+  const colors = { info: '#3498db', warn: '#f1c40f', error: '#e74c3c' };
+
+  // Get template
+  const textarea = $(`#wh-tpl-${eventType}`);
+  const template = textarea ? textarea.value : '';
+  const vars = PREVIEW_SAMPLE_VARS[eventType] || {};
+
+  // Render template
+  const rendered = template.replace(/\{(\w+)\}/g, (match, key) => {
+    return key in vars ? String(vars[key]) : match;
+  });
+
+  // Bot name
+  const botName = $('#wh-bot-name') ? $('#wh-bot-name').value.trim() : '';
+  const titleName = botName || 'Freeze Monitor';
+
+  // Update preview elements
+  $('#wh-preview-bar').style.background = colors[level];
+  $('#wh-preview-title').textContent = `${emoji[level]} ${titleName}`;
+  $('#wh-preview-desc').textContent = rendered;
+
+  // Fields for error/critical
+  const fieldsContainer = $('#wh-preview-fields');
+  fieldsContainer.innerHTML = '';
+  if (eventType === 'error') {
+    const fieldData = [
+      { name: 'Error Code', value: String(vars.errorCode || '') },
+      { name: 'Video', value: `#${vars.videoIndex} (${vars.videoId})` },
+      { name: 'Attempt', value: String(vars.attempt || '') },
+    ];
+    for (const f of fieldData) {
+      const fieldEl = document.createElement('div');
+      fieldEl.innerHTML = `<div class="wh-preview-field-name">${escapeHtml(f.name)}</div><div class="wh-preview-field-value">${escapeHtml(f.value)}</div>`;
+      fieldsContainer.appendChild(fieldEl);
+    }
+  } else if (eventType === 'critical') {
+    const fieldEl = document.createElement('div');
+    fieldEl.style.gridColumn = '1 / -1';
+    fieldEl.innerHTML = `<div class="wh-preview-field-name">Status</div><div class="wh-preview-field-value">${escapeHtml(String(vars.message || ''))}</div>`;
+    fieldsContainer.appendChild(fieldEl);
+  }
+
+  // Footer
+  $('#wh-preview-footer').textContent = `Dashboard: http://localhost:3000/admin | Uptime: 2h 15m | v1.0.0`;
+}
+
+async function handleWebhookSave() {
+  const btn = $('#wh-save-btn');
+  const discord = {
+    webhookUrl: $('#wh-url').value.trim() || '********',
+    botName: $('#wh-bot-name').value.trim(),
+    avatarUrl: $('#wh-avatar-url').value.trim(),
+    rolePing: $('#wh-role-ping').value.trim(),
+    events: {},
+    templates: {},
+  };
+
+  for (const key of Object.keys(EVENT_LABELS)) {
+    const el = $(`#wh-evt-${key}`);
+    if (el) discord.events[key] = el.checked;
+    const tpl = $(`#wh-tpl-${key}`);
+    if (tpl) discord.templates[key] = tpl.value;
+  }
+
+  try {
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ discord }),
+    });
+    btn.textContent = 'Saved!';
+    webhookSettingsLoaded = false;
+    setTimeout(() => { btn.textContent = 'Save Webhook Settings'; btn.disabled = false; }, 1500);
+  } catch (err) {
+    showToast('Failed to save: ' + err.message);
+    btn.textContent = 'Save Webhook Settings';
+    btn.disabled = false;
+  }
+}
+
+async function testDiscordWebhook() {
+  const resultEl = $('#wh-test-result');
+  resultEl.style.display = 'block';
+  resultEl.textContent = 'Sending test message...';
+  resultEl.className = 'obs-path-result';
+  try {
+    await api('/api/discord/test', { method: 'POST' });
+    resultEl.textContent = 'Test message sent! Check your Discord channel.';
+    resultEl.className = 'obs-path-result valid';
+  } catch (err) {
+    resultEl.textContent = err.message || 'Failed to send test message.';
+    resultEl.className = 'obs-path-result invalid';
+  }
+}
+
 // --- Overlays tab ---
 
 function initOverlayUrls() {
@@ -798,6 +1022,7 @@ function switchTab(tabName) {
   $$('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + tabName));
   if (tabName === 'settings') loadSettings();
   if (tabName === 'overlays') initOverlayUrls();
+  if (tabName === 'webhooks') loadWebhookSettings();
 }
 
 // --- Helpers ---
@@ -914,6 +1139,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Autostart
   $('#autostart-toggle').addEventListener('change', handleAutostartToggle);
+
+  // Webhook preview updates
+  const previewSelect = $('#wh-preview-select');
+  if (previewSelect) {
+    previewSelect.addEventListener('change', () => updatePreview());
+  }
+  const botNameInput = $('#wh-bot-name');
+  if (botNameInput) {
+    botNameInput.addEventListener('input', () => updatePreview());
+  }
 
   init();
 });

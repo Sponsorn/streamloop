@@ -27,7 +27,7 @@ export class StateManager {
       return parsed;
     } catch {
       logger.info('No existing state file, starting fresh');
-      return { playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 0, videoDuration: 0, updatedAt: new Date().toISOString() };
+      return { playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 0, videoDuration: 0, nextVideoId: '', updatedAt: new Date().toISOString() };
     }
   }
 

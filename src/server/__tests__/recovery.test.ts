@@ -13,7 +13,17 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     obsWebsocketPassword: '',
     obsBrowserSourceName: 'Source',
     playlists: [{ id: 'PL123' }],
-    discordWebhookUrl: '',
+    discord: {
+      webhookUrl: '',
+      botName: '',
+      avatarUrl: '',
+      rolePing: '',
+      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true },
+      templates: {
+        error: '', skip: '', recovery: '', critical: '', resume: '',
+        obsDisconnect: '', obsReconnect: '',
+      },
+    },
     heartbeatIntervalMs: 5000,
     heartbeatTimeoutMs: 15000,
     maxConsecutiveErrors: 3,
@@ -162,6 +172,7 @@ describe('RecoveryEngine', () => {
       videoTitle: 'Test Video',
       currentTime: 99,
       videoDuration: 300,
+      nextVideoId: '',
     });
   });
 

@@ -59,7 +59,7 @@ describe('loadConfig', () => {
     expect(cfg.heartbeatTimeoutMs).toBe(15000);
     expect(cfg.maxConsecutiveErrors).toBe(3);
     expect(cfg.recoveryDelayMs).toBe(5000);
-    expect(cfg.discordWebhookUrl).toBe('');
+    expect(cfg.discord.webhookUrl).toBe('');
     expect(cfg.obsWebsocketPassword).toBe('');
   });
 
@@ -107,5 +107,87 @@ describe('isFirstRun', () => {
     }));
     const cfg = loadConfig(tmpConfig);
     expect(isFirstRun(cfg)).toBe(false);
+  });
+});
+
+describe('discord config migration', () => {
+  it('migrates old flat discordWebhookUrl to nested discord.webhookUrl', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      obsBrowserSourceName: 'Source',
+      discordWebhookUrl: 'https://discord.com/api/webhooks/old',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.discord.webhookUrl).toBe('https://discord.com/api/webhooks/old');
+    expect((cfg as any).discordWebhookUrl).toBeUndefined();
+  });
+
+  it('does not overwrite existing discord object during migration', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      obsBrowserSourceName: 'Source',
+      discord: { webhookUrl: 'https://discord.com/api/webhooks/new' },
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.discord.webhookUrl).toBe('https://discord.com/api/webhooks/new');
+  });
+});
+
+describe('discord config defaults', () => {
+  it('applies default event toggles (all enabled)', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      obsBrowserSourceName: 'Source',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.discord.events.error).toBe(true);
+    expect(cfg.discord.events.skip).toBe(true);
+    expect(cfg.discord.events.recovery).toBe(true);
+    expect(cfg.discord.events.critical).toBe(true);
+    expect(cfg.discord.events.resume).toBe(true);
+    expect(cfg.discord.events.obsDisconnect).toBe(true);
+    expect(cfg.discord.events.obsReconnect).toBe(true);
+  });
+
+  it('applies default templates', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      obsBrowserSourceName: 'Source',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.discord.templates.error).toContain('{errorCode}');
+    expect(cfg.discord.templates.skip).toContain('{reason}');
+    expect(cfg.discord.templates.recovery).toContain('{step}');
+    expect(cfg.discord.templates.critical).toContain('{message}');
+    expect(cfg.discord.templates.resume).toContain('{videoIndex}');
+    expect(cfg.discord.templates.obsDisconnect).toContain('OBS disconnected');
+    expect(cfg.discord.templates.obsReconnect).toContain('OBS reconnected');
+  });
+
+  it('applies default empty strings for bot identity', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      obsBrowserSourceName: 'Source',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.discord.botName).toBe('');
+    expect(cfg.discord.avatarUrl).toBe('');
+    expect(cfg.discord.rolePing).toBe('');
+  });
+
+  it('preserves partial event overrides without clobbering others', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      obsBrowserSourceName: 'Source',
+      discord: {
+        webhookUrl: 'https://discord.com/api/webhooks/test',
+        events: { error: false },
+      },
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.discord.events.error).toBe(false);
+    // Other events should still default to true
+    expect(cfg.discord.events.skip).toBe(true);
+    expect(cfg.discord.events.critical).toBe(true);
   });
 });

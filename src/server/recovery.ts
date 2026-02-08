@@ -28,6 +28,7 @@ export class RecoveryEngine {
   private totalVideos = 0;
   private startedAt = Date.now();
   private eventLog: EventLogEntry[] = [];
+  private consecutivePausedHeartbeats = 0;
 
   constructor(
     config: AppConfig,
@@ -130,10 +131,16 @@ export class RecoveryEngine {
           videoTitle: msg.videoTitle,
           currentTime: msg.currentTime,
           videoDuration: msg.videoDuration,
+          nextVideoId: msg.nextVideoId || '',
         });
-        // YT.PlayerState.PAUSED === 2
+        // YT.PlayerState.PAUSED === 2 — only auto-resume after 2 consecutive paused heartbeats
         if (msg.playerState === 2) {
-          this.handlePaused();
+          this.consecutivePausedHeartbeats++;
+          if (this.consecutivePausedHeartbeats >= 2) {
+            this.handlePaused();
+          }
+        } else {
+          this.consecutivePausedHeartbeats = 0;
         }
         break;
 
@@ -147,10 +154,6 @@ export class RecoveryEngine {
         // YT.PlayerState.PLAYING === 1
         if (msg.playerState === 1) {
           this.consecutiveErrors = 0;
-        }
-        // YT.PlayerState.PAUSED === 2
-        if (msg.playerState === 2) {
-          this.handlePaused();
         }
         // YT.PlayerState.ENDED === 0 — detect natural end of last video
         if (msg.playerState === 0 && this.totalVideos > 0

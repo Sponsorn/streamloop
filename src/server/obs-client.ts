@@ -219,8 +219,8 @@ export class OBSClient {
       this.reconnectTimer = null;
     }
     if (this.connected) {
+      this.connected = false; // Set before disconnect so ConnectionClosed handler doesn't fire callback
       await this.obs.disconnect();
-      this.connected = false;
     }
   }
 }

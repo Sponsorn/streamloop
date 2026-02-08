@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { ZodError } from 'zod';
-import { saveConfig, isFirstRun, getConfigPath } from './config.js';
+import { saveConfig, isFirstRun, getConfigPath, DEFAULT_DISCORD_TEMPLATES, DISCORD_TEMPLATE_VARIABLES } from './config.js';
 import { logger } from './logger.js';
 import type { AppConfig } from './types.js';
 import type { RecoveryEngine } from './recovery.js';
@@ -29,6 +29,17 @@ const STARTUP_FOLDER = join(
   'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
 );
 const AUTOSTART_VBS = join(STARTUP_FOLDER, 'FreezeMonitor.vbs');
+
+function maskConfig(config: AppConfig): Record<string, unknown> {
+  return {
+    ...config,
+    obsWebsocketPassword: config.obsWebsocketPassword ? '********' : '',
+    discord: {
+      ...config.discord,
+      webhookUrl: config.discord.webhookUrl ? '********' : '',
+    },
+  };
+}
 
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
@@ -57,13 +68,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   router.get('/config', (_req, res) => {
-    const config = deps.getConfig();
-    const safe = {
-      ...config,
-      obsWebsocketPassword: config.obsWebsocketPassword ? '********' : '',
-      discordWebhookUrl: config.discordWebhookUrl ? '********' : '',
-    };
-    res.json(safe);
+    res.json(maskConfig(deps.getConfig()));
   });
 
   router.post('/config', (req, res) => {
@@ -73,8 +78,9 @@ export function createApiRouter(deps: ApiDependencies): Router {
       if (body.obsWebsocketPassword === '********') {
         delete body.obsWebsocketPassword;
       }
-      if (body.discordWebhookUrl === '********') {
-        delete body.discordWebhookUrl;
+      // Handle nested discord webhook masking
+      if (body.discord?.webhookUrl === '********') {
+        delete body.discord.webhookUrl;
       }
       const updated = saveConfig(body);
       logger.info('Config updated via API');
@@ -82,11 +88,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       deps.reloadConfig().catch((err) => {
         logger.error({ err }, 'Failed to reload after config update');
       });
-      res.json({ ok: true, config: {
-        ...updated,
-        obsWebsocketPassword: updated.obsWebsocketPassword ? '********' : '',
-        discordWebhookUrl: updated.discordWebhookUrl ? '********' : '',
-      } });
+      res.json({ ok: true, config: maskConfig(updated) });
     } catch (err) {
       logger.error({ err }, 'Failed to save config');
       if (err instanceof ZodError) {
@@ -165,11 +167,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({ valid: true });
   });
 
-  // --- Discord test ---
+  // --- Discord endpoints ---
 
   router.post('/discord/test', async (_req, res) => {
     const config = deps.getConfig();
-    if (!config.discordWebhookUrl) {
+    if (!config.discord.webhookUrl) {
       return res.status(400).json({ error: 'No Discord webhook URL configured' });
     }
     try {
@@ -178,6 +180,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
+  });
+
+  router.get('/discord/defaults', (_req, res) => {
+    res.json({
+      templates: DEFAULT_DISCORD_TEMPLATES,
+      variables: DISCORD_TEMPLATE_VARIABLES,
+    });
   });
 
   // --- Update endpoints ---

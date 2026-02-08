@@ -12,6 +12,7 @@ export interface PlayerHeartbeatMessage {
   playerState: number; // YT.PlayerState
   currentTime: number;
   videoDuration: number;
+  nextVideoId: string;
 }
 
 export interface PlayerErrorMessage {
@@ -77,6 +78,7 @@ export interface PersistedState {
   videoTitle: string;
   currentTime: number;
   videoDuration: number;
+  nextVideoId: string;
   updatedAt: string;
 }
 
@@ -97,13 +99,42 @@ export interface PlaylistEntry {
   name?: string;
 }
 
+export interface DiscordEventToggles {
+  error: boolean;
+  skip: boolean;
+  recovery: boolean;
+  critical: boolean;
+  resume: boolean;
+  obsDisconnect: boolean;
+  obsReconnect: boolean;
+}
+
+export interface DiscordTemplates {
+  error: string;
+  skip: string;
+  recovery: string;
+  critical: string;
+  resume: string;
+  obsDisconnect: string;
+  obsReconnect: string;
+}
+
+export interface DiscordConfig {
+  webhookUrl: string;
+  botName: string;
+  avatarUrl: string;
+  rolePing: string;
+  events: DiscordEventToggles;
+  templates: DiscordTemplates;
+}
+
 export interface AppConfig {
   port: number;
   obsWebsocketUrl: string;
   obsWebsocketPassword: string;
   obsBrowserSourceName: string;
   playlists: PlaylistEntry[];
-  discordWebhookUrl: string;
+  discord: DiscordConfig;
   heartbeatIntervalMs: number;
   heartbeatTimeoutMs: number;
   maxConsecutiveErrors: number;

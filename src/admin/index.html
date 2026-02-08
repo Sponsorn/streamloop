@@ -214,6 +214,7 @@
       <div class="tabs">
         <button class="tab active" data-tab="monitor">Monitor</button>
         <button class="tab" data-tab="overlays">Overlays</button>
+        <button class="tab" data-tab="webhooks">Webhooks</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
 
@@ -309,6 +310,110 @@
         </div>
       </div>
 
+      <!-- Webhooks tab -->
+      <div id="panel-webhooks" class="tab-panel hidden">
+        <!-- Webhook & Identity -->
+        <div class="section">
+          <div class="section-title">Webhook &amp; Identity</div>
+          <div class="settings-panel">
+            <div class="form-group">
+              <label for="wh-url">Discord Webhook URL</label>
+              <div class="obs-path-row">
+                <input type="url" id="wh-url" placeholder="https://discord.com/api/webhooks/...">
+                <button type="button" class="btn btn-secondary btn-small" onclick="testDiscordWebhook()">Test</button>
+              </div>
+              <div id="wh-test-result" class="obs-path-result" style="display:none;"></div>
+            </div>
+            <div class="form-group">
+              <label for="wh-bot-name">Bot Name</label>
+              <input type="text" id="wh-bot-name" placeholder="Freeze Monitor (default)">
+              <div class="hint">Custom username shown for webhook messages</div>
+            </div>
+            <div class="form-group">
+              <label for="wh-avatar-url">Avatar URL</label>
+              <input type="url" id="wh-avatar-url" placeholder="https://example.com/avatar.png">
+              <div class="hint">Custom avatar image URL for webhook messages</div>
+            </div>
+            <div class="form-group">
+              <label for="wh-role-ping">Role Ping ID</label>
+              <input type="text" id="wh-role-ping" placeholder="e.g. 123456789012345678">
+              <div class="hint">Discord role ID to @mention on critical alerts only</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Event Notifications -->
+        <div class="section">
+          <div class="section-title">Event Notifications</div>
+          <div class="settings-panel">
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Playback Errors</div><div class="toggle-desc">When a video encounters a playback error</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-error"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Video Skips</div><div class="toggle-desc">When a video is skipped due to errors</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-skip"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Recovery Actions</div><div class="toggle-desc">When recovery steps are executed (retry, refresh, toggle)</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-recovery"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Critical Alerts</div><div class="toggle-desc">When all recovery steps are exhausted</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-critical"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Playback Resumed</div><div class="toggle-desc">When playback successfully resumes after recovery</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-resume"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">OBS Disconnected</div><div class="toggle-desc">When connection to OBS is lost</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-obsDisconnect"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">OBS Reconnected</div><div class="toggle-desc">When OBS connection is restored</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-obsReconnect"><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Message Templates -->
+        <div class="section">
+          <div class="section-title">Message Templates</div>
+          <div id="wh-templates-container"></div>
+        </div>
+
+        <!-- Preview -->
+        <div class="section">
+          <div class="section-title">Preview</div>
+          <div class="settings-panel">
+            <div class="form-group">
+              <label for="wh-preview-select">Event Type</label>
+              <select id="wh-preview-select" class="wh-preview-select">
+                <option value="error">Playback Error</option>
+                <option value="skip">Video Skip</option>
+                <option value="recovery">Recovery Action</option>
+                <option value="critical">Critical Alert</option>
+                <option value="resume">Playback Resumed</option>
+                <option value="obsDisconnect">OBS Disconnected</option>
+                <option value="obsReconnect">OBS Reconnected</option>
+              </select>
+            </div>
+            <div class="wh-discord-preview" id="wh-preview">
+              <div class="wh-preview-color-bar" id="wh-preview-bar"></div>
+              <div class="wh-preview-body">
+                <div class="wh-preview-title" id="wh-preview-title"></div>
+                <div class="wh-preview-desc" id="wh-preview-desc"></div>
+                <div class="wh-preview-fields" id="wh-preview-fields"></div>
+                <div class="wh-preview-footer" id="wh-preview-footer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button type="button" id="wh-save-btn" class="btn btn-primary" onclick="handleWebhookSave()">Save Webhook Settings</button>
+      </div>
+
       <!-- Settings tab -->
       <div id="panel-settings" class="tab-panel hidden">
         <div class="settings-panel">
@@ -325,14 +430,6 @@
             <div class="form-group">
               <label for="set-obs-pass">OBS WebSocket Password</label>
               <input type="password" id="set-obs-pass">
-            </div>
-            <div class="form-group">
-              <label for="set-discord">Discord Webhook URL</label>
-              <div class="obs-path-row">
-                <input type="url" id="set-discord">
-                <button type="button" class="btn btn-secondary btn-small" onclick="testDiscord()">Test</button>
-              </div>
-              <div id="discord-test-result" class="obs-path-result" style="display:none;"></div>
             </div>
             <button type="submit" id="set-btn" class="btn btn-primary">Save Settings</button>
           </form>

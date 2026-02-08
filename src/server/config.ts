@@ -1,7 +1,52 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs';
 import { resolve } from 'path';
 import { z } from 'zod';
-import type { AppConfig } from './types.js';
+import type { AppConfig, DiscordTemplates } from './types.js';
+
+export const DEFAULT_DISCORD_TEMPLATES: DiscordTemplates = {
+  error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
+  skip: 'Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}',
+  recovery: 'Recovery action: **{step}**',
+  critical: '**CRITICAL:** {message}',
+  resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
+  obsDisconnect: 'OBS disconnected — attempting to reconnect',
+  obsReconnect: 'OBS reconnected',
+};
+
+export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]> = {
+  error: ['videoIndex', 'videoId', 'errorCode', 'attempt'],
+  skip: ['videoIndex', 'videoId', 'reason'],
+  recovery: ['step'],
+  critical: ['message'],
+  resume: ['videoIndex', 'videoId'],
+  obsDisconnect: [],
+  obsReconnect: [],
+};
+
+const discordSchema = z.object({
+  webhookUrl: z.string().default(''),
+  botName: z.string().default(''),
+  avatarUrl: z.string().default(''),
+  rolePing: z.string().default(''),
+  events: z.object({
+    error: z.boolean().default(true),
+    skip: z.boolean().default(true),
+    recovery: z.boolean().default(true),
+    critical: z.boolean().default(true),
+    resume: z.boolean().default(true),
+    obsDisconnect: z.boolean().default(true),
+    obsReconnect: z.boolean().default(true),
+  }).default({}),
+  templates: z.object({
+    error: z.string().default(DEFAULT_DISCORD_TEMPLATES.error),
+    skip: z.string().default(DEFAULT_DISCORD_TEMPLATES.skip),
+    recovery: z.string().default(DEFAULT_DISCORD_TEMPLATES.recovery),
+    critical: z.string().default(DEFAULT_DISCORD_TEMPLATES.critical),
+    resume: z.string().default(DEFAULT_DISCORD_TEMPLATES.resume),
+    obsDisconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsDisconnect),
+    obsReconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsReconnect),
+  }).default({}),
+}).default({});
 
 const configSchema = z.object({
   port: z.number().int().positive().default(3000),
@@ -9,7 +54,7 @@ const configSchema = z.object({
   obsWebsocketPassword: z.string().default(''),
   obsBrowserSourceName: z.string().min(1),
   playlists: z.array(z.object({ id: z.string().min(1), name: z.string().optional() })).min(1),
-  discordWebhookUrl: z.string().default(''),
+  discord: discordSchema,
   heartbeatIntervalMs: z.number().int().positive().default(5000),
   heartbeatTimeoutMs: z.number().int().positive().default(15000),
   stateFilePath: z.string().default('./state.json').refine(
@@ -26,15 +71,24 @@ const configSchema = z.object({
 
 let resolvedConfigPath = '';
 
-export function loadConfig(path?: string): AppConfig {
-  resolvedConfigPath = resolve(path ?? 'config.json');
-  const raw = readFileSync(resolvedConfigPath, 'utf-8');
-  const json = JSON.parse(raw);
+function migrateJson(json: Record<string, unknown>): void {
   // Migrate old single-playlist format
   if (json.playlistId && !json.playlists) {
     json.playlists = [{ id: json.playlistId }];
     delete json.playlistId;
   }
+  // Migrate old flat discordWebhookUrl to nested discord object
+  if (json.discordWebhookUrl !== undefined && !json.discord) {
+    json.discord = { webhookUrl: json.discordWebhookUrl };
+    delete json.discordWebhookUrl;
+  }
+}
+
+export function loadConfig(path?: string): AppConfig {
+  resolvedConfigPath = resolve(path ?? 'config.json');
+  const raw = readFileSync(resolvedConfigPath, 'utf-8');
+  const json = JSON.parse(raw);
+  migrateJson(json);
   return configSchema.parse(json);
 }
 
@@ -47,12 +101,23 @@ export function saveConfig(config: Partial<AppConfig>, path?: string): AppConfig
   } catch {
     // No existing file, start fresh
   }
-  const merged = { ...existing, ...config } as Record<string, unknown>;
-  // Migrate old single-playlist format
-  if (merged.playlistId && !merged.playlists) {
-    merged.playlists = [{ id: merged.playlistId }];
-    delete merged.playlistId;
+  migrateJson(existing);
+
+  // Deep-merge discord object so partial saves don't clobber nested fields
+  const incoming = config as Record<string, unknown>;
+  if (incoming.discord && typeof incoming.discord === 'object' && existing.discord && typeof existing.discord === 'object') {
+    const existingDiscord = existing.discord as Record<string, unknown>;
+    const incomingDiscord = incoming.discord as Record<string, unknown>;
+    incoming.discord = {
+      ...existingDiscord,
+      ...incomingDiscord,
+      events: { ...(existingDiscord.events as object || {}), ...(incomingDiscord.events as object || {}) },
+      templates: { ...(existingDiscord.templates as object || {}), ...(incomingDiscord.templates as object || {}) },
+    };
   }
+
+  const merged = { ...existing, ...incoming } as Record<string, unknown>;
+  migrateJson(merged);
   const validated = configSchema.parse(merged);
   const tmpPath = targetPath + '.tmp';
   writeFileSync(tmpPath, JSON.stringify(validated, null, 2), 'utf-8');

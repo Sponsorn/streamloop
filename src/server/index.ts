@@ -1,5 +1,6 @@
 import { createServer } from 'http';
 import { exec } from 'child_process';
+import { readFileSync } from 'fs';
 import express from 'express';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -15,9 +16,16 @@ import { Updater } from './updater.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Read version from package.json
+const pkgPath = resolve(__dirname, '..', '..', 'package.json');
+const appVersion = JSON.parse(readFileSync(pkgPath, 'utf-8')).version as string;
+
 async function main() {
   let config = loadConfig();
   logger.info({ port: config.port, playlists: config.playlists.length }, 'Starting freeze-monitor');
+
+  const startedAt = Date.now();
+  const getUptime = () => Date.now() - startedAt;
 
   // State
   const state = new StateManager(config.stateFilePath);
@@ -45,8 +53,10 @@ async function main() {
   // OBS client
   let obs = new OBSClient(config);
 
+  const adminUrl = `http://localhost:${config.port}/admin`;
+
   // Discord
-  let discord = new DiscordNotifier(config);
+  let discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
 
   // Recovery engine
   let recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
@@ -76,11 +86,17 @@ async function main() {
     // Reconnect OBS if settings changed
     obs.disconnect();
     obs = new OBSClient(config);
-    obs.onConnect(() => logger.info('OBS reconnected after config change'));
-    obs.onDisconnect(() => logger.warn('OBS disconnected'));
+    obs.onConnect(() => {
+      logger.info('OBS reconnected after config change');
+      discord.notifyObsReconnect();
+    });
+    obs.onDisconnect(() => {
+      logger.warn('OBS disconnected');
+      discord.notifyObsDisconnect();
+    });
     await obs.connect();
     // Recreate discord notifier
-    discord = new DiscordNotifier(config);
+    discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
     // Restart recovery with new config
     recovery.stop();
     recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
@@ -104,6 +120,7 @@ async function main() {
   // Connect to OBS
   obs.onConnect(() => {
     logger.info('OBS connected, checking player status');
+    discord.notifyObsReconnect();
     if (!playerWs.isConnected()) {
       logger.warn('Player not connected after OBS reconnect');
     }
@@ -111,6 +128,7 @@ async function main() {
 
   obs.onDisconnect(() => {
     logger.warn('OBS disconnected');
+    discord.notifyObsDisconnect();
   });
 
   if (!isFirstRun(config)) {
@@ -126,10 +144,9 @@ async function main() {
   server.listen(config.port, '127.0.0.1', () => {
     logger.info({ port: config.port }, 'Server listening');
     logger.info(`Player URL: http://localhost:${config.port}`);
-    logger.info(`Admin URL: http://localhost:${config.port}/admin`);
+    logger.info(`Admin URL: ${adminUrl}`);
 
     // Auto-open browser to admin dashboard
-    const adminUrl = `http://localhost:${config.port}/admin`;
     if (process.platform === 'win32') {
       exec(`start "" "${adminUrl}"`);
     }
