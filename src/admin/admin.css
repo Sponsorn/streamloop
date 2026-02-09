@@ -66,7 +66,6 @@ header .status-pill {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
-.np-item { }
 .np-title-item { grid-column: 1 / -1; }
 .np-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; }
 .np-value { font-size: 15px; }
@@ -315,7 +314,7 @@ header .status-pill {
 .wh-preview-color-bar {
   width: 4px;
   flex-shrink: 0;
-  background: #3447003;
+  background: #5865f2;
 }
 .wh-preview-body {
   padding: 12px 16px;

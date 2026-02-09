@@ -106,6 +106,7 @@ async function main() {
     recovery.stop();
     recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
     recovery.start();
+    startStreamMonitor();
     logger.info('Components reloaded with new config');
   };
 
@@ -143,6 +144,17 @@ async function main() {
     logger.warn('OBS disconnected');
     discord.notifyObsDisconnect();
   });
+
+  // Stream health monitor — restarts stream if it drops while player is healthy
+  const startStreamMonitor = () => {
+    obs.startStreamMonitor(() => {
+      if (!playerWs.isConnected()) return false;
+      const status = recovery.getStatus();
+      const heartbeatAge = Date.now() - status.lastHeartbeatAt;
+      return heartbeatAge < config.heartbeatTimeoutMs;
+    });
+  };
+  startStreamMonitor();
 
   if (!isFirstRun(config)) {
     await obs.connect();

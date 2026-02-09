@@ -20,6 +20,8 @@ export class OBSClient {
   private obsLaunched = false;
   private onConnectCallback: (() => void) | null = null;
   private onDisconnectCallback: (() => void) | null = null;
+  private streamCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private isPlayerHealthy: (() => boolean) | null = null;
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -271,7 +273,38 @@ export class OBSClient {
     }
   }
 
+  /** Start periodic stream health check. Restarts stream if it drops while everything else is healthy. */
+  startStreamMonitor(isPlayerHealthy: () => boolean) {
+    this.stopStreamMonitor();
+    this.isPlayerHealthy = isPlayerHealthy;
+    this.streamCheckTimer = setInterval(() => this.checkStreamHealth(), 30_000);
+  }
+
+  stopStreamMonitor() {
+    if (this.streamCheckTimer) {
+      clearInterval(this.streamCheckTimer);
+      this.streamCheckTimer = null;
+    }
+  }
+
+  private async checkStreamHealth() {
+    if (!this.config.obsAutoStream) return;
+    if (!this.connected) return;
+    if (!this.isPlayerHealthy?.()) return;
+
+    try {
+      const { outputActive } = await this.obs.call('GetStreamStatus');
+      if (!outputActive) {
+        logger.warn('Stream health check: not streaming, attempting to restart');
+        await this.startStreaming();
+      }
+    } catch {
+      // OBS call failed, skip this check
+    }
+  }
+
   async disconnect(): Promise<void> {
+    this.stopStreamMonitor();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
