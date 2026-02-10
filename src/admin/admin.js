@@ -639,8 +639,7 @@ async function loadSettings() {
   }
 }
 
-async function handleSettingsSave(e) {
-  e.preventDefault();
+async function handleSettingsSave() {
   const playlists = collectPlaylists('#set-playlists-list');
   if (playlists === null) return; // validation error already shown
   if (playlists.length === 0) {
@@ -1132,17 +1131,46 @@ async function waitForRestart() {
   }
 }
 
+async function handleCheckUpdate() {
+  const btn = $('#check-update-btn');
+  const result = $('#check-update-result');
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  result.textContent = '';
+
+  try {
+    const status = await api('/api/update/check', { method: 'POST' });
+    if (status.updateAvailable) {
+      result.textContent = `v${status.latestVersion} available!`;
+      result.style.color = 'var(--accent)';
+      renderUpdateBanner(status);
+    } else {
+      result.textContent = `Up to date (v${status.currentVersion})`;
+      result.style.color = 'var(--text-muted)';
+    }
+  } catch (err) {
+    result.textContent = 'Check failed: ' + err.message;
+    result.style.color = 'var(--red)';
+  }
+  btn.textContent = 'Check for Updates';
+  btn.disabled = false;
+}
+
 // --- Boot ---
 
 document.addEventListener('DOMContentLoaded', () => {
   // Settings form
-  $('#settings-form').addEventListener('submit', handleSettingsSave);
+  $('#settings-form').addEventListener('submit', (e) => e.preventDefault());
+  $('#set-btn').addEventListener('click', handleSettingsSave);
 
   // Tabs
   $$('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
   // Autostart
   $('#autostart-toggle').addEventListener('change', handleAutostartToggle);
+
+  // Check for updates button
+  $('#check-update-btn').addEventListener('click', handleCheckUpdate);
 
   // Webhook preview updates
   const previewSelect = $('#wh-preview-select');

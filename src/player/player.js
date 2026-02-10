@@ -7,6 +7,7 @@
   let playerReady = false;
   let heartbeatTimer = null;
   let pendingSeekTime = 0;
+  let currentLoop = false;
   const HEARTBEAT_INTERVAL = 5000;
   const WS_RECONNECT_DELAY = 3000;
 
@@ -135,13 +136,17 @@
       setTimeout(function () { loadPlaylist(playlistId, index, loop, startTime); }, 500);
       return;
     }
+    // Stop current playback immediately to prevent YouTube from auto-advancing
+    // the old playlist while we load the new one
+    player.stopVideo();
     pendingSeekTime = startTime || 0;
     player.loadPlaylist({
       list: playlistId,
       listType: 'playlist',
       index: index || 0,
     });
-    player.setLoop(!!loop);
+    currentLoop = !!loop;
+    player.setLoop(currentLoop);
   }
 
   function retryCurrent() {
@@ -200,6 +205,20 @@
       videoId: getVideoId(),
       videoTitle: getVideoTitle(),
     });
+
+    // When last video ends in a non-loop playlist, stop playback immediately
+    // to prevent YouTube from auto-advancing back to video 0 before the server
+    // can send the loadPlaylist command for the next playlist
+    if (state === YT.PlayerState.ENDED && !currentLoop) {
+      try {
+        var playlist = player.getPlaylist();
+        var idx = player.getPlaylistIndex();
+        if (playlist && playlist.length > 0 && idx === playlist.length - 1) {
+          console.log('[Player] Last video ended (non-loop), stopping to wait for server');
+          player.stopVideo();
+        }
+      } catch (e) { /* ignore */ }
+    }
 
     // Seek to saved position after resume from crash
     if (state === YT.PlayerState.PLAYING && pendingSeekTime > 0) {
