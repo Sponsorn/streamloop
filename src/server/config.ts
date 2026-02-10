@@ -49,7 +49,7 @@ const discordSchema = z.object({
 }).default({});
 
 const configSchema = z.object({
-  port: z.number().int().positive().default(3000),
+  port: z.number().int().positive().default(7654),
   obsWebsocketUrl: z.string().default('ws://127.0.0.1:4455'),
   obsWebsocketPassword: z.string().default(''),
   obsBrowserSourceName: z.string().min(1),

@@ -170,6 +170,13 @@ export class RecoveryEngine {
         this.totalVideos = msg.totalVideos;
         logger.info({ totalVideos: msg.totalVideos }, 'Playlist loaded');
         this.addEvent(`Playlist loaded with ${msg.totalVideos} videos`);
+        // Clamp videoIndex if out of bounds (e.g. state from a different playlist)
+        const currentVideoIndex = this.state.get().videoIndex;
+        if (msg.totalVideos > 0 && currentVideoIndex >= msg.totalVideos) {
+          logger.warn({ videoIndex: currentVideoIndex, totalVideos: msg.totalVideos }, 'videoIndex out of bounds, resetting to 0');
+          this.state.update({ videoIndex: 0 });
+          this.ws.send({ type: 'skip', index: 0 });
+        }
         break;
 
       case 'error':
@@ -229,6 +236,7 @@ export class RecoveryEngine {
     const playlist = this.config.playlists[next];
     this.addEvent(`Playlist finished. Advancing to ${next + 1}/${this.config.playlists.length}: ${playlist.name || playlist.id}`);
     this.state.update({ playlistIndex: next, videoIndex: 0, videoId: '', currentTime: 0 });
+    this.state.flush(); // Critical transition — write immediately, don't wait for debounce
     this.totalVideos = 0;
     this.ws.send({ type: 'loadPlaylist', playlistId: playlist.id, index: 0, loop: this.config.playlists.length === 1 });
     this.consecutiveErrors = 0;

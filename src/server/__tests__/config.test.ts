@@ -54,7 +54,7 @@ describe('loadConfig', () => {
       obsBrowserSourceName: 'Source',
     }));
     const cfg = loadConfig(tmpConfig);
-    expect(cfg.port).toBe(3000);
+    expect(cfg.port).toBe(7654);
     expect(cfg.heartbeatIntervalMs).toBe(5000);
     expect(cfg.heartbeatTimeoutMs).toBe(15000);
     expect(cfg.maxConsecutiveErrors).toBe(3);
@@ -64,7 +64,7 @@ describe('loadConfig', () => {
   });
 
   it('throws on missing required fields', () => {
-    writeFileSync(tmpConfig, JSON.stringify({ port: 3000 }));
+    writeFileSync(tmpConfig, JSON.stringify({ port: 7654 }));
     expect(() => loadConfig(tmpConfig)).toThrow();
   });
 

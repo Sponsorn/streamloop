@@ -55,13 +55,14 @@ async function main() {
   // Copy source directories
   cpSync(join(ROOT, 'src'), join(appDir, 'src'), { recursive: true });
 
-  // Copy config and package files
-  for (const file of ['config.json', 'package.json', 'package-lock.json', 'tsconfig.json']) {
+  // Copy package files (never copy config.json — use the example template instead)
+  for (const file of ['package.json', 'package-lock.json', 'tsconfig.json']) {
     const src = join(ROOT, file);
     if (existsSync(src)) {
       cpSync(src, join(appDir, file));
     }
   }
+  cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.json'));
 
   // Step 3: Install production dependencies
   console.log('Installing production dependencies...');

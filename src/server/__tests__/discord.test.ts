@@ -29,7 +29,7 @@ const defaultDiscord: DiscordConfig = {
 
 function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partial<DiscordConfig> = {}): AppConfig {
   return {
-    port: 3000,
+    port: 7654,
     obsWebsocketUrl: '',
     obsWebsocketPassword: '',
     obsBrowserSourceName: 'Source',
@@ -59,7 +59,7 @@ function makeNotifier(discordOverrides: Partial<DiscordConfig> = {}) {
     makeConfig({}, discordOverrides),
     '1.0.0',
     () => 3600000,
-    'http://localhost:3000/admin',
+    'http://localhost:7654/admin',
   );
 }
 
@@ -237,7 +237,7 @@ describe('DiscordNotifier', () => {
     await notifier.send('test', 'error');
     const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
     const footer = body.embeds[0].footer.text;
-    expect(footer).toContain('Dashboard: http://localhost:3000/admin');
+    expect(footer).toContain('Dashboard: http://localhost:7654/admin');
     expect(footer).toContain('Uptime:');
     expect(footer).toContain('v1.0.0');
   });

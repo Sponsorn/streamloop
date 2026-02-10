@@ -8,7 +8,7 @@ import type { DiscordNotifier } from '../discord.js';
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
-    port: 3000,
+    port: 7654,
     obsWebsocketUrl: '',
     obsWebsocketPassword: '',
     obsBrowserSourceName: 'Source',

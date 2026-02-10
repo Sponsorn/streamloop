@@ -197,6 +197,15 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Unhandled promise rejection');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception');
+  process.exit(1);
+});
+
 main().catch((err) => {
   logger.fatal({ err }, 'Fatal error');
   process.exit(1);

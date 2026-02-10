@@ -54,7 +54,16 @@ if %ERRORLEVEL% equ 75 (
     goto loop
 )
 
-:: If we get here, the server has exited normally
+:: Exit code 0 = clean shutdown, don't restart
+if %ERRORLEVEL% equ 0 (
+    echo.
+    echo Server stopped cleanly.
+    pause
+    exit /b 0
+)
+
+:: Any other exit code = crash, auto-restart after delay
 echo.
-echo Server has stopped.
-pause
+echo Server crashed (exit code %ERRORLEVEL%). Restarting in 10 seconds...
+timeout /t 10 /nobreak >nul
+goto loop

@@ -942,7 +942,7 @@ function updatePreview() {
   }
 
   // Footer
-  $('#wh-preview-footer').textContent = `Dashboard: http://localhost:3000/admin | Uptime: 2h 15m | v1.0.0`;
+  $('#wh-preview-footer').textContent = `Dashboard: http://localhost:7654/admin | Uptime: 2h 15m | v1.0.0`;
 }
 
 async function handleWebhookSave() {
