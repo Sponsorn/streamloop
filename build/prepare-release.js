@@ -21,10 +21,10 @@ const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}
 
 const ROOT = resolve(import.meta.dirname, '..');
 const DIST = join(ROOT, 'dist');
-const RELEASE = join(DIST, 'freeze-monitor');
+const RELEASE = join(DIST, 'streamloop');
 
 async function main() {
-  console.log('=== Freeze Monitor Release Builder ===\n');
+  console.log('=== StreamLoop Release Builder ===\n');
 
   // Clean previous build
   if (existsSync(DIST)) {
@@ -81,7 +81,7 @@ async function main() {
   // Step 5: Create ZIP
   console.log('Creating ZIP archive...');
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-  const zipPath = join(DIST, `freeze-monitor-v${pkg.version}.zip`);
+  const zipPath = join(DIST, `streamloop-v${pkg.version}.zip`);
   execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
 
   console.log(`\nRelease built successfully!`);

@@ -1,4 +1,4 @@
-// YouTube IFrame Player + WebSocket client for freeze-monitor
+// YouTube IFrame Player + WebSocket client for StreamLoop
 (function () {
   'use strict';
 
@@ -8,6 +8,7 @@
   let heartbeatTimer = null;
   let pendingSeekTime = 0;
   let currentLoop = false;
+  let playlistLoadNotified = false;
   const HEARTBEAT_INTERVAL = 5000;
   const WS_RECONNECT_DELAY = 3000;
 
@@ -79,6 +80,7 @@
         videoDuration: player.getDuration() || 0,
         nextVideoId: getNextVideoId(),
       });
+      updateOverlay();
     }, HEARTBEAT_INTERVAL);
   }
 
@@ -140,6 +142,7 @@
     // the old playlist while we load the new one
     player.stopVideo();
     pendingSeekTime = startTime || 0;
+    playlistLoadNotified = false;
     player.loadPlaylist({
       list: playlistId,
       listType: 'playlist',
@@ -176,11 +179,9 @@
         controls: 0,
         disablekb: 1,
         fs: 0,
-        modestbranding: 1,
         rel: 0,
         iv_load_policy: 3,
         cc_load_policy: 0,
-        showinfo: 0,
       },
       events: {
         onReady: onPlayerReady,
@@ -205,6 +206,7 @@
       videoId: getVideoId(),
       videoTitle: getVideoTitle(),
     });
+    updateOverlay();
 
     // When last video ends in a non-loop playlist, stop playback immediately
     // to prevent YouTube from auto-advancing back to video 0 before the server
@@ -229,10 +231,11 @@
     }
 
     // Notify server when playlist is loaded (first CUED or PLAYING after load)
-    if (state === YT.PlayerState.CUED || state === YT.PlayerState.PLAYING) {
+    if (!playlistLoadNotified && (state === YT.PlayerState.CUED || state === YT.PlayerState.PLAYING)) {
       try {
         var playlist = player.getPlaylist();
         if (playlist && playlist.length > 0) {
+          playlistLoadNotified = true;
           sendMessage({
             type: 'playlistLoaded',
             totalVideos: playlist.length,
@@ -250,6 +253,38 @@
       videoIndex: player.getPlaylistIndex() || 0,
       videoId: getVideoId(),
     });
+  }
+
+  // --- Now Playing overlay ---
+
+  var npOverlay = document.getElementById('np-overlay');
+  var npTitle = document.getElementById('np-title');
+  var npLabel = document.getElementById('np-label');
+  var lastOverlayTitle = '';
+
+  function updateOverlay() {
+    var title = getVideoTitle();
+    if (title !== lastOverlayTitle) {
+      lastOverlayTitle = title;
+      if (npTitle) npTitle.textContent = title;
+    }
+    if (npOverlay) {
+      if (title) {
+        npOverlay.classList.remove('np-hidden');
+      } else {
+        npOverlay.classList.add('np-hidden');
+      }
+    }
+    if (npLabel && player) {
+      var duration = player.getDuration() || 0;
+      var current = player.getCurrentTime() || 0;
+      if (duration > 0) {
+        var pct = Math.min(100, Math.round((current / duration) * 100));
+        npLabel.textContent = 'Now Playing, progress: ' + pct + '%';
+      } else {
+        npLabel.textContent = 'Now Playing';
+      }
+    }
   }
 
   // --- Boot ---

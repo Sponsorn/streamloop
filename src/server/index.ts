@@ -22,7 +22,7 @@ const appVersion = JSON.parse(readFileSync(pkgPath, 'utf-8')).version as string;
 
 async function main() {
   let config = loadConfig();
-  logger.info({ port: config.port, playlists: config.playlists.length }, 'Starting freeze-monitor');
+  logger.info({ port: config.port, playlists: config.playlists.length }, 'Starting StreamLoop');
 
   const startedAt = Date.now();
   const getUptime = () => Date.now() - startedAt;

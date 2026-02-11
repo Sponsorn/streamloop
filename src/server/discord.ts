@@ -106,7 +106,7 @@ export class DiscordNotifier {
     const footerExtra = isBatched ? `${messages.length} events` : undefined;
 
     const embed: Record<string, unknown> = {
-      title: `${emoji[highestLevel]} Freeze Monitor`,
+      title: `${emoji[highestLevel]} StreamLoop`,
       description,
       color: colorMap[highestLevel],
       timestamp: new Date().toISOString(),

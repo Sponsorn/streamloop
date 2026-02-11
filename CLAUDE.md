@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Freeze Monitor is a Node.js/TypeScript application that plays YouTube playlists in an OBS Browser Source and automatically recovers from playback freezes, errors, and failures. It communicates with a browser-based player via WebSocket, connects to OBS via obs-websocket-js, and optionally sends alerts to Discord webhooks.
+StreamLoop is a Node.js/TypeScript application that plays YouTube playlists in an OBS Browser Source and automatically recovers from playback freezes, errors, and failures. It communicates with a browser-based player via WebSocket, connects to OBS via obs-websocket-js, and optionally sends alerts to Discord webhooks.
 
 ## Setup
 
@@ -73,7 +73,7 @@ ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` 
 
 ## Auto-Updater
 
-The updater checks GitHub Releases for `Sponsorn/kandy-freeze-monitor` and supports one-click updates from the admin dashboard.
+The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-click updates from the admin dashboard.
 
 **API endpoints:**
 - `GET /api/update/status` — current update status (version info, availability, progress)

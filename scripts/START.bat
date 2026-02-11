@@ -1,8 +1,8 @@
 @echo off
-title Freeze Monitor
-echo ============================================
-echo   Freeze Monitor - YouTube Playlist Monitor
-echo ============================================
+title StreamLoop
+echo ======================================
+echo   StreamLoop - 24/7 YouTube Streamer
+echo ======================================
 echo.
 
 :: Resolve paths relative to this batch file

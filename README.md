@@ -1,6 +1,6 @@
-# Freeze Monitor
+# StreamLoop
 
-YouTube Playlist Stream Monitor for OBS. Plays YouTube playlists in an OBS Browser Source and watches for playback freezes, errors, and failures. When something goes wrong, it automatically recovers through an escalating sequence of actions. Optionally sends alerts to Discord webhooks.
+24/7 YouTube playlist streamer for OBS with auto-recovery. Plays YouTube playlists in an OBS Browser Source and watches for playback freezes, errors, and failures. When something goes wrong, it automatically recovers through an escalating sequence of actions. Optionally sends alerts to Discord webhooks.
 
 ## Features
 
@@ -29,12 +29,12 @@ npm run dev     # Start with file watching
 ### OBS Configuration
 
 1. Create a Browser Source in OBS (e.g. named "Playlist Player")
-2. Set its URL to `http://localhost:3000`
+2. Set its URL to `http://localhost:7654`
 3. Enable OBS WebSocket Server: Tools > WebSocket Server Settings > Enable
 
 ### Admin Dashboard
 
-Open `http://localhost:3000/admin` to monitor player status, view recovery events, and edit settings.
+Open `http://localhost:7654/admin` to monitor player status, view recovery events, and edit settings.
 
 ## Configuration
 
@@ -42,7 +42,7 @@ Open `http://localhost:3000/admin` to monitor player status, view recovery event
 |-------|---------|-------------|
 | `playlists` | — | Array of `{ id, name? }` YouTube playlist objects |
 | `obsBrowserSourceName` | — | Name of the OBS Browser Source to control |
-| `port` | `3000` | HTTP server port |
+| `port` | `7654` | HTTP server port |
 | `obsWebsocketUrl` | `ws://127.0.0.1:4455` | OBS WebSocket server URL |
 | `obsWebsocketPassword` | `""` | OBS WebSocket password |
 | `discordWebhookUrl` | `""` | Discord webhook for alerts |

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Freeze Monitor - Admin</title>
+  <title>StreamLoop - Admin</title>
   <link rel="stylesheet" href="/admin/admin.css">
 </head>
 <body>
@@ -28,7 +28,7 @@
 
       <!-- Step 1: Welcome -->
       <div class="wiz-step" data-step="1">
-        <h2>Welcome to Freeze Monitor</h2>
+        <h2>Welcome to StreamLoop</h2>
         <p>This app plays YouTube playlists in OBS and automatically recovers from freezes, errors, and failures.</p>
         <div class="wiz-info-box">
           <div class="wiz-info-title">What we'll set up:</div>
@@ -48,7 +48,7 @@
       <!-- Step 2: OBS WebSocket -->
       <div class="wiz-step hidden" data-step="2">
         <h2>OBS WebSocket Connection</h2>
-        <p>Freeze Monitor talks to OBS through WebSocket. Let's make sure it's enabled.</p>
+        <p>StreamLoop talks to OBS through WebSocket. Let's make sure it's enabled.</p>
         <div class="wiz-info-box">
           <div class="wiz-info-title">In OBS, follow these steps:</div>
           <ol class="wiz-instructions">
@@ -114,6 +114,7 @@
             <code>youtube.com/playlist?list=<strong>PLxxxxxxxxxxxxxxxx</strong></code>
           </div>
           <p class="wiz-url-hint">Copy the part after <strong>list=</strong> &mdash; it starts with <strong>PL</strong></p>
+          <p class="wiz-url-hint" style="margin-top: 8px;"><strong>Note:</strong> YouTube limits playlists to 200 videos in the embedded player. If your playlist has more, split it into multiple playlists of 200 or fewer.</p>
         </div>
         <div class="form-group">
           <label>Playlists</label>
@@ -202,7 +203,7 @@
 
     <div class="container">
       <header>
-        <h1>Freeze Monitor</h1>
+        <h1>StreamLoop</h1>
         <div>
           <span id="header-pill" class="status-pill pill-muted">Loading</span>
           <span id="heartbeat-pill" class="status-pill pill-muted" style="display:none;">Heartbeat: -</span>
@@ -283,30 +284,9 @@
       <!-- Overlays tab -->
       <div id="panel-overlays" class="tab-panel hidden">
         <div class="section">
-          <div class="section-title">OBS Browser Source Overlays</div>
-          <p class="overlays-desc">Add these as Browser Sources in OBS to display information on your stream. Set the background to transparent in the source properties.</p>
-        </div>
-        <div class="overlay-card">
-          <div class="overlay-header">
-            <div>
-              <div class="overlay-name">Now Playing</div>
-              <div class="overlay-desc">Shows the current video title at the bottom of the screen</div>
-            </div>
-            <a class="btn btn-secondary btn-small" id="overlay-np-preview" target="_blank" rel="noopener">Preview</a>
-          </div>
-          <div class="overlay-url-row">
-            <label>Browser Source URL</label>
-            <div class="wiz-copy-row">
-              <code id="overlay-np-url"></code>
-              <button type="button" class="btn btn-secondary btn-small" onclick="copyOverlayUrl('overlay-np-url')">Copy</button>
-            </div>
-          </div>
-          <div class="overlay-settings">
-            <div class="overlay-setting">
-              <span class="overlay-setting-label">Recommended size:</span>
-              <span>1920 x 1080</span>
-            </div>
-          </div>
+          <div class="section-title">Now Playing Overlay</div>
+          <p class="overlays-desc">The "Now Playing" overlay is built into the player browser source. It displays the current video title with a frosted glass effect directly on top of the video.</p>
+          <p class="overlays-desc" style="margin-top: 8px;">No extra browser sources needed &mdash; it works automatically.</p>
         </div>
       </div>
 
@@ -326,7 +306,7 @@
             </div>
             <div class="form-group">
               <label for="wh-bot-name">Bot Name</label>
-              <input type="text" id="wh-bot-name" placeholder="Freeze Monitor (default)">
+              <input type="text" id="wh-bot-name" placeholder="StreamLoop (default)">
               <div class="hint">Custom username shown for webhook messages</div>
             </div>
             <div class="form-group">

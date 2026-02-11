@@ -29,6 +29,9 @@ export class RecoveryEngine {
   private startedAt = Date.now();
   private eventLog: EventLogEntry[] = [];
   private consecutivePausedHeartbeats = 0;
+  private lastProgressTime = 0;
+  private stalledHeartbeats = 0;
+  private static readonly STALL_THRESHOLD = 3; // consecutive heartbeats with no progress while "playing"
 
   constructor(
     config: AppConfig,
@@ -127,7 +130,6 @@ export class RecoveryEngine {
 
       case 'heartbeat':
         this.lastHeartbeatAt = Date.now();
-        this.resetRecovery();
         this.state.update({
           videoIndex: msg.videoIndex,
           videoId: msg.videoId,
@@ -136,6 +138,30 @@ export class RecoveryEngine {
           videoDuration: msg.videoDuration,
           nextVideoId: msg.nextVideoId || '',
         });
+        // Stall detection: player claims to be playing but currentTime isn't advancing
+        // YT.PlayerState.PLAYING === 1
+        if (msg.playerState === 1 && msg.currentTime > 0) {
+          if (Math.abs(msg.currentTime - this.lastProgressTime) < 1) {
+            this.stalledHeartbeats++;
+            if (this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
+              const stallMsg = `Player stalled at ${Math.floor(msg.currentTime)}s on video #${msg.videoIndex} (${msg.videoId}) — no progress for ${this.stalledHeartbeats} heartbeats`;
+              logger.warn({ currentTime: msg.currentTime, stalledHeartbeats: this.stalledHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stalled — video not advancing');
+              this.addEvent(stallMsg);
+              this.discord.notifyRecovery(`Stall detected — ${stallMsg}`);
+              this.startRecoverySequence();
+            }
+          } else {
+            this.stalledHeartbeats = 0;
+            this.lastProgressTime = msg.currentTime;
+            this.resetRecovery();
+          }
+        } else {
+          this.stalledHeartbeats = 0;
+          this.lastProgressTime = msg.currentTime;
+          if (this.recoveryStep !== RecoveryStep.None && msg.playerState === 1) {
+            this.resetRecovery();
+          }
+        }
         // YT.PlayerState.PAUSED === 2 — only auto-resume after 2 consecutive paused heartbeats
         if (msg.playerState === 2) {
           this.consecutivePausedHeartbeats++;

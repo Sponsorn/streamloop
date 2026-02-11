@@ -28,7 +28,7 @@ const STARTUP_FOLDER = join(
   process.env.APPDATA ?? '',
   'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
 );
-const AUTOSTART_VBS = join(STARTUP_FOLDER, 'FreezeMonitor.vbs');
+const AUTOSTART_VBS = join(STARTUP_FOLDER, 'StreamLoop.vbs');
 
 function maskConfig(config: AppConfig): Record<string, unknown> {
   return {
@@ -179,7 +179,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return res.status(400).json({ error: 'No Discord webhook URL configured' });
     }
     try {
-      await deps.getDiscord().send('Test notification from Freeze Monitor. If you see this, your webhook is working!', 'info');
+      await deps.getDiscord().send('Test notification from StreamLoop. If you see this, your webhook is working!', 'info');
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: String(err) });

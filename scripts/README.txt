@@ -1,5 +1,5 @@
-Freeze Monitor - YouTube Playlist Stream Monitor for OBS
-=========================================================
+StreamLoop - 24/7 YouTube Streamer for OBS
+===========================================
 
 Quick Start
 -----------
@@ -13,7 +13,7 @@ That's it! No need to install Node.js or anything else.
 
 What This Does
 --------------
-Freeze Monitor plays a YouTube playlist in an OBS Browser Source and
+StreamLoop plays a YouTube playlist in an OBS Browser Source and
 watches for playback freezes, errors, and failures. When something goes
 wrong, it automatically recovers by retrying, refreshing, or toggling
 the source in OBS. Optionally sends alerts to a Discord webhook.
@@ -40,6 +40,14 @@ Folder Structure
   app/          Application code and dependencies
   START.bat     Launch script — double-click to run
   README.txt    This file
+
+Playlist Limits
+---------------
+YouTube's IFrame API only loads the first 200 videos from a playlist,
+regardless of how many it actually contains. If your playlist has more
+than 200 videos, split it into multiple playlists of 200 or fewer and
+add them all in the settings. StreamLoop plays through each playlist
+in order and loops back to the first one automatically.
 
 Troubleshooting
 ---------------

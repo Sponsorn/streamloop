@@ -8,7 +8,7 @@ import { logger } from './logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const GITHUB_REPO = 'Sponsorn/kandy-freeze-monitor';
+const GITHUB_REPO = 'Sponsorn/streamloop';
 const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 
 export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'extracting' | 'ready' | 'error';
@@ -83,7 +83,7 @@ export class Updater {
       const res = await fetch(GITHUB_API_URL, {
         headers: {
           'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': `freeze-monitor/${this.currentVersion}`,
+          'User-Agent': `streamloop/${this.currentVersion}`,
         },
       });
 
@@ -149,7 +149,7 @@ export class Updater {
 
       const zipPath = join(tmpDir, 'update.zip');
       const res = await fetch(this.releaseAssetUrl, {
-        headers: { 'User-Agent': `freeze-monitor/${this.currentVersion}` },
+        headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
       });
       if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
       if (!res.body) throw new Error('No response body');
@@ -165,8 +165,8 @@ export class Updater {
       execSync(`powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`, { timeout: 120_000 });
 
       // Find the app directory inside the extracted zip
-      // The ZIP contains freeze-monitor/app/ — we need the app folder
-      let newAppDir = join(extractDir, 'freeze-monitor', 'app');
+      // The ZIP contains streamloop/app/ — we need the app folder
+      let newAppDir = join(extractDir, 'streamloop', 'app');
       if (!existsSync(newAppDir)) {
         // Maybe the zip extracts directly
         newAppDir = join(extractDir, 'app');
@@ -184,7 +184,7 @@ export class Updater {
       }
 
       // Also copy the new START.bat and node/ if present in the release
-      const newStartBat = join(extractDir, 'freeze-monitor', 'START.bat');
+      const newStartBat = join(extractDir, 'streamloop', 'START.bat');
       if (existsSync(newStartBat)) {
         cpSync(newStartBat, join(rootDir, 'START.bat'));
       }

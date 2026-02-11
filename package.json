@@ -1,7 +1,8 @@
 {
-  "name": "freeze-monitor",
+  "name": "streamloop",
   "version": "1.0.0",
-  "description": "YouTube Playlist Stream Monitor for OBS",
+  "description": "24/7 YouTube playlist streamer for OBS with auto-recovery",
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "start": "tsx src/server/index.ts",

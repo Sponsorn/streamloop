@@ -912,7 +912,7 @@ function updatePreview() {
 
   // Bot name
   const botName = $('#wh-bot-name') ? $('#wh-bot-name').value.trim() : '';
-  const titleName = botName || 'Freeze Monitor';
+  const titleName = botName || 'StreamLoop';
 
   // Update preview elements
   $('#wh-preview-bar').style.background = colors[level];
@@ -995,36 +995,12 @@ async function testDiscordWebhook() {
   }
 }
 
-// --- Overlays tab ---
-
-function initOverlayUrls() {
-  const base = window.location.origin;
-  const npUrl = base + '/overlay';
-  $('#overlay-np-url').textContent = npUrl;
-  $('#overlay-np-preview').href = npUrl;
-}
-
-function copyOverlayUrl(codeId) {
-  const url = $(`#${codeId}`).textContent;
-  navigator.clipboard.writeText(url).then(() => {
-    showToast('Copied to clipboard!', 'success');
-  }).catch(() => {
-    const range = document.createRange();
-    range.selectNodeContents($(`#${codeId}`));
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    showToast('Press Ctrl+C to copy', 'success');
-  });
-}
-
 // --- Tab switching ---
 
 function switchTab(tabName) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
   $$('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + tabName));
   if (tabName === 'settings') loadSettings();
-  if (tabName === 'overlays') initOverlayUrls();
   if (tabName === 'webhooks') loadWebhookSettings();
 }
 
