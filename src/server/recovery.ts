@@ -130,14 +130,6 @@ export class RecoveryEngine {
 
       case 'heartbeat':
         this.lastHeartbeatAt = Date.now();
-        this.state.update({
-          videoIndex: msg.videoIndex,
-          videoId: msg.videoId,
-          videoTitle: msg.videoTitle,
-          currentTime: msg.currentTime,
-          videoDuration: msg.videoDuration,
-          nextVideoId: msg.nextVideoId || '',
-        });
         // Stall detection: player claims to be playing but currentTime isn't advancing
         // YT.PlayerState.PLAYING === 1
         if (msg.playerState === 1 && msg.currentTime > 0) {
@@ -161,6 +153,17 @@ export class RecoveryEngine {
           if (this.recoveryStep !== RecoveryStep.None && msg.playerState === 1) {
             this.resetRecovery();
           }
+        }
+        // Only write state when video is making progress — skip stale writes during stalls
+        if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {
+          this.state.update({
+            videoIndex: msg.videoIndex,
+            videoId: msg.videoId,
+            videoTitle: msg.videoTitle,
+            currentTime: msg.currentTime,
+            videoDuration: msg.videoDuration,
+            nextVideoId: msg.nextVideoId || '',
+          });
         }
         // YT.PlayerState.PAUSED === 2 — only auto-resume after 2 consecutive paused heartbeats
         if (msg.playerState === 2) {
@@ -345,9 +348,10 @@ export class RecoveryEngine {
     this.recoveryTimer = setTimeout(() => {
       // Check if recovery was cancelled (heartbeat came back)
       if (this.recoveryStep === RecoveryStep.None) return;
-      // Check if heartbeat is still missing
+      // Check if the problem persists (heartbeat timeout OR stall still ongoing)
       const elapsed = Date.now() - this.lastHeartbeatAt;
-      if (elapsed > this.config.heartbeatTimeoutMs) {
+      const stillStalled = this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD;
+      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled) {
         this.executeStep(nextStep);
       } else {
         logger.info('Heartbeat restored, cancelling recovery');
