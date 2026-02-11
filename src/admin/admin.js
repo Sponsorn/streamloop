@@ -1131,13 +1131,16 @@ async function handleCheckUpdate() {
 
   try {
     const status = await api('/api/update/check', { method: 'POST' });
+    const settingsBtn = $('#settings-update-btn');
     if (status.updateAvailable) {
       result.textContent = `v${status.latestVersion} available!`;
       result.style.color = 'var(--accent)';
+      if (settingsBtn && !status.isDevMode) settingsBtn.classList.remove('hidden');
       renderUpdateBanner(status);
     } else {
       result.textContent = `Up to date (v${status.currentVersion})`;
       result.style.color = 'var(--text-muted)';
+      if (settingsBtn) settingsBtn.classList.add('hidden');
     }
   } catch (err) {
     result.textContent = 'Check failed: ' + err.message;
