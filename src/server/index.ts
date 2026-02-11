@@ -102,6 +102,15 @@ async function main() {
       logger.warn('OBS disconnected');
       discord.notifyObsDisconnect();
     });
+    obs.onStreamDrop((attempt, maxAttempts) => {
+      discord.notifyStreamDrop(attempt, maxAttempts);
+    });
+    obs.onStreamRestart((attempts) => {
+      discord.notifyStreamRestart(attempts);
+    });
+    obs.onStreamRestartFailed(() => {
+      discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
+    });
     await obs.connect();
     // Recreate discord notifier
     discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
@@ -147,6 +156,18 @@ async function main() {
   obs.onDisconnect(() => {
     logger.warn('OBS disconnected');
     discord.notifyObsDisconnect();
+  });
+
+  obs.onStreamDrop((attempt, maxAttempts) => {
+    discord.notifyStreamDrop(attempt, maxAttempts);
+  });
+
+  obs.onStreamRestart((attempts) => {
+    discord.notifyStreamRestart(attempts);
+  });
+
+  obs.onStreamRestartFailed(() => {
+    discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
   });
 
   // Stream health monitor — restarts stream if it drops while player is healthy

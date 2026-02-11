@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, renameSync } from 'fs';
 import { resolve } from 'path';
 import { z } from 'zod';
 import type { AppConfig, DiscordTemplates } from './types.js';
+import { logger } from './logger.js';
 
 export const DEFAULT_DISCORD_TEMPLATES: DiscordTemplates = {
   error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
@@ -11,6 +12,8 @@ export const DEFAULT_DISCORD_TEMPLATES: DiscordTemplates = {
   resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
   obsDisconnect: 'OBS disconnected — attempting to reconnect',
   obsReconnect: 'OBS reconnected',
+  streamDrop: 'OBS stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})',
+  streamRestart: 'OBS stream restarted successfully after {attempts} attempt(s)',
 };
 
 export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]> = {
@@ -21,6 +24,8 @@ export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]
   resume: ['videoIndex', 'videoId'],
   obsDisconnect: [],
   obsReconnect: [],
+  streamDrop: ['attempt', 'maxAttempts'],
+  streamRestart: ['attempts'],
 };
 
 const discordSchema = z.object({
@@ -36,6 +41,8 @@ const discordSchema = z.object({
     resume: z.boolean().default(true),
     obsDisconnect: z.boolean().default(true),
     obsReconnect: z.boolean().default(true),
+    streamDrop: z.boolean().default(true),
+    streamRestart: z.boolean().default(true),
   }).default({}),
   templates: z.object({
     error: z.string().default(DEFAULT_DISCORD_TEMPLATES.error),
@@ -45,6 +52,8 @@ const discordSchema = z.object({
     resume: z.string().default(DEFAULT_DISCORD_TEMPLATES.resume),
     obsDisconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsDisconnect),
     obsReconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsReconnect),
+    streamDrop: z.string().default(DEFAULT_DISCORD_TEMPLATES.streamDrop),
+    streamRestart: z.string().default(DEFAULT_DISCORD_TEMPLATES.streamRestart),
   }).default({}),
 }).default({});
 
@@ -97,7 +106,22 @@ export function loadConfig(path?: string): AppConfig {
   const raw = readFileSync(resolvedConfigPath, 'utf-8');
   const json = JSON.parse(raw);
   migrateJson(json);
-  return configSchema.parse(json);
+  const validated = configSchema.parse(json);
+
+  // Write back if Zod filled in new defaults (e.g. after an update adds new fields)
+  const validatedStr = JSON.stringify(validated, null, 2);
+  if (validatedStr !== JSON.stringify(json, null, 2)) {
+    try {
+      const tmpPath = resolvedConfigPath + '.tmp';
+      writeFileSync(tmpPath, validatedStr, 'utf-8');
+      renameSync(tmpPath, resolvedConfigPath);
+      logger.info('Config updated with new default fields');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to write back config defaults');
+    }
+  }
+
+  return validated;
 }
 
 export function saveConfig(config: Partial<AppConfig>, path?: string): AppConfig {

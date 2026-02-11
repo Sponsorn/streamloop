@@ -20,8 +20,19 @@ export class OBSClient {
   private obsLaunched = false;
   private onConnectCallback: (() => void) | null = null;
   private onDisconnectCallback: (() => void) | null = null;
+  private onStreamDropCallback: ((attempt: number, maxAttempts: number) => void) | null = null;
+  private onStreamRestartCallback: ((attempts: number) => void) | null = null;
+  private onStreamRestartFailedCallback: (() => void) | null = null;
   private streamCheckTimer: ReturnType<typeof setInterval> | null = null;
   private isPlayerHealthy: (() => boolean) | null = null;
+
+  // Stream restart backoff state
+  private streamRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamRestartDelay = 10_000; // Start at 10s
+  private streamRestartAttempts = 0;
+  private static readonly MAX_STREAM_RESTART_ATTEMPTS = 5;
+  private static readonly STREAM_RESTART_DELAYS = [10_000, 30_000, 60_000, 60_000, 60_000];
+  private lastStreamStartTime = 0;
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -32,6 +43,7 @@ export class OBSClient {
         this.connected = false;
         this.failedReconnects = 0;
         this.obsLaunched = false;
+        this.clearStreamRestartTimer();
         this.onDisconnectCallback?.();
         this.scheduleReconnect();
       }
@@ -39,6 +51,11 @@ export class OBSClient {
 
     this.obs.on('ConnectionError', (err) => {
       logger.error({ err }, 'OBS WebSocket connection error');
+    });
+
+    // Listen for stream state changes (encoder errors, network drops, etc.)
+    this.obs.on('StreamStateChanged' as any, (event: { outputActive: boolean; outputState: string }) => {
+      this.handleStreamStateChanged(event);
     });
   }
 
@@ -151,7 +168,142 @@ export class OBSClient {
 
   onConnect(cb: () => void) { this.onConnectCallback = cb; }
   onDisconnect(cb: () => void) { this.onDisconnectCallback = cb; }
+  onStreamDrop(cb: (attempt: number, maxAttempts: number) => void) { this.onStreamDropCallback = cb; }
+  onStreamRestart(cb: (attempts: number) => void) { this.onStreamRestartCallback = cb; }
+  onStreamRestartFailed(cb: () => void) { this.onStreamRestartFailedCallback = cb; }
   isConnected(): boolean { return this.connected; }
+
+  private handleStreamStateChanged(event: { outputActive: boolean; outputState: string }) {
+    logger.info({ outputState: event.outputState, outputActive: event.outputActive }, 'OBS stream state changed');
+
+    if (event.outputState === 'OBS_WEBSOCKET_OUTPUT_STARTED') {
+      this.lastStreamStartTime = Date.now();
+      // Stream started successfully — reset backoff if this was a restart
+      if (this.streamRestartAttempts > 0) {
+        logger.info({ attempts: this.streamRestartAttempts }, 'Stream restarted successfully after drop');
+        this.onStreamRestartCallback?.(this.streamRestartAttempts);
+        this.dismissObsDialogs();
+      }
+      this.streamRestartAttempts = 0;
+      this.clearStreamRestartTimer();
+      return;
+    }
+
+    if (event.outputState === 'OBS_WEBSOCKET_OUTPUT_STOPPED') {
+      if (!this.config.obsAutoStream) return;
+      this.scheduleStreamRestart();
+    }
+  }
+
+  private scheduleStreamRestart() {
+    if (this.streamRestartTimer) return; // Already scheduled
+    if (this.streamRestartAttempts >= OBSClient.MAX_STREAM_RESTART_ATTEMPTS) {
+      logger.error({ attempts: this.streamRestartAttempts }, 'Max stream restart attempts reached, giving up');
+      this.onStreamRestartFailedCallback?.();
+      // Reset so recovery can kick in again if user manually restarts and it drops later
+      this.streamRestartAttempts = 0;
+      return;
+    }
+
+    const delay = OBSClient.STREAM_RESTART_DELAYS[
+      Math.min(this.streamRestartAttempts, OBSClient.STREAM_RESTART_DELAYS.length - 1)
+    ];
+    this.streamRestartAttempts++;
+
+    logger.warn(
+      { attempt: this.streamRestartAttempts, delayMs: delay, max: OBSClient.MAX_STREAM_RESTART_ATTEMPTS },
+      'Stream dropped, scheduling restart',
+    );
+
+    this.onStreamDropCallback?.(this.streamRestartAttempts, OBSClient.MAX_STREAM_RESTART_ATTEMPTS);
+
+    this.streamRestartTimer = setTimeout(async () => {
+      this.streamRestartTimer = null;
+      if (!this.connected || !this.config.obsAutoStream) return;
+      if (!this.isPlayerHealthy?.()) {
+        logger.warn('Skipping stream restart: player not healthy');
+        return;
+      }
+
+      try {
+        const { outputActive } = await this.obs.call('GetStreamStatus');
+        if (outputActive) {
+          logger.info('Stream already active, no restart needed');
+          this.streamRestartAttempts = 0;
+          return;
+        }
+        logger.info({ attempt: this.streamRestartAttempts }, 'Attempting to restart stream');
+        await this.obs.call('StartStream');
+        // StreamStateChanged event will fire and handle success/failure
+      } catch (err) {
+        logger.error({ err, attempt: this.streamRestartAttempts }, 'Failed to restart stream');
+        // Schedule another attempt if we haven't hit max
+        this.scheduleStreamRestart();
+      }
+    }, delay);
+  }
+
+  private clearStreamRestartTimer() {
+    if (this.streamRestartTimer) {
+      clearTimeout(this.streamRestartTimer);
+      this.streamRestartTimer = null;
+    }
+  }
+
+  /**
+   * Dismiss OBS error dialog popups by finding owned windows (dialogs)
+   * belonging to the OBS process and sending WM_CLOSE.
+   */
+  private dismissObsDialogs() {
+    // C# source for Win32 dialog closer — finds visible top-level windows
+    // owned by another window (i.e. dialogs) in the target process
+    const csharpSrc = [
+      'using System;',
+      'using System.Runtime.InteropServices;',
+      'public class DialogCloser {',
+      '  delegate bool EnumCb(IntPtr h, IntPtr l);',
+      '  [DllImport("user32.dll")] static extern bool EnumWindows(EnumCb cb, IntPtr l);',
+      '  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+      '  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);',
+      '  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);',
+      '  [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);',
+      '  public static int Close(int pid) {',
+      '    int n = 0;',
+      '    EnumCb cb = (h, _) => {',
+      '      uint p; GetWindowThreadProcessId(h, out p);',
+      '      if ((int)p == pid && IsWindowVisible(h) && GetWindow(h, 4) != IntPtr.Zero) {',
+      '        PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero);',
+      '        n++;',
+      '      }',
+      '      return true;',
+      '    };',
+      '    EnumWindows(cb, IntPtr.Zero);',
+      '    return n;',
+      '  }',
+      '}',
+    ].join('\n');
+
+    const psScript = [
+      `Add-Type -TypeDefinition '${csharpSrc}'`,
+      '$p = Get-Process obs64 -EA 0',
+      'if (!$p) { $p = Get-Process obs32 -EA 0 }',
+      'if ($p) { [DialogCloser]::Close($p.Id) }',
+    ].join('\n');
+
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', psScript],
+      { timeout: 15_000 },
+      (err, stdout) => {
+        if (err) {
+          logger.warn({ err }, 'Failed to dismiss OBS dialogs');
+        } else {
+          const closed = parseInt(stdout.trim(), 10);
+          if (closed > 0) {
+            logger.info({ closed }, 'Dismissed OBS dialog(s)');
+          }
+        }
+      },
+    );
+  }
 
   async isStreaming(): Promise<boolean> {
     if (!this.connected) return false;
@@ -291,6 +443,8 @@ export class OBSClient {
     if (!this.config.obsAutoStream) return;
     if (!this.connected) return;
     if (!this.isPlayerHealthy?.()) return;
+    // Skip if event-driven restart is already in progress
+    if (this.streamRestartTimer) return;
 
     try {
       const { outputActive } = await this.obs.call('GetStreamStatus');
@@ -305,6 +459,7 @@ export class OBSClient {
 
   async disconnect(): Promise<void> {
     this.stopStreamMonitor();
+    this.clearStreamRestartTimer();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

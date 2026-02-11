@@ -15,6 +15,8 @@ const defaultDiscord: DiscordConfig = {
     resume: true,
     obsDisconnect: true,
     obsReconnect: true,
+    streamDrop: true,
+    streamRestart: true,
   },
   templates: {
     error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
@@ -24,6 +26,8 @@ const defaultDiscord: DiscordConfig = {
     resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
     obsDisconnect: 'OBS disconnected — attempting to reconnect',
     obsReconnect: 'OBS reconnected',
+    streamDrop: 'Stream dropped (attempt {attempt}/{maxAttempts})',
+    streamRestart: 'Stream restarted after {attempts} attempt(s)',
   },
 };
 

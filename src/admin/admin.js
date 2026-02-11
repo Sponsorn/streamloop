@@ -779,6 +779,8 @@ const EVENT_LABELS = {
   resume: 'Playback Resumed',
   obsDisconnect: 'OBS Disconnected',
   obsReconnect: 'OBS Reconnected',
+  streamDrop: 'Stream Dropped',
+  streamRestart: 'Stream Restarted',
 };
 
 const EVENT_LEVELS = {
@@ -789,6 +791,8 @@ const EVENT_LEVELS = {
   resume: 'info',
   obsDisconnect: 'warn',
   obsReconnect: 'info',
+  streamDrop: 'warn',
+  streamRestart: 'info',
 };
 
 const PREVIEW_SAMPLE_VARS = {
@@ -799,6 +803,8 @@ const PREVIEW_SAMPLE_VARS = {
   resume: { videoIndex: 4, videoId: 'abc123def' },
   obsDisconnect: {},
   obsReconnect: {},
+  streamDrop: { attempt: 1, maxAttempts: 5 },
+  streamRestart: { attempts: 2 },
 };
 
 async function loadWebhookSettings() {

@@ -109,6 +109,8 @@ export interface DiscordEventToggles {
   resume: boolean;
   obsDisconnect: boolean;
   obsReconnect: boolean;
+  streamDrop: boolean;
+  streamRestart: boolean;
 }
 
 export interface DiscordTemplates {
@@ -119,6 +121,8 @@ export interface DiscordTemplates {
   resume: string;
   obsDisconnect: string;
   obsReconnect: string;
+  streamDrop: string;
+  streamRestart: string;
 }
 
 export interface DiscordConfig {

@@ -16,7 +16,9 @@
       "critical": true,
       "resume": true,
       "obsDisconnect": true,
-      "obsReconnect": true
+      "obsReconnect": true,
+      "streamDrop": true,
+      "streamRestart": true
     },
     "templates": {
       "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
@@ -25,7 +27,9 @@
       "critical": "**CRITICAL:** {message}",
       "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
       "obsDisconnect": "OBS disconnected — attempting to reconnect",
-      "obsReconnect": "OBS reconnected"
+      "obsReconnect": "OBS reconnected",
+      "streamDrop": "OBS stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+      "streamRestart": "OBS stream restarted successfully after {attempts} attempt(s)"
     }
   },
   "heartbeatIntervalMs": 5000,

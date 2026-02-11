@@ -199,4 +199,16 @@ export class DiscordNotifier {
     if (!this.discord.events.obsReconnect) return;
     await this.send(this.discord.templates.obsReconnect, 'info');
   }
+
+  async notifyStreamDrop(attempt: number, maxAttempts: number): Promise<void> {
+    if (!this.discord.events.streamDrop) return;
+    const content = this.renderTemplate(this.discord.templates.streamDrop, { attempt, maxAttempts });
+    await this.send(content, 'warn');
+  }
+
+  async notifyStreamRestart(attempts: number): Promise<void> {
+    if (!this.discord.events.streamRestart) return;
+    const content = this.renderTemplate(this.discord.templates.streamRestart, { attempts });
+    await this.send(content, 'info');
+  }
 }

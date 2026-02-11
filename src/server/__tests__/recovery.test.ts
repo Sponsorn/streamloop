@@ -18,10 +18,10 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       botName: '',
       avatarUrl: '',
       rolePing: '',
-      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true },
+      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true, streamDrop: true, streamRestart: true },
       templates: {
         error: '', skip: '', recovery: '', critical: '', resume: '',
-        obsDisconnect: '', obsReconnect: '',
+        obsDisconnect: '', obsReconnect: '', streamDrop: '', streamRestart: '',
       },
     },
     heartbeatIntervalMs: 5000,
