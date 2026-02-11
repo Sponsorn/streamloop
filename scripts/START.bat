@@ -42,14 +42,26 @@ cd /d "%APP%"
 :: Check if server exited with code 75 (update restart)
 if %ERRORLEVEL% equ 75 (
     echo.
-    echo Update applied, restarting server...
     cd /d "%ROOT%"
-    if exist "%ROOT%_update_old" (
-        rmdir /s /q "%ROOT%_update_old" 2>nul
+
+    :: Swap app directory if a staged update exists
+    if exist "%ROOT%_update_tmp\app" (
+        echo Applying update...
+        if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
+        rename "%ROOT%app" _update_old
+        move "%ROOT%_update_tmp\app" "%ROOT%app"
+        :: Copy new START.bat if included in the update
+        if exist "%ROOT%_update_tmp\START.bat" (
+            copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul
+        )
+        echo Update applied successfully.
     )
-    if exist "%ROOT%_update_tmp" (
-        rmdir /s /q "%ROOT%_update_tmp" 2>nul
-    )
+
+    :: Clean up temp directories
+    if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
+    if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
+
+    echo Restarting server...
     timeout /t 2 /nobreak >nul
     goto loop
 )

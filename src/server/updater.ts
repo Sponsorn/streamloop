@@ -226,33 +226,24 @@ export class Updater {
         }
       }
 
-      // Also copy the new START.bat and node/ if present in the release
+      // Copy new START.bat to tmp staging (START.bat swap also done by the batch file)
       const newStartBat = join(extractDir, 'streamloop', 'START.bat');
       if (existsSync(newStartBat)) {
-        cpSync(newStartBat, join(rootDir, 'START.bat'));
+        cpSync(newStartBat, join(tmpDir, 'START.bat'));
       }
 
-      // Swap: app/ → _update_old/, new app → app/
-      this.status = 'ready';
-      renameSync(appDir, oldDir);
-      renameSync(newAppDir, appDir);
+      // Stage the new app at _update_tmp/app/ for START.bat to swap after exit.
+      // We can't rename the live app/ directory while the server is running on Windows
+      // (EBUSY), so the batch file handles the swap after the process exits.
+      const stagedAppDir = join(tmpDir, 'app');
+      renameSync(newAppDir, stagedAppDir);
 
-      logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update applied, restart required');
+      this.status = 'ready';
+      logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');
     } catch (err) {
       this.status = 'error';
       this.error = err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'Update failed');
-
-      // Try to restore if the old dir exists but app/ doesn't
-      if (existsSync(oldDir) && !existsSync(appDir)) {
-        try {
-          renameSync(oldDir, appDir);
-          logger.info('Restored original app/ after failed update');
-        } catch (restoreErr) {
-          logger.error({ err: restoreErr }, 'Failed to restore app/ after failed update');
-        }
-      }
-
       throw err;
     }
   }
