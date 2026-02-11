@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream } from 'fs';
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream, readFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +11,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const GITHUB_REPO = 'Sponsorn/streamloop';
 const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const ALLOWED_DOWNLOAD_HOSTS = new Set(['github.com', 'objects.githubusercontent.com']);
+
+function isAllowedDownloadUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && ALLOWED_DOWNLOAD_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
 
 export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'extracting' | 'ready' | 'error';
 
@@ -45,6 +56,7 @@ export class Updater {
   private lastCheckTime = 0;
   private isDevMode: boolean;
   private releaseAssetUrl: string | null = null;
+  private releaseChecksumUrl: string | null = null;
 
   constructor() {
     // Read version from package.json
@@ -104,10 +116,22 @@ export class Updater {
       this.latestVersion = release.tag_name.replace(/^v/, '');
       this.updateAvailable = compareVersions(this.latestVersion, this.currentVersion) > 0;
 
-      // Find the ZIP asset
+      // Find the ZIP and checksum assets, validate URLs against allowed domains
       if (this.updateAvailable) {
         const zipAsset = release.assets.find(a => a.name.endsWith('.zip'));
-        this.releaseAssetUrl = zipAsset?.browser_download_url ?? null;
+        const zipUrl = zipAsset?.browser_download_url ?? null;
+        if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
+          throw new Error(`Untrusted download URL domain: ${zipUrl}`);
+        }
+        this.releaseAssetUrl = zipUrl;
+
+        const checksumAsset = release.assets.find(a => a.name.endsWith('.sha256'));
+        const checksumUrl = checksumAsset?.browser_download_url ?? null;
+        if (checksumUrl && !isAllowedDownloadUrl(checksumUrl)) {
+          this.releaseChecksumUrl = null;
+        } else {
+          this.releaseChecksumUrl = checksumUrl;
+        }
       }
 
       this.status = 'idle';
@@ -156,6 +180,25 @@ export class Updater {
 
       const fileStream = createWriteStream(zipPath);
       await pipeline(res.body as unknown as NodeJS.ReadableStream, fileStream);
+
+      // Verify SHA-256 checksum if available
+      if (this.releaseChecksumUrl) {
+        logger.info('Verifying update checksum');
+        const checksumRes = await fetch(this.releaseChecksumUrl, {
+          headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
+        });
+        if (!checksumRes.ok) throw new Error(`Checksum download failed: ${checksumRes.status}`);
+        const checksumText = await checksumRes.text();
+        const expectedHash = checksumText.trim().split(/\s+/)[0].toLowerCase();
+        const fileBuffer = readFileSync(zipPath);
+        const actualHash = createHash('sha256').update(fileBuffer).digest('hex');
+        if (actualHash !== expectedHash) {
+          throw new Error(`Checksum mismatch: expected ${expectedHash}, got ${actualHash}`);
+        }
+        logger.info('Update checksum verified');
+      } else {
+        logger.warn('No checksum file in release — skipping integrity verification');
+      }
 
       // Extract
       this.status = 'extracting';

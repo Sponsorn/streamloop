@@ -1,4 +1,4 @@
-import { exec, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { existsSync, rmSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import OBSWebSocket from 'obs-websocket-js';
@@ -88,9 +88,9 @@ export class OBSClient {
       return;
     }
 
-    // Check if OBS is still running before launching
+    // Check if OBS is still running before launching (use execFile to avoid shell injection)
     const exeName = basename(obsPath);
-    exec(`tasklist /FI "IMAGENAME eq ${exeName}" /NH`, (err, stdout) => {
+    execFile('tasklist', ['/FI', `IMAGENAME eq ${exeName}`, '/NH'], (err, stdout) => {
       if (err) {
         logger.error({ err }, 'Failed to check if OBS is running');
         return;

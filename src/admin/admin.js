@@ -3,6 +3,7 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+let apiToken = '';
 let currentView = 'loading'; // 'wizard' | 'dashboard'
 let pollTimer = null;
 let pollFailures = 0;
@@ -46,7 +47,21 @@ function showDashboard() {
 
 // --- API helper ---
 
+async function fetchApiToken() {
+  try {
+    const res = await fetch('/api/token');
+    const data = await res.json();
+    apiToken = data.token;
+  } catch (err) {
+    console.error('Failed to fetch API token:', err);
+  }
+}
+
 async function api(url, opts) {
+  if (!opts) opts = {};
+  if (apiToken) {
+    opts.headers = { ...opts.headers, 'X-API-Token': apiToken };
+  }
   const res = await fetch(url, opts);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -1134,7 +1149,10 @@ async function handleCheckUpdate() {
 
 // --- Boot ---
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Fetch API token before any API calls (CSRF protection)
+  await fetchApiToken();
+
   // Settings form
   $('#settings-form').addEventListener('submit', (e) => e.preventDefault());
   $('#set-btn').addEventListener('click', handleSettingsSave);

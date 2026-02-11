@@ -22,6 +22,7 @@ export interface ApiDependencies {
   updater: Updater;
   triggerRestart: () => void;
   getDiscord: () => DiscordNotifier;
+  apiToken: string;
 }
 
 const STARTUP_FOLDER = join(
@@ -43,6 +44,22 @@ function maskConfig(config: AppConfig): Record<string, unknown> {
 
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
+
+  // CSRF/auth protection: require API token on all state-changing requests.
+  // Token is served via GET /token (same-origin only — no CORS headers).
+  router.use((req, res, next) => {
+    if (req.method === 'POST') {
+      const token = req.headers['x-api-token'];
+      if (token !== deps.apiToken) {
+        return res.status(403).json({ error: 'Forbidden: invalid API token' });
+      }
+    }
+    next();
+  });
+
+  router.get('/token', (_req, res) => {
+    res.json({ token: deps.apiToken });
+  });
 
   router.get('/status', async (_req, res) => {
     const config = deps.getConfig();

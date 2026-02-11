@@ -65,7 +65,14 @@ const configSchema = z.object({
   recoveryDelayMs: z.number().int().positive().default(5000),
   obsAutoRestart: z.boolean().default(false),
   obsAutoStream: z.boolean().default(false),
-  obsPath: z.string().default(''),
+  obsPath: z.string().default('').refine(
+    (p) => {
+      if (!p) return true;
+      const lower = p.toLowerCase();
+      return lower.endsWith('.exe') && lower.includes('obs');
+    },
+    { message: 'obsPath must point to an OBS executable (e.g. obs64.exe)' },
+  ),
   autoUpdateCheck: z.boolean().default(true),
   updateCheckIntervalMs: z.number().int().positive().default(21600000),
 });

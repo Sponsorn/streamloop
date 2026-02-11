@@ -1,4 +1,5 @@
 import { createServer } from 'http';
+import { randomBytes } from 'crypto';
 import { exec } from 'child_process';
 import { readFileSync } from 'fs';
 import express from 'express';
@@ -23,6 +24,8 @@ const appVersion = JSON.parse(readFileSync(pkgPath, 'utf-8')).version as string;
 async function main() {
   let config = loadConfig();
   logger.info({ port: config.port, playlists: config.playlists.length }, 'Starting StreamLoop');
+
+  const apiToken = randomBytes(32).toString('hex');
 
   const startedAt = Date.now();
   const getUptime = () => Date.now() - startedAt;
@@ -120,6 +123,7 @@ async function main() {
     updater,
     triggerRestart,
     getDiscord: () => discord,
+    apiToken,
   });
   app.use('/api', apiRouter);
 

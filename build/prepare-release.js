@@ -11,6 +11,7 @@
  */
 
 import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, createWriteStream } from 'fs';
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
@@ -84,8 +85,17 @@ async function main() {
   const zipPath = join(DIST, `streamloop-v${pkg.version}.zip`);
   execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
 
+  // Step 6: Generate SHA-256 checksum
+  console.log('Generating SHA-256 checksum...');
+  const zipData = readFileSync(zipPath);
+  const hash = createHash('sha256').update(zipData).digest('hex');
+  const zipFilename = `streamloop-v${pkg.version}.zip`;
+  const checksumPath = join(DIST, `streamloop-v${pkg.version}.sha256`);
+  writeFileSync(checksumPath, `${hash}  ${zipFilename}\n`);
+
   console.log(`\nRelease built successfully!`);
   console.log(`  ZIP: ${zipPath}`);
+  console.log(`  SHA-256: ${checksumPath}`);
   console.log(`  Dir: ${RELEASE}`);
 }
 
