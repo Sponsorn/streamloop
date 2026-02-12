@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream, readFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream, createReadStream } from 'fs';
 import { createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { join, resolve, dirname } from 'path';
@@ -194,8 +194,9 @@ export class Updater {
         if (!checksumRes.ok) throw new Error(`Checksum download failed: ${checksumRes.status}`);
         const checksumText = await checksumRes.text();
         const expectedHash = checksumText.trim().split(/\s+/)[0].toLowerCase();
-        const fileBuffer = readFileSync(zipPath);
-        const actualHash = createHash('sha256').update(fileBuffer).digest('hex');
+        const hash = createHash('sha256');
+        await pipeline(createReadStream(zipPath), hash);
+        const actualHash = hash.digest('hex');
         if (actualHash !== expectedHash) {
           throw new Error(`Checksum mismatch: expected ${expectedHash}, got ${actualHash}`);
         }
@@ -222,13 +223,8 @@ export class Updater {
         throw new Error('Could not find app/ directory in update archive');
       }
 
-      // Copy config.json and state.json from current app to new app
-      for (const file of ['config.json', 'state.json']) {
-        const src = join(appDir, file);
-        if (existsSync(src)) {
-          cpSync(src, join(newAppDir, file));
-        }
-      }
+      // config.json and state.json are copied by START.bat after the server exits,
+      // so late config changes and the final flushed state are preserved.
 
       // Copy new START.bat to tmp staging (START.bat swap also done by the batch file)
       const newStartBat = join(extractDir, 'streamloop', 'START.bat');
@@ -248,6 +244,10 @@ export class Updater {
       this.status = 'error';
       this.error = err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'Update failed');
+      // Clean up partial download/extraction
+      try {
+        if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+      } catch { /* best effort */ }
       throw err;
     }
   }

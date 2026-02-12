@@ -49,17 +49,29 @@ if %ERRORLEVEL% equ 75 (
         echo Applying update...
         if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
         rename "%ROOT%app" _update_old
-        move "%ROOT%_update_tmp\app" "%ROOT%app"
-        :: Copy new START.bat if included in the update
-        if exist "%ROOT%_update_tmp\START.bat" (
-            copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul
+        if not exist "%ROOT%app" (
+            move "%ROOT%_update_tmp\app" "%ROOT%app"
+            if exist "%ROOT%app\src\server\index.ts" (
+                :: Carry over config and state from old app (server already flushed)
+                if exist "%ROOT%_update_old\config.json" copy /y "%ROOT%_update_old\config.json" "%ROOT%app\config.json" >nul
+                if exist "%ROOT%_update_old\state.json" copy /y "%ROOT%_update_old\state.json" "%ROOT%app\state.json" >nul
+                :: Copy new START.bat if included in the update
+                if exist "%ROOT%_update_tmp\START.bat" (
+                    copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul
+                )
+                echo Update applied successfully.
+                :: Clean up temp directories only after successful swap
+                if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
+                if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
+            ) else (
+                echo [ERROR] New app directory is incomplete, rolling back...
+                if exist "%ROOT%app" rmdir /s /q "%ROOT%app" 2>nul
+                rename "%ROOT%_update_old" app
+            )
+        ) else (
+            echo [ERROR] Failed to rename old app directory, aborting update.
         )
-        echo Update applied successfully.
     )
-
-    :: Clean up temp directories
-    if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
-    if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
 
     echo Restarting server...
     timeout /t 2 /nobreak >nul

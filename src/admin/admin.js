@@ -1186,10 +1186,21 @@ async function handleUpdate() {
   }
 }
 
+let restartAttempts = 0;
 async function waitForRestart() {
+  restartAttempts++;
+  if (restartAttempts > 30) {
+    // 60 seconds of retries — give up
+    showToast('Server did not come back after update. Check the console window for errors.');
+    const btn = $('#update-btn');
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    restartAttempts = 0;
+    return;
+  }
   try {
     await api('/api/status');
     // Server is back, reload page
+    restartAttempts = 0;
     window.location.reload();
   } catch {
     // Server still restarting, try again

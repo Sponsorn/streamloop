@@ -4,4 +4,5 @@ config.json
 state.json
 *.log
 .test-tmp/
+.claude/
 todo.txt

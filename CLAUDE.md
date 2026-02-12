@@ -51,6 +51,8 @@ No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
 **Recovery escalation sequence:** When heartbeats timeout, the recovery engine escalates through steps: retry current video → refresh OBS browser source URL (cache bust) → toggle OBS source visibility → send critical Discord alert, wait 60s, then restart the sequence.
 
+**Periodic source refresh:** Configurable via `sourceRefreshIntervalMs` (0 = disabled). Proactively refreshes the OBS browser source at a set interval to prevent Chromium memory degradation during long sessions. Skips if recovery is in progress or player is disconnected.
+
 **Configuration hot-reload:** POST to `/api/config` updates `config.json` and triggers component reloading (OBS reconnect, recovery engine restart) without server restart.
 
 ## WebSocket Protocol (Player ↔ Server)
@@ -80,7 +82,14 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - `POST /api/update/check` — manually trigger a version check (60s cooldown)
 - `POST /api/update/apply` — download, extract, swap, and restart
 
-**Restart mechanism:** After applying an update, the server exits with code 75. `START.bat` detects this exit code, cleans up `_update_old/` and `_update_tmp/` directories, then re-launches the server.
+**Restart mechanism:** After applying an update, the server exits with code 75. `START.bat` detects this exit code, swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, copies `config.json` and `state.json` from the old app, verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`.
+
+**Safety guards:**
+- Concurrent `downloadAndApply()` calls are rejected (prevents double-click corruption)
+- `_update_tmp/` is cleaned up on download/extraction failure
+- `START.bat` verifies swap success before cleanup; rolls back on failure
+- Dashboard `waitForRestart()` times out after 60s instead of looping forever
+- Checksum verification uses streaming hash (no full ZIP in memory)
 
 **Dev mode:** When the `node/` sibling directory doesn't exist (i.e., running via `npm start`), the updater operates in check-only mode — it can detect available updates but won't download or apply them.
 
