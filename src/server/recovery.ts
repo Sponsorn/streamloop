@@ -31,6 +31,7 @@ export class RecoveryEngine {
   private consecutivePausedHeartbeats = 0;
   private lastProgressTime = 0;
   private stalledHeartbeats = 0;
+  private playbackQuality = '';
   private static readonly STALL_THRESHOLD = 3; // consecutive heartbeats with no progress while "playing"
 
   constructor(
@@ -76,6 +77,7 @@ export class RecoveryEngine {
       playlistIndex,
       totalPlaylists: this.config.playlists.length,
       currentPlaylistId: this.config.playlists[playlistIndex].id,
+      playbackQuality: this.playbackQuality,
     };
   }
 
@@ -153,6 +155,10 @@ export class RecoveryEngine {
           if (this.recoveryStep !== RecoveryStep.None && msg.playerState === 1) {
             this.resetRecovery();
           }
+        }
+        // Track playback quality for dashboard display
+        if (msg.playbackQuality) {
+          this.playbackQuality = msg.playbackQuality;
         }
         // Only write state when video is making progress — skip stale writes during stalls
         if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {

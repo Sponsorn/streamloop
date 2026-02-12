@@ -9,6 +9,7 @@
   let pendingSeekTime = 0;
   let currentLoop = false;
   let playlistLoadNotified = false;
+  let currentQuality = '';
   const HEARTBEAT_INTERVAL = 5000;
   const WS_RECONNECT_DELAY = 3000;
 
@@ -81,6 +82,7 @@
         nextVideoId: getNextVideoId(),
         volume: player.getVolume(),
         muted: player.isMuted(),
+        playbackQuality: currentQuality,
       });
       updateOverlay();
     }, HEARTBEAT_INTERVAL);
@@ -189,6 +191,7 @@
         onReady: onPlayerReady,
         onStateChange: onPlayerStateChange,
         onError: onPlayerError,
+        onPlaybackQualityChange: onPlaybackQualityChange,
       },
     });
   };
@@ -263,6 +266,11 @@
       videoIndex: player.getPlaylistIndex() || 0,
       videoId: getVideoId(),
     });
+  }
+
+  function onPlaybackQualityChange(event) {
+    currentQuality = event.data || '';
+    console.log('[Player] Quality changed:', currentQuality);
   }
 
   // --- Now Playing overlay ---

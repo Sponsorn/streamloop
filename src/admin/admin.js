@@ -510,7 +510,7 @@ async function pollOnce() {
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
     renderStatus(status);
-    renderNowPlaying(state, status.totalVideos);
+    renderNowPlaying(state, status.totalVideos, status);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
   } catch (err) {
@@ -604,7 +604,18 @@ function setCard(id, text, cls) {
   el.className = 'card-value ' + cls;
 }
 
-function renderNowPlaying(s, totalVideos) {
+const QUALITY_LABELS = {
+  small: '240p',
+  medium: '360p',
+  large: '480p',
+  hd720: '720p',
+  hd1080: '1080p',
+  hd1440: '1440p',
+  hd2160: '4K',
+  highres: '4K+',
+};
+
+function renderNowPlaying(s, totalVideos, status) {
   $('#np-title').textContent = s.videoTitle || '-';
   $('#np-index').textContent = totalVideos ? `${s.videoIndex + 1} / ${totalVideos}` : `${s.videoIndex + 1}`;
   const vidEl = $('#np-videoid');
@@ -616,6 +627,8 @@ function renderNowPlaying(s, totalVideos) {
   const timeStr = formatTime(s.currentTime);
   const durationStr = s.videoDuration ? formatTime(s.videoDuration) : '--:--:--';
   $('#np-time').textContent = `${timeStr} / ${durationStr}`;
+  const quality = status.playbackQuality;
+  $('#np-quality').textContent = quality ? (QUALITY_LABELS[quality] || quality) : '-';
   $('#np-updated').textContent = s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : '-';
 }
 

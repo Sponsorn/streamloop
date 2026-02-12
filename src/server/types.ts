@@ -13,6 +13,7 @@ export interface PlayerHeartbeatMessage {
   currentTime: number;
   videoDuration: number;
   nextVideoId: string;
+  playbackQuality?: string;
 }
 
 export interface PlayerErrorMessage {
