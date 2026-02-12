@@ -49,8 +49,8 @@ export class OBSClient {
       }
     });
 
-    this.obs.on('ConnectionError', (err) => {
-      logger.error({ err }, 'OBS WebSocket connection error');
+    this.obs.on('ConnectionError', () => {
+      // Handled by the connect() catch block — suppress duplicate logging
     });
 
     // Listen for stream state changes (encoder errors, network drops, etc.)
@@ -76,8 +76,13 @@ export class OBSClient {
       this.obsLaunched = false;
       logger.info('Connected to OBS WebSocket');
       this.onConnectCallback?.();
-    } catch (err) {
-      logger.error({ err }, 'Failed to connect to OBS WebSocket');
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (msg.includes('ECONNREFUSED')) {
+        logger.warn('OBS not reachable at %s - is OBS running?', this.config.obsWebsocketUrl);
+      } else {
+        logger.error({ err }, 'Failed to connect to OBS WebSocket');
+      }
       this.failedReconnects++;
       this.tryLaunchObs();
       this.scheduleReconnect();
