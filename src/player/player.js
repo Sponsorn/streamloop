@@ -76,7 +76,7 @@
         videoIndex: player.getPlaylistIndex() || 0,
         videoId: getVideoId(),
         videoTitle: getVideoTitle(),
-        playerState: player.getPlayerState(),
+        playerState: player.getPlayerState() ?? -1,
         currentTime: player.getCurrentTime() || 0,
         videoDuration: player.getDuration() || 0,
         nextVideoId: getNextVideoId(),

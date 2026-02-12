@@ -29,7 +29,10 @@ No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
 ## Release Checklist
 
-Before pushing and building a release, bump the version in `package.json`. The version is read at startup and used by the updater to compare against GitHub Releases.
+Before pushing and building a release:
+
+1. Bump the version in `package.json`. The version is read at startup and used by the updater to compare against GitHub Releases.
+2. Update `RELEASE_NOTES.md` with the new version's changelog. This file is used when creating GitHub Releases.
 
 ## Architecture
 

@@ -151,7 +151,7 @@ export class RecoveryEngine {
               const stallMsg = `Player stalled at ${Math.floor(msg.currentTime)}s on video #${msg.videoIndex} (${msg.videoId}) — no progress for ${this.stalledHeartbeats} heartbeats`;
               logger.warn({ currentTime: msg.currentTime, stalledHeartbeats: this.stalledHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stalled — video not advancing');
               this.addEvent(stallMsg);
-              this.discord.notifyRecovery(`Stall detected — ${stallMsg}`);
+              this.discord.notifyRecovery('Stall detected');
               this.startRecoverySequence();
             }
           } else {
@@ -181,7 +181,7 @@ export class RecoveryEngine {
               const qualityMsg = `Low quality (${msg.playbackQuality}) sustained for ${this.lowQualityHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
               logger.warn({ quality: msg.playbackQuality, heartbeats: this.lowQualityHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Low quality detected — triggering recovery');
               this.addEvent(qualityMsg);
-              this.discord.notifyRecovery(`Low quality recovery — ${qualityMsg}`);
+              this.discord.notifyRecovery('Low quality recovery');
               this.lowQualityHeartbeats = 0;
               this.startRecoverySequence();
             }
@@ -217,15 +217,16 @@ export class RecoveryEngine {
           this.consecutivePausedHeartbeats = 0;
         }
         // Non-playing detection: player is connected and sending heartbeats but stuck in buffering/unstarted
+        // Skip detection before playlist is loaded — heartbeats during initial load are expected to be non-playing
         if (msg.playerState === 1) {
           this.nonPlayingHeartbeats = 0;
-        } else if (msg.playerState !== 2) { // paused is already handled above
+        } else if (msg.playerState !== 2 && this.totalVideos > 0) { // paused is already handled above; skip before playlist loaded
           this.nonPlayingHeartbeats++;
           if (this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
             const npMsg = `Player not playing (state ${msg.playerState}) for ${this.nonPlayingHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
             logger.warn({ playerState: msg.playerState, heartbeats: this.nonPlayingHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stuck in non-playing state');
             this.addEvent(npMsg);
-            this.discord.notifyRecovery(`Non-playing recovery — ${npMsg}`);
+            this.discord.notifyRecovery('Non-playing recovery');
             this.startRecoverySequence();
           }
         }
