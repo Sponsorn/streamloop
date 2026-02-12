@@ -155,4 +155,5 @@ export interface AppConfig {
   qualityRecoveryEnabled: boolean;
   minQuality: string;
   qualityRecoveryDelayMs: number;
+  sourceRefreshIntervalMs: number;
 }

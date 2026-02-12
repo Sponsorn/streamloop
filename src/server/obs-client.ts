@@ -327,8 +327,9 @@ export class OBSClient {
     try {
       const { inputSettings } = await this.obs.call('GetInputSettings', { inputName: name });
       const url = (inputSettings as any).url as string;
-      const separator = url.includes('?') ? '&' : '?';
-      const bustUrl = url.replace(/[?&]_cb=\d+/, '') + separator + '_cb=' + Date.now();
+      const cleanUrl = url.replace(/[?&]_cb=\d+/, '');
+      const separator = cleanUrl.includes('?') ? '&' : '?';
+      const bustUrl = cleanUrl + separator + '_cb=' + Date.now();
       await this.obs.call('SetInputSettings', {
         inputName: name,
         inputSettings: { url: bustUrl },

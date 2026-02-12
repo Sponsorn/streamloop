@@ -34,6 +34,7 @@ export class RecoveryEngine {
   private playbackQuality = '';
   private lowQualityHeartbeats = 0;
   private nonPlayingHeartbeats = 0;
+  private sourceRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly STALL_THRESHOLD = 3; // consecutive heartbeats with no progress while "playing"
   private static readonly NON_PLAYING_THRESHOLD = 6; // ~30s of heartbeats without reaching playing state
   private static readonly QUALITY_RANKS: Record<string, number> = {
@@ -59,6 +60,7 @@ export class RecoveryEngine {
     this.ws.onConnect(() => this.onPlayerConnect());
     this.ws.onDisconnect(() => this.onPlayerDisconnect());
     this.startHeartbeatMonitor();
+    this.startSourceRefreshTimer();
     // If player is already connected (e.g. after config reload), send playlist now
     if (this.ws.isConnected()) {
       this.onPlayerConnect();
@@ -67,6 +69,7 @@ export class RecoveryEngine {
 
   stop() {
     this.stopHeartbeatMonitor();
+    this.stopSourceRefreshTimer();
     this.clearRecoveryTimer();
   }
 
@@ -190,14 +193,19 @@ export class RecoveryEngine {
         }
         // Only write state when video is making progress — skip stale writes during stalls
         if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {
-          this.state.update({
+          const update: Record<string, unknown> = {
             videoIndex: msg.videoIndex,
             videoId: msg.videoId,
             videoTitle: msg.videoTitle,
-            currentTime: msg.currentTime,
             videoDuration: msg.videoDuration,
             nextVideoId: msg.nextVideoId || '',
-          });
+          };
+          // Only update currentTime when playing or paused — don't overwrite
+          // a valid resume position with 0 during buffering/loading
+          if (msg.playerState === 1 || msg.playerState === 2 || msg.currentTime > 0) {
+            update.currentTime = msg.currentTime;
+          }
+          this.state.update(update);
         }
         // YT.PlayerState.PAUSED === 2 — only auto-resume after 2 consecutive paused heartbeats
         if (msg.playerState === 2) {
@@ -244,6 +252,7 @@ export class RecoveryEngine {
 
       case 'playlistLoaded':
         this.totalVideos = msg.totalVideos;
+        this.nonPlayingHeartbeats = 0;
         logger.info({ totalVideos: msg.totalVideos }, 'Playlist loaded');
         this.addEvent(`Playlist loaded with ${msg.totalVideos} videos`);
         // Clamp videoIndex if out of bounds (e.g. state from a different playlist)
@@ -338,6 +347,29 @@ export class RecoveryEngine {
     if (this.heartbeatCheckTimer) {
       clearInterval(this.heartbeatCheckTimer);
       this.heartbeatCheckTimer = null;
+    }
+  }
+
+  // --- Periodic source refresh ---
+
+  private startSourceRefreshTimer() {
+    this.stopSourceRefreshTimer();
+    if (this.config.sourceRefreshIntervalMs <= 0) return;
+    const hours = (this.config.sourceRefreshIntervalMs / 3600000).toFixed(1);
+    logger.info({ intervalMs: this.config.sourceRefreshIntervalMs }, `Periodic source refresh enabled (every ${hours}h)`);
+    this.sourceRefreshTimer = setInterval(() => {
+      if (this.recoveryStep !== RecoveryStep.None) return;
+      if (!this.ws.isConnected()) return;
+      logger.info('Periodic browser source refresh');
+      this.addEvent('Periodic browser source refresh (maintenance)');
+      this.obs.refreshBrowserSource();
+    }, this.config.sourceRefreshIntervalMs);
+  }
+
+  private stopSourceRefreshTimer() {
+    if (this.sourceRefreshTimer) {
+      clearInterval(this.sourceRefreshTimer);
+      this.sourceRefreshTimer = null;
     }
   }
 

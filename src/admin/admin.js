@@ -1049,6 +1049,7 @@ async function loadPlaybackSettings() {
     $('#pb-quality-toggle').checked = cfg.qualityRecoveryEnabled !== false;
     $('#pb-quality-min').value = cfg.minQuality || 'hd720';
     $('#pb-quality-delay').value = String(cfg.qualityRecoveryDelayMs || 120000);
+    $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
     playbackSettingsLoaded = true;
   } catch (err) {
     console.error('Failed to load playback settings:', err);
@@ -1063,6 +1064,7 @@ async function handlePlaybackSave() {
     qualityRecoveryEnabled: $('#pb-quality-toggle').checked,
     minQuality: $('#pb-quality-min').value,
     qualityRecoveryDelayMs: Number($('#pb-quality-delay').value),
+    sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
   };
   try {
     btn.disabled = true;

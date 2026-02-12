@@ -342,6 +342,22 @@
             </div>
           </div>
         </div>
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">Maintenance</div>
+          <div class="settings-panel">
+            <div class="form-group">
+              <label for="pb-refresh-interval">Periodic browser source refresh</label>
+              <select id="pb-refresh-interval" class="wh-preview-select">
+                <option value="0">Disabled</option>
+                <option value="14400000">Every 4 hours</option>
+                <option value="21600000">Every 6 hours</option>
+                <option value="28800000">Every 8 hours</option>
+                <option value="43200000">Every 12 hours</option>
+              </select>
+              <div class="hint">Proactively refresh the OBS browser source to prevent memory buildup during long sessions</div>
+            </div>
+          </div>
+        </div>
         <button type="button" id="pb-save-btn" class="btn btn-primary" style="margin-top: 20px;">Save Playback Settings</button>
       </div>
 
