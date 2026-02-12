@@ -71,6 +71,7 @@ header .status-pill {
 .np-value { font-size: 15px; }
 .np-value a { color: var(--accent); text-decoration: none; }
 .np-value a:hover { text-decoration: underline; }
+.np-value.warn { color: var(--yellow); }
 
 /* Event log */
 .event-log {
@@ -109,7 +110,19 @@ header .status-pill {
   outline: none;
   transition: border-color .15s;
 }
-.form-group input:focus { border-color: var(--accent); }
+.form-group select {
+  max-width: 280px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color .15s;
+}
+.form-group input:focus,
+.form-group select:focus { border-color: var(--accent); }
 .form-group input.invalid { border-color: var(--red); }
 .form-group .hint { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 

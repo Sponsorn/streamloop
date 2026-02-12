@@ -152,4 +152,7 @@ export interface AppConfig {
   obsPath: string;
   autoUpdateCheck: boolean;
   updateCheckIntervalMs: number;
+  qualityRecoveryEnabled: boolean;
+  minQuality: string;
+  qualityRecoveryDelayMs: number;
 }

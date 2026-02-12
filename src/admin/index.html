@@ -214,7 +214,7 @@
       <!-- Tabs -->
       <div class="tabs">
         <button class="tab active" data-tab="monitor">Monitor</button>
-        <button class="tab" data-tab="overlays">Overlays</button>
+        <button class="tab" data-tab="playback">Playback</button>
         <button class="tab" data-tab="webhooks">Webhooks</button>
         <button class="tab" data-tab="settings">Settings</button>
       </div>
@@ -285,13 +285,64 @@
         </div>
       </div>
 
-      <!-- Overlays tab -->
-      <div id="panel-overlays" class="tab-panel hidden">
+      <!-- Playback tab -->
+      <div id="panel-playback" class="tab-panel hidden">
         <div class="section">
-          <div class="section-title">Now Playing Overlay</div>
-          <p class="overlays-desc">The "Now Playing" overlay is built into the player browser source. It displays the current video title with a frosted glass effect directly on top of the video.</p>
-          <p class="overlays-desc" style="margin-top: 8px;">No extra browser sources needed &mdash; it works automatically.</p>
+          <div class="section-title">Recovery</div>
+          <div class="settings-panel">
+            <div class="form-group">
+              <label for="pb-recovery-delay">Recovery delay</label>
+              <select id="pb-recovery-delay" class="wh-preview-select">
+                <option value="3000">3 seconds</option>
+                <option value="5000">5 seconds</option>
+                <option value="10000">10 seconds</option>
+              </select>
+              <div class="hint">Wait time before retrying a failed video and before escalating to source refresh</div>
+            </div>
+            <div class="form-group">
+              <label for="pb-max-errors">Max consecutive errors before skip</label>
+              <select id="pb-max-errors" class="wh-preview-select">
+                <option value="2">2 errors</option>
+                <option value="3">3 errors</option>
+                <option value="5">5 errors</option>
+              </select>
+              <div class="hint">How many errors on the same video before skipping to the next</div>
+            </div>
+          </div>
         </div>
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">Quality Recovery</div>
+          <div class="settings-panel">
+            <div class="toggle-row" style="border: none; padding: 0; background: none; margin-bottom: 12px;">
+              <div>
+                <div class="toggle-label">Recover from low quality</div>
+                <div class="toggle-desc">Restart playback if quality stays below minimum for too long</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="pb-quality-toggle">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="pb-quality-min">Minimum acceptable quality</label>
+              <select id="pb-quality-min" class="wh-preview-select">
+                <option value="large">480p</option>
+                <option value="hd720">720p</option>
+                <option value="hd1080">1080p</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="pb-quality-delay">Wait before recovering</label>
+              <select id="pb-quality-delay" class="wh-preview-select">
+                <option value="60000">60 seconds</option>
+                <option value="120000">120 seconds</option>
+                <option value="300000">5 minutes</option>
+              </select>
+              <div class="hint">How long quality must stay below minimum before triggering recovery</div>
+            </div>
+          </div>
+        </div>
+        <button type="button" id="pb-save-btn" class="btn btn-primary" style="margin-top: 20px;">Save Playback Settings</button>
       </div>
 
       <!-- Webhooks tab -->

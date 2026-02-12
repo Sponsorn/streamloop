@@ -32,7 +32,13 @@ export class RecoveryEngine {
   private lastProgressTime = 0;
   private stalledHeartbeats = 0;
   private playbackQuality = '';
+  private lowQualityHeartbeats = 0;
+  private nonPlayingHeartbeats = 0;
   private static readonly STALL_THRESHOLD = 3; // consecutive heartbeats with no progress while "playing"
+  private static readonly NON_PLAYING_THRESHOLD = 6; // ~30s of heartbeats without reaching playing state
+  private static readonly QUALITY_RANKS: Record<string, number> = {
+    small: 0, medium: 1, large: 2, hd720: 3, hd1080: 4, hd1440: 5, hd2160: 6, highres: 7,
+  };
 
   constructor(
     config: AppConfig,
@@ -98,6 +104,7 @@ export class RecoveryEngine {
     this.addEvent(`Player connected — resuming video #${resumeInfo.videoIndex} at ${Math.floor(resumeInfo.currentTime)}s`);
     this.resetRecovery();
     this.lastHeartbeatAt = Date.now();
+    this.nonPlayingHeartbeats = 0;
 
     const savedState = this.state.get();
     const playlistIndex = savedState.playlistIndex < this.config.playlists.length
@@ -160,6 +167,27 @@ export class RecoveryEngine {
         if (msg.playbackQuality) {
           this.playbackQuality = msg.playbackQuality;
         }
+        // Quality recovery: detect sustained low quality while playing
+        if (this.config.qualityRecoveryEnabled && msg.playbackQuality && msg.playerState === 1) {
+          const currentRank = RecoveryEngine.QUALITY_RANKS[msg.playbackQuality] ?? -1;
+          const minRank = RecoveryEngine.QUALITY_RANKS[this.config.minQuality] ?? 3;
+          if (currentRank >= 0 && currentRank < minRank) {
+            this.lowQualityHeartbeats++;
+            const threshold = Math.ceil(this.config.qualityRecoveryDelayMs / 5000);
+            if (this.lowQualityHeartbeats >= threshold && this.recoveryStep === RecoveryStep.None) {
+              const qualityMsg = `Low quality (${msg.playbackQuality}) sustained for ${this.lowQualityHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
+              logger.warn({ quality: msg.playbackQuality, heartbeats: this.lowQualityHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Low quality detected — triggering recovery');
+              this.addEvent(qualityMsg);
+              this.discord.notifyRecovery(`Low quality recovery — ${qualityMsg}`);
+              this.lowQualityHeartbeats = 0;
+              this.startRecoverySequence();
+            }
+          } else {
+            this.lowQualityHeartbeats = 0;
+          }
+        } else if (msg.playerState !== 1) {
+          this.lowQualityHeartbeats = 0;
+        }
         // Only write state when video is making progress — skip stale writes during stalls
         if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {
           this.state.update({
@@ -179,6 +207,19 @@ export class RecoveryEngine {
           }
         } else {
           this.consecutivePausedHeartbeats = 0;
+        }
+        // Non-playing detection: player is connected and sending heartbeats but stuck in buffering/unstarted
+        if (msg.playerState === 1) {
+          this.nonPlayingHeartbeats = 0;
+        } else if (msg.playerState !== 2) { // paused is already handled above
+          this.nonPlayingHeartbeats++;
+          if (this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
+            const npMsg = `Player not playing (state ${msg.playerState}) for ${this.nonPlayingHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
+            logger.warn({ playerState: msg.playerState, heartbeats: this.nonPlayingHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stuck in non-playing state');
+            this.addEvent(npMsg);
+            this.discord.notifyRecovery(`Non-playing recovery — ${npMsg}`);
+            this.startRecoverySequence();
+          }
         }
         break;
 
@@ -357,7 +398,8 @@ export class RecoveryEngine {
       // Check if the problem persists (heartbeat timeout OR stall still ongoing)
       const elapsed = Date.now() - this.lastHeartbeatAt;
       const stillStalled = this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD;
-      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled) {
+      const stillNotPlaying = this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD;
+      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying) {
         this.executeStep(nextStep);
       } else {
         logger.info('Heartbeat restored, cancelling recovery');

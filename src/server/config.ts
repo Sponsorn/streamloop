@@ -84,6 +84,9 @@ const configSchema = z.object({
   ),
   autoUpdateCheck: z.boolean().default(true),
   updateCheckIntervalMs: z.number().int().positive().default(21600000),
+  qualityRecoveryEnabled: z.boolean().default(true),
+  minQuality: z.string().default('hd720'),
+  qualityRecoveryDelayMs: z.number().int().positive().default(120000),
 });
 
 let resolvedConfigPath = '';
