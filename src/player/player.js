@@ -79,6 +79,8 @@
         currentTime: player.getCurrentTime() || 0,
         videoDuration: player.getDuration() || 0,
         nextVideoId: getNextVideoId(),
+        volume: player.getVolume(),
+        muted: player.isMuted(),
       });
       updateOverlay();
     }, HEARTBEAT_INTERVAL);
@@ -194,6 +196,8 @@
   function onPlayerReady() {
     console.log('[Player] Ready');
     playerReady = true;
+    player.unMute();
+    player.setVolume(100);
     // Server will send loadPlaylist after receiving 'ready' via WebSocket
   }
 
@@ -220,6 +224,12 @@
           player.stopVideo();
         }
       } catch (e) { /* ignore */ }
+    }
+
+    // Ensure audio is never muted (autoplay policy can mute videos)
+    if (state === YT.PlayerState.PLAYING) {
+      player.unMute();
+      player.setVolume(100);
     }
 
     // Seek to saved position after resume from crash
