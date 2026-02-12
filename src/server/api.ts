@@ -101,8 +101,9 @@ export function createApiRouter(deps: ApiDependencies): Router {
         delete body.obsWebsocketPassword;
       }
       // Handle nested discord webhook masking
-      if (body.discord?.webhookUrl === '********') {
-        delete body.discord.webhookUrl;
+      if (body.discord && body.discord.webhookUrl === '********') {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete (body.discord as any).webhookUrl;
       }
       const updated = saveConfig(body);
       logger.info('Config updated via API');

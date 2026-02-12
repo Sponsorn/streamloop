@@ -54,6 +54,10 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     obsPath: '',
     autoUpdateCheck: true,
     updateCheckIntervalMs: 21600000,
+    qualityRecoveryEnabled: true,
+    minQuality: 'hd720',
+    qualityRecoveryDelayMs: 120000,
+    sourceRefreshIntervalMs: 0,
     ...overrides,
   };
 }

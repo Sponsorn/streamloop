@@ -27,6 +27,10 @@ npm run build:release  # Package Windows distributable ZIP with portable Node.js
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
+## Release Checklist
+
+Before pushing and building a release, bump the version in `package.json`. The version is read at startup and used by the updater to compare against GitHub Releases.
+
 ## Architecture
 
 **Client-server model with three browser clients:**
