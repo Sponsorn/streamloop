@@ -155,6 +155,10 @@ export class Updater {
       throw new Error('No update available to apply');
     }
 
+    if (this.status === 'downloading' || this.status === 'extracting' || this.status === 'ready') {
+      throw new Error('Update already in progress');
+    }
+
     const appDir = resolve(__dirname, '..', '..');
     const rootDir = resolve(appDir, '..');
     const tmpDir = join(rootDir, '_update_tmp');
