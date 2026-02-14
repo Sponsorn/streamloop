@@ -1176,13 +1176,33 @@ async function handleUpdate() {
 
   try {
     await api('/api/update/apply', { method: 'POST' });
-    btn.textContent = 'Restarting...';
-    // Poll until server comes back
-    setTimeout(waitForRestart, 3000);
+    // Server responds immediately; poll status for progress
+    pollUpdateProgress();
   } catch (err) {
     showToast('Update failed: ' + err.message);
     btn.disabled = false;
     btn.textContent = 'Retry';
+  }
+}
+
+async function pollUpdateProgress() {
+  try {
+    const status = await api('/api/update/status');
+    renderUpdateBanner(status);
+    if (status.status === 'ready') {
+      // Server is about to restart — wait for it to come back
+      setTimeout(waitForRestart, 3000);
+      return;
+    }
+    if (status.status === 'error') {
+      // renderUpdateBanner already shows the error and Retry button
+      return;
+    }
+    // Still downloading/extracting — keep polling
+    setTimeout(pollUpdateProgress, 1500);
+  } catch {
+    // Server went down (restarting) — switch to restart polling
+    setTimeout(waitForRestart, 2000);
   }
 }
 

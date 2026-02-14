@@ -6,3 +6,4 @@ state.json
 .test-tmp/
 .claude/
 todo.txt
+RELEASE_NOTES.md

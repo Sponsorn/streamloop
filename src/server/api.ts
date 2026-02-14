@@ -227,14 +227,19 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
-  router.post('/update/apply', async (_req, res) => {
+  router.post('/update/apply', (_req, res) => {
+    // Respond immediately — the dashboard polls /update/status for progress
     try {
-      await deps.updater.downloadAndApply();
-      res.json({ ok: true, message: 'Update applied, restarting...' });
-      // Trigger restart after sending response
-      setTimeout(() => deps.triggerRestart(), 1000);
+      deps.updater.downloadAndApply()
+        .then(() => {
+          setTimeout(() => deps.triggerRestart(), 1000);
+        })
+        .catch((err) => {
+          logger.error({ err }, 'Failed to apply update');
+        });
+      res.json({ ok: true, message: 'Update started' });
     } catch (err) {
-      logger.error({ err }, 'Failed to apply update');
+      logger.error({ err }, 'Failed to start update');
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });

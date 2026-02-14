@@ -39,6 +39,10 @@
   "recoveryDelayMs": 5000,
   "obsAutoRestart": false,
   "obsAutoStream": false,
+  "qualityRecoveryEnabled": true,
+  "minQuality": "hd720",
+  "qualityRecoveryDelayMs": 120000,
+  "sourceRefreshIntervalMs": 0,
   "autoUpdateCheck": true,
   "updateCheckIntervalMs": 21600000
 }
