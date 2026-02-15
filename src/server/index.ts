@@ -89,6 +89,8 @@ async function main() {
     // Reconnect OBS if settings changed
     obs.disconnect();
     obs = new OBSClient(config);
+    // Recreate discord notifier before OBS connect so callbacks use the new config
+    discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
     obs.onConnect(async () => {
       logger.info('OBS reconnected after config change');
       discord.notifyObsReconnect();
@@ -112,8 +114,6 @@ async function main() {
       discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
     });
     await obs.connect();
-    // Recreate discord notifier
-    discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
     // Restart recovery with new config
     recovery.stop();
     recovery = new RecoveryEngine(config, playerWs, state, obs, discord);

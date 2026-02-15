@@ -53,6 +53,7 @@ export class Updater {
   private status: UpdateStatus = 'idle';
   private error: string | null = null;
   private autoCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private initialCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private lastCheckTime = 0;
   private isDevMode: boolean;
   private releaseAssetUrl: string | null = null;
@@ -255,7 +256,8 @@ export class Updater {
   startAutoCheck(intervalMs: number): void {
     this.stopAutoCheck();
     // Initial check after 30 seconds
-    setTimeout(() => {
+    this.initialCheckTimer = setTimeout(() => {
+      this.initialCheckTimer = null;
       this.checkForUpdate().catch(() => {});
     }, 30_000);
     this.autoCheckTimer = setInterval(() => {
@@ -264,6 +266,10 @@ export class Updater {
   }
 
   stopAutoCheck(): void {
+    if (this.initialCheckTimer) {
+      clearTimeout(this.initialCheckTimer);
+      this.initialCheckTimer = null;
+    }
     if (this.autoCheckTimer) {
       clearInterval(this.autoCheckTimer);
       this.autoCheckTimer = null;
