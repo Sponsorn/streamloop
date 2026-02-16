@@ -3,6 +3,7 @@ dist/
 config.json
 state.json
 *.log
+logs/
 .test-tmp/
 .claude/
 todo.txt

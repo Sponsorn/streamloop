@@ -55,6 +55,7 @@ if %ERRORLEVEL% equ 75 (
                 :: Carry over config and state from old app (server already flushed)
                 if exist "%ROOT%_update_old\config.json" copy /y "%ROOT%_update_old\config.json" "%ROOT%app\config.json" >nul
                 if exist "%ROOT%_update_old\state.json" copy /y "%ROOT%_update_old\state.json" "%ROOT%app\state.json" >nul
+                if exist "%ROOT%_update_old\logs" xcopy "%ROOT%_update_old\logs" "%ROOT%app\logs\" /E /I /Y >nul 2>nul
                 :: Copy new START.bat if included in the update
                 if exist "%ROOT%_update_tmp\START.bat" (
                     copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul
