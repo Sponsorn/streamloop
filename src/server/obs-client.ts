@@ -320,6 +320,16 @@ export class OBSClient {
     }
   }
 
+  async stopStream(): Promise<boolean> {
+    if (!this.connected) return false;
+    try {
+      await this.obs.call('StopStream');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Refresh browser source by toggling its URL with a cache-busting param. */
   async refreshBrowserSource(): Promise<boolean> {
     if (!this.connected) return false;

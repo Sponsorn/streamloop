@@ -536,6 +536,7 @@ header .status-pill {
   font-family: 'Consolas', 'Monaco', monospace;
 }
 .btn-small { padding: 6px 12px; font-size: 12px; }
+.btn-copied { background: var(--green, #27ae60); border-color: var(--green, #27ae60); color: #fff; }
 
 /* URL diagram */
 .wiz-url-diagram {

@@ -44,5 +44,10 @@
   "qualityRecoveryDelayMs": 120000,
   "sourceRefreshIntervalMs": 0,
   "autoUpdateCheck": true,
-  "updateCheckIntervalMs": 21600000
+  "updateCheckIntervalMs": 21600000,
+  "twitchClientId": "",
+  "twitchClientSecret": "",
+  "twitchChannel": "",
+  "twitchLivenessEnabled": false,
+  "twitchPollIntervalMs": 60000
 }

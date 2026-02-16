@@ -389,6 +389,20 @@ function wizCopyUrl() {
   });
 }
 
+function copyRedirectUrl(btn) {
+  navigator.clipboard.writeText('https://localhost').then(() => {
+    const original = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.classList.add('btn-copied');
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove('btn-copied');
+    }, 2000);
+  }).catch(() => {
+    showToast('Press Ctrl+C to copy', 'success');
+  });
+}
+
 async function runVerification() {
   const nextBtn = $('#wiz-next');
   const statusEl = $('#wiz-verify-status');
@@ -528,7 +542,7 @@ async function pollOnce() {
 // --- Rendering ---
 
 const RECOVERY_LABELS = {
-  none: 'Idle',
+  none: 'All Clear',
   retryCurrent: 'Retrying Video',
   refreshSource: 'Refreshing Source',
   toggleVisibility: 'Toggling Source',
@@ -542,8 +556,33 @@ function renderStatus(s) {
   const obsLevel = !s.obsConnected ? 'err' : s.obsStreaming ? 'ok' : 'warn';
   setCard('obs-status', obsLabel, obsLevel);
   const recoveryLabel = RECOVERY_LABELS[s.recoveryStep] || s.recoveryStep;
-  setCard('recovery-step', recoveryLabel, s.recoveryStep === 'none' ? 'ok' : 'warn');
+  const recoveryLevel = s.recoveryStep === 'none' ? 'ok' : s.recoveryStep === 'criticalAlert' ? 'err' : 'warn';
+  setCard('recovery-step', recoveryLabel, recoveryLevel);
   setCard('errors', String(s.consecutiveErrors), s.consecutiveErrors === 0 ? 'ok' : 'warn');
+
+  // Twitch card
+  const twitchCard = $('#twitch-card');
+  if (s.twitch && s.twitch.enabled) {
+    twitchCard.style.display = '';
+    const tw = s.twitch;
+    let twitchLabel, twitchLevel;
+    if (tw.channelLive === null) {
+      twitchLabel = 'Checking...';
+      twitchLevel = 'warn';
+    } else if (tw.channelLive) {
+      twitchLabel = 'Live';
+      twitchLevel = 'ok';
+    } else {
+      twitchLabel = 'Offline';
+      twitchLevel = tw.consecutiveMismatches > 0 ? 'err' : 'warn';
+    }
+    if (tw.consecutiveMismatches > 0) {
+      twitchLabel += ` (${tw.consecutiveMismatches}/${tw.mismatchThreshold})`;
+    }
+    setCard('twitch-status', twitchLabel, twitchLevel);
+  } else {
+    twitchCard.style.display = 'none';
+  }
 
   // Header pill
   const pill = $('#header-pill');
@@ -668,6 +707,10 @@ async function loadSettings() {
     $('#obs-restart-toggle').checked = cfg.obsAutoRestart || false;
     $('#obs-stream-toggle').checked = cfg.obsAutoStream || false;
     $('#set-obs-path').value = cfg.obsPath || '';
+    $('#twitch-enabled-toggle').checked = cfg.twitchLivenessEnabled || false;
+    $('#set-twitch-client-id').value = cfg.twitchClientId || '';
+    $('#set-twitch-client-secret').value = cfg.twitchClientSecret || '';
+    $('#set-twitch-channel').value = cfg.twitchChannel || '';
     settingsLoaded = true;
   } catch (err) {
     console.error('Failed to load settings:', err);
@@ -688,6 +731,10 @@ async function handleSettingsSave() {
     obsAutoRestart: $('#obs-restart-toggle').checked,
     obsAutoStream: $('#obs-stream-toggle').checked,
     obsPath: $('#set-obs-path').value.trim(),
+    twitchLivenessEnabled: $('#twitch-enabled-toggle').checked,
+    twitchClientId: $('#set-twitch-client-id').value.trim(),
+    twitchClientSecret: $('#set-twitch-client-secret').value,
+    twitchChannel: $('#set-twitch-channel').value.trim(),
   };
 
   try {

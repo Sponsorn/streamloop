@@ -231,6 +231,12 @@
             <div class="card-label">OBS</div>
             <div class="card-value" id="obs-status">-</div>
           </div>
+          <div class="card" id="twitch-card" style="display:none;">
+            <div class="card-label">Twitch</div>
+            <div class="card-value" id="twitch-status">-</div>
+          </div>
+        </div>
+        <div class="cards" style="margin-top: 8px;">
           <div class="card">
             <div class="card-label">Recovery</div>
             <div class="card-value" id="recovery-step">-</div>
@@ -518,6 +524,60 @@
             <div class="obs-path-result" id="obs-path-result"></div>
             <div class="hint">Should look like: <code>C:\Program Files\obs-studio\bin\64bit\obs64.exe</code></div>
             <div class="hint">Leave blank to auto-detect from default install locations</div>
+          </div>
+        </div>
+
+        <!-- Twitch Liveness -->
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">Twitch Liveness Check</div>
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-label">Enable Twitch liveness monitoring</div>
+              <div class="toggle-desc">Restart the stream when OBS reports streaming but the channel is offline on Twitch (e.g. after Twitch's 48-hour RTMP disconnect)</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="twitch-enabled-toggle">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <details class="wiz-collapsible" style="margin-top: 12px;">
+            <summary>How do I get Twitch API credentials?</summary>
+            <ol class="wiz-instructions">
+              <li>Go to <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener"><strong>dev.twitch.tv/console/apps</strong></a> and log in with <strong>the same Twitch account you stream from</strong></li>
+              <li>Click <strong>Register Your Application</strong></li>
+              <li>Fill in the form:
+                <ul style="margin: 6px 0 6px 16px; list-style: disc;">
+                  <li><strong>Name</strong> &mdash; anything you like (e.g. <em>StreamLoop</em>)</li>
+                  <li><strong>OAuth Redirect URLs</strong> &mdash; copy the value below, paste it in, and click <strong>Add</strong>. This is required by Twitch but StreamLoop doesn't use it.
+                    <div class="wiz-copy-box" style="margin-top: 6px;">
+                      <div class="wiz-copy-row">
+                        <code>https://localhost</code>
+                        <button type="button" class="btn btn-secondary btn-small" onclick="copyRedirectUrl(this)">Copy</button>
+                      </div>
+                    </div>
+                  </li>
+                  <li><strong>Category</strong> &mdash; select <strong>Application Integration</strong></li>
+                  <li><strong>Client Type</strong> &mdash; select <strong>Confidential</strong></li>
+                </ul>
+              </li>
+              <li>Click <strong>Create</strong></li>
+              <li>You'll be taken back to the app list. Click <strong>Manage</strong> on your new app.</li>
+              <li>Copy the <strong>Client ID</strong> and paste it below</li>
+              <li>Click <strong>New Secret</strong>, confirm, then copy the generated <strong>Client Secret</strong> and paste it below. You won't be able to see this secret again after leaving the page.</li>
+            </ol>
+          </details>
+          <div class="form-group" style="margin-top: 12px;">
+            <label for="set-twitch-client-id">Twitch Client ID</label>
+            <input type="text" id="set-twitch-client-id" placeholder="Your Twitch application Client ID">
+          </div>
+          <div class="form-group">
+            <label for="set-twitch-client-secret">Twitch Client Secret</label>
+            <input type="password" id="set-twitch-client-secret" placeholder="Your Twitch application Client Secret">
+          </div>
+          <div class="form-group">
+            <label for="set-twitch-channel">Twitch Channel Name</label>
+            <input type="text" id="set-twitch-channel" placeholder="Your Twitch channel username (lowercase)">
+            <div class="hint">The channel name from your Twitch URL: twitch.tv/<strong>yourname</strong></div>
           </div>
         </div>
 

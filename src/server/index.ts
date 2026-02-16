@@ -14,6 +14,7 @@ import { DiscordNotifier } from './discord.js';
 import { RecoveryEngine } from './recovery.js';
 import { createApiRouter } from './api.js';
 import { Updater } from './updater.js';
+import { TwitchLivenessChecker } from './twitch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -65,12 +66,16 @@ async function main() {
   let recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
   recovery.start();
 
+  // Twitch liveness checker
+  let twitch = new TwitchLivenessChecker(config, obs, discord);
+
   // Updater
   const updater = new Updater();
 
   const triggerRestart = () => {
     logger.info('Restart requested for update');
     updater.stopAutoCheck();
+    twitch.stop();
     recovery.stop();
     state.flush();
     playerWs.close();
@@ -119,6 +124,10 @@ async function main() {
     recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
     recovery.start();
     startStreamMonitor();
+    // Restart Twitch liveness checker with new config
+    twitch.stop();
+    twitch = new TwitchLivenessChecker(config, obs, discord);
+    twitch.start();
     logger.info('Components reloaded with new config');
   };
 
@@ -132,6 +141,7 @@ async function main() {
     updater,
     triggerRestart,
     getDiscord: () => discord,
+    getTwitch: () => twitch,
     apiToken,
   });
   app.use('/api', apiRouter);
@@ -183,6 +193,7 @@ async function main() {
 
   if (!isFirstRun(config)) {
     await obs.connect();
+    twitch.start();
   }
 
   // Start auto-update check if enabled
@@ -206,6 +217,7 @@ async function main() {
   const shutdown = () => {
     logger.info('Shutting down...');
     updater.stopAutoCheck();
+    twitch.stop();
     recovery.stop();
     state.flush();
     playerWs.close();

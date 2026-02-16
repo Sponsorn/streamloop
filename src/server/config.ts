@@ -88,6 +88,11 @@ const configSchema = z.object({
   minQuality: z.string().default('hd720'),
   qualityRecoveryDelayMs: z.number().int().positive().default(120000),
   sourceRefreshIntervalMs: z.number().int().min(0).default(0),
+  twitchClientId: z.string().default(''),
+  twitchClientSecret: z.string().default(''),
+  twitchChannel: z.string().default(''),
+  twitchLivenessEnabled: z.boolean().default(false),
+  twitchPollIntervalMs: z.number().int().min(30000).default(60000),
 });
 
 let resolvedConfigPath = '';

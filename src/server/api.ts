@@ -11,6 +11,7 @@ import type { OBSClient } from './obs-client.js';
 import type { StateManager } from './state.js';
 import type { Updater } from './updater.js';
 import type { DiscordNotifier } from './discord.js';
+import type { TwitchLivenessChecker } from './twitch.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
@@ -22,6 +23,7 @@ export interface ApiDependencies {
   updater: Updater;
   triggerRestart: () => void;
   getDiscord: () => DiscordNotifier;
+  getTwitch: () => TwitchLivenessChecker;
   apiToken: string;
 }
 
@@ -35,6 +37,7 @@ function maskConfig(config: AppConfig): Record<string, unknown> {
   return {
     ...config,
     obsWebsocketPassword: config.obsWebsocketPassword ? '********' : '',
+    twitchClientSecret: config.twitchClientSecret ? '********' : '',
     discord: {
       ...config.discord,
       webhookUrl: config.discord.webhookUrl ? '********' : '',
@@ -81,6 +84,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       totalPlaylists: status.totalPlaylists,
       playbackQuality: status.playbackQuality,
       firstRun: isFirstRun(config),
+      twitch: deps.getTwitch().getStatus(),
     });
   });
 
@@ -99,6 +103,9 @@ export function createApiRouter(deps: ApiDependencies): Router {
       // Don't overwrite masked credentials
       if (body.obsWebsocketPassword === '********') {
         delete body.obsWebsocketPassword;
+      }
+      if (body.twitchClientSecret === '********') {
+        delete body.twitchClientSecret;
       }
       // Handle nested discord webhook masking
       if (body.discord && body.discord.webhookUrl === '********') {

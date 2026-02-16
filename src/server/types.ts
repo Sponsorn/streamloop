@@ -156,4 +156,9 @@ export interface AppConfig {
   minQuality: string;
   qualityRecoveryDelayMs: number;
   sourceRefreshIntervalMs: number;
+  twitchClientId: string;
+  twitchClientSecret: string;
+  twitchChannel: string;
+  twitchLivenessEnabled: boolean;
+  twitchPollIntervalMs: number;
 }
