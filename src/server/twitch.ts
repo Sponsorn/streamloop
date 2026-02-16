@@ -145,16 +145,13 @@ export class TwitchLivenessChecker {
     this.consecutiveMismatches = 0;
 
     logger.warn('Twitch liveness: restarting stream (OBS says live, Twitch says offline)');
-    await this.discord.send(
-      'Twitch liveness mismatch detected — OBS reports streaming but channel is offline on Twitch. Restarting stream.',
-      'warn',
-    );
+    await this.discord.notifyTwitchMismatch(this.config.twitchChannel);
 
     try {
       const stopped = await this.obs.stopStream();
       if (!stopped) {
         logger.error('Failed to stop OBS stream for Twitch liveness restart');
-        await this.discord.send('Twitch liveness restart failed: could not stop stream.', 'error');
+        await this.discord.notifyCritical('Twitch liveness restart failed: could not stop stream.');
         return;
       }
 
@@ -166,14 +163,14 @@ export class TwitchLivenessChecker {
 
       if (started) {
         logger.info('Twitch liveness: stream restarted successfully');
-        await this.discord.send('Stream restarted successfully after Twitch liveness mismatch.', 'info');
+        await this.discord.notifyTwitchRestart(this.config.twitchChannel);
       } else {
         logger.error('Twitch liveness: failed to restart stream');
-        await this.discord.send('Twitch liveness restart failed: could not start stream.', 'error');
+        await this.discord.notifyCritical('Twitch liveness restart failed: could not start stream.');
       }
     } catch (err) {
       logger.error({ err }, 'Twitch liveness stream restart error');
-      await this.discord.send('Twitch liveness restart encountered an error.', 'error');
+      await this.discord.notifyCritical('Twitch liveness restart encountered an error.');
     } finally {
       this.restartInProgress = false;
     }

@@ -231,7 +231,7 @@
             <div class="card-label">OBS</div>
             <div class="card-value" id="obs-status">-</div>
           </div>
-          <div class="card" id="twitch-card" style="display:none;">
+          <div class="card" id="twitch-card">
             <div class="card-label">Twitch</div>
             <div class="card-value" id="twitch-status">-</div>
           </div>
@@ -403,12 +403,13 @@
         <div class="section">
           <div class="section-title">Event Notifications</div>
           <div class="settings-panel">
+            <div class="wh-category-label">Playback</div>
             <div class="wh-toggle">
               <div><div class="toggle-label">Playback Errors</div><div class="toggle-desc">When a video encounters a playback error</div></div>
               <label class="toggle"><input type="checkbox" id="wh-evt-error"><span class="toggle-slider"></span></label>
             </div>
             <div class="wh-toggle">
-              <div><div class="toggle-label">Video Skips</div><div class="toggle-desc">When a video is skipped due to errors</div></div>
+              <div><div class="toggle-label">Video Skips</div><div class="toggle-desc">When a video is skipped due to repeated errors</div></div>
               <label class="toggle"><input type="checkbox" id="wh-evt-skip"><span class="toggle-slider"></span></label>
             </div>
             <div class="wh-toggle">
@@ -420,9 +421,10 @@
               <label class="toggle"><input type="checkbox" id="wh-evt-critical"><span class="toggle-slider"></span></label>
             </div>
             <div class="wh-toggle">
-              <div><div class="toggle-label">Playback Resumed</div><div class="toggle-desc">When playback successfully resumes after recovery</div></div>
+              <div><div class="toggle-label">Playback Resumed</div><div class="toggle-desc">When playback resumes after recovery</div></div>
               <label class="toggle"><input type="checkbox" id="wh-evt-resume"><span class="toggle-slider"></span></label>
             </div>
+            <div class="wh-category-label">OBS</div>
             <div class="wh-toggle">
               <div><div class="toggle-label">OBS Disconnected</div><div class="toggle-desc">When connection to OBS is lost</div></div>
               <label class="toggle"><input type="checkbox" id="wh-evt-obsDisconnect"><span class="toggle-slider"></span></label>
@@ -430,6 +432,23 @@
             <div class="wh-toggle">
               <div><div class="toggle-label">OBS Reconnected</div><div class="toggle-desc">When OBS connection is restored</div></div>
               <label class="toggle"><input type="checkbox" id="wh-evt-obsReconnect"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Stream Dropped</div><div class="toggle-desc">When OBS stream output stops unexpectedly</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-streamDrop"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Stream Restarted</div><div class="toggle-desc">When OBS stream is successfully restarted after a drop</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-streamRestart"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-category-label">Twitch</div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Twitch Mismatch</div><div class="toggle-desc">When OBS reports streaming but the channel is offline on Twitch</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-twitchMismatch"><span class="toggle-slider"></span></label>
+            </div>
+            <div class="wh-toggle">
+              <div><div class="toggle-label">Twitch Restarted</div><div class="toggle-desc">When the stream restarts after a Twitch liveness mismatch</div></div>
+              <label class="toggle"><input type="checkbox" id="wh-evt-twitchRestart"><span class="toggle-slider"></span></label>
             </div>
           </div>
         </div>
@@ -454,6 +473,10 @@
                 <option value="resume">Playback Resumed</option>
                 <option value="obsDisconnect">OBS Disconnected</option>
                 <option value="obsReconnect">OBS Reconnected</option>
+                <option value="streamDrop">Stream Dropped</option>
+                <option value="streamRestart">Stream Restarted</option>
+                <option value="twitchMismatch">Twitch Mismatch</option>
+                <option value="twitchRestart">Twitch Restarted</option>
               </select>
             </div>
             <div class="wh-discord-preview" id="wh-preview">

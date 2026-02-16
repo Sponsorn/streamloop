@@ -16,10 +16,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       botName: '',
       avatarUrl: '',
       rolePing: '',
-      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true, streamDrop: true, streamRestart: true },
+      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true, streamDrop: true, streamRestart: true, twitchMismatch: true, twitchRestart: true },
       templates: {
         error: '', skip: '', recovery: '', critical: '', resume: '',
         obsDisconnect: '', obsReconnect: '', streamDrop: '', streamRestart: '',
+        twitchMismatch: '', twitchRestart: '',
       },
     },
     heartbeatIntervalMs: 5000,
@@ -57,6 +58,9 @@ function mockObs() {
 function mockDiscord() {
   return {
     send: vi.fn(() => Promise.resolve()),
+    notifyTwitchMismatch: vi.fn(() => Promise.resolve()),
+    notifyTwitchRestart: vi.fn(() => Promise.resolve()),
+    notifyCritical: vi.fn(() => Promise.resolve()),
   } as unknown as DiscordNotifier;
 }
 
@@ -282,7 +286,8 @@ describe('TwitchLivenessChecker', () => {
       expect(checker.getStatus().consecutiveMismatches).toBe(0);
       expect(obs.stopStream).toHaveBeenCalledOnce();
       expect(obs.startStreaming).toHaveBeenCalledOnce();
-      expect(discord.send).toHaveBeenCalled();
+      expect(discord.notifyTwitchMismatch).toHaveBeenCalled();
+      expect(discord.notifyTwitchRestart).toHaveBeenCalled();
       expect(checker.getStatus().restartCount).toBe(1);
     });
   });

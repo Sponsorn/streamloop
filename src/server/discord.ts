@@ -211,4 +211,16 @@ export class DiscordNotifier {
     const content = this.renderTemplate(this.discord.templates.streamRestart, { attempts });
     await this.send(content, 'info');
   }
+
+  async notifyTwitchMismatch(channel: string): Promise<void> {
+    if (!this.discord.events.twitchMismatch) return;
+    const content = this.renderTemplate(this.discord.templates.twitchMismatch, { channel });
+    await this.send(content, 'warn');
+  }
+
+  async notifyTwitchRestart(channel: string): Promise<void> {
+    if (!this.discord.events.twitchRestart) return;
+    const content = this.renderTemplate(this.discord.templates.twitchRestart, { channel });
+    await this.send(content, 'info');
+  }
 }

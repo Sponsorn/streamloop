@@ -561,9 +561,7 @@ function renderStatus(s) {
   setCard('errors', String(s.consecutiveErrors), s.consecutiveErrors === 0 ? 'ok' : 'warn');
 
   // Twitch card
-  const twitchCard = $('#twitch-card');
   if (s.twitch && s.twitch.enabled) {
-    twitchCard.style.display = '';
     const tw = s.twitch;
     let twitchLabel, twitchLevel;
     if (tw.channelLive === null) {
@@ -581,7 +579,7 @@ function renderStatus(s) {
     }
     setCard('twitch-status', twitchLabel, twitchLevel);
   } else {
-    twitchCard.style.display = 'none';
+    setCard('twitch-status', 'Disabled', '');
   }
 
   // Header pill
@@ -848,6 +846,8 @@ const EVENT_LABELS = {
   obsReconnect: 'OBS Reconnected',
   streamDrop: 'Stream Dropped',
   streamRestart: 'Stream Restarted',
+  twitchMismatch: 'Twitch Mismatch',
+  twitchRestart: 'Twitch Restarted',
 };
 
 const EVENT_LEVELS = {
@@ -860,6 +860,8 @@ const EVENT_LEVELS = {
   obsReconnect: 'info',
   streamDrop: 'warn',
   streamRestart: 'info',
+  twitchMismatch: 'warn',
+  twitchRestart: 'info',
 };
 
 const PREVIEW_SAMPLE_VARS = {
@@ -872,6 +874,8 @@ const PREVIEW_SAMPLE_VARS = {
   obsReconnect: {},
   streamDrop: { attempt: 1, maxAttempts: 5 },
   streamRestart: { attempts: 2 },
+  twitchMismatch: { channel: 'mychannel' },
+  twitchRestart: { channel: 'mychannel' },
 };
 
 async function loadWebhookSettings() {

@@ -112,6 +112,8 @@ export interface DiscordEventToggles {
   obsReconnect: boolean;
   streamDrop: boolean;
   streamRestart: boolean;
+  twitchMismatch: boolean;
+  twitchRestart: boolean;
 }
 
 export interface DiscordTemplates {
@@ -124,6 +126,8 @@ export interface DiscordTemplates {
   obsReconnect: string;
   streamDrop: string;
   streamRestart: string;
+  twitchMismatch: string;
+  twitchRestart: string;
 }
 
 export interface DiscordConfig {

@@ -14,6 +14,8 @@ export const DEFAULT_DISCORD_TEMPLATES: DiscordTemplates = {
   obsReconnect: 'OBS reconnected',
   streamDrop: 'OBS stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})',
   streamRestart: 'OBS stream restarted successfully after {attempts} attempt(s)',
+  twitchMismatch: 'Twitch liveness mismatch — OBS reports streaming but **{channel}** is offline on Twitch. Restarting stream.',
+  twitchRestart: 'Stream restarted after Twitch liveness mismatch on **{channel}**',
 };
 
 export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]> = {
@@ -26,6 +28,8 @@ export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]
   obsReconnect: [],
   streamDrop: ['attempt', 'maxAttempts'],
   streamRestart: ['attempts'],
+  twitchMismatch: ['channel'],
+  twitchRestart: ['channel'],
 };
 
 const discordSchema = z.object({
@@ -43,6 +47,8 @@ const discordSchema = z.object({
     obsReconnect: z.boolean().default(true),
     streamDrop: z.boolean().default(true),
     streamRestart: z.boolean().default(true),
+    twitchMismatch: z.boolean().default(true),
+    twitchRestart: z.boolean().default(true),
   }).default({}),
   templates: z.object({
     error: z.string().default(DEFAULT_DISCORD_TEMPLATES.error),
@@ -54,6 +60,8 @@ const discordSchema = z.object({
     obsReconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsReconnect),
     streamDrop: z.string().default(DEFAULT_DISCORD_TEMPLATES.streamDrop),
     streamRestart: z.string().default(DEFAULT_DISCORD_TEMPLATES.streamRestart),
+    twitchMismatch: z.string().default(DEFAULT_DISCORD_TEMPLATES.twitchMismatch),
+    twitchRestart: z.string().default(DEFAULT_DISCORD_TEMPLATES.twitchRestart),
   }).default({}),
 }).default({});
 

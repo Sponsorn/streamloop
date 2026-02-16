@@ -264,6 +264,20 @@ header .status-pill {
 .wh-toggle + .wh-toggle {
   border-top: 1px solid var(--border);
 }
+.wh-category-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 12px 0 4px;
+}
+.wh-category-label:first-child {
+  padding-top: 0;
+}
+.wh-category-label + .wh-toggle {
+  border-top: none;
+}
 .wh-template-group {
   background: var(--surface);
   border: 1px solid var(--border);

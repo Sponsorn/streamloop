@@ -18,7 +18,9 @@
       "obsDisconnect": true,
       "obsReconnect": true,
       "streamDrop": true,
-      "streamRestart": true
+      "streamRestart": true,
+      "twitchMismatch": true,
+      "twitchRestart": true
     },
     "templates": {
       "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
@@ -29,7 +31,9 @@
       "obsDisconnect": "OBS disconnected — attempting to reconnect",
       "obsReconnect": "OBS reconnected",
       "streamDrop": "OBS stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
-      "streamRestart": "OBS stream restarted successfully after {attempts} attempt(s)"
+      "streamRestart": "OBS stream restarted successfully after {attempts} attempt(s)",
+      "twitchMismatch": "Twitch liveness mismatch — OBS reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+      "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
     }
   },
   "heartbeatIntervalMs": 5000,
