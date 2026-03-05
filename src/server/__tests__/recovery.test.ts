@@ -18,10 +18,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       botName: '',
       avatarUrl: '',
       rolePing: '',
-      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true, streamDrop: true, streamRestart: true },
+      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true, streamDrop: true, streamRestart: true, twitchMismatch: true, twitchRestart: true },
       templates: {
         error: '', skip: '', recovery: '', critical: '', resume: '',
         obsDisconnect: '', obsReconnect: '', streamDrop: '', streamRestart: '',
+        twitchMismatch: '', twitchRestart: '',
       },
     },
     heartbeatIntervalMs: 5000,
@@ -38,6 +39,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     minQuality: 'hd720',
     qualityRecoveryDelayMs: 120000,
     sourceRefreshIntervalMs: 0,
+    twitchClientId: '',
+    twitchClientSecret: '',
+    twitchChannel: '',
+    twitchLivenessEnabled: false,
+    twitchPollIntervalMs: 60000,
     ...overrides,
   };
 }

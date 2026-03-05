@@ -132,7 +132,7 @@ export function loadConfig(path?: string): AppConfig {
       const tmpPath = resolvedConfigPath + '.tmp';
       writeFileSync(tmpPath, validatedStr, 'utf-8');
       renameSync(tmpPath, resolvedConfigPath);
-      logger.info('Config updated with new default fields');
+      logger.debug('Config written back (new defaults or key reorder)');
     } catch (err) {
       logger.warn({ err }, 'Failed to write back config defaults');
     }

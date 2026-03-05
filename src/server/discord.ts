@@ -138,7 +138,12 @@ export class DiscordNotifier {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
+      if (res.status === 429) {
+        const retryAfter = res.headers.get('retry-after');
+        const waitMs = retryAfter ? parseFloat(retryAfter) * 1000 : 10_000;
+        logger.warn({ retryAfterMs: waitMs }, 'Discord rate limited, waiting');
+        await new Promise((r) => setTimeout(r, waitMs));
+      } else if (!res.ok) {
         logger.error({ status: res.status }, 'Discord webhook failed');
       }
     } catch (err) {

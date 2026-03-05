@@ -14,6 +14,11 @@ export class PlayerWebSocket {
     this.wss = new WebSocketServer({ server, path: '/ws' });
 
     this.wss.on('connection', (ws) => {
+      // Close previous connection if still open
+      if (this.client && this.client.readyState === WebSocket.OPEN) {
+        logger.warn('New player connection replacing existing one');
+        this.client.close();
+      }
       logger.info('Player WebSocket connected');
       this.client = ws;
       this.onConnectCallback?.();
@@ -29,8 +34,10 @@ export class PlayerWebSocket {
 
       ws.on('close', () => {
         logger.warn('Player WebSocket disconnected');
-        if (this.client === ws) this.client = null;
-        this.onDisconnectCallback?.();
+        if (this.client === ws) {
+          this.client = null;
+          this.onDisconnectCallback?.();
+        }
       });
 
       ws.on('error', (err) => {

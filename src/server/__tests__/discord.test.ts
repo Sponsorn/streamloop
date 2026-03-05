@@ -16,7 +16,7 @@ const defaultDiscord: DiscordConfig = {
     obsDisconnect: true,
     obsReconnect: true,
     streamDrop: true,
-    streamRestart: true,
+    streamRestart: true, twitchMismatch: true, twitchRestart: true,
   },
   templates: {
     error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
@@ -28,6 +28,8 @@ const defaultDiscord: DiscordConfig = {
     obsReconnect: 'OBS reconnected',
     streamDrop: 'Stream dropped (attempt {attempt}/{maxAttempts})',
     streamRestart: 'Stream restarted after {attempts} attempt(s)',
+    twitchMismatch: 'Twitch mismatch on {channel}',
+    twitchRestart: 'Stream restarted after Twitch mismatch on {channel}',
   },
 };
 
@@ -58,6 +60,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     minQuality: 'hd720',
     qualityRecoveryDelayMs: 120000,
     sourceRefreshIntervalMs: 0,
+    twitchClientId: '',
+    twitchClientSecret: '',
+    twitchChannel: '',
+    twitchLivenessEnabled: false,
+    twitchPollIntervalMs: 60000,
     ...overrides,
   };
 }

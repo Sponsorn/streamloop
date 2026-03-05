@@ -16,18 +16,15 @@ export class StateManager {
   }
 
   private load(): PersistedState {
+    const fresh: PersistedState = { playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 0, videoDuration: 0, nextVideoId: '', updatedAt: new Date().toISOString() };
     try {
       const raw = readFileSync(this.filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as PersistedState;
-      // Backward compat: old state files may lack playlistIndex
-      if (parsed.playlistIndex === undefined) {
-        parsed.playlistIndex = 0;
-      }
+      const parsed: PersistedState = { ...fresh, ...JSON.parse(raw) };
       logger.info({ state: parsed }, 'Loaded persisted state');
       return parsed;
     } catch {
       logger.info('No existing state file, starting fresh');
-      return { playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 0, videoDuration: 0, nextVideoId: '', updatedAt: new Date().toISOString() };
+      return fresh;
     }
   }
 

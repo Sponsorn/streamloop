@@ -183,7 +183,7 @@ export class RecoveryEngine {
               this.addEvent(qualityMsg);
               this.discord.notifyRecovery('Low quality recovery');
               this.lowQualityHeartbeats = 0;
-              this.startRecoverySequence();
+              this.executeStep(RecoveryStep.RefreshSource);
             }
           } else {
             this.lowQualityHeartbeats = 0;
