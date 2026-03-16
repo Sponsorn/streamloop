@@ -24,7 +24,9 @@ export class RecoveryEngine {
   private lastHeartbeatAt = Date.now();
   private heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
   private recoveryStep = RecoveryStep.None;
+  private recoveryReason: 'heartbeat' | 'stall' | 'quality' | 'non-playing' | null = null;
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private errorRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private totalVideos = 0;
   private startedAt = Date.now();
   private eventLog: EventLogEntry[] = [];
@@ -71,6 +73,7 @@ export class RecoveryEngine {
     this.stopHeartbeatMonitor();
     this.stopSourceRefreshTimer();
     this.clearRecoveryTimer();
+    this.clearErrorRetryTimer();
   }
 
   getStatus() {
@@ -152,17 +155,21 @@ export class RecoveryEngine {
               logger.warn({ currentTime: msg.currentTime, stalledHeartbeats: this.stalledHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stalled — video not advancing');
               this.addEvent(stallMsg);
               this.discord.notifyRecovery('Stall detected');
+              this.recoveryReason = 'stall';
               this.startRecoverySequence();
             }
           } else {
             this.stalledHeartbeats = 0;
             this.lastProgressTime = msg.currentTime;
-            this.resetRecovery();
+            // Don't cancel quality recovery just because video is progressing — quality is the issue, not playback
+            if (this.recoveryReason !== 'quality') {
+              this.resetRecovery();
+            }
           }
         } else {
           this.stalledHeartbeats = 0;
           this.lastProgressTime = msg.currentTime;
-          if (this.recoveryStep !== RecoveryStep.None && msg.playerState === 1) {
+          if (this.recoveryStep !== RecoveryStep.None && msg.playerState === 1 && this.recoveryReason !== 'quality') {
             this.resetRecovery();
           }
         }
@@ -172,21 +179,25 @@ export class RecoveryEngine {
         }
         // Quality recovery: detect sustained low quality while playing
         if (this.config.qualityRecoveryEnabled && msg.playbackQuality && msg.playerState === 1) {
-          const currentRank = RecoveryEngine.QUALITY_RANKS[msg.playbackQuality] ?? -1;
+          const currentRank = RecoveryEngine.QUALITY_RANKS[msg.playbackQuality];
           const minRank = RecoveryEngine.QUALITY_RANKS[this.config.minQuality] ?? 3;
-          if (currentRank >= 0 && currentRank < minRank) {
+          if (currentRank === undefined) {
+            logger.warn({ quality: msg.playbackQuality }, 'Unknown playback quality string from YouTube API');
+          } else if (currentRank < minRank) {
             this.lowQualityHeartbeats++;
-            const threshold = Math.ceil(this.config.qualityRecoveryDelayMs / 5000);
+            const threshold = Math.ceil(this.config.qualityRecoveryDelayMs / this.config.heartbeatIntervalMs);
             if (this.lowQualityHeartbeats >= threshold && this.recoveryStep === RecoveryStep.None) {
               const qualityMsg = `Low quality (${msg.playbackQuality}) sustained for ${this.lowQualityHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
-              logger.warn({ quality: msg.playbackQuality, heartbeats: this.lowQualityHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Low quality detected — triggering recovery');
+              logger.warn({ quality: msg.playbackQuality, minQuality: this.config.minQuality, heartbeats: this.lowQualityHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Low quality detected — triggering recovery');
               this.addEvent(qualityMsg);
-              this.discord.notifyRecovery('Low quality recovery');
+              this.discord.notifyRecovery(`Low quality recovery: ${msg.playbackQuality} (minimum: ${this.config.minQuality}) on video #${msg.videoIndex}`);
               this.lowQualityHeartbeats = 0;
+              this.recoveryReason = 'quality';
               this.executeStep(RecoveryStep.RefreshSource);
             }
           } else {
-            this.lowQualityHeartbeats = 0;
+            // Decay instead of hard reset to handle oscillation at threshold boundary
+            this.lowQualityHeartbeats = Math.max(0, this.lowQualityHeartbeats - 1);
           }
         } else if (msg.playerState !== 1) {
           this.lowQualityHeartbeats = 0;
@@ -227,6 +238,7 @@ export class RecoveryEngine {
             logger.warn({ playerState: msg.playerState, heartbeats: this.nonPlayingHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stuck in non-playing state');
             this.addEvent(npMsg);
             this.discord.notifyRecovery('Non-playing recovery');
+            this.recoveryReason = 'non-playing';
             this.startRecoverySequence();
           }
         }
@@ -291,7 +303,9 @@ export class RecoveryEngine {
 
     // Retry current video after delay
     logger.info({ attempt: this.consecutiveErrors }, 'Retrying current video');
-    setTimeout(() => {
+    this.clearErrorRetryTimer();
+    this.errorRetryTimer = setTimeout(() => {
+      this.errorRetryTimer = null;
       this.ws.send({ type: 'retryCurrent' });
     }, this.config.recoveryDelayMs);
   }
@@ -326,6 +340,10 @@ export class RecoveryEngine {
     this.totalVideos = 0;
     this.ws.send({ type: 'loadPlaylist', playlistId: playlist.id, index: 0, loop: this.config.playlists.length === 1 });
     this.consecutiveErrors = 0;
+    this.stalledHeartbeats = 0;
+    this.lowQualityHeartbeats = 0;
+    this.nonPlayingHeartbeats = 0;
+    this.consecutivePausedHeartbeats = 0;
   }
 
   // --- Heartbeat monitoring ---
@@ -339,6 +357,7 @@ export class RecoveryEngine {
       if (elapsed > this.config.heartbeatTimeoutMs && this.recoveryStep === RecoveryStep.None) {
         logger.warn({ elapsedMs: elapsed }, 'Heartbeat timeout, starting recovery');
         this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery`);
+        this.recoveryReason = 'heartbeat';
         this.startRecoverySequence();
       }
     }, 5000);
@@ -428,17 +447,25 @@ export class RecoveryEngine {
     this.recoveryTimer = setTimeout(() => {
       // Check if recovery was cancelled (heartbeat came back)
       if (this.recoveryStep === RecoveryStep.None) return;
-      // Check if the problem persists (heartbeat timeout OR stall still ongoing)
+      // Check if the problem persists based on what triggered recovery
       const elapsed = Date.now() - this.lastHeartbeatAt;
       const stillStalled = this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD;
       const stillNotPlaying = this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD;
-      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying) {
+      const stillLowQuality = this.recoveryReason === 'quality' && this.isQualityBelowMinimum();
+      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying || stillLowQuality) {
         this.executeStep(nextStep);
       } else {
-        logger.info('Heartbeat restored, cancelling recovery');
+        logger.info({ reason: this.recoveryReason }, 'Recovery condition resolved, cancelling recovery');
         this.resetRecovery();
       }
     }, delayMs);
+  }
+
+  private isQualityBelowMinimum(): boolean {
+    if (!this.playbackQuality) return false;
+    const currentRank = RecoveryEngine.QUALITY_RANKS[this.playbackQuality];
+    const minRank = RecoveryEngine.QUALITY_RANKS[this.config.minQuality] ?? 3;
+    return currentRank !== undefined && currentRank < minRank;
   }
 
   private resetRecovery() {
@@ -449,6 +476,7 @@ export class RecoveryEngine {
       this.discord.notifyResume(currentState.videoIndex, currentState.videoId);
     }
     this.recoveryStep = RecoveryStep.None;
+    this.recoveryReason = null;
     this.clearRecoveryTimer();
   }
 
@@ -456,6 +484,13 @@ export class RecoveryEngine {
     if (this.recoveryTimer) {
       clearTimeout(this.recoveryTimer);
       this.recoveryTimer = null;
+    }
+  }
+
+  private clearErrorRetryTimer() {
+    if (this.errorRetryTimer) {
+      clearTimeout(this.errorRetryTimer);
+      this.errorRetryTimer = null;
     }
   }
 }

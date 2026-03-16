@@ -344,4 +344,162 @@ describe('RecoveryEngine', () => {
     engine.stop();
     // Should not throw
   });
+
+  describe('quality recovery', () => {
+    let _timeCounter = 100;
+    function sendHeartbeat(ws: ReturnType<typeof mockWs>, quality: string, overrides: Record<string, unknown> = {}) {
+      _timeCounter += 10;
+      ws._triggerMessage({
+        type: 'heartbeat',
+        videoIndex: 0,
+        videoId: 'vid1',
+        videoTitle: 'Test',
+        playerState: 1,
+        currentTime: _timeCounter,
+        videoDuration: 300,
+        playbackQuality: quality,
+        ...overrides,
+      });
+    }
+
+    it('triggers RefreshSource after sustained low quality', async () => {
+      const ws = mockWs();
+      const obs = mockObs();
+      const discord = mockDiscord();
+      // Short delay: 3 heartbeats at 5000ms interval
+      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
+      const engine = new RecoveryEngine(config, ws, mockState(), obs, discord);
+      engine.start();
+
+      // Send 3 low-quality heartbeats (threshold = ceil(15000/5000) = 3)
+      let time = 10;
+      for (let i = 0; i < 3; i++) {
+        time += 5;
+        sendHeartbeat(ws, 'medium', { currentTime: time });
+      }
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(obs.refreshBrowserSource).toHaveBeenCalled();
+      expect(discord.notifyRecovery).toHaveBeenCalledWith(
+        expect.stringContaining('medium')
+      );
+    });
+
+    it('uses heartbeatIntervalMs for threshold calculation, not hardcoded 5000', async () => {
+      const ws = mockWs();
+      const obs = mockObs();
+      // 10000ms delay, 2000ms heartbeat interval → threshold = 5
+      const config = makeConfig({ qualityRecoveryDelayMs: 10000, heartbeatIntervalMs: 2000 });
+      const engine = new RecoveryEngine(config, ws, mockState(), obs, mockDiscord());
+      engine.start();
+
+      let time = 10;
+      // 4 heartbeats should NOT trigger (threshold is 5)
+      for (let i = 0; i < 4; i++) {
+        time += 5;
+        sendHeartbeat(ws, 'small', { currentTime: time });
+      }
+      expect(obs.refreshBrowserSource).not.toHaveBeenCalled();
+
+      // 5th heartbeat should trigger
+      sendHeartbeat(ws, 'small', { currentTime: time + 5 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(obs.refreshBrowserSource).toHaveBeenCalled();
+    });
+
+    it('decays counter gradually when quality improves instead of hard reset', async () => {
+      const ws = mockWs();
+      const obs = mockObs();
+      // threshold = ceil(15000/5000) = 3
+      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
+      const engine = new RecoveryEngine(config, ws, mockState(), obs, mockDiscord());
+      engine.start();
+
+      let time = 10;
+      // 2 low quality heartbeats
+      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
+      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
+
+      // 1 good heartbeat — decays by 1 (from 2 to 1), not reset to 0
+      sendHeartbeat(ws, 'hd720', { currentTime: time += 5 });
+
+      // 1 more low quality — counter goes from 1 to 2, not threshold yet
+      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
+      expect(obs.refreshBrowserSource).not.toHaveBeenCalled();
+
+      // 1 more low quality — counter goes from 2 to 3, hits threshold
+      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(obs.refreshBrowserSource).toHaveBeenCalled();
+    });
+
+    it('quality recovery escalates through ToggleVisibility when quality stays low', async () => {
+      const ws = mockWs();
+      const obs = mockObs();
+      const discord = mockDiscord();
+      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
+      const engine = new RecoveryEngine(config, ws, mockState(), obs, discord);
+      engine.start();
+
+      let time = 10;
+      // Trigger quality recovery (3 heartbeats)
+      for (let i = 0; i < 3; i++) {
+        sendHeartbeat(ws, 'small', { currentTime: time += 5 });
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(obs.refreshBrowserSource).toHaveBeenCalledTimes(1);
+
+      // Keep sending low quality heartbeats during recovery to keep playbackQuality low
+      sendHeartbeat(ws, 'small', { currentTime: time += 5 });
+
+      // Advance past the 15s scheduled next step
+      await vi.advanceTimersByTimeAsync(15000);
+
+      // Should have escalated to ToggleVisibility
+      expect(obs.toggleBrowserSource).toHaveBeenCalled();
+    });
+
+    it('quality recovery cancels escalation when quality improves', async () => {
+      const ws = mockWs();
+      const obs = mockObs();
+      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
+      const engine = new RecoveryEngine(config, ws, mockState(), obs, mockDiscord());
+      engine.start();
+
+      let time = 10;
+      // Trigger quality recovery
+      for (let i = 0; i < 3; i++) {
+        sendHeartbeat(ws, 'small', { currentTime: time += 5 });
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(obs.refreshBrowserSource).toHaveBeenCalledTimes(1);
+
+      // Quality improves — update playbackQuality via heartbeat
+      sendHeartbeat(ws, 'hd1080', { currentTime: time += 5 });
+
+      // Advance past the scheduled escalation
+      await vi.advanceTimersByTimeAsync(15000);
+
+      // Should NOT have escalated — recovery cancelled
+      expect(obs.toggleBrowserSource).not.toHaveBeenCalled();
+    });
+
+    it('Discord notification includes quality details', async () => {
+      const ws = mockWs();
+      const discord = mockDiscord();
+      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000, minQuality: 'hd720' });
+      const engine = new RecoveryEngine(config, ws, mockState(), mockObs(), discord);
+      engine.start();
+
+      let time = 10;
+      for (let i = 0; i < 3; i++) {
+        sendHeartbeat(ws, 'large', { currentTime: time += 5 });
+      }
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(discord.notifyRecovery).toHaveBeenCalledWith(
+        expect.stringMatching(/large.*hd720/)
+      );
+    });
+  });
 });
