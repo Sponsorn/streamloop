@@ -537,9 +537,23 @@ function initPlaybackControls() {
   const pagination = document.getElementById('video-list-pagination');
   const seekBar = document.getElementById('seek-bar');
 
+  const btnStop = document.getElementById('btn-stop');
+
   if (btnPrev) btnPrev.addEventListener('click', function() { api('/api/player/prev', { method: 'POST' }); });
   if (btnNext) btnNext.addEventListener('click', function() { api('/api/player/next', { method: 'POST' }); });
   if (btnPause) btnPause.addEventListener('click', function() { api('/api/player/pause', { method: 'POST' }); });
+  if (btnStop) btnStop.addEventListener('click', function() {
+    var isStopped = btnStop.classList.contains('active');
+    if (isStopped) {
+      api('/api/player/resume', { method: 'POST' });
+      btnStop.classList.remove('active');
+      btnStop.title = 'Stop (prevents auto-resume)';
+    } else {
+      api('/api/player/stop', { method: 'POST' });
+      btnStop.classList.add('active');
+      btnStop.title = 'Resume playback';
+    }
+  });
 
   if (playlistSelect) {
     playlistSelect.addEventListener('change', function() {

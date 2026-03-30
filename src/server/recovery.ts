@@ -47,6 +47,8 @@ export class RecoveryEngine {
   private playbackQuality = '';
   private lowQualityHeartbeats = 0;
   private nonPlayingHeartbeats = 0;
+  private consecutivePausedHeartbeats = 0;
+  private intentionallyStopped = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
@@ -109,6 +111,20 @@ export class RecoveryEngine {
 
   getEvents(): EventLogEntry[] {
     return [...this.eventLog];
+  }
+
+  /** Mark playback as intentionally stopped — disables auto-resume */
+  setIntentionallyStopped(stopped: boolean) {
+    this.intentionallyStopped = stopped;
+    if (stopped) {
+      this.addEvent('Playback intentionally stopped');
+    } else {
+      this.addEvent('Playback resumed from intentional stop');
+    }
+  }
+
+  isIntentionallyStopped(): boolean {
+    return this.intentionallyStopped;
   }
 
   // --- Public: load playlist into mpv ---
@@ -307,8 +323,20 @@ export class RecoveryEngine {
       this.state.update(update);
     }
 
+    // Auto-resume if paused (unless intentionally stopped via dashboard)
+    if (hb.paused && !this.intentionallyStopped) {
+      this.consecutivePausedHeartbeats++;
+      if (this.consecutivePausedHeartbeats >= 2) {
+        logger.info('Video paused, auto-resuming');
+        this.addEvent('Video paused — auto-resuming');
+        this.mpv.play().catch(() => {});
+        this.consecutivePausedHeartbeats = 0;
+      }
+    } else {
+      this.consecutivePausedHeartbeats = 0;
+    }
+
     // Non-playing detection: mpv is connected but stuck in idle/buffering
-    // Exclude paused state — user may have intentionally paused via dashboard
     if (isPlaying || hb.paused) {
       this.nonPlayingHeartbeats = 0;
     } else if (this.totalVideos > 0) {

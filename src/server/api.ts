@@ -342,6 +342,28 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
+  router.post('/player/stop', async (_req, res) => {
+    try {
+      const recovery = deps.getRecovery();
+      recovery.setIntentionallyStopped(true);
+      await deps.mpv.pause();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to stop playback' });
+    }
+  });
+
+  router.post('/player/resume', async (_req, res) => {
+    try {
+      const recovery = deps.getRecovery();
+      recovery.setIntentionallyStopped(false);
+      await deps.mpv.play();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to resume playback' });
+    }
+  });
+
   // --- yt-dlp endpoints ---
 
   router.post('/yt-dlp/update', async (_req, res) => {
