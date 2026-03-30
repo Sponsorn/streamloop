@@ -1,76 +1,32 @@
-// --- Player → Server messages ---
+// --- mpv IPC types ---
 
-export interface PlayerReadyMessage {
-  type: 'ready';
+export interface MpvHeartbeat {
+  timePos: number;
+  duration: number;
+  paused: boolean;
+  idle: boolean;
+  playlistPos: number;
+  playlistCount: number;
+  mediaTitle: string;
+  filename: string;
 }
 
-export interface PlayerHeartbeatMessage {
-  type: 'heartbeat';
-  videoIndex: number;
-  videoId: string;
-  videoTitle: string;
-  playerState: number; // YT.PlayerState
-  currentTime: number;
-  videoDuration: number;
-  nextVideoId: string;
-  playbackQuality?: string;
-}
-
-export interface PlayerErrorMessage {
-  type: 'error';
-  errorCode: number;
-  videoIndex: number;
-  videoId: string;
-}
-
-export interface PlayerStateChangeMessage {
-  type: 'stateChange';
-  playerState: number;
-  videoIndex: number;
-  videoId: string;
-  videoTitle: string;
-}
-
-export interface PlayerPlaylistLoadedMessage {
-  type: 'playlistLoaded';
-  totalVideos: number;
-}
-
-export type PlayerMessage =
-  | PlayerReadyMessage
-  | PlayerHeartbeatMessage
-  | PlayerErrorMessage
-  | PlayerStateChangeMessage
-  | PlayerPlaylistLoadedMessage;
-
-// --- Server → Player messages ---
-
-export interface ServerLoadPlaylistMessage {
-  type: 'loadPlaylist';
-  playlistId: string;
+export interface MpvPlaylistEntry {
   index: number;
-  loop: boolean;
-  startTime?: number;
+  id: string;
+  title: string;
+  duration: number;
+  current?: boolean;
 }
 
-export interface ServerRetryCurrentMessage {
-  type: 'retryCurrent';
-}
+// --- Recovery ---
 
-export interface ServerResumeMessage {
-  type: 'resume';
+export enum RecoveryStep {
+  None = 'none',
+  RetryCurrent = 'retryCurrent',
+  RestartMpv = 'restartMpv',
+  CriticalAlert = 'criticalAlert',
 }
-
-export interface ServerSkipMessage {
-  type: 'skip';
-  index: number;
-}
-
-export type ServerMessage =
-  | ServerLoadPlaylistMessage
-  | ServerRetryCurrentMessage
-  | ServerResumeMessage
-  | ServerSkipMessage;
 
 // --- Persisted state ---
 
@@ -83,16 +39,6 @@ export interface PersistedState {
   videoDuration: number;
   nextVideoId: string;
   updatedAt: string;
-}
-
-// --- Recovery ---
-
-export enum RecoveryStep {
-  None = 'none',
-  RetryCurrent = 'retryCurrent',
-  RefreshSource = 'refreshSource',
-  ToggleVisibility = 'toggleVisibility',
-  CriticalAlert = 'criticalAlert',
 }
 
 // --- Config ---
@@ -165,4 +111,7 @@ export interface AppConfig {
   twitchChannel: string;
   twitchLivenessEnabled: boolean;
   twitchPollIntervalMs: number;
+  mpvGeometry: string;
+  mpvYtdlFormat: string;
+  mpvExtraArgs: string[];
 }
