@@ -211,7 +211,7 @@ export class Updater {
       logger.info('Extracting update');
       const extractDir = join(tmpDir, 'extracted');
       mkdirSync(extractDir, { recursive: true });
-      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force`], { timeout: 120_000 });
+      execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force`], { timeout: 600_000 });
 
       // Find the app directory inside the extracted zip
       // The ZIP contains streamloop/app/ — we need the app folder

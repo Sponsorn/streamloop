@@ -1,3 +1,11 @@
+## v2.0.3
+
+### Bug Fixes
+
+- **Auto-updater extraction timeout increased to 10 minutes.** The larger v2.0.x ZIP (with bundled mpv) was timing out during extraction on low-RAM systems.
+
+---
+
 ## v2.0.2
 
 ### Bug Fixes
