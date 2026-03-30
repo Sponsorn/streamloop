@@ -191,15 +191,13 @@ describe('RecoveryEngine', () => {
     mpv._emit('connected');
     await vi.advanceTimersByTimeAsync(0);
 
-    // fileLoaded triggers jump to saved index
+    // Should set start property for resume position
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+42');
+
+    // fileLoaded triggers jump to saved index (start property handles seek)
     mpv._emit('fileLoaded');
     await vi.advanceTimersByTimeAsync(0);
     expect(mpv.jumpTo).toHaveBeenCalledWith(5);
-
-    // Second fileLoaded (after jump) triggers seek
-    mpv._emit('fileLoaded');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(mpv.seek).toHaveBeenCalledWith(42);
   });
 
   it('updates state from heartbeat poll', async () => {

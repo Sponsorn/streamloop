@@ -141,45 +141,40 @@ export class RecoveryEngine {
     const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
     logger.info({ playlistId: playlist.id, videoIndex: savedState.videoIndex, currentTime: savedState.currentTime }, 'Loading playlist in mpv');
     this.addEvent(`Loading playlist ${playlist.name || playlist.id}`);
+
+    // Set start position before loading so yt-dlp/mpv can request the correct byte range
+    const seekTime = savedState.currentTime;
+    if (seekTime > 0) {
+      logger.info({ seekTime }, 'Setting start position for resume');
+      this.seekPending = true;
+      await this.mpv.setProperty('start', `+${seekTime}`).catch(() => {});
+    }
+
     await this.mpv.loadPlaylist(url);
 
-    // Wait for the file to load, then jump to saved position
+    // Jump to saved video index after playlist loads
     const jumpIndex = savedState.videoIndex;
-    const seekTime = savedState.currentTime;
-
-    const onFileLoaded = async () => {
-      this.mpv.removeListener('fileLoaded', onFileLoaded);
-      try {
-        if (jumpIndex > 0) {
-          await this.mpv.jumpTo(jumpIndex);
-          // Wait for the jumped-to file to load before seeking
+    if (jumpIndex > 0) {
+      const onFileLoaded = async () => {
+        this.mpv.removeListener('fileLoaded', onFileLoaded);
+        try {
+          // Set start position again before jumping (it resets per-file)
           if (seekTime > 0) {
-            const onSeekFileLoaded = async () => {
-              this.mpv.removeListener('fileLoaded', onSeekFileLoaded);
-              try {
-                logger.info({ seekTime }, 'Seeking to saved position');
-                this.seekPending = true;
-                await this.mpv.seek(seekTime);
-              } catch { /* ignore */ }
-            };
-            this.mpv.on('fileLoaded', onSeekFileLoaded);
-            // Timeout fallback in case fileLoaded doesn't fire
-            setTimeout(() => {
-              this.mpv.removeListener('fileLoaded', onSeekFileLoaded);
-            }, 15000);
+            await this.mpv.setProperty('start', `+${seekTime}`).catch(() => {});
           }
-        } else if (seekTime > 0) {
-          logger.info({ seekTime }, 'Seeking to saved position');
-          this.seekPending = true;
-          await this.mpv.seek(seekTime);
-        }
-      } catch { /* ignore */ }
-    };
-    this.mpv.on('fileLoaded', onFileLoaded);
-    // Timeout fallback
-    setTimeout(() => {
-      this.mpv.removeListener('fileLoaded', onFileLoaded);
-    }, 15000);
+          await this.mpv.jumpTo(jumpIndex);
+        } catch { /* ignore */ }
+      };
+      this.mpv.on('fileLoaded', onFileLoaded);
+      setTimeout(() => {
+        this.mpv.removeListener('fileLoaded', onFileLoaded);
+      }, 15000);
+    }
+
+    // Clear start property after initial load so future videos start at 0
+    setTimeout(async () => {
+      await this.mpv.setProperty('start', 'none').catch(() => {});
+    }, 30000);
   }
 
   // --- Private: event log ---
