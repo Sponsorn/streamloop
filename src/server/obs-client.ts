@@ -18,6 +18,8 @@ export class OBSClient {
   private reconnectDelay = 5000;
   private failedReconnects = 0;
   private obsLaunched = false;
+  private zombieCheckCount = 0;
+  private static readonly ZOMBIE_KILL_THRESHOLD = 5; // force-kill after this many "still running" checks
   private onConnectCallback: (() => void) | null = null;
   private onDisconnectCallback: (() => void) | null = null;
   private onStreamDropCallback: ((attempt: number, maxAttempts: number) => void) | null = null;
@@ -74,6 +76,7 @@ export class OBSClient {
       this.reconnectDelay = 5000;
       this.failedReconnects = 0;
       this.obsLaunched = false;
+      this.zombieCheckCount = 0;
       logger.info('Connected to OBS WebSocket');
       this.onConnectCallback?.();
     } catch (err: any) {
@@ -118,9 +121,24 @@ export class OBSClient {
         return;
       }
       if (stdout.toLowerCase().includes(exeName.toLowerCase())) {
-        logger.info('OBS process still running, waiting for it to exit');
+        this.zombieCheckCount++;
+        if (this.zombieCheckCount >= OBSClient.ZOMBIE_KILL_THRESHOLD) {
+          logger.warn({ checks: this.zombieCheckCount }, 'OBS process unresponsive — force-killing');
+          execFile('taskkill', ['/F', '/IM', exeName], (killErr) => {
+            if (killErr) {
+              logger.error({ err: killErr }, 'Failed to kill OBS process');
+            } else {
+              logger.info('OBS process killed');
+            }
+            this.zombieCheckCount = 0;
+            this.obsLaunched = false;
+          });
+        } else {
+          logger.info({ check: this.zombieCheckCount, threshold: OBSClient.ZOMBIE_KILL_THRESHOLD }, 'OBS process still running, waiting for it to exit');
+        }
         return;
       }
+      this.zombieCheckCount = 0;
       // Clear OBS crash sentinel so it doesn't prompt for safe mode
       this.clearObsSentinel();
 
