@@ -1,3 +1,12 @@
+## v2.0.4
+
+### Bug Fixes
+
+- **mpv window now opens visible.** Spawns mpv as a detached process so it gets its own window instead of inheriting the parent's hidden state.
+- **Test files excluded from release ZIP.** Reduces download size.
+
+---
+
 ## v2.0.3
 
 ### Bug Fixes
