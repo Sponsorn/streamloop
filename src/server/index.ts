@@ -123,10 +123,16 @@ async function main() {
     obs.onConnect(async () => {
       logger.info('OBS reconnected after config change');
       discord.notifyObsReconnect();
-      if (config.obsAutoStream && mpv.isConnected()) {
-        setTimeout(async () => {
-          await obs.startStreaming();
-        }, 5000);
+      if (config.obsAutoStream) {
+        const waitForVideo = setInterval(async () => {
+          const status = recovery.getStatus();
+          if (status.videoConfirmed) {
+            clearInterval(waitForVideo);
+            logger.info('Video confirmed rendering, starting stream');
+            await obs.startStreaming();
+          }
+        }, 2000);
+        setTimeout(() => clearInterval(waitForVideo), 120000);
       }
     });
     obs.onDisconnect(() => {
@@ -179,13 +185,18 @@ async function main() {
     if (!mpv.isConnected()) {
       logger.warn('Player not connected after OBS reconnect');
     }
-    // Auto-start stream after OBS reconnect (e.g. after crash relaunch)
-    if (config.obsAutoStream && mpv.isConnected()) {
-      // Give OBS a moment to fully initialize after connecting
-      setTimeout(async () => {
-        logger.info('Attempting auto-start stream');
-        await obs.startStreaming();
-      }, 5000);
+    // Auto-start stream — wait until video is confirmed rendering
+    if (config.obsAutoStream) {
+      const waitForVideo = setInterval(async () => {
+        const status = recovery.getStatus();
+        if (status.videoConfirmed) {
+          clearInterval(waitForVideo);
+          logger.info('Video confirmed rendering, starting stream');
+          await obs.startStreaming();
+        }
+      }, 2000);
+      // Give up after 2 minutes
+      setTimeout(() => clearInterval(waitForVideo), 120000);
     }
   });
 

@@ -51,6 +51,7 @@ export class RecoveryEngine {
   private intentionallyStopped = false;
   private lastKnownPaused = false;
   private seekPending = false;
+  private videoConfirmed = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
@@ -110,6 +111,7 @@ export class RecoveryEngine {
       mpvRunning: this.mpv.isRunning(),
       paused: this.lastKnownPaused,
       intentionallyStopped: this.intentionallyStopped,
+      videoConfirmed: this.videoConfirmed,
     };
   }
 
@@ -201,6 +203,7 @@ export class RecoveryEngine {
   private onMpvDisconnect() {
     logger.warn('mpv disconnected');
     this.addEvent('mpv disconnected');
+    this.videoConfirmed = false;
     // Heartbeat poll will detect timeout and trigger recovery
   }
 
@@ -282,7 +285,7 @@ export class RecoveryEngine {
   }
 
   private async pollMpvState(): Promise<MpvHeartbeat> {
-    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename] =
+    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename, videoParams] =
       await Promise.all([
         this.mpv.getProperty('time-pos').catch(() => 0),
         this.mpv.getProperty('duration').catch(() => 0),
@@ -292,6 +295,7 @@ export class RecoveryEngine {
         this.mpv.getProperty('playlist-count').catch(() => 0),
         this.mpv.getProperty('media-title').catch(() => ''),
         this.mpv.getProperty('filename').catch(() => ''),
+        this.mpv.getProperty('video-params').catch(() => null),
       ]);
     return {
       timePos: timePos as number,
@@ -302,6 +306,7 @@ export class RecoveryEngine {
       playlistCount: playlistCount as number,
       mediaTitle: mediaTitle as string,
       filename: filename as string,
+      hasVideo: videoParams != null,
     };
   }
 
@@ -310,6 +315,15 @@ export class RecoveryEngine {
   /** @internal — exposed name for testing via poll timer */
   private processHeartbeat(hb: MpvHeartbeat) {
     const isPlaying = !hb.paused && !hb.idle && hb.timePos > 0;
+
+    // Track whether video is confirmed rendering (not just audio/black screen)
+    if (isPlaying && hb.hasVideo) {
+      if (!this.videoConfirmed) {
+        this.videoConfirmed = true;
+        logger.info('Video confirmed rendering — playback is visible');
+        this.addEvent('Video confirmed rendering');
+      }
+    }
     this.lastKnownPaused = hb.paused;
     const videoId = this.extractVideoId(hb.filename);
     const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
