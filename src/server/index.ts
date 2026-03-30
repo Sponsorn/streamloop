@@ -1,7 +1,7 @@
 import { createServer } from 'http';
 import { randomBytes } from 'crypto';
 import { exec } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import express from 'express';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -49,10 +49,15 @@ async function main() {
 
   const server = createServer(app);
 
-  // Resolve bundled binary paths (portable release structure)
-  const installRoot = resolve(__dirname, '..', '..', '..');
-  const mpvPath = resolve(installRoot, 'mpv', 'mpv.exe');
-  const ytdlpPath = resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
+  // Resolve binary paths: check project root first (dev), then portable release structure
+  const projectRoot = resolve(__dirname, '..', '..');
+  const installRoot = resolve(projectRoot, '..');
+  const mpvPath = existsSync(resolve(projectRoot, 'mpv', 'mpv.exe'))
+    ? resolve(projectRoot, 'mpv', 'mpv.exe')
+    : resolve(installRoot, 'mpv', 'mpv.exe');
+  const ytdlpPath = existsSync(resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe'))
+    ? resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe')
+    : resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
 
   const mpv = new MpvClient({
     mpvPath,
