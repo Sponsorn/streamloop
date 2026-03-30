@@ -1,3 +1,19 @@
+## v2.1.0
+
+### New Features
+
+- **Stream starts only after video is visible.** OBS auto-stream now waits until mpv is confirmed rendering video frames (not just connected), preventing viewers from seeing a black screen on startup or recovery.
+- **Restart mpv button.** One-click restart in the dashboard if the mpv window disappears or gets stuck.
+
+### Bug Fixes
+
+- **Resume position after restart.** Uses mpv's `start` property to request the correct byte range from YouTube, instead of post-load seeking which YouTube rejected.
+- **Seek failure recovery.** If resuming at a saved position fails, replays from the beginning instead of entering an error loop.
+- **mpv window visibility.** Reverted detached spawn, added `--force-window=yes`, switched to `--hwdec=auto` for broader hardware compatibility.
+- **Overlay opacity** increased to 0.30 for better readability.
+
+---
+
 ## v2.0.5
 
 ### Bug Fixes
