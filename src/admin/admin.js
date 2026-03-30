@@ -528,6 +528,47 @@ function renderVideoList(data) {
   pag.innerHTML = html;
 }
 
+var lastHighlightedIndex = -1;
+
+function updateVideoListHighlight(currentIndex) {
+  if (currentIndex === lastHighlightedIndex) return;
+  lastHighlightedIndex = currentIndex;
+  var tbody = document.getElementById('video-list-body');
+  if (!tbody) return;
+  var rows = tbody.querySelectorAll('tr');
+  rows.forEach(function(tr) {
+    var playBtn = tr.querySelector('.btn-play');
+    if (playBtn && Number(playBtn.dataset.index) === currentIndex) {
+      tr.className = 'current';
+    } else {
+      tr.className = '';
+    }
+  });
+}
+
+function updatePauseButton(status) {
+  var btn = document.getElementById('btn-pause');
+  if (!btn) return;
+  if (status.paused) {
+    btn.innerHTML = '&#9654;'; // play icon
+    btn.title = 'Resume';
+  } else {
+    btn.innerHTML = '&#9208;'; // pause icon
+    btn.title = 'Pause';
+  }
+  // Update stop button state
+  var btnStop = document.getElementById('btn-stop');
+  if (btnStop) {
+    if (status.intentionallyStopped) {
+      btnStop.classList.add('active');
+      btnStop.title = 'Resume playback';
+    } else {
+      btnStop.classList.remove('active');
+      btnStop.title = 'Stop (prevents auto-resume)';
+    }
+  }
+}
+
 function initPlaybackControls() {
   const btnPrev = document.getElementById('btn-prev');
   const btnNext = document.getElementById('btn-next');
@@ -651,6 +692,14 @@ async function pollOnce() {
     if (state && seekTime) {
       seekTime.textContent = formatTime(state.currentTime) + ' / ' + formatTime(state.videoDuration);
     }
+
+    // Update highlighted row in video list when video changes
+    if (state) {
+      updateVideoListHighlight(state.videoIndex);
+    }
+
+    // Update pause button icon based on mpv state
+    updatePauseButton(status);
   } catch (err) {
     console.error('Poll error:', err);
     pollFailures++;

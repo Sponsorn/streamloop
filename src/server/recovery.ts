@@ -49,6 +49,7 @@ export class RecoveryEngine {
   private nonPlayingHeartbeats = 0;
   private consecutivePausedHeartbeats = 0;
   private intentionallyStopped = false;
+  private lastKnownPaused = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
@@ -106,6 +107,8 @@ export class RecoveryEngine {
       systemMemory: getSystemMemory(),
       mpvConnected: this.mpv.isConnected(),
       mpvRunning: this.mpv.isRunning(),
+      paused: this.lastKnownPaused,
+      intentionallyStopped: this.intentionallyStopped,
     };
   }
 
@@ -275,6 +278,7 @@ export class RecoveryEngine {
   /** @internal — exposed name for testing via poll timer */
   private processHeartbeat(hb: MpvHeartbeat) {
     const isPlaying = !hb.paused && !hb.idle && hb.timePos > 0;
+    this.lastKnownPaused = hb.paused;
     const videoId = this.extractVideoId(hb.filename);
     const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
 

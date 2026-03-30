@@ -87,6 +87,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
       totalPlaylists: status.totalPlaylists,
       playbackQuality: status.playbackQuality,
       systemMemory: status.systemMemory,
+      paused: status.paused,
+      intentionallyStopped: status.intentionallyStopped,
       firstRun: isFirstRun(config),
       twitch: deps.getTwitch().getStatus(),
     });
@@ -298,7 +300,9 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.post('/player/jump', async (req, res) => {
     const { index } = req.body as { index: number };
     try {
+      deps.getRecovery().setIntentionallyStopped(false);
       await deps.mpv.jumpTo(index);
+      await deps.mpv.play();
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: 'Failed to jump to video' });
@@ -307,7 +311,9 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   router.post('/player/next', async (_req, res) => {
     try {
+      deps.getRecovery().setIntentionallyStopped(false);
       await deps.mpv.next();
+      await deps.mpv.play();
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: 'Failed to skip to next' });
@@ -316,7 +322,9 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   router.post('/player/prev', async (_req, res) => {
     try {
+      deps.getRecovery().setIntentionallyStopped(false);
       await deps.mpv.prev();
+      await deps.mpv.play();
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: 'Failed to go to previous' });
