@@ -318,8 +318,12 @@ export class RecoveryEngine {
 
   private extractVideoId(filename: string): string {
     if (!filename) return '';
-    const match = filename.match(/(?:v=|youtu\.be\/|\/watch\?.*v=)([^&\s]+)/);
-    return match ? match[1] : filename;
+    // Try YouTube URL patterns
+    const match = filename.match(/(?:v=|youtu\.be\/|\/watch\?.*v=)([A-Za-z0-9_-]{11})/);
+    if (match) return match[1];
+    // Try bare 11-char video ID (mpv sometimes reports just the ID)
+    const bare = filename.match(/^([A-Za-z0-9_-]{11})$/);
+    return bare ? bare[1] : '';
   }
 
   // --- Private: skip and playlist advancement ---

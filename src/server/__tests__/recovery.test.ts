@@ -211,7 +211,7 @@ describe('RecoveryEngine', () => {
         case 'playlist-pos': return 3;
         case 'playlist-count': return 10;
         case 'media-title': return 'Test Video';
-        case 'filename': return 'https://www.youtube.com/watch?v=abc123';
+        case 'filename': return 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
         default: return null;
       }
     });
@@ -224,7 +224,7 @@ describe('RecoveryEngine', () => {
     expect(state.update).toHaveBeenCalledWith(
       expect.objectContaining({
         videoIndex: 3,
-        videoId: 'abc123',
+        videoId: 'dQw4w9WgXcQ',
         videoTitle: 'Test Video',
         videoDuration: 300,
         currentTime: 99,
