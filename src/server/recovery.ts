@@ -164,9 +164,15 @@ export class RecoveryEngine {
 
   private async onFileEnded(reason: string) {
     if (reason === 'error') {
+      // Ignore errors during initial playlist load or when nothing was playing
+      const elapsed = Date.now() - this.lastHeartbeatAt;
+      if (elapsed > this.config.heartbeatIntervalMs * 2) {
+        logger.debug({ reason }, 'Ignoring end-file error (no recent heartbeat, likely playlist loading)');
+        return;
+      }
       this.consecutiveErrors++;
       const { videoIndex, videoId } = this.state.get();
-      logger.error({ videoIndex, videoId }, 'mpv playback error');
+      logger.error({ videoIndex, videoId, consecutiveErrors: this.consecutiveErrors }, 'mpv playback error');
       this.addEvent(`Playback error on video #${videoIndex} (${videoId})`);
       await this.discord.notifyError(videoIndex, videoId, 0, this.consecutiveErrors);
       if (this.consecutiveErrors >= this.config.maxConsecutiveErrors) {
