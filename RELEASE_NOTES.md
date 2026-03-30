@@ -1,3 +1,11 @@
+## v2.0.5
+
+### Bug Fixes
+
+- **mpv window visible again.** Reverted detached spawn that caused mpv to open without a window on some systems. Uses `--force-window=yes` and `--hwdec=auto` for broader hardware compatibility.
+
+---
+
 ## v2.0.4
 
 ### Bug Fixes

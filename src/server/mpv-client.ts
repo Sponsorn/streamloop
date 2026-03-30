@@ -206,14 +206,14 @@ export class MpvClient extends EventEmitter {
       '--idle',
       `--input-ipc-server=${this.pipePath}`,
       '--no-terminal',
+      '--force-window=yes',
       ...this.extraArgs,
     ];
 
     logger.info({ mpvPath: this.mpvPath, args }, 'Spawning mpv');
 
     this.process = spawn(this.mpvPath, args, {
-      stdio: 'ignore',
-      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
     });
 
