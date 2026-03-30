@@ -83,13 +83,25 @@
       <!-- Step 3: Window Capture -->
       <div class="wiz-step hidden" data-step="3">
         <h2>Window Capture Setup</h2>
-        <p>StreamLoop uses mpv to play videos. You need to capture the mpv window in OBS.</p>
+        <p>StreamLoop uses mpv to play videos. You need two OBS sources:</p>
+
+        <h3 style="margin-top: 16px;">1. Video Player</h3>
         <ol>
-          <li>Click <strong>"Check mpv"</strong> below to verify mpv is running</li>
           <li>In OBS, add a <strong>Window Capture</strong> source</li>
           <li>Select the <strong>mpv</strong> window from the dropdown</li>
           <li>Resize the capture to fit your canvas</li>
         </ol>
+
+        <h3 style="margin-top: 16px;">2. Now Playing Overlay</h3>
+        <ol>
+          <li>In OBS, add a <strong>Browser Source</strong></li>
+          <li>Set the URL to: <code id="wiz-overlay-url" style="cursor:pointer; user-select:all;"></code>
+            <button type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 12px; margin-left: 4px;" onclick="navigator.clipboard.writeText(document.getElementById('wiz-overlay-url').textContent)">Copy</button>
+          </li>
+          <li>Set width/height to match your canvas (e.g. 1920x1080)</li>
+          <li>Place it <strong>above</strong> the Window Capture source in OBS</li>
+        </ol>
+
         <div style="margin: 16px 0;">
           <button type="button" id="wiz-check-mpv" class="btn btn-secondary">Check mpv</button>
           <span id="wiz-mpv-result" style="margin-left: 12px;"></span>

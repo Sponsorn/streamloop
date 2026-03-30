@@ -232,13 +232,17 @@ function wizInitStep(step) {
       $('#wiz-obs-result').textContent = '';
       $('#wiz-obs-result').className = 'wiz-test-result';
       break;
-    case 3:
+    case 3: {
       // Reset check results for window capture step
       const mpvResult = document.getElementById('wiz-mpv-result');
       const captureResult = document.getElementById('wiz-capture-result');
       if (mpvResult) { mpvResult.textContent = ''; mpvResult.style.color = ''; }
       if (captureResult) { captureResult.textContent = ''; captureResult.style.color = ''; }
+      // Set overlay URL
+      const overlayUrl = document.getElementById('wiz-overlay-url');
+      if (overlayUrl) overlayUrl.textContent = window.location.origin + '/overlay';
       break;
+    }
     case 4: {
       const container = $('#wiz-playlists-list');
       container.innerHTML = '';
