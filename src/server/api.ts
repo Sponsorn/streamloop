@@ -24,6 +24,7 @@ export interface ApiDependencies {
   reloadConfig: () => Promise<void>;
   updater: Updater;
   triggerRestart: () => void;
+  triggerShutdown: () => void;
   getDiscord: () => DiscordNotifier;
   getTwitch: () => TwitchLivenessChecker;
   apiToken: string;
@@ -390,6 +391,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
       logger.error({ err }, 'Failed to update yt-dlp');
       res.status(500).json({ error: 'Failed to update yt-dlp' });
     }
+  });
+
+  // --- Shutdown endpoint ---
+
+  router.post('/shutdown', (_req, res) => {
+    res.json({ ok: true, message: 'Shutting down...' });
+    setTimeout(() => deps.triggerShutdown(), 500);
   });
 
   return router;

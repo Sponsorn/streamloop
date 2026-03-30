@@ -1506,6 +1506,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check for updates button
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
 
+  // Shutdown button
+  const shutdownBtn = document.getElementById('shutdown-btn');
+  if (shutdownBtn) {
+    shutdownBtn.addEventListener('click', function() {
+      if (confirm('Are you sure you want to shut down StreamLoop? This will stop playback and the server.')) {
+        api('/api/shutdown', { method: 'POST' });
+        shutdownBtn.textContent = 'Shutting down...';
+        shutdownBtn.disabled = true;
+      }
+    });
+  }
+
   // Wizard step 3 buttons
   const wizCheckMpvBtn = document.getElementById('wiz-check-mpv');
   if (wizCheckMpvBtn) wizCheckMpvBtn.addEventListener('click', wizCheckMpv);

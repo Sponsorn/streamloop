@@ -166,6 +166,7 @@ async function main() {
     reloadConfig,
     updater,
     triggerRestart,
+    triggerShutdown: () => shutdown(),
     getDiscord: () => discord,
     getTwitch: () => twitch,
     apiToken,
