@@ -50,6 +50,7 @@ export class RecoveryEngine {
   private consecutivePausedHeartbeats = 0;
   private intentionallyStopped = false;
   private lastKnownPaused = false;
+  private seekPending = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
@@ -157,6 +158,7 @@ export class RecoveryEngine {
               this.mpv.removeListener('fileLoaded', onSeekFileLoaded);
               try {
                 logger.info({ seekTime }, 'Seeking to saved position');
+                this.seekPending = true;
                 await this.mpv.seek(seekTime);
               } catch { /* ignore */ }
             };
@@ -168,6 +170,7 @@ export class RecoveryEngine {
           }
         } else if (seekTime > 0) {
           logger.info({ seekTime }, 'Seeking to saved position');
+          this.seekPending = true;
           await this.mpv.seek(seekTime);
         }
       } catch { /* ignore */ }
@@ -208,6 +211,15 @@ export class RecoveryEngine {
 
   private async onFileEnded(reason: string) {
     if (reason === 'error') {
+      // If a seek was pending, the error is likely due to YouTube rejecting the seek position.
+      // Retry the same video from the beginning instead of counting it as a real error.
+      if (this.seekPending) {
+        this.seekPending = false;
+        logger.warn('Seek failed (YouTube may have rejected the position), replaying from start');
+        this.addEvent('Seek to saved position failed — replaying from start');
+        this.state.update({ currentTime: 0 });
+        return;
+      }
       // Ignore errors during initial playlist load or when nothing was playing
       const elapsed = Date.now() - this.lastHeartbeatAt;
       if (elapsed > this.config.heartbeatIntervalMs * 2) {
