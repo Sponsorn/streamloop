@@ -11,6 +11,9 @@ let lastHeartbeatAt = 0;
 let heartbeatIntervalMs = 5000;
 let heartbeatCountdownTimer = null;
 let playerConnected = false;
+let videoListPage = 1;
+const VIDEO_LIST_PER_PAGE = 25;
+let seeking = false;
 
 // --- Initialization ---
 
@@ -43,6 +46,7 @@ function showDashboard() {
   startPolling();
   loadSettings();
   loadAutostart();
+  initPlaybackControls();
 }
 
 // --- API helper ---
@@ -131,7 +135,6 @@ const WIZ_TOTAL_STEPS = 6;
 let wizStep = 1;
 const wizState = {
   obsWebsocketPassword: '',
-  obsBrowserSourceName: 'Playlist Player',
   playlists: [],
   discordWebhookUrl: '',
   autostart: false,
@@ -143,9 +146,6 @@ function wizInitWizard() {
     if (cfg.obsWebsocketPassword && cfg.obsWebsocketPassword !== '********') {
       wizState.obsWebsocketPassword = cfg.obsWebsocketPassword;
     }
-    if (cfg.obsBrowserSourceName) {
-      wizState.obsBrowserSourceName = cfg.obsBrowserSourceName;
-    }
     if (cfg.discord && cfg.discord.webhookUrl && cfg.discord.webhookUrl !== '********') {
       wizState.discordWebhookUrl = cfg.discord.webhookUrl;
     }
@@ -155,8 +155,6 @@ function wizInitWizard() {
       wizState.playlists = playlists;
     }
   }).catch(() => {});
-  // Set player URL
-  $('#wiz-player-url').textContent = window.location.origin;
   wizGoTo(1);
 }
 
@@ -213,7 +211,7 @@ function wizCollectStepData() {
       wizState.obsWebsocketPassword = $('#wiz-obs-pass').value;
       break;
     case 3:
-      wizState.obsBrowserSourceName = $('#wiz-source').value.trim();
+      // No data to collect from window capture step
       break;
     case 4: {
       const pl = collectPlaylists('#wiz-playlists-list');
@@ -234,12 +232,17 @@ function wizInitStep(step) {
       $('#wiz-obs-result').textContent = '';
       $('#wiz-obs-result').className = 'wiz-test-result';
       break;
-    case 3:
-      $('#wiz-player-url').textContent = window.location.origin;
-      $('#wiz-source').value = wizState.obsBrowserSourceName;
-      $('#wiz-player-result').textContent = '';
-      $('#wiz-player-result').className = 'wiz-test-result';
+    case 3: {
+      // Reset check results for window capture step
+      const mpvResult = document.getElementById('wiz-mpv-result');
+      const captureResult = document.getElementById('wiz-capture-result');
+      if (mpvResult) { mpvResult.textContent = ''; mpvResult.style.color = ''; }
+      if (captureResult) { captureResult.textContent = ''; captureResult.style.color = ''; }
+      // Set overlay URL
+      const overlayUrl = document.getElementById('wiz-overlay-url');
+      if (overlayUrl) overlayUrl.textContent = window.location.origin + '/overlay';
       break;
+    }
     case 4: {
       const container = $('#wiz-playlists-list');
       container.innerHTML = '';
@@ -270,16 +273,9 @@ function wizInitStep(step) {
 
 function wizValidateStep() {
   switch (wizStep) {
-    case 3: {
-      const source = $('#wiz-source').value.trim();
-      if (!source) {
-        $('#wiz-source').classList.add('invalid');
-        showToast('Enter the name of the Browser Source you created in OBS.');
-        return false;
-      }
-      $('#wiz-source').classList.remove('invalid');
+    case 3:
+      // No validation needed for window capture step
       return true;
-    }
     case 4: {
       const pl = collectPlaylists('#wiz-playlists-list');
       if (pl === null) return false; // validation error already shown
@@ -336,57 +332,42 @@ async function wizTestObs() {
   btn.disabled = false;
 }
 
-async function wizTestPlayer() {
-  const resultEl = $('#wiz-player-result');
-  const btn = $('#wiz-test-player');
-  resultEl.textContent = 'Checking...';
-  resultEl.className = 'wiz-test-result pending';
-  btn.disabled = true;
-
-  // Save the source name so server knows what to look for
-  const sourceName = $('#wiz-source').value.trim();
-  if (sourceName) {
-    try {
-      await api('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ obsBrowserSourceName: sourceName }),
-      });
-    } catch {
-      // Non-critical
-    }
-  }
-
-  await sleep(2000);
+async function wizCheckMpv() {
+  const result = document.getElementById('wiz-mpv-result');
+  result.textContent = 'Checking...';
+  result.style.color = '';
   try {
     const status = await api('/api/status');
-    if (status.playerConnected) {
-      resultEl.textContent = 'Player is connected!';
-      resultEl.className = 'wiz-test-result success';
+    if (status.mpvRunning) {
+      result.textContent = 'mpv is running!';
+      result.style.color = 'var(--success, #22c55e)';
     } else {
-      resultEl.textContent = 'Player not detected. Make sure the Browser Source is active and the URL is correct.';
-      resultEl.className = 'wiz-test-result failure';
+      result.textContent = 'mpv is not running. Check server logs.';
+      result.style.color = 'var(--error, #ef4444)';
     }
-  } catch {
-    resultEl.textContent = 'Could not reach server.';
-    resultEl.className = 'wiz-test-result failure';
+  } catch (err) {
+    result.textContent = 'Failed to check status';
+    result.style.color = 'var(--error, #ef4444)';
   }
-  btn.disabled = false;
 }
 
-function wizCopyUrl() {
-  const url = $('#wiz-player-url').textContent;
-  navigator.clipboard.writeText(url).then(() => {
-    showToast('Copied to clipboard!', 'success');
-  }).catch(() => {
-    // Fallback: select the text
-    const range = document.createRange();
-    range.selectNodeContents($('#wiz-player-url'));
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    showToast('Press Ctrl+C to copy', 'success');
-  });
+async function wizCheckCapture() {
+  const result = document.getElementById('wiz-capture-result');
+  result.textContent = 'Checking...';
+  result.style.color = '';
+  try {
+    const status = await api('/api/status');
+    if (status.obsConnected) {
+      result.textContent = 'OBS connected! Set up Window Capture in OBS.';
+      result.style.color = 'var(--success, #22c55e)';
+    } else {
+      result.textContent = 'OBS not connected. Make sure OBS is running with WebSocket enabled.';
+      result.style.color = 'var(--error, #ef4444)';
+    }
+  } catch (err) {
+    result.textContent = 'Failed to check OBS status';
+    result.style.color = 'var(--error, #ef4444)';
+  }
 }
 
 function copyRedirectUrl(btn) {
@@ -418,7 +399,6 @@ async function runVerification() {
 
   const body = {
     playlists: wizState.playlists,
-    obsBrowserSourceName: wizState.obsBrowserSourceName,
     discord: { webhookUrl: wizState.discordWebhookUrl },
   };
   if (wizState.obsWebsocketPassword) {
@@ -466,7 +446,7 @@ async function runVerification() {
     try {
       const status = await api('/api/status');
       if (status.obsConnected) { obsOk = true; setVerifyIcon('obs', 'pass'); }
-      if (status.playerConnected) { playerOk = true; setVerifyIcon('player', 'pass'); }
+      if (status.mpvRunning) { playerOk = true; setVerifyIcon('player', 'pass'); }
       if (obsOk && playerOk) break;
     } catch {
       // Ignore transient errors
@@ -481,7 +461,7 @@ async function runVerification() {
   } else {
     const issues = [];
     if (!obsOk) issues.push('OBS WebSocket');
-    if (!playerOk) issues.push('Player');
+    if (!playerOk) issues.push('mpv player');
     statusEl.textContent = issues.join(' and ') + ' not connected. You can fix this later in Settings.';
   }
 
@@ -500,6 +480,184 @@ function setVerifyIcon(key, state) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// --- Playback Controls ---
+
+async function loadVideoList(page) {
+  videoListPage = page || 1;
+  const loading = document.getElementById('video-list-loading');
+  if (loading) loading.style.display = 'block';
+  try {
+    const data = await api('/api/playlist/videos?page=' + videoListPage + '&perPage=' + VIDEO_LIST_PER_PAGE);
+    renderVideoList(data);
+  } catch (err) {
+    console.error('Failed to load video list:', err);
+    if (loading) loading.style.display = 'none';
+  }
+}
+
+function renderVideoList(data) {
+  const tbody = document.getElementById('video-list-body');
+  const loading = document.getElementById('video-list-loading');
+  if (loading) loading.style.display = 'none';
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+  data.videos.forEach(function(v) {
+    const tr = document.createElement('tr');
+    if (v.index === data.currentIndex) tr.className = 'current';
+    const mins = Math.floor((v.duration || 0) / 60);
+    const secs = Math.floor((v.duration || 0) % 60);
+    const dur = mins + ':' + (secs < 10 ? '0' : '') + secs;
+    tr.innerHTML = '<td>' + (v.index + 1) + '</td>' +
+      '<td>' + escapeHtml(v.title || 'Untitled') + '</td>' +
+      '<td>' + dur + '</td>' +
+      '<td><button class="btn btn-secondary btn-play" data-index="' + v.index + '">&#9654;</button></td>';
+    tbody.appendChild(tr);
+  });
+
+  // Pagination
+  const totalPages = Math.ceil(data.total / data.perPage);
+  const pag = document.getElementById('video-list-pagination');
+  if (!pag) return;
+  if (totalPages <= 1) { pag.innerHTML = ''; return; }
+  let html = '';
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === data.page) {
+      html += '<strong style="margin: 0 4px;">[' + i + ']</strong>';
+    } else {
+      html += '<a href="#" style="margin: 0 4px;" data-page="' + i + '">' + i + '</a>';
+    }
+  }
+  pag.innerHTML = html;
+}
+
+var lastHighlightedIndex = -1;
+
+function updateVideoListHighlight(currentIndex) {
+  if (currentIndex === lastHighlightedIndex) return;
+  lastHighlightedIndex = currentIndex;
+  var tbody = document.getElementById('video-list-body');
+  if (!tbody) return;
+  var rows = tbody.querySelectorAll('tr');
+  rows.forEach(function(tr) {
+    var playBtn = tr.querySelector('.btn-play');
+    if (playBtn && Number(playBtn.dataset.index) === currentIndex) {
+      tr.className = 'current';
+    } else {
+      tr.className = '';
+    }
+  });
+}
+
+function updatePauseButton(status) {
+  var btn = document.getElementById('btn-pause');
+  if (!btn) return;
+  if (status.paused) {
+    btn.innerHTML = '&#9654;'; // play icon
+    btn.title = 'Resume';
+  } else {
+    btn.innerHTML = '&#9208;'; // pause icon
+    btn.title = 'Pause';
+  }
+  // Update stop button state
+  var btnStop = document.getElementById('btn-stop');
+  if (btnStop) {
+    if (status.intentionallyStopped) {
+      btnStop.classList.add('active');
+      btnStop.title = 'Resume playback';
+    } else {
+      btnStop.classList.remove('active');
+      btnStop.title = 'Stop (prevents auto-resume)';
+    }
+  }
+}
+
+function initPlaybackControls() {
+  const btnPrev = document.getElementById('btn-prev');
+  const btnNext = document.getElementById('btn-next');
+  const btnPause = document.getElementById('btn-pause');
+  const playlistSelect = document.getElementById('playlist-select');
+  const videoListBody = document.getElementById('video-list-body');
+  const pagination = document.getElementById('video-list-pagination');
+  const seekBar = document.getElementById('seek-bar');
+
+  const btnStop = document.getElementById('btn-stop');
+
+  if (btnPrev) btnPrev.addEventListener('click', function() { api('/api/player/prev', { method: 'POST' }); });
+  if (btnNext) btnNext.addEventListener('click', function() { api('/api/player/next', { method: 'POST' }); });
+  if (btnPause) btnPause.addEventListener('click', function() { api('/api/player/pause', { method: 'POST' }); });
+  if (btnStop) btnStop.addEventListener('click', function() {
+    var isStopped = btnStop.classList.contains('active');
+    if (isStopped) {
+      api('/api/player/resume', { method: 'POST' });
+      btnStop.classList.remove('active');
+      btnStop.title = 'Stop (prevents auto-resume)';
+    } else {
+      api('/api/player/stop', { method: 'POST' });
+      btnStop.classList.add('active');
+      btnStop.title = 'Resume playback';
+    }
+  });
+
+  if (playlistSelect) {
+    playlistSelect.addEventListener('change', function() {
+      const idx = Number(this.value);
+      api('/api/playlist/switch', { method: 'POST', body: JSON.stringify({ playlistIndex: idx }) })
+        .then(function() { loadVideoList(1); });
+    });
+  }
+
+  if (videoListBody) {
+    videoListBody.addEventListener('click', function(e) {
+      const btn = e.target.closest('.btn-play');
+      if (btn) {
+        const index = Number(btn.dataset.index);
+        api('/api/player/jump', { method: 'POST', body: JSON.stringify({ index: index }) });
+      }
+    });
+  }
+
+  if (pagination) {
+    pagination.addEventListener('click', function(e) {
+      if (e.target.dataset && e.target.dataset.page) {
+        e.preventDefault();
+        loadVideoList(Number(e.target.dataset.page));
+      }
+    });
+  }
+
+  if (seekBar) {
+    seekBar.addEventListener('mousedown', function() { seeking = true; });
+    seekBar.addEventListener('mouseup', function() {
+      seeking = false;
+      const seconds = Number(seekBar.value);
+      api('/api/player/seek', { method: 'POST', body: JSON.stringify({ seconds: seconds }) });
+    });
+  }
+
+  loadPlaylistSelector();
+  loadVideoList(1);
+}
+
+async function loadPlaylistSelector() {
+  try {
+    const cfg = await api('/api/config');
+    const select = document.getElementById('playlist-select');
+    if (!select) return;
+    select.innerHTML = '';
+    cfg.playlists.forEach(function(p, i) {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = p.name || p.id;
+      select.appendChild(opt);
+    });
+    const state = await api('/api/state');
+    select.value = state.playlistIndex || 0;
+  } catch (err) {
+    console.error('Failed to load playlist selector:', err);
+  }
+}
 
 // --- Dashboard polling ---
 
@@ -527,6 +685,25 @@ async function pollOnce() {
     renderNowPlaying(state, status.totalVideos, status);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
+
+    // Update seek bar
+    const seekBar = document.getElementById('seek-bar');
+    const seekTime = document.getElementById('seek-time');
+    if (state && seekBar && !seeking) {
+      seekBar.max = Math.floor(state.videoDuration || 0);
+      seekBar.value = Math.floor(state.currentTime || 0);
+    }
+    if (state && seekTime) {
+      seekTime.textContent = formatTime(state.currentTime) + ' / ' + formatTime(state.videoDuration);
+    }
+
+    // Update highlighted row in video list when video changes
+    if (state) {
+      updateVideoListHighlight(state.videoIndex);
+    }
+
+    // Update pause button icon based on mpv state
+    updatePauseButton(status);
   } catch (err) {
     console.error('Poll error:', err);
     pollFailures++;
@@ -551,7 +728,7 @@ const RECOVERY_LABELS = {
 
 function renderStatus(s) {
   // Status cards
-  setCard('player-status', s.playerConnected ? 'Connected' : 'Disconnected', s.playerConnected ? 'ok' : 'err');
+  setCard('player-status', s.mpvConnected ? 'Connected' : 'Disconnected', s.mpvConnected ? 'ok' : 'err');
   const obsLabel = !s.obsConnected ? 'Disconnected' : s.obsStreaming ? 'Streaming' : 'Not Live';
   const obsLevel = !s.obsConnected ? 'err' : s.obsStreaming ? 'ok' : 'warn';
   setCard('obs-status', obsLabel, obsLevel);
@@ -584,7 +761,7 @@ function renderStatus(s) {
 
   // Header pill
   const pill = $('#header-pill');
-  if (s.playerConnected && s.recoveryStep === 'none') {
+  if (s.mpvConnected && s.recoveryStep === 'none') {
     pill.textContent = 'Healthy';
     pill.className = 'status-pill pill-ok';
   } else if (s.recoveryStep !== 'none') {
@@ -598,7 +775,7 @@ function renderStatus(s) {
   // Heartbeat countdown
   lastHeartbeatAt = s.lastHeartbeatAt;
   heartbeatIntervalMs = s.heartbeatIntervalMs || 5000;
-  playerConnected = s.playerConnected;
+  playerConnected = s.mpvConnected;
   updateHeartbeatPill();
   if (!heartbeatCountdownTimer) {
     heartbeatCountdownTimer = setInterval(updateHeartbeatPill, 1000);
@@ -1328,6 +1505,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Check for updates button
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
+
+  // Shutdown button
+  const shutdownBtn = document.getElementById('shutdown-btn');
+  if (shutdownBtn) {
+    shutdownBtn.addEventListener('click', function() {
+      if (confirm('Are you sure you want to shut down StreamLoop? This will stop playback and the server.')) {
+        api('/api/shutdown', { method: 'POST' });
+        shutdownBtn.textContent = 'Shutting down...';
+        shutdownBtn.disabled = true;
+      }
+    });
+  }
+
+  // Wizard step 3 buttons
+  const wizCheckMpvBtn = document.getElementById('wiz-check-mpv');
+  if (wizCheckMpvBtn) wizCheckMpvBtn.addEventListener('click', wizCheckMpv);
+  const wizCheckCaptureBtn = document.getElementById('wiz-check-capture');
+  if (wizCheckCaptureBtn) wizCheckCaptureBtn.addEventListener('click', wizCheckCapture);
 
   // Webhook preview updates
   const previewSelect = $('#wh-preview-select');

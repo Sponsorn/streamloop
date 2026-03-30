@@ -3,11 +3,17 @@
  *
  * Assembles a distributable ZIP for Windows:
  *   1. Downloads portable Node.js (win-x64)
- *   2. Copies application source files
- *   3. Installs production dependencies
- *   4. Packages everything into a ZIP
+ *   2. Downloads yt-dlp.exe
+ *   3. Bundles mpv.exe (must be pre-placed in build/mpv/mpv.exe)
+ *   4. Copies application source files
+ *   5. Installs production dependencies
+ *   6. Packages everything into a ZIP
  *
  * Usage: node build/prepare-release.js
+ *
+ * Note: mpv.exe must be manually placed in build/mpv/mpv.exe before building.
+ * Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases
+ * (mpv releases use .7z archives which are complex to extract in a build script)
  */
 
 import { execSync } from 'child_process';
@@ -19,6 +25,7 @@ import { pipeline } from 'stream/promises';
 const NODE_VERSION = '22.12.0';
 const NODE_ARCH = 'win-x64';
 const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`;
+const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const DIST = join(ROOT, 'dist');
@@ -49,7 +56,40 @@ async function main() {
   const extractedNodeDir = join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`);
   cpSync(extractedNodeDir, join(RELEASE, 'node'), { recursive: true });
 
-  // Step 2: Copy application files
+  // Step 2: Download yt-dlp
+  console.log('Downloading yt-dlp...');
+  mkdirSync(join(RELEASE, 'yt-dlp'), { recursive: true });
+  await downloadFile(YTDLP_URL, join(RELEASE, 'yt-dlp', 'yt-dlp.exe'));
+
+  // Step 3: Bundle mpv
+  console.log('Bundling mpv...');
+  mkdirSync(join(RELEASE, 'mpv'), { recursive: true });
+  const localMpv = join(ROOT, 'build', 'mpv', 'mpv.exe');
+  if (existsSync(localMpv)) {
+    cpSync(localMpv, join(RELEASE, 'mpv', 'mpv.exe'));
+    console.log('  Copied mpv.exe from build/mpv/');
+  } else {
+    console.warn('  WARNING: mpv.exe not found at build/mpv/mpv.exe');
+    console.warn('  Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases');
+    console.warn('  Place mpv.exe in build/mpv/ and re-run this script');
+  }
+
+  // Write default mpv.conf
+  writeFileSync(join(RELEASE, 'mpv', 'mpv.conf'), [
+    'no-border',
+    'no-osc',
+    'osd-level=0',
+    'hwdec=d3d11va',
+    'vo=gpu',
+    'gpu-api=d3d11',
+    'ytdl-format=bestvideo[height<=?1080]+bestaudio/best',
+    'ytdl-raw-options=yes-playlist=',
+    'loop-playlist=inf',
+    'keep-open=yes',
+  ].join('\n'));
+  console.log('  Wrote default mpv.conf');
+
+  // Step 4: Copy application files
   console.log('Copying application files...');
   const appDir = join(RELEASE, 'app');
 
@@ -65,7 +105,7 @@ async function main() {
   }
   cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.json'));
 
-  // Step 3: Install production dependencies
+  // Step 5: Install production dependencies
   console.log('Installing production dependencies...');
   const nodeExe = join(RELEASE, 'node', 'node.exe');
   const npmCmd = join(RELEASE, 'node', 'npm.cmd');
@@ -74,18 +114,18 @@ async function main() {
   // tsx is a devDependency but needed at runtime for the portable bundle
   execSync(`"${npmCmd}" install tsx@4`, { cwd: appDir, stdio: 'inherit' });
 
-  // Step 4: Copy scripts
+  // Step 6: Copy scripts
   console.log('Copying scripts...');
   cpSync(join(ROOT, 'scripts', 'START.bat'), join(RELEASE, 'START.bat'));
   cpSync(join(ROOT, 'scripts', 'README.txt'), join(RELEASE, 'README.txt'));
 
-  // Step 5: Create ZIP
+  // Step 7: Create ZIP
   console.log('Creating ZIP archive...');
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const zipPath = join(DIST, `streamloop-v${pkg.version}.zip`);
   execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
 
-  // Step 6: Generate SHA-256 checksum
+  // Step 8: Generate SHA-256 checksum
   console.log('Generating SHA-256 checksum...');
   const zipData = readFileSync(zipPath);
   const hash = createHash('sha256').update(zipData).digest('hex');

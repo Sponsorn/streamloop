@@ -42,6 +42,9 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     twitchChannel: 'testchannel',
     twitchLivenessEnabled: true,
     twitchPollIntervalMs: 60000,
+    mpvGeometry: '1920x1080+0+0',
+    mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
+    mpvExtraArgs: [],
     ...overrides,
   };
 }

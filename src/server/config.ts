@@ -101,6 +101,9 @@ const configSchema = z.object({
   twitchChannel: z.string().default(''),
   twitchLivenessEnabled: z.boolean().default(false),
   twitchPollIntervalMs: z.number().int().min(30000).default(60000),
+  mpvGeometry: z.string().default('1920x1080+0+0'),
+  mpvYtdlFormat: z.string().default('bestvideo[height<=?1080]+bestaudio/best'),
+  mpvExtraArgs: z.array(z.string()).default([]),
 });
 
 let resolvedConfigPath = '';

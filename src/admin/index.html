@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>StreamLoop - Admin</title>
   <link rel="stylesheet" href="/admin/admin.css">
+  <style>
+    .video-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    .video-table th, .video-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    .video-table tr.current { background: rgba(59, 130, 246, 0.15); }
+    .video-table .btn-play { padding: 2px 8px; font-size: 12px; cursor: pointer; }
+    .transport-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .transport-controls button { font-size: 18px; min-width: 36px; }
+    #seek-bar { flex: 1; }
+  </style>
 </head>
 <body>
 
@@ -17,7 +26,7 @@
         <div class="wiz-progress-line" data-after="1"></div>
         <div class="wiz-progress-dot" data-step="2"><span class="wiz-dot-num">2</span><span class="wiz-dot-label">OBS WebSocket</span></div>
         <div class="wiz-progress-line" data-after="2"></div>
-        <div class="wiz-progress-dot" data-step="3"><span class="wiz-dot-num">3</span><span class="wiz-dot-label">Browser Source</span></div>
+        <div class="wiz-progress-dot" data-step="3"><span class="wiz-dot-num">3</span><span class="wiz-dot-label">Window Capture</span></div>
         <div class="wiz-progress-line" data-after="3"></div>
         <div class="wiz-progress-dot" data-step="4"><span class="wiz-dot-num">4</span><span class="wiz-dot-label">Playlists</span></div>
         <div class="wiz-progress-line" data-after="4"></div>
@@ -34,7 +43,7 @@
           <div class="wiz-info-title">What we'll set up:</div>
           <ol class="wiz-checklist-preview">
             <li>Connect to OBS via WebSocket</li>
-            <li>Create a Browser Source in OBS for the player</li>
+            <li>Set up Window Capture in OBS for the mpv player</li>
             <li>Add your YouTube playlists</li>
             <li>Optional: Discord alerts &amp; Windows autostart</li>
           </ol>
@@ -71,36 +80,35 @@
         </div>
       </div>
 
-      <!-- Step 3: OBS Browser Source -->
+      <!-- Step 3: Window Capture -->
       <div class="wiz-step hidden" data-step="3">
-        <h2>Create OBS Browser Source</h2>
-        <p>The player runs inside an OBS Browser Source. Let's create one.</p>
-        <div class="wiz-info-box">
-          <div class="wiz-info-title">In OBS, follow these steps:</div>
-          <ol class="wiz-instructions">
-            <li>In the <strong>Sources</strong> panel, click the <strong>+</strong> button</li>
-            <li>Choose <strong>Browser</strong></li>
-            <li>Name it (e.g. <strong>Playlist Player</strong>) and click OK</li>
-            <li>Set the <strong>URL</strong> to the address shown below</li>
-            <li>Set <strong>Width</strong> to <strong>1920</strong> and <strong>Height</strong> to <strong>1080</strong> (or match your canvas)</li>
-            <li>Click <strong>OK</strong> to create the source</li>
-          </ol>
+        <h2>Window Capture Setup</h2>
+        <p>StreamLoop uses mpv to play videos. You need two OBS sources:</p>
+
+        <h3 style="margin-top: 16px;">1. Video Player</h3>
+        <ol>
+          <li>In OBS, add a <strong>Window Capture</strong> source</li>
+          <li>Select the <strong>mpv</strong> window from the dropdown</li>
+          <li>Resize the capture to fit your canvas</li>
+        </ol>
+
+        <h3 style="margin-top: 16px;">2. Now Playing Overlay</h3>
+        <ol>
+          <li>In OBS, add a <strong>Browser Source</strong></li>
+          <li>Set the URL to: <code id="wiz-overlay-url" style="cursor:pointer; user-select:all;"></code>
+            <button type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 12px; margin-left: 4px;" onclick="navigator.clipboard.writeText(document.getElementById('wiz-overlay-url').textContent)">Copy</button>
+          </li>
+          <li>Set width/height to match your canvas (e.g. 1920x1080)</li>
+          <li>Place it <strong>above</strong> the Window Capture source in OBS</li>
+        </ol>
+
+        <div style="margin: 16px 0;">
+          <button type="button" id="wiz-check-mpv" class="btn btn-secondary">Check mpv</button>
+          <span id="wiz-mpv-result" style="margin-left: 12px;"></span>
         </div>
-        <div class="wiz-copy-box">
-          <label>Player URL</label>
-          <div class="wiz-copy-row">
-            <code id="wiz-player-url"></code>
-            <button type="button" class="btn btn-secondary btn-small" onclick="wizCopyUrl()">Copy</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="wiz-source">OBS Browser Source Name</label>
-          <input type="text" id="wiz-source" placeholder="Playlist Player" value="Playlist Player">
-          <div class="hint">Enter the exact name you gave the Browser Source in OBS</div>
-        </div>
-        <div class="wiz-test-row">
-          <button type="button" class="btn btn-secondary" id="wiz-test-player" onclick="wizTestPlayer()">Check Player</button>
-          <span class="wiz-test-result" id="wiz-player-result"></span>
+        <div style="margin: 16px 0;">
+          <button type="button" id="wiz-check-capture" class="btn btn-secondary">Verify OBS connection</button>
+          <span id="wiz-capture-result" style="margin-left: 12px;"></span>
         </div>
       </div>
 
@@ -170,7 +178,7 @@
           </div>
           <div class="wiz-verify-item" data-check="player">
             <span class="wiz-verify-icon" id="wiz-chk-player">&#9679;</span>
-            <span>Player connected in OBS</span>
+            <span>mpv player running</span>
           </div>
         </div>
         <div class="wiz-verify-status" id="wiz-verify-status"></div>
@@ -221,6 +229,30 @@
 
       <!-- Monitor tab -->
       <div id="panel-monitor" class="tab-panel">
+        <!-- Playback Controls -->
+        <div class="card" style="margin-bottom: 20px;" id="playback-controls">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label for="playlist-select">Playlist</label>
+            <select id="playlist-select" class="wh-preview-select"></select>
+          </div>
+          <div class="transport-controls">
+            <button type="button" id="btn-prev" class="btn btn-secondary" title="Previous">&#9198;</button>
+            <button type="button" id="btn-pause" class="btn btn-secondary" title="Pause/Resume">&#9208;</button>
+            <button type="button" id="btn-next" class="btn btn-secondary" title="Next">&#9197;</button>
+            <button type="button" id="btn-stop" class="btn btn-secondary" title="Stop (prevents auto-resume)" style="margin-left: 8px;">&#9209;</button>
+            <span id="seek-time" style="font-size: 13px; color: var(--text-dim);">0:00 / 0:00</span>
+            <input type="range" id="seek-bar" min="0" max="100" value="0">
+          </div>
+          <div id="video-list-container">
+            <table class="video-table">
+              <thead><tr><th style="width:40px">#</th><th>Title</th><th style="width:60px">Duration</th><th style="width:40px"></th></tr></thead>
+              <tbody id="video-list-body"></tbody>
+            </table>
+            <div id="video-list-pagination" style="text-align: center; margin-top: 8px;"></div>
+            <div id="video-list-loading" class="hint" style="text-align: center; padding: 16px;">Loading playlist...</div>
+          </div>
+        </div>
+
         <!-- Status cards -->
         <div class="cards">
           <div class="card">
@@ -352,15 +384,19 @@
           <div class="section-title">Maintenance</div>
           <div class="settings-panel">
             <div class="form-group">
-              <label for="pb-refresh-interval">Periodic browser source refresh</label>
+              <label for="pb-refresh-interval">Periodic mpv restart</label>
               <select id="pb-refresh-interval" class="wh-preview-select">
                 <option value="0">Disabled</option>
+                <option value="300000">Every 5 minutes</option>
+                <option value="600000">Every 10 minutes</option>
+                <option value="1800000">Every 30 minutes</option>
+                <option value="3600000">Every 1 hour</option>
                 <option value="14400000">Every 4 hours</option>
                 <option value="21600000">Every 6 hours</option>
                 <option value="28800000">Every 8 hours</option>
                 <option value="43200000">Every 12 hours</option>
               </select>
-              <div class="hint">Proactively refresh the OBS browser source to prevent memory buildup during long sessions</div>
+              <div class="hint">Proactively restart mpv to prevent memory buildup during long sessions</div>
             </div>
           </div>
         </div>
@@ -628,6 +664,15 @@
             <button type="button" id="check-update-btn" class="btn btn-secondary">Check for Updates</button>
             <button type="button" id="settings-update-btn" class="btn btn-update hidden" onclick="handleUpdate()">Update Now</button>
             <span id="check-update-result" style="font-size: 13px; color: var(--text-muted);"></span>
+          </div>
+        </div>
+
+        <!-- Server Control -->
+        <div class="section" style="margin-top: 20px;">
+          <div class="section-title">Server</div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button type="button" id="shutdown-btn" class="btn btn-secondary" style="background: var(--error, #ef4444); border-color: var(--error, #ef4444); color: #fff;">Shutdown StreamLoop</button>
+            <span style="font-size: 13px; color: var(--text-muted);">Stops the server, mpv, and all processes</span>
           </div>
         </div>
       </div>

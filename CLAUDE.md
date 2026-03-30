@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-StreamLoop is a Node.js/TypeScript application that plays YouTube playlists in an OBS Browser Source and automatically recovers from playback freezes, errors, and failures. It communicates with a browser-based player via WebSocket, connects to OBS via obs-websocket-js, and optionally sends alerts to Discord webhooks.
+StreamLoop is a Node.js/TypeScript application that plays YouTube playlists via mpv (controlled over Windows named pipe IPC) and automatically recovers from playback freezes, errors, and failures. OBS captures the mpv window via Window Capture. The server connects to OBS via obs-websocket-js and optionally sends alerts to Discord webhooks.
 
 ## Setup
 
@@ -36,11 +36,11 @@ Before pushing and building a release:
 
 ## Architecture
 
-**Client-server model with three browser clients:**
+**Server + mpv player + admin dashboard:**
 
 - **Server** (`src/server/`): Express.js app that orchestrates everything. Entry point is `index.ts`, which wires components together via dependency injection.
-- **Player** (`src/player/player.js`): Loaded as an OBS Browser Source. Embeds YouTube IFrame API, sends heartbeats and state changes to the server over WebSocket (`/ws`).
-- **Admin Dashboard** (`src/admin/admin.js`): Browser UI for monitoring status, viewing recovery events, and editing config via REST API.
+- **mpv Player**: Spawned as a child process, controlled via Windows named pipe IPC (`\\.\pipe\mpv-streamloop`). Uses yt-dlp for YouTube playlist/video resolution.
+- **Admin Dashboard** (`src/admin/admin.js`): Browser UI for monitoring status, viewing recovery events, playback controls (playlist selector, transport, seek, video list), and editing config via REST API.
 
 **Key server modules:**
 
@@ -48,27 +48,30 @@ Before pushing and building a release:
 |--------|---------------|
 | `config.ts` | Loads/saves `config.json` with Zod schema validation and defaults |
 | `state.ts` | Persists playback position (`state.json`) with debounced 2s writes |
-| `recovery.ts` | Core heartbeat monitor with escalating recovery: RetryCurrent → RefreshSource → ToggleVisibility → CriticalAlert |
-| `obs-client.ts` | OBS WebSocket client for source manipulation (settings, visibility) |
-| `websocket.ts` | WebSocket server for player communication |
+| `mpv-client.ts` | Spawns mpv process, connects via named pipe IPC, sends commands, receives events |
+| `recovery.ts` | Core heartbeat monitor with escalating recovery: RetryCurrent → RestartMpv → CriticalAlert |
+| `playlist-metadata.ts` | Fetches playlist video metadata via yt-dlp, caches in memory |
+| `obs-client.ts` | OBS WebSocket client for streaming control |
 | `discord.ts` | Discord webhook notifications |
-| `api.ts` | REST endpoints (`/api/status`, `/api/state`, `/api/config`, `/api/events`, `/api/autostart`, `/api/update/*`) |
+| `api.ts` | REST endpoints (`/api/status`, `/api/state`, `/api/config`, `/api/events`, `/api/playlist/*`, `/api/player/*`, `/api/autostart`, `/api/update/*`) |
 | `updater.ts` | GitHub Releases auto-updater: checks for new versions, downloads ZIP, swaps app directory |
 | `logger.ts` | Pino structured logging |
 
-**Recovery escalation sequence:** When heartbeats timeout, the recovery engine escalates through steps: retry current video → refresh OBS browser source URL (cache bust) → toggle OBS source visibility → send critical Discord alert, wait 60s, then restart the sequence.
+**Recovery escalation sequence:** The server polls mpv properties every 5 seconds. When stalls are detected (no `time-pos` progress for 3 consecutive polls), recovery escalates: retry current video via IPC → kill and restart mpv process → send critical Discord alert, wait 60s, then restart the sequence.
 
-**Periodic source refresh:** Configurable via `sourceRefreshIntervalMs` (0 = disabled). Proactively refreshes the OBS browser source at a set interval to prevent Chromium memory degradation during long sessions. Skips if recovery is in progress or player is disconnected.
+**Periodic mpv restart:** Configurable via `sourceRefreshIntervalMs` (default 30 min). Proactively restarts mpv to prevent memory growth during long sessions. Skips if recovery is in progress or mpv is disconnected.
 
 **Configuration hot-reload:** POST to `/api/config` updates `config.json` and triggers component reloading (OBS reconnect, recovery engine restart) without server restart.
 
-## WebSocket Protocol (Player ↔ Server)
+## mpv IPC Protocol (Server ↔ mpv)
 
-Player sends: `ready`, `heartbeat` (with video position), `error` (with error code), `stateChange`, `playlistLoaded`
+Communication via Windows named pipe (`\\.\pipe\mpv-streamloop`) using newline-delimited JSON.
 
-Server sends: `loadPlaylist` (with playlist ID and resume index), `retryCurrent`, `skip`
+Server sends commands: `loadlist` (playlist URL), `set_property playlist-pos` (jump to video), `seek` (position), `set_property pause` (toggle), `playlist-next`, `playlist-prev`, `get_property` (poll state)
 
-YouTube error codes 100/101/150 (unavailable/not embeddable) trigger automatic skip. Other errors retry up to `maxConsecutiveErrors` before skipping.
+Server polls: `time-pos`, `duration`, `pause`, `idle-active`, `playlist-pos`, `playlist-count`, `media-title`, `filename`
+
+mpv sends events: `start-file`, `end-file` (with reason: eof/error/stop), `file-loaded`, `shutdown`
 
 ## Testing
 
@@ -76,7 +79,7 @@ Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` dire
 
 ## Platform Notes
 
-Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) bundles portable Node.js v22.12.0 win-x64 into a standalone ZIP.
+Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) bundles portable Node.js v22.12.0 win-x64, mpv, and yt-dlp into a standalone ZIP. mpv.exe must be placed in `build/mpv/` before running the build script.
 
 ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` in tsconfig).
 

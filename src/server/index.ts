@@ -1,14 +1,15 @@
 import { createServer } from 'http';
 import { randomBytes } from 'crypto';
 import { exec } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import express from 'express';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { loadConfig, isFirstRun } from './config.js';
 import { logger } from './logger.js';
 import { StateManager } from './state.js';
-import { PlayerWebSocket } from './websocket.js';
+import { MpvClient } from './mpv-client.js';
+import { PlaylistMetadataCache } from './playlist-metadata.js';
 import { OBSClient } from './obs-client.js';
 import { DiscordNotifier } from './discord.js';
 import { RecoveryEngine } from './recovery.js';
@@ -38,9 +39,6 @@ async function main() {
   const app = express();
   app.use(express.json());
 
-  const playerDir = resolve(__dirname, '..', 'player');
-  app.use(express.static(playerDir));
-
   // Admin dashboard static files
   const adminDir = resolve(__dirname, '..', 'admin');
   app.use('/admin', express.static(adminDir));
@@ -51,8 +49,35 @@ async function main() {
 
   const server = createServer(app);
 
-  // WebSocket
-  const playerWs = new PlayerWebSocket(server);
+  // Resolve binary paths: check project root first (dev), then portable release structure
+  const projectRoot = resolve(__dirname, '..', '..');
+  const installRoot = resolve(projectRoot, '..');
+  const mpvPath = existsSync(resolve(projectRoot, 'mpv', 'mpv.exe'))
+    ? resolve(projectRoot, 'mpv', 'mpv.exe')
+    : resolve(installRoot, 'mpv', 'mpv.exe');
+  const ytdlpPath = existsSync(resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe'))
+    ? resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe')
+    : resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
+
+  const mpv = new MpvClient({
+    mpvPath,
+    pipePath: '\\\\.\\pipe\\mpv-streamloop',
+    mpvArgs: [
+      '--no-border',
+      '--no-osc',
+      '--osd-level=0',
+      `--geometry=${config.mpvGeometry}`,
+      '--hwdec=d3d11va',
+      '--vo=gpu',
+      `--ytdl-format=${config.mpvYtdlFormat}`,
+      '--loop-playlist=inf',
+      '--ytdl-raw-options=yes-playlist=,js-runtimes=node',
+      `--script-opts=ytdl_hook-ytdl_path=${ytdlpPath}`,
+      ...config.mpvExtraArgs,
+    ],
+  });
+
+  const playlistCache = new PlaylistMetadataCache(ytdlpPath);
 
   // OBS client
   let obs = new OBSClient(config);
@@ -63,7 +88,7 @@ async function main() {
   let discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
 
   // Recovery engine
-  let recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
+  let recovery = new RecoveryEngine(config, mpv, state, obs, discord);
   recovery.start();
 
   // Twitch liveness checker
@@ -72,13 +97,13 @@ async function main() {
   // Updater
   const updater = new Updater();
 
-  const triggerRestart = () => {
+  const triggerRestart = async () => {
     logger.info('Restart requested for update');
     updater.stopAutoCheck();
     twitch.stop();
     recovery.stop();
     state.flush();
-    playerWs.close();
+    await mpv.stop();
     obs.disconnect();
     server.close(() => {
       logger.info('Server closed for update restart');
@@ -99,7 +124,7 @@ async function main() {
     obs.onConnect(async () => {
       logger.info('OBS reconnected after config change');
       discord.notifyObsReconnect();
-      if (config.obsAutoStream && playerWs.isConnected()) {
+      if (config.obsAutoStream && mpv.isConnected()) {
         setTimeout(async () => {
           await obs.startStreaming();
         }, 5000);
@@ -121,7 +146,7 @@ async function main() {
     await obs.connect();
     // Restart recovery with new config
     recovery.stop();
-    recovery = new RecoveryEngine(config, playerWs, state, obs, discord);
+    recovery = new RecoveryEngine(config, mpv, state, obs, discord);
     recovery.start();
     startStreamMonitor();
     // Restart Twitch liveness checker with new config
@@ -134,12 +159,14 @@ async function main() {
   const apiRouter = createApiRouter({
     getConfig: () => config,
     getRecovery: () => recovery,
-    playerWs,
+    mpv,
+    playlistCache,
     getObs: () => obs,
     state,
     reloadConfig,
     updater,
     triggerRestart,
+    triggerShutdown: () => shutdown(),
     getDiscord: () => discord,
     getTwitch: () => twitch,
     apiToken,
@@ -150,11 +177,11 @@ async function main() {
   obs.onConnect(async () => {
     logger.info('OBS connected, checking player status');
     discord.notifyObsReconnect();
-    if (!playerWs.isConnected()) {
+    if (!mpv.isConnected()) {
       logger.warn('Player not connected after OBS reconnect');
     }
     // Auto-start stream after OBS reconnect (e.g. after crash relaunch)
-    if (config.obsAutoStream && playerWs.isConnected()) {
+    if (config.obsAutoStream && mpv.isConnected()) {
       // Give OBS a moment to fully initialize after connecting
       setTimeout(async () => {
         logger.info('Attempting auto-start stream');
@@ -183,7 +210,7 @@ async function main() {
   // Stream health monitor — restarts stream if it drops while player is healthy
   const startStreamMonitor = () => {
     obs.startStreamMonitor(() => {
-      if (!playerWs.isConnected()) return false;
+      if (!mpv.isConnected()) return false;
       const status = recovery.getStatus();
       const heartbeatAge = Date.now() - status.lastHeartbeatAt;
       return heartbeatAge < config.heartbeatTimeoutMs;
@@ -192,6 +219,7 @@ async function main() {
   startStreamMonitor();
 
   if (!isFirstRun(config)) {
+    await mpv.start();
     await obs.connect();
     twitch.start();
   }
@@ -204,7 +232,6 @@ async function main() {
   // Start HTTP server
   server.listen(config.port, '127.0.0.1', () => {
     logger.info({ port: config.port }, 'Server listening');
-    logger.info(`Player URL: http://localhost:${config.port}`);
     logger.info(`Admin URL: ${adminUrl}`);
 
     // Auto-open browser to admin dashboard
@@ -214,13 +241,13 @@ async function main() {
   });
 
   // Graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     logger.info('Shutting down...');
     updater.stopAutoCheck();
     twitch.stop();
     recovery.stop();
     state.flush();
-    playerWs.close();
+    await mpv.stop();
     obs.disconnect();
     server.close(() => {
       logger.info('Server closed');

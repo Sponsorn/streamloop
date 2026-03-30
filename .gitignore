@@ -1,5 +1,7 @@
 node_modules/
 dist/
+mpv/
+yt-dlp/
 config.json
 state.json
 *.log
