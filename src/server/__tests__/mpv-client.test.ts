@@ -355,7 +355,7 @@ describe('MpvClient', () => {
 
       const p = c.loadPlaylist('https://youtube.com/playlist?list=PLtest');
       const msg = await readLine(sock) as any;
-      expect(msg.command).toEqual(['loadlist', 'https://youtube.com/playlist?list=PLtest']);
+      expect(msg.command).toEqual(['loadfile', 'https://youtube.com/playlist?list=PLtest', 'replace']);
       serverSend(sock, { error: 'success', request_id: msg.request_id });
       await p;
     });

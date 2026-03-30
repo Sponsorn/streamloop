@@ -162,7 +162,9 @@ export class MpvClient extends EventEmitter {
   }
 
   loadPlaylist(url: string, mode: string = 'replace'): Promise<unknown> {
-    return this.command('loadlist', url);
+    // Use loadfile (not loadlist) so yt-dlp's ytdl_hook resolves the playlist.
+    // loadlist treats the URL as a plaintext playlist file, which breaks YouTube URLs.
+    return this.command('loadfile', url, mode);
   }
 
   play(): Promise<unknown> {
