@@ -93,8 +93,11 @@ async function main() {
   console.log('Copying application files...');
   const appDir = join(RELEASE, 'app');
 
-  // Copy source directories
-  cpSync(join(ROOT, 'src'), join(appDir, 'src'), { recursive: true });
+  // Copy source directories (exclude test files)
+  cpSync(join(ROOT, 'src'), join(appDir, 'src'), {
+    recursive: true,
+    filter: (src) => !src.includes('__tests__'),
+  });
 
   // Copy package files (never copy config.json — use the example template instead)
   for (const file of ['package.json', 'package-lock.json', 'tsconfig.json']) {
