@@ -254,6 +254,7 @@ export class RecoveryEngine {
   private processHeartbeat(hb: MpvHeartbeat) {
     const isPlaying = !hb.paused && !hb.idle && hb.timePos > 0;
     const videoId = this.extractVideoId(hb.filename);
+    const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
 
     // Update totalVideos from playlist count
     if (hb.playlistCount > 0) {
@@ -291,7 +292,7 @@ export class RecoveryEngine {
       const update: Record<string, unknown> = {
         videoIndex: hb.playlistPos,
         videoId,
-        videoTitle: hb.mediaTitle,
+        videoTitle: mediaTitle,
         videoDuration: hb.duration,
       };
       if (isPlaying || hb.timePos > 0) {
@@ -314,6 +315,15 @@ export class RecoveryEngine {
         this.startRecoverySequence();
       }
     }
+  }
+
+  private sanitizeTitle(title: string): string {
+    if (!title) return '';
+    // Discard titles that look like HTML/CSS content (yt-dlp resolution failure)
+    if (/[{}<>]/.test(title) || /^\s*(body|html|div|span|a,)\b/i.test(title) || /:\s*\d+%/.test(title)) {
+      return '';
+    }
+    return title;
   }
 
   private extractVideoId(filename: string): string {
