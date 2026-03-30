@@ -1,3 +1,13 @@
+## v2.0.2
+
+### Bug Fixes
+
+- **Resumes at correct timestamp after recovery.** Fixed race condition where playlist loaded multiple times after mpv restart, preventing the seek to saved position. Now uses event-based waiting instead of fragile timeouts.
+
+- **Play button in video list works.** (Also in v2.0.1)
+
+---
+
 ## v2.0.1
 
 ### Bug Fixes
