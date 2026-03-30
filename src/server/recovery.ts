@@ -307,8 +307,9 @@ export class RecoveryEngine {
       this.state.update(update);
     }
 
-    // Non-playing detection: mpv is connected but stuck in idle/paused/buffering
-    if (isPlaying) {
+    // Non-playing detection: mpv is connected but stuck in idle/buffering
+    // Exclude paused state — user may have intentionally paused via dashboard
+    if (isPlaying || hb.paused) {
       this.nonPlayingHeartbeats = 0;
     } else if (this.totalVideos > 0) {
       this.nonPlayingHeartbeats++;
