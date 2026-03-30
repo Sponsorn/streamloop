@@ -95,7 +95,7 @@ const configSchema = z.object({
   qualityRecoveryEnabled: z.boolean().default(true),
   minQuality: z.string().default('hd720'),
   qualityRecoveryDelayMs: z.number().int().positive().default(120000),
-  sourceRefreshIntervalMs: z.number().int().min(0).default(0),
+  sourceRefreshIntervalMs: z.number().int().min(0).default(1800000),
   twitchClientId: z.string().default(''),
   twitchClientSecret: z.string().default(''),
   twitchChannel: z.string().default(''),

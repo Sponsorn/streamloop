@@ -1,3 +1,4 @@
+import { freemem, totalmem } from 'os';
 import type { AppConfig, DiscordConfig } from './types.js';
 import { logger } from './logger.js';
 
@@ -49,6 +50,15 @@ export class DiscordNotifier {
     if (h > 0) return `${h}h ${m}m`;
     if (m > 0) return `${m}m ${s % 60}s`;
     return `${s}s`;
+  }
+
+  private getMemoryField(): EmbedField {
+    const totalBytes = totalmem();
+    const freeBytes = freemem();
+    const usedGB = ((totalBytes - freeBytes) / 1073741824).toFixed(1);
+    const totalGB = (totalBytes / 1073741824).toFixed(1);
+    const usedPercent = Math.round(((totalBytes - freeBytes) / totalBytes) * 100);
+    return { name: 'RAM', value: `${usedGB}/${totalGB} GB (${usedPercent}%)`, inline: true };
   }
 
   private makeFooterText(extraText?: string): string {
@@ -175,7 +185,8 @@ export class DiscordNotifier {
   async notifyRecovery(step: string): Promise<void> {
     if (!this.discord.events.recovery) return;
     const content = this.renderTemplate(this.discord.templates.recovery, { step });
-    await this.send(content, 'warn');
+    const mem = this.getMemoryField();
+    await this.send(content, 'warn', [mem]);
   }
 
   async notifyCritical(message: string): Promise<void> {
@@ -183,6 +194,7 @@ export class DiscordNotifier {
     const content = this.renderTemplate(this.discord.templates.critical, { message });
     const fields: EmbedField[] = [
       { name: 'Status', value: message, inline: false },
+      this.getMemoryField(),
     ];
     await this.send(content, 'error', fields);
   }

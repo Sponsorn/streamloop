@@ -151,6 +151,7 @@
       list: playlistId,
       listType: 'playlist',
       index: index || 0,
+      startSeconds: pendingSeekTime,
     });
     currentLoop = !!loop;
     player.setLoop(currentLoop);

@@ -146,7 +146,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
         const batPath = join(appRoot, '..', 'START.bat');
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          `WshShell.Run """${batPath}""", 0, False`,
+          `WshShell.Run """${batPath}""", 1, False`,
         ].join('\r\n');
         writeFileSync(AUTOSTART_VBS, vbsContent, 'utf-8');
         logger.info('Autostart shortcut created');

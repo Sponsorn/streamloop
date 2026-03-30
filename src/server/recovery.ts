@@ -1,9 +1,22 @@
+import { freemem, totalmem } from 'os';
 import { RecoveryStep, type AppConfig, type PlayerMessage } from './types.js';
 import type { PlayerWebSocket } from './websocket.js';
 import type { StateManager } from './state.js';
 import type { OBSClient } from './obs-client.js';
 import type { DiscordNotifier } from './discord.js';
 import { logger } from './logger.js';
+
+function getSystemMemory() {
+  const totalBytes = totalmem();
+  const freeBytes = freemem();
+  const usedBytes = totalBytes - freeBytes;
+  return {
+    totalGB: +(totalBytes / 1073741824).toFixed(1),
+    freeGB: +(freeBytes / 1073741824).toFixed(1),
+    usedGB: +(usedBytes / 1073741824).toFixed(1),
+    usedPercent: Math.round((usedBytes / totalBytes) * 100),
+  };
+}
 
 const SKIP_ERROR_CODES = new Set([100, 101, 150]);
 const MAX_EVENT_LOG = 100;
@@ -90,6 +103,7 @@ export class RecoveryEngine {
       totalPlaylists: this.config.playlists.length,
       currentPlaylistId: this.config.playlists[playlistIndex].id,
       playbackQuality: this.playbackQuality,
+      systemMemory: getSystemMemory(),
     };
   }
 
@@ -151,8 +165,9 @@ export class RecoveryEngine {
           if (Math.abs(msg.currentTime - this.lastProgressTime) < 1) {
             this.stalledHeartbeats++;
             if (this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
-              const stallMsg = `Player stalled at ${Math.floor(msg.currentTime)}s on video #${msg.videoIndex} (${msg.videoId}) — no progress for ${this.stalledHeartbeats} heartbeats`;
-              logger.warn({ currentTime: msg.currentTime, stalledHeartbeats: this.stalledHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stalled — video not advancing');
+              const mem = getSystemMemory();
+              const stallMsg = `Player stalled at ${Math.floor(msg.currentTime)}s on video #${msg.videoIndex} (${msg.videoId}) — no progress for ${this.stalledHeartbeats} heartbeats (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`;
+              logger.warn({ currentTime: msg.currentTime, stalledHeartbeats: this.stalledHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId, systemMemory: mem }, 'Player stalled — video not advancing');
               this.addEvent(stallMsg);
               this.discord.notifyRecovery('Stall detected');
               this.recoveryReason = 'stall';
@@ -355,8 +370,9 @@ export class RecoveryEngine {
 
       const elapsed = Date.now() - this.lastHeartbeatAt;
       if (elapsed > this.config.heartbeatTimeoutMs && this.recoveryStep === RecoveryStep.None) {
-        logger.warn({ elapsedMs: elapsed }, 'Heartbeat timeout, starting recovery');
-        this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery`);
+        const mem = getSystemMemory();
+        logger.warn({ elapsedMs: elapsed, systemMemory: mem }, 'Heartbeat timeout, starting recovery');
+        this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
         this.recoveryReason = 'heartbeat';
         this.startRecoverySequence();
       }
@@ -375,13 +391,15 @@ export class RecoveryEngine {
   private startSourceRefreshTimer() {
     this.stopSourceRefreshTimer();
     if (this.config.sourceRefreshIntervalMs <= 0) return;
-    const hours = (this.config.sourceRefreshIntervalMs / 3600000).toFixed(1);
-    logger.info({ intervalMs: this.config.sourceRefreshIntervalMs }, `Periodic source refresh enabled (every ${hours}h)`);
+    const mins = Math.round(this.config.sourceRefreshIntervalMs / 60000);
+    const label = mins >= 60 ? `${(mins / 60).toFixed(1)}h` : `${mins}m`;
+    logger.info({ intervalMs: this.config.sourceRefreshIntervalMs }, `Periodic source refresh enabled (every ${label})`);
     this.sourceRefreshTimer = setInterval(() => {
       if (this.recoveryStep !== RecoveryStep.None) return;
       if (!this.ws.isConnected()) return;
-      logger.info('Periodic browser source refresh');
-      this.addEvent('Periodic browser source refresh (maintenance)');
+      const mem = getSystemMemory();
+      logger.info({ systemMemory: mem }, 'Periodic browser source refresh');
+      this.addEvent(`Periodic browser source refresh (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
       this.obs.refreshBrowserSource();
     }, this.config.sourceRefreshIntervalMs);
   }
