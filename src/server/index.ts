@@ -71,7 +71,7 @@ async function main() {
       '--vo=gpu',
       `--ytdl-format=${config.mpvYtdlFormat}`,
       '--loop-playlist=inf',
-      '--ytdl-raw-options=yes-playlist=',
+      '--ytdl-raw-options=yes-playlist=,js-runtimes=node',
       `--script-opts=ytdl_hook-ytdl_path=${ytdlpPath}`,
       ...config.mpvExtraArgs,
     ],
