@@ -119,11 +119,23 @@ async function main() {
   cpSync(join(ROOT, 'scripts', 'START.bat'), join(RELEASE, 'START.bat'));
   cpSync(join(ROOT, 'scripts', 'README.txt'), join(RELEASE, 'README.txt'));
 
-  // Step 7: Create ZIP
+  // Step 7: Create ZIP (retry up to 3 times — antivirus may lock newly created files)
   console.log('Creating ZIP archive...');
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const zipPath = join(DIST, `streamloop-v${pkg.version}.zip`);
-  execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // Wait for antivirus to finish scanning new files
+      if (attempt > 1) console.log(`  Retry ${attempt}/3 after 10s delay...`);
+      await new Promise(r => setTimeout(r, attempt === 1 ? 5000 : 10000));
+      execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
+      if (existsSync(zipPath)) break;
+    } catch (err) {
+      if (attempt === 3) throw err;
+      console.warn(`  ZIP attempt ${attempt} failed, retrying...`);
+      if (existsSync(zipPath)) rmSync(zipPath, { force: true });
+    }
+  }
 
   // Step 8: Generate SHA-256 checksum
   console.log('Generating SHA-256 checksum...');
