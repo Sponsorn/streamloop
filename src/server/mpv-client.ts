@@ -213,6 +213,7 @@ export class MpvClient extends EventEmitter {
 
     this.process = spawn(this.mpvPath, args, {
       stdio: 'ignore',
+      detached: true,
       windowsHide: false,
     });
 
