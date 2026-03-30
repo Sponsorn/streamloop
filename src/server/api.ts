@@ -373,6 +373,15 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
+  router.post('/player/restart-mpv', async (_req, res) => {
+    try {
+      await deps.mpv.restart();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to restart mpv' });
+    }
+  });
+
   // --- yt-dlp endpoints ---
 
   router.post('/yt-dlp/update', async (_req, res) => {

@@ -603,6 +603,18 @@ function initPlaybackControls() {
     }
   });
 
+  const btnRestartMpv = document.getElementById('btn-restart-mpv');
+  if (btnRestartMpv) btnRestartMpv.addEventListener('click', function() {
+    btnRestartMpv.disabled = true;
+    btnRestartMpv.title = 'Restarting...';
+    api('/api/player/restart-mpv', { method: 'POST' }).finally(function() {
+      setTimeout(function() {
+        btnRestartMpv.disabled = false;
+        btnRestartMpv.title = 'Restart mpv';
+      }, 5000);
+    });
+  });
+
   if (playlistSelect) {
     playlistSelect.addEventListener('change', function() {
       const idx = Number(this.value);
