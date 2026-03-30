@@ -1,3 +1,11 @@
+## v2.0.1
+
+### Bug Fixes
+
+- **Play button in video list now works.** Fixed missing Content-Type header on POST requests from dashboard playback controls.
+
+---
+
 ## v2.0.0
 
 ### Breaking Changes
