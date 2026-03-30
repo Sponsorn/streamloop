@@ -6,7 +6,8 @@ import { saveConfig, isFirstRun, getConfigPath, DEFAULT_DISCORD_TEMPLATES, DISCO
 import { logger } from './logger.js';
 import type { AppConfig } from './types.js';
 import type { RecoveryEngine } from './recovery.js';
-import type { PlayerWebSocket } from './websocket.js';
+import type { MpvClient } from './mpv-client.js';
+import type { PlaylistMetadataCache } from './playlist-metadata.js';
 import type { OBSClient } from './obs-client.js';
 import type { StateManager } from './state.js';
 import type { Updater } from './updater.js';
@@ -16,7 +17,8 @@ import type { TwitchLivenessChecker } from './twitch.js';
 export interface ApiDependencies {
   getConfig: () => AppConfig;
   getRecovery: () => RecoveryEngine;
-  playerWs: PlayerWebSocket;
+  mpv: MpvClient;
+  playlistCache: PlaylistMetadataCache;
   getObs: () => OBSClient;
   state: StateManager;
   reloadConfig: () => Promise<void>;
@@ -71,7 +73,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const obsConnected = obs.isConnected();
     const obsStreaming = obsConnected ? await obs.isStreaming() : false;
     res.json({
-      playerConnected: deps.playerWs.isConnected(),
+      mpvConnected: deps.mpv.isConnected(),
+      mpvRunning: deps.mpv.isRunning(),
       obsConnected,
       obsStreaming,
       recoveryStep: status.recoveryStep,
@@ -83,6 +86,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       playlistIndex: status.playlistIndex,
       totalPlaylists: status.totalPlaylists,
       playbackQuality: status.playbackQuality,
+      systemMemory: status.systemMemory,
       firstRun: isFirstRun(config),
       twitch: deps.getTwitch().getStatus(),
     });
@@ -248,6 +252,113 @@ export function createApiRouter(deps: ApiDependencies): Router {
     } catch (err) {
       logger.error({ err }, 'Failed to start update');
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // --- Playlist endpoints ---
+
+  router.get('/playlist/videos', async (req, res) => {
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const perPage = Math.min(100, Math.max(1, Number(req.query.perPage) || 25));
+    const config = deps.getConfig();
+    const state = deps.state.get();
+    const playlistIndex = state.playlistIndex < config.playlists.length ? state.playlistIndex : 0;
+    const playlist = config.playlists[playlistIndex];
+    try {
+      const metadata = await deps.playlistCache.fetch(playlist.id);
+      const start = (page - 1) * perPage;
+      const videos = metadata.videos.slice(start, start + perPage);
+      res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: state.videoIndex });
+    } catch (err) {
+      logger.error({ err }, 'Failed to fetch playlist metadata');
+      res.status(500).json({ error: 'Failed to fetch playlist metadata' });
+    }
+  });
+
+  router.post('/playlist/switch', async (req, res) => {
+    const { playlistIndex } = req.body as { playlistIndex: number };
+    const config = deps.getConfig();
+    if (typeof playlistIndex !== 'number' || playlistIndex < 0 || playlistIndex >= config.playlists.length) {
+      return res.status(400).json({ error: 'Invalid playlist index' });
+    }
+    const playlist = config.playlists[playlistIndex];
+    const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
+    deps.state.update({ playlistIndex, videoIndex: 0, currentTime: 0, videoId: '', videoTitle: '' });
+    try {
+      await deps.mpv.loadPlaylist(url);
+      res.json({ ok: true });
+    } catch (err) {
+      logger.error({ err }, 'Failed to switch playlist');
+      res.status(500).json({ error: 'Failed to switch playlist' });
+    }
+  });
+
+  // --- Player control endpoints ---
+
+  router.post('/player/jump', async (req, res) => {
+    const { index } = req.body as { index: number };
+    try {
+      await deps.mpv.jumpTo(index);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to jump to video' });
+    }
+  });
+
+  router.post('/player/next', async (_req, res) => {
+    try {
+      await deps.mpv.next();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to skip to next' });
+    }
+  });
+
+  router.post('/player/prev', async (_req, res) => {
+    try {
+      await deps.mpv.prev();
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to go to previous' });
+    }
+  });
+
+  router.post('/player/seek', async (req, res) => {
+    const { seconds } = req.body as { seconds: number };
+    try {
+      await deps.mpv.seek(seconds);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to seek' });
+    }
+  });
+
+  router.post('/player/pause', async (_req, res) => {
+    try {
+      const paused = await deps.mpv.togglePause();
+      res.json({ ok: true, paused });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to toggle pause' });
+    }
+  });
+
+  // --- yt-dlp endpoints ---
+
+  router.post('/yt-dlp/update', async (_req, res) => {
+    try {
+      const { execFileSync } = await import('child_process');
+      // yt-dlp is at <install>/yt-dlp/yt-dlp.exe, resolve relative to server dir
+      const { resolve, dirname } = await import('path');
+      const { fileURLToPath } = await import('url');
+      const __dirname = dirname(fileURLToPath(import.meta.url));
+      const installRoot = resolve(__dirname, '..', '..', '..');
+      const ytdlpPath = resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
+      execFileSync(ytdlpPath, ['-U'], { timeout: 120000 });
+      const version = execFileSync(ytdlpPath, ['--version'], { timeout: 10000 }).toString().trim();
+      res.json({ ok: true, version });
+    } catch (err) {
+      logger.error({ err }, 'Failed to update yt-dlp');
+      res.status(500).json({ error: 'Failed to update yt-dlp' });
     }
   });
 
