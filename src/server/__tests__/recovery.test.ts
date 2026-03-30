@@ -59,6 +59,10 @@ function mockMpv() {
       emitter.on(event, handler);
       return mock;
     }),
+    removeListener: vi.fn((event: string, handler: (...args: any[]) => void) => {
+      emitter.removeListener(event, handler);
+      return mock;
+    }),
     isConnected: vi.fn(() => true),
     isRunning: vi.fn(() => true),
     getProperty: vi.fn(async (name: string) => {
@@ -80,6 +84,7 @@ function mockMpv() {
     seek: vi.fn(async () => {}),
     next: vi.fn(async () => {}),
     restart: vi.fn(async () => {}),
+    play: vi.fn(async () => {}),
     _emit: (event: string, ...args: any[]) => emitter.emit(event, ...args),
   };
   return mock;
@@ -186,12 +191,14 @@ describe('RecoveryEngine', () => {
     mpv._emit('connected');
     await vi.advanceTimersByTimeAsync(0);
 
-    // After 2s delay, should jump to index 5
-    await vi.advanceTimersByTimeAsync(2000);
+    // fileLoaded triggers jump to saved index
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
     expect(mpv.jumpTo).toHaveBeenCalledWith(5);
 
-    // After another 3s delay, should seek to 42s
-    await vi.advanceTimersByTimeAsync(3000);
+    // Second fileLoaded (after jump) triggers seek
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
     expect(mpv.seek).toHaveBeenCalledWith(42);
   });
 

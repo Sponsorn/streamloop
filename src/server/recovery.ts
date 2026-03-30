@@ -138,20 +138,45 @@ export class RecoveryEngine {
       ? savedState.playlistIndex : 0;
     const playlist = this.config.playlists[playlistIndex];
     const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
-    logger.info({ playlistId: playlist.id, videoIndex: savedState.videoIndex }, 'Loading playlist in mpv');
+    logger.info({ playlistId: playlist.id, videoIndex: savedState.videoIndex, currentTime: savedState.currentTime }, 'Loading playlist in mpv');
     this.addEvent(`Loading playlist ${playlist.name || playlist.id}`);
     await this.mpv.loadPlaylist(url);
-    // Jump to saved position after a delay for playlist to load
-    setTimeout(async () => {
+
+    // Wait for the file to load, then jump to saved position
+    const jumpIndex = savedState.videoIndex;
+    const seekTime = savedState.currentTime;
+
+    const onFileLoaded = async () => {
+      this.mpv.removeListener('fileLoaded', onFileLoaded);
       try {
-        if (savedState.videoIndex > 0) await this.mpv.jumpTo(savedState.videoIndex);
-        if (savedState.currentTime > 0) {
-          setTimeout(async () => {
-            try { await this.mpv.seek(savedState.currentTime); } catch { /* ignore */ }
-          }, 3000);
+        if (jumpIndex > 0) {
+          await this.mpv.jumpTo(jumpIndex);
+          // Wait for the jumped-to file to load before seeking
+          if (seekTime > 0) {
+            const onSeekFileLoaded = async () => {
+              this.mpv.removeListener('fileLoaded', onSeekFileLoaded);
+              try {
+                logger.info({ seekTime }, 'Seeking to saved position');
+                await this.mpv.seek(seekTime);
+              } catch { /* ignore */ }
+            };
+            this.mpv.on('fileLoaded', onSeekFileLoaded);
+            // Timeout fallback in case fileLoaded doesn't fire
+            setTimeout(() => {
+              this.mpv.removeListener('fileLoaded', onSeekFileLoaded);
+            }, 15000);
+          }
+        } else if (seekTime > 0) {
+          logger.info({ seekTime }, 'Seeking to saved position');
+          await this.mpv.seek(seekTime);
         }
       } catch { /* ignore */ }
-    }, 2000);
+    };
+    this.mpv.on('fileLoaded', onFileLoaded);
+    // Timeout fallback
+    setTimeout(() => {
+      this.mpv.removeListener('fileLoaded', onFileLoaded);
+    }, 15000);
   }
 
   // --- Private: event log ---
@@ -429,7 +454,7 @@ export class RecoveryEngine {
       this.addEvent(`Periodic mpv restart (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
       try {
         await this.mpv.restart();
-        await this.loadCurrentPlaylist();
+        // onMpvConnect will call loadCurrentPlaylist
       } catch (err) {
         logger.error({ err }, 'Periodic mpv restart failed');
       }
@@ -466,7 +491,7 @@ export class RecoveryEngine {
       case RecoveryStep.RestartMpv: {
         try {
           await this.mpv.restart();
-          await this.loadCurrentPlaylist();
+          // onMpvConnect will call loadCurrentPlaylist
         } catch (err) {
           logger.warn({ err }, 'mpv restart failed');
         }
