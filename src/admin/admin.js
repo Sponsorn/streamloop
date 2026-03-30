@@ -63,6 +63,9 @@ async function fetchApiToken() {
 
 async function api(url, opts) {
   if (!opts) opts = {};
+  if (opts.body && typeof opts.body === 'string') {
+    opts.headers = { 'Content-Type': 'application/json', ...opts.headers };
+  }
   if (apiToken) {
     opts.headers = { ...opts.headers, 'X-API-Token': apiToken };
   }
