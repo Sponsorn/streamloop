@@ -1,3 +1,34 @@
+## v2.0.0
+
+### Breaking Changes
+
+- **mpv replaces the OBS Browser Source player.** StreamLoop now uses mpv (bundled) to play YouTube playlists, controlled via Windows named pipe IPC. This eliminates the Chromium memory leak that caused playback stalls on low-RAM systems. **You must set up a Window Capture source in OBS instead of a Browser Source.** Download the full v2.0.0 ZIP — the auto-updater from v1.x cannot upgrade to this version.
+
+- **Now Playing overlay requires a separate Browser Source.** Add a Browser Source in OBS pointing to `http://localhost:7654/overlay` and layer it above the Window Capture.
+
+### New Features
+
+- **Playlist selector and playback controls.** The dashboard Monitor tab now has a playlist dropdown, transport controls (previous/pause/next/stop), seek bar, and a paginated video list. Click any video to play it.
+
+- **Stop button.** Intentionally pause playback without the server auto-resuming. The stop button prevents recovery from restarting the video.
+
+- **Shutdown button.** Cleanly stop StreamLoop (mpv, server, all processes) from the Settings tab.
+
+- **System memory in Discord webhooks.** Recovery and critical alerts include RAM usage.
+
+- **Zombie OBS process detection.** If OBS is running but unresponsive to WebSocket after 5 attempts, it's force-killed and relaunched.
+
+- **yt-dlp update from dashboard.** Update yt-dlp to the latest version from the Settings tab to keep up with YouTube changes.
+
+### Migration from v1.x
+
+1. Download the full v2.0.0 ZIP and extract to a new folder
+2. Copy `config.json` and `state.json` from your old installation
+3. In OBS: remove the old Browser Source, add a **Window Capture** (select mpv window) and a **Browser Source** for the overlay (`http://localhost:7654/overlay`)
+4. Run `START.bat`
+
+---
+
 ## v1.4.3
 
 ### Bug Fixes
