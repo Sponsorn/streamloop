@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
 import { RecoveryEngine } from '../recovery.js';
-import type { AppConfig } from '../types.js';
-import type { PlayerWebSocket } from '../websocket.js';
+import { RecoveryStep, type AppConfig } from '../types.js';
+import type { MpvClient } from '../mpv-client.js';
 import type { StateManager } from '../state.js';
 import type { OBSClient } from '../obs-client.js';
 import type { DiscordNotifier } from '../discord.js';
@@ -51,28 +52,42 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   };
 }
 
-function mockWs() {
-  let msgCb: Function = () => {};
-  let connectCb: Function = () => {};
-  let disconnectCb: Function = () => {};
-  return {
-    onMessage: vi.fn((cb: Function) => { msgCb = cb; }),
-    onConnect: vi.fn((cb: Function) => { connectCb = cb; }),
-    onDisconnect: vi.fn((cb: Function) => { disconnectCb = cb; }),
-    send: vi.fn(),
-    isConnected: vi.fn(() => false),
-    close: vi.fn(),
-    _triggerMessage: (msg: any) => msgCb(msg),
-    _triggerConnect: () => connectCb(),
-    _triggerDisconnect: () => disconnectCb(),
-  } as unknown as PlayerWebSocket & {
-    _triggerMessage: (msg: any) => void;
-    _triggerConnect: () => void;
-    _triggerDisconnect: () => void;
+function mockMpv() {
+  const emitter = new EventEmitter();
+  const mock = {
+    on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+      emitter.on(event, handler);
+      return mock;
+    }),
+    isConnected: vi.fn(() => true),
+    isRunning: vi.fn(() => true),
+    getProperty: vi.fn(async (name: string) => {
+      switch (name) {
+        case 'time-pos': return 0;
+        case 'duration': return 0;
+        case 'pause': return false;
+        case 'idle-active': return false;
+        case 'playlist-pos': return 0;
+        case 'playlist-count': return 0;
+        case 'media-title': return '';
+        case 'filename': return '';
+        default: return null;
+      }
+    }),
+    setProperty: vi.fn(async () => {}),
+    loadPlaylist: vi.fn(async () => {}),
+    jumpTo: vi.fn(async () => {}),
+    seek: vi.fn(async () => {}),
+    next: vi.fn(async () => {}),
+    restart: vi.fn(async () => {}),
+    _emit: (event: string, ...args: any[]) => emitter.emit(event, ...args),
   };
+  return mock;
 }
 
-function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: number; videoId: string; videoTitle: string; currentTime: number; videoDuration: number; updatedAt: string }> = {}) {
+type MockMpv = ReturnType<typeof mockMpv>;
+
+function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: number; videoId: string; videoTitle: string; currentTime: number; videoDuration: number; nextVideoId: string; updatedAt: string }> = {}) {
   const state = {
     playlistIndex: 0,
     videoIndex: 0,
@@ -80,6 +95,7 @@ function mockState(overrides: Partial<{ playlistIndex: number; videoIndex: numbe
     videoTitle: '',
     currentTime: 0,
     videoDuration: 0,
+    nextVideoId: '',
     updatedAt: '',
     ...overrides,
   };
@@ -117,392 +133,420 @@ describe('RecoveryEngine', () => {
     vi.useRealTimers();
   });
 
-  it('sends loadPlaylist on player connect with first playlist', () => {
-    const ws = mockWs();
-    const state = mockState({ videoIndex: 5 });
-    const engine = new RecoveryEngine(makeConfig(), ws, state, mockObs(), mockDiscord());
+  it('loads playlist on mpv connect', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5, currentTime: 42 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
     engine.start();
 
-    ws._triggerConnect();
-
-    expect((ws as any).send).toHaveBeenCalledWith({
-      type: 'loadPlaylist',
-      playlistId: 'PL123',
-      index: 5,
-      loop: true,
-      startTime: 0,
-    });
-  });
-
-  it('sends loadPlaylist with correct playlist based on playlistIndex', () => {
-    const ws = mockWs();
-    const state = mockState({ playlistIndex: 1, videoIndex: 3 });
-    const config = makeConfig({ playlists: [{ id: 'PLA' }, { id: 'PLB' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
-    engine.start();
-
-    ws._triggerConnect();
-
-    expect((ws as any).send).toHaveBeenCalledWith({
-      type: 'loadPlaylist',
-      playlistId: 'PLB',
-      index: 3,
-      loop: false,
-      startTime: 0,
-    });
-  });
-
-  it('clamps out-of-range playlistIndex to 0', () => {
-    const ws = mockWs();
-    const state = mockState({ playlistIndex: 5, videoIndex: 0 });
-    const config = makeConfig({ playlists: [{ id: 'PLA' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
-    engine.start();
-
-    ws._triggerConnect();
-
-    expect((ws as any).send).toHaveBeenCalledWith({
-      type: 'loadPlaylist',
-      playlistId: 'PLA',
-      index: 0,
-      loop: true,
-      startTime: 0,
-    });
-  });
-
-  it('updates state on heartbeat', () => {
-    const ws = mockWs();
-    const state = mockState();
-    const engine = new RecoveryEngine(makeConfig(), ws, state, mockObs(), mockDiscord());
-    engine.start();
-
-    ws._triggerMessage({
-      type: 'heartbeat',
-      videoIndex: 3,
-      videoId: 'abc',
-      videoTitle: 'Test Video',
-      playerState: 1,
-      currentTime: 99,
-      videoDuration: 300,
-    });
-
-    expect(state.update).toHaveBeenCalledWith({
-      videoIndex: 3,
-      videoId: 'abc',
-      videoTitle: 'Test Video',
-      currentTime: 99,
-      videoDuration: 300,
-      nextVideoId: '',
-    });
-  });
-
-  it('skips immediately on error codes 100, 101, 150', async () => {
-    const ws = mockWs();
-    const discord = mockDiscord();
-    const state = mockState();
-    const engine = new RecoveryEngine(makeConfig(), ws, state, mockObs(), discord);
-    engine.start();
-
-    // Simulate playlistLoaded so totalVideos is set
-    ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 10 });
-
-    ws._triggerMessage({ type: 'error', errorCode: 150, videoIndex: 2, videoId: 'bad' });
-
+    mpv._emit('connected');
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(discord.notifySkip).toHaveBeenCalled();
-    expect((ws as any).send).toHaveBeenCalledWith({ type: 'skip', index: 3 });
+    expect(mpv.loadPlaylist).toHaveBeenCalledWith(
+      'https://www.youtube.com/playlist?list=PL123'
+    );
   });
 
-  it('retries on non-skip errors up to maxConsecutiveErrors then skips', async () => {
-    const ws = mockWs();
-    const discord = mockDiscord();
-    const state = mockState();
-    const config = makeConfig({ maxConsecutiveErrors: 2, recoveryDelayMs: 100 });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), discord);
+  it('loads correct playlist based on playlistIndex', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ playlistIndex: 1, videoIndex: 3 });
+    const config = makeConfig({ playlists: [{ id: 'PLA' }, { id: 'PLB' }] });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
     engine.start();
 
-    ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 10 });
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
 
-    // First error → retry
-    ws._triggerMessage({ type: 'error', errorCode: 5, videoIndex: 1, videoId: 'v1' });
+    expect(mpv.loadPlaylist).toHaveBeenCalledWith(
+      'https://www.youtube.com/playlist?list=PLB'
+    );
+  });
+
+  it('clamps out-of-range playlistIndex to 0', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ playlistIndex: 5, videoIndex: 0 });
+    const config = makeConfig({ playlists: [{ id: 'PLA' }] });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mpv.loadPlaylist).toHaveBeenCalledWith(
+      'https://www.youtube.com/playlist?list=PLA'
+    );
+  });
+
+  it('jumps to saved video index after playlist load delay', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5, currentTime: 42 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // After 2s delay, should jump to index 5
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mpv.jumpTo).toHaveBeenCalledWith(5);
+
+    // After another 3s delay, should seek to 42s
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mpv.seek).toHaveBeenCalledWith(42);
+  });
+
+  it('updates state from heartbeat poll', async () => {
+    const mpv = mockMpv();
+    const state = mockState();
+    const config = makeConfig({ heartbeatIntervalMs: 5000 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+
+    // Configure getProperty to return playing state
+    mpv.getProperty.mockImplementation(async (name: string) => {
+      switch (name) {
+        case 'time-pos': return 99;
+        case 'duration': return 300;
+        case 'pause': return false;
+        case 'idle-active': return false;
+        case 'playlist-pos': return 3;
+        case 'playlist-count': return 10;
+        case 'media-title': return 'Test Video';
+        case 'filename': return 'https://www.youtube.com/watch?v=abc123';
+        default: return null;
+      }
+    });
+
+    engine.start();
+
+    // Advance one heartbeat interval
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(state.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        videoIndex: 3,
+        videoId: 'abc123',
+        videoTitle: 'Test Video',
+        videoDuration: 300,
+        currentTime: 99,
+      })
+    );
+  });
+
+  it('skips heartbeat poll when mpv is not connected', async () => {
+    const mpv = mockMpv();
+    mpv.isConnected.mockReturnValue(false);
+    const state = mockState();
+    const config = makeConfig({ heartbeatIntervalMs: 5000 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(mpv.getProperty).not.toHaveBeenCalled();
+  });
+
+  it('handles fileEnded error by incrementing errors', async () => {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 2, videoId: 'v1' });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), discord);
+    engine.start();
+
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(discord.notifyError).toHaveBeenCalledWith(2, 'v1', 0, 1);
+  });
+
+  it('skips to next video after maxConsecutiveErrors file-ended errors', async () => {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 1, videoId: 'v1' });
+    const config = makeConfig({ maxConsecutiveErrors: 2 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), discord);
+    engine.start();
+
+    // First error
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.next).not.toHaveBeenCalled();
+
+    // Second error -> skip
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.next).toHaveBeenCalled();
+  });
+
+  it('resets consecutive errors on eof', async () => {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 1, videoId: 'v1' });
+    const config = makeConfig({ maxConsecutiveErrors: 3 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), discord);
+    engine.start();
+
+    // One error
+    mpv._emit('fileEnded', 'error');
     await vi.advanceTimersByTimeAsync(0);
     expect(discord.notifyError).toHaveBeenCalledTimes(1);
 
-    // Second error → skip
-    ws._triggerMessage({ type: 'error', errorCode: 5, videoIndex: 1, videoId: 'v1' });
+    // EOF resets counter
+    mpv._emit('fileEnded', 'eof');
     await vi.advanceTimersByTimeAsync(0);
-    expect(discord.notifySkip).toHaveBeenCalledTimes(1);
+
+    // Another error — should be count 1, not 2
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(discord.notifyError).toHaveBeenLastCalledWith(1, 'v1', 0, 1);
   });
 
-  it('advances to next playlist when skipping past last video with 2 playlists', async () => {
-    const ws = mockWs();
-    const state = mockState({ playlistIndex: 0 });
-    const config = makeConfig({ playlists: [{ id: 'PLA' }, { id: 'PLB' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
-    engine.start();
+  describe('stall detection', () => {
+    function setupStallTest(configOverrides: Partial<AppConfig> = {}) {
+      const mpv = mockMpv();
+      const discord = mockDiscord();
+      const state = mockState();
+      const config = makeConfig({ heartbeatIntervalMs: 5000, ...configOverrides });
+      const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), discord);
 
-    ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 3 });
+      let currentTimePos = 10;
+      mpv.getProperty.mockImplementation(async (name: string) => {
+        switch (name) {
+          case 'time-pos': return currentTimePos;
+          case 'duration': return 300;
+          case 'pause': return false;
+          case 'idle-active': return false;
+          case 'playlist-pos': return 0;
+          case 'playlist-count': return 10;
+          case 'media-title': return 'Test';
+          case 'filename': return 'test';
+          default: return null;
+        }
+      });
 
-    // Skip error on last video (index 2, totalVideos 3)
-    ws._triggerMessage({ type: 'error', errorCode: 150, videoIndex: 2, videoId: 'last' });
-    await vi.advanceTimersByTimeAsync(0);
+      return {
+        mpv, discord, state, engine,
+        setTimePos: (t: number) => { currentTimePos = t; },
+      };
+    }
 
-    // Should send loadPlaylist for PLB at index 0
-    expect((ws as any).send).toHaveBeenCalledWith({
-      type: 'loadPlaylist',
-      playlistId: 'PLB',
-      index: 0,
-      loop: false,
+    it('triggers recovery after 3 stalled heartbeats', async () => {
+      const { mpv, discord, engine, setTimePos } = setupStallTest();
+      engine.start();
+
+      // First heartbeat — establishes baseline
+      setTimePos(50);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // Next 3 heartbeats at same position — stalled
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(5000);
+      }
+
+      expect(discord.notifyRecovery).toHaveBeenCalledWith('Stall detected');
     });
-    // State should be updated to playlist 1
-    expect(state.update).toHaveBeenCalledWith({
-      playlistIndex: 1,
-      videoIndex: 0,
-      videoId: '',
-      currentTime: 0,
+
+    it('does not trigger recovery when time advances', async () => {
+      const { mpv, discord, engine, setTimePos } = setupStallTest();
+      engine.start();
+
+      setTimePos(50);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      setTimePos(55);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      setTimePos(60);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      setTimePos(65);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // Only the standard recovery step notifications, not stall detection
+      expect(discord.notifyRecovery).not.toHaveBeenCalledWith('Stall detected');
+    });
+
+    it('resets stall counter when progress resumes', async () => {
+      const { discord, engine, setTimePos } = setupStallTest();
+      engine.start();
+
+      // Establish baseline
+      setTimePos(50);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // 2 stalled heartbeats (not at threshold yet)
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // Progress resumes
+      setTimePos(55);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // 2 more stalled heartbeats — should NOT trigger (counter was reset)
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(discord.notifyRecovery).not.toHaveBeenCalledWith('Stall detected');
     });
   });
 
-  it('single playlist wraps back to itself when skipping past last video', async () => {
-    const ws = mockWs();
-    const state = mockState({ playlistIndex: 0 });
-    const config = makeConfig({ playlists: [{ id: 'PLonly' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
-    engine.start();
-
-    ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 2 });
-
-    ws._triggerMessage({ type: 'error', errorCode: 100, videoIndex: 1, videoId: 'last' });
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Should reload same playlist at index 0 (wrap: (0+1) % 1 = 0)
-    expect((ws as any).send).toHaveBeenCalledWith({
-      type: 'loadPlaylist',
-      playlistId: 'PLonly',
-      index: 0,
-      loop: true,
-    });
-  });
-
-  it('stateChange ENDED on last video advances to next playlist', async () => {
-    const ws = mockWs();
-    const state = mockState({ playlistIndex: 0 });
-    const config = makeConfig({ playlists: [{ id: 'PLA' }, { id: 'PLB' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
-    engine.start();
-
-    ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 5 });
-
-    // Simulate ENDED (playerState 0) on last video (index 4)
-    ws._triggerMessage({ type: 'stateChange', playerState: 0, videoIndex: 4, videoId: 'last', videoTitle: '' });
-
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect((ws as any).send).toHaveBeenCalledWith({
-      type: 'loadPlaylist',
-      playlistId: 'PLB',
-      index: 0,
-      loop: false,
-    });
-  });
-
-  it('stateChange ENDED on last video does NOT advance with single playlist', async () => {
-    const ws = mockWs();
-    const state = mockState({ playlistIndex: 0 });
-    const config = makeConfig({ playlists: [{ id: 'PLonly' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
-    engine.start();
-
-    ws._triggerMessage({ type: 'playlistLoaded', totalVideos: 3 });
-
-    ws._triggerMessage({ type: 'stateChange', playerState: 0, videoIndex: 2, videoId: 'last', videoTitle: '' });
-
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Should NOT send loadPlaylist (YouTube auto-loops single playlists)
-    const loadCalls = (ws as any).send.mock.calls.filter(
-      (c: any) => c[0].type === 'loadPlaylist'
-    );
-    expect(loadCalls).toHaveLength(0);
-  });
-
-  it('getStatus includes playlist info', () => {
-    const ws = mockWs();
+  it('getStatus includes playlist info and mpv state', () => {
+    const mpv = mockMpv();
+    mpv.isConnected.mockReturnValue(true);
+    mpv.isRunning.mockReturnValue(true);
     const state = mockState({ playlistIndex: 1 });
     const config = makeConfig({ playlists: [{ id: 'PLA' }, { id: 'PLB' }, { id: 'PLC' }] });
-    const engine = new RecoveryEngine(config, ws, state, mockObs(), mockDiscord());
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
     engine.start();
 
     const status = engine.getStatus();
     expect(status.playlistIndex).toBe(1);
     expect(status.totalPlaylists).toBe(3);
     expect(status.currentPlaylistId).toBe('PLB');
+    expect(status.mpvConnected).toBe(true);
+    expect(status.mpvRunning).toBe(true);
   });
 
   it('stops cleanly', () => {
-    const ws = mockWs();
-    const engine = new RecoveryEngine(makeConfig(), ws, mockState(), mockObs(), mockDiscord());
+    const mpv = mockMpv();
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, mockState(), mockObs(), mockDiscord());
     engine.start();
     engine.stop();
     // Should not throw
   });
 
-  describe('quality recovery', () => {
-    let _timeCounter = 100;
-    function sendHeartbeat(ws: ReturnType<typeof mockWs>, quality: string, overrides: Record<string, unknown> = {}) {
-      _timeCounter += 10;
-      ws._triggerMessage({
-        type: 'heartbeat',
-        videoIndex: 0,
-        videoId: 'vid1',
-        videoTitle: 'Test',
-        playerState: 1,
-        currentTime: _timeCounter,
-        videoDuration: 300,
-        playbackQuality: quality,
-        ...overrides,
+  describe('recovery escalation', () => {
+    it('escalates through RetryCurrent -> RestartMpv -> CriticalAlert', async () => {
+      const mpv = mockMpv();
+      mpv.isConnected.mockReturnValue(false); // prevent heartbeat polls from interfering
+      const discord = mockDiscord();
+      const config = makeConfig({ recoveryDelayMs: 5000, heartbeatTimeoutMs: 15000 });
+      const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, mockState(), mockObs(), discord);
+      engine.start();
+
+      // Trigger heartbeat timeout: disconnect mpv and wait
+      await vi.advanceTimersByTimeAsync(20000);
+
+      // Should have started recovery with RetryCurrent
+      expect(discord.notifyRecovery).toHaveBeenCalledWith(RecoveryStep.RetryCurrent);
+      expect(mpv.jumpTo).toHaveBeenCalled();
+
+      // Advance past recoveryDelayMs for next step
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(discord.notifyRecovery).toHaveBeenCalledWith(RecoveryStep.RestartMpv);
+      expect(mpv.restart).toHaveBeenCalled();
+
+      // Advance 15s for CriticalAlert
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(discord.notifyCritical).toHaveBeenCalled();
+    });
+  });
+
+  describe('playlist advancement on eof', () => {
+    it('advances to next playlist when last video ends with eof', async () => {
+      const mpv = mockMpv();
+      const state = mockState({ playlistIndex: 0 });
+      const config = makeConfig({ playlists: [{ id: 'PLA' }, { id: 'PLB' }], heartbeatIntervalMs: 5000 });
+      const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+
+      // Set up poll to return last video in playlist
+      mpv.getProperty.mockImplementation(async (name: string) => {
+        switch (name) {
+          case 'time-pos': return 100;
+          case 'duration': return 300;
+          case 'pause': return false;
+          case 'idle-active': return false;
+          case 'playlist-pos': return 4;
+          case 'playlist-count': return 5;
+          case 'media-title': return 'Last Video';
+          case 'filename': return 'last';
+          default: return null;
+        }
       });
-    }
 
-    it('triggers RefreshSource after sustained low quality', async () => {
-      const ws = mockWs();
-      const obs = mockObs();
-      const discord = mockDiscord();
-      // Short delay: 3 heartbeats at 5000ms interval
-      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
-      const engine = new RecoveryEngine(config, ws, mockState(), obs, discord);
       engine.start();
 
-      // Send 3 low-quality heartbeats (threshold = ceil(15000/5000) = 3)
-      let time = 10;
-      for (let i = 0; i < 3; i++) {
-        time += 5;
-        sendHeartbeat(ws, 'medium', { currentTime: time });
-      }
+      // Let a heartbeat tick to set totalVideos
+      await vi.advanceTimersByTimeAsync(5000);
 
+      // Now emit eof on last video
+      // Update state to match what processHeartbeat would have set
+      (state.get as any).mockReturnValue({ playlistIndex: 0, videoIndex: 4, videoId: 'last', videoTitle: 'Last Video', currentTime: 100, videoDuration: 300, nextVideoId: '', updatedAt: '' });
+
+      mpv._emit('fileEnded', 'eof');
       await vi.advanceTimersByTimeAsync(0);
-      expect(obs.refreshBrowserSource).toHaveBeenCalled();
-      expect(discord.notifyRecovery).toHaveBeenCalledWith(
-        expect.stringContaining('medium')
+
+      expect(mpv.loadPlaylist).toHaveBeenCalledWith(
+        'https://www.youtube.com/playlist?list=PLB'
+      );
+      expect(state.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          playlistIndex: 1,
+          videoIndex: 0,
+        })
       );
     });
 
-    it('uses heartbeatIntervalMs for threshold calculation, not hardcoded 5000', async () => {
-      const ws = mockWs();
-      const obs = mockObs();
-      // 10000ms delay, 2000ms heartbeat interval → threshold = 5
-      const config = makeConfig({ qualityRecoveryDelayMs: 10000, heartbeatIntervalMs: 2000 });
-      const engine = new RecoveryEngine(config, ws, mockState(), obs, mockDiscord());
-      engine.start();
+    it('does not advance on eof with single playlist', async () => {
+      const mpv = mockMpv();
+      const state = mockState({ playlistIndex: 0 });
+      const config = makeConfig({ playlists: [{ id: 'PLonly' }], heartbeatIntervalMs: 5000 });
+      const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
 
-      let time = 10;
-      // 4 heartbeats should NOT trigger (threshold is 5)
-      for (let i = 0; i < 4; i++) {
-        time += 5;
-        sendHeartbeat(ws, 'small', { currentTime: time });
+      mpv.getProperty.mockImplementation(async (name: string) => {
+        switch (name) {
+          case 'time-pos': return 100;
+          case 'duration': return 300;
+          case 'pause': return false;
+          case 'idle-active': return false;
+          case 'playlist-pos': return 1;
+          case 'playlist-count': return 2;
+          case 'media-title': return 'Last';
+          case 'filename': return 'last';
+          default: return null;
+        }
+      });
+
+      engine.start();
+      await vi.advanceTimersByTimeAsync(5000);
+
+      (state.get as any).mockReturnValue({ playlistIndex: 0, videoIndex: 1, videoId: 'last', videoTitle: 'Last', currentTime: 100, videoDuration: 300, nextVideoId: '', updatedAt: '' });
+
+      mpv.loadPlaylist.mockClear();
+      mpv._emit('fileEnded', 'eof');
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Should NOT load a new playlist
+      expect(mpv.loadPlaylist).not.toHaveBeenCalled();
+    });
+  });
+
+  it('extracts video ID from YouTube URLs in filename', async () => {
+    const mpv = mockMpv();
+    const state = mockState();
+    const config = makeConfig({ heartbeatIntervalMs: 5000 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+
+    mpv.getProperty.mockImplementation(async (name: string) => {
+      switch (name) {
+        case 'time-pos': return 50;
+        case 'duration': return 300;
+        case 'pause': return false;
+        case 'idle-active': return false;
+        case 'playlist-pos': return 0;
+        case 'playlist-count': return 5;
+        case 'media-title': return 'My Video';
+        case 'filename': return 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+        default: return null;
       }
-      expect(obs.refreshBrowserSource).not.toHaveBeenCalled();
-
-      // 5th heartbeat should trigger
-      sendHeartbeat(ws, 'small', { currentTime: time + 5 });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(obs.refreshBrowserSource).toHaveBeenCalled();
     });
 
-    it('decays counter gradually when quality improves instead of hard reset', async () => {
-      const ws = mockWs();
-      const obs = mockObs();
-      // threshold = ceil(15000/5000) = 3
-      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
-      const engine = new RecoveryEngine(config, ws, mockState(), obs, mockDiscord());
-      engine.start();
+    engine.start();
+    await vi.advanceTimersByTimeAsync(5000);
 
-      let time = 10;
-      // 2 low quality heartbeats
-      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
-      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
-
-      // 1 good heartbeat — decays by 1 (from 2 to 1), not reset to 0
-      sendHeartbeat(ws, 'hd720', { currentTime: time += 5 });
-
-      // 1 more low quality — counter goes from 1 to 2, not threshold yet
-      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
-      expect(obs.refreshBrowserSource).not.toHaveBeenCalled();
-
-      // 1 more low quality — counter goes from 2 to 3, hits threshold
-      sendHeartbeat(ws, 'medium', { currentTime: time += 5 });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(obs.refreshBrowserSource).toHaveBeenCalled();
-    });
-
-    it('quality recovery escalates through ToggleVisibility when quality stays low', async () => {
-      const ws = mockWs();
-      const obs = mockObs();
-      const discord = mockDiscord();
-      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
-      const engine = new RecoveryEngine(config, ws, mockState(), obs, discord);
-      engine.start();
-
-      let time = 10;
-      // Trigger quality recovery (3 heartbeats)
-      for (let i = 0; i < 3; i++) {
-        sendHeartbeat(ws, 'small', { currentTime: time += 5 });
-      }
-      await vi.advanceTimersByTimeAsync(0);
-      expect(obs.refreshBrowserSource).toHaveBeenCalledTimes(1);
-
-      // Keep sending low quality heartbeats during recovery to keep playbackQuality low
-      sendHeartbeat(ws, 'small', { currentTime: time += 5 });
-
-      // Advance past the 15s scheduled next step
-      await vi.advanceTimersByTimeAsync(15000);
-
-      // Should have escalated to ToggleVisibility
-      expect(obs.toggleBrowserSource).toHaveBeenCalled();
-    });
-
-    it('quality recovery cancels escalation when quality improves', async () => {
-      const ws = mockWs();
-      const obs = mockObs();
-      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000 });
-      const engine = new RecoveryEngine(config, ws, mockState(), obs, mockDiscord());
-      engine.start();
-
-      let time = 10;
-      // Trigger quality recovery
-      for (let i = 0; i < 3; i++) {
-        sendHeartbeat(ws, 'small', { currentTime: time += 5 });
-      }
-      await vi.advanceTimersByTimeAsync(0);
-      expect(obs.refreshBrowserSource).toHaveBeenCalledTimes(1);
-
-      // Quality improves — update playbackQuality via heartbeat
-      sendHeartbeat(ws, 'hd1080', { currentTime: time += 5 });
-
-      // Advance past the scheduled escalation
-      await vi.advanceTimersByTimeAsync(15000);
-
-      // Should NOT have escalated — recovery cancelled
-      expect(obs.toggleBrowserSource).not.toHaveBeenCalled();
-    });
-
-    it('Discord notification includes quality details', async () => {
-      const ws = mockWs();
-      const discord = mockDiscord();
-      const config = makeConfig({ qualityRecoveryDelayMs: 15000, heartbeatIntervalMs: 5000, minQuality: 'hd720' });
-      const engine = new RecoveryEngine(config, ws, mockState(), mockObs(), discord);
-      engine.start();
-
-      let time = 10;
-      for (let i = 0; i < 3; i++) {
-        sendHeartbeat(ws, 'large', { currentTime: time += 5 });
-      }
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(discord.notifyRecovery).toHaveBeenCalledWith(
-        expect.stringMatching(/large.*hd720/)
-      );
-    });
+    expect(state.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        videoId: 'dQw4w9WgXcQ',
+      })
+    );
   });
 });

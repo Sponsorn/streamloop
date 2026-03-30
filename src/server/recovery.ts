@@ -1,6 +1,6 @@
 import { freemem, totalmem } from 'os';
-import { RecoveryStep, type AppConfig, type PlayerMessage } from './types.js';
-import type { PlayerWebSocket } from './websocket.js';
+import { RecoveryStep, type AppConfig, type MpvHeartbeat } from './types.js';
+import type { MpvClient } from './mpv-client.js';
 import type { StateManager } from './state.js';
 import type { OBSClient } from './obs-client.js';
 import type { DiscordNotifier } from './discord.js';
@@ -18,7 +18,6 @@ function getSystemMemory() {
   };
 }
 
-const SKIP_ERROR_CODES = new Set([100, 101, 150]);
 const MAX_EVENT_LOG = 100;
 
 export interface EventLogEntry {
@@ -28,63 +27,62 @@ export interface EventLogEntry {
 
 export class RecoveryEngine {
   private config: AppConfig;
-  private ws: PlayerWebSocket;
+  private mpv: MpvClient;
   private state: StateManager;
   private obs: OBSClient;
   private discord: DiscordNotifier;
 
   private consecutiveErrors = 0;
   private lastHeartbeatAt = Date.now();
-  private heartbeatCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatPollTimer: ReturnType<typeof setInterval> | null = null;
   private recoveryStep = RecoveryStep.None;
-  private recoveryReason: 'heartbeat' | 'stall' | 'quality' | 'non-playing' | null = null;
+  private recoveryReason: 'heartbeat' | 'stall' | 'non-playing' | null = null;
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private errorRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private totalVideos = 0;
   private startedAt = Date.now();
   private eventLog: EventLogEntry[] = [];
-  private consecutivePausedHeartbeats = 0;
   private lastProgressTime = 0;
   private stalledHeartbeats = 0;
   private playbackQuality = '';
   private lowQualityHeartbeats = 0;
   private nonPlayingHeartbeats = 0;
-  private sourceRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly STALL_THRESHOLD = 3; // consecutive heartbeats with no progress while "playing"
-  private static readonly NON_PLAYING_THRESHOLD = 6; // ~30s of heartbeats without reaching playing state
+  private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly STALL_THRESHOLD = 3;
+  private static readonly NON_PLAYING_THRESHOLD = 6;
   private static readonly QUALITY_RANKS: Record<string, number> = {
     small: 0, medium: 1, large: 2, hd720: 3, hd1080: 4, hd1440: 5, hd2160: 6, highres: 7,
   };
 
   constructor(
     config: AppConfig,
-    ws: PlayerWebSocket,
+    mpv: MpvClient,
     state: StateManager,
     obs: OBSClient,
     discord: DiscordNotifier,
   ) {
     this.config = config;
-    this.ws = ws;
+    this.mpv = mpv;
     this.state = state;
     this.obs = obs;
     this.discord = discord;
   }
 
   start() {
-    this.ws.onMessage((msg) => this.handlePlayerMessage(msg));
-    this.ws.onConnect(() => this.onPlayerConnect());
-    this.ws.onDisconnect(() => this.onPlayerDisconnect());
-    this.startHeartbeatMonitor();
-    this.startSourceRefreshTimer();
-    // If player is already connected (e.g. after config reload), send playlist now
-    if (this.ws.isConnected()) {
-      this.onPlayerConnect();
+    this.mpv.on('connected', () => this.onMpvConnect());
+    this.mpv.on('disconnected', () => this.onMpvDisconnect());
+    this.mpv.on('fileEnded', (reason: string) => this.onFileEnded(reason));
+    this.mpv.on('processExit', () => this.onProcessExit());
+    this.startHeartbeatPoll();
+    this.startPeriodicRestartTimer();
+    if (this.mpv.isConnected()) {
+      this.onMpvConnect();
     }
   }
 
   stop() {
-    this.stopHeartbeatMonitor();
-    this.stopSourceRefreshTimer();
+    this.stopHeartbeatPoll();
+    this.stopPeriodicRestartTimer();
     this.clearRecoveryTimer();
     this.clearErrorRetryTimer();
   }
@@ -104,12 +102,40 @@ export class RecoveryEngine {
       currentPlaylistId: this.config.playlists[playlistIndex].id,
       playbackQuality: this.playbackQuality,
       systemMemory: getSystemMemory(),
+      mpvConnected: this.mpv.isConnected(),
+      mpvRunning: this.mpv.isRunning(),
     };
   }
 
   getEvents(): EventLogEntry[] {
     return [...this.eventLog];
   }
+
+  // --- Public: load playlist into mpv ---
+
+  async loadCurrentPlaylist() {
+    const savedState = this.state.get();
+    const playlistIndex = savedState.playlistIndex < this.config.playlists.length
+      ? savedState.playlistIndex : 0;
+    const playlist = this.config.playlists[playlistIndex];
+    const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
+    logger.info({ playlistId: playlist.id, videoIndex: savedState.videoIndex }, 'Loading playlist in mpv');
+    this.addEvent(`Loading playlist ${playlist.name || playlist.id}`);
+    await this.mpv.loadPlaylist(url);
+    // Jump to saved position after a delay for playlist to load
+    setTimeout(async () => {
+      try {
+        if (savedState.videoIndex > 0) await this.mpv.jumpTo(savedState.videoIndex);
+        if (savedState.currentTime > 0) {
+          setTimeout(async () => {
+            try { await this.mpv.seek(savedState.currentTime); } catch { /* ignore */ }
+          }, 3000);
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }
+
+  // --- Private: event log ---
 
   private addEvent(message: string) {
     this.eventLog.push({ timestamp: new Date().toISOString(), message });
@@ -118,215 +144,187 @@ export class RecoveryEngine {
     }
   }
 
-  private onPlayerConnect() {
+  // --- Private: mpv event handlers ---
+
+  private async onMpvConnect() {
     const resumeInfo = { videoIndex: this.state.get().videoIndex, currentTime: this.state.get().currentTime };
-    logger.info(resumeInfo, 'Player connected, sending playlist load');
-    this.addEvent(`Player connected — resuming video #${resumeInfo.videoIndex} at ${Math.floor(resumeInfo.currentTime)}s`);
+    logger.info(resumeInfo, 'mpv connected, loading playlist');
+    this.addEvent(`mpv connected — resuming video #${resumeInfo.videoIndex} at ${Math.floor(resumeInfo.currentTime)}s`);
     this.resetRecovery();
     this.lastHeartbeatAt = Date.now();
     this.nonPlayingHeartbeats = 0;
-
-    const savedState = this.state.get();
-    const playlistIndex = savedState.playlistIndex < this.config.playlists.length
-      ? savedState.playlistIndex : 0;
-    const playlist = this.config.playlists[playlistIndex];
-    this.ws.send({
-      type: 'loadPlaylist',
-      playlistId: playlist.id,
-      index: savedState.videoIndex,
-      loop: this.config.playlists.length === 1,
-      startTime: savedState.currentTime || 0,
-    });
+    await this.loadCurrentPlaylist();
   }
 
-  private onPlayerDisconnect() {
-    logger.warn('Player disconnected');
-    this.addEvent('Player disconnected');
-    // Heartbeat monitor will trigger recovery
+  private onMpvDisconnect() {
+    logger.warn('mpv disconnected');
+    this.addEvent('mpv disconnected');
+    // Heartbeat poll will detect timeout and trigger recovery
   }
 
-  private handlePaused() {
-    logger.info('Player paused, sending resume');
-    this.addEvent('Player paused — auto-resuming');
-    this.ws.send({ type: 'resume' });
-  }
-
-  private handlePlayerMessage(msg: PlayerMessage) {
-    switch (msg.type) {
-      case 'ready':
-        // Handled by onPlayerConnect
-        break;
-
-      case 'heartbeat':
-        this.lastHeartbeatAt = Date.now();
-        // Stall detection: player claims to be playing but currentTime isn't advancing
-        // YT.PlayerState.PLAYING === 1
-        if (msg.playerState === 1 && msg.currentTime > 0) {
-          if (Math.abs(msg.currentTime - this.lastProgressTime) < 1) {
-            this.stalledHeartbeats++;
-            if (this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
-              const mem = getSystemMemory();
-              const stallMsg = `Player stalled at ${Math.floor(msg.currentTime)}s on video #${msg.videoIndex} (${msg.videoId}) — no progress for ${this.stalledHeartbeats} heartbeats (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`;
-              logger.warn({ currentTime: msg.currentTime, stalledHeartbeats: this.stalledHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId, systemMemory: mem }, 'Player stalled — video not advancing');
-              this.addEvent(stallMsg);
-              this.discord.notifyRecovery('Stall detected');
-              this.recoveryReason = 'stall';
-              this.startRecoverySequence();
-            }
-          } else {
-            this.stalledHeartbeats = 0;
-            this.lastProgressTime = msg.currentTime;
-            // Don't cancel quality recovery just because video is progressing — quality is the issue, not playback
-            if (this.recoveryReason !== 'quality') {
-              this.resetRecovery();
-            }
-          }
-        } else {
-          this.stalledHeartbeats = 0;
-          this.lastProgressTime = msg.currentTime;
-          if (this.recoveryStep !== RecoveryStep.None && msg.playerState === 1 && this.recoveryReason !== 'quality') {
-            this.resetRecovery();
-          }
-        }
-        // Track playback quality for dashboard display
-        if (msg.playbackQuality) {
-          this.playbackQuality = msg.playbackQuality;
-        }
-        // Quality recovery: detect sustained low quality while playing
-        if (this.config.qualityRecoveryEnabled && msg.playbackQuality && msg.playerState === 1) {
-          const currentRank = RecoveryEngine.QUALITY_RANKS[msg.playbackQuality];
-          const minRank = RecoveryEngine.QUALITY_RANKS[this.config.minQuality] ?? 3;
-          if (currentRank === undefined) {
-            logger.warn({ quality: msg.playbackQuality }, 'Unknown playback quality string from YouTube API');
-          } else if (currentRank < minRank) {
-            this.lowQualityHeartbeats++;
-            const threshold = Math.ceil(this.config.qualityRecoveryDelayMs / this.config.heartbeatIntervalMs);
-            if (this.lowQualityHeartbeats >= threshold && this.recoveryStep === RecoveryStep.None) {
-              const qualityMsg = `Low quality (${msg.playbackQuality}) sustained for ${this.lowQualityHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
-              logger.warn({ quality: msg.playbackQuality, minQuality: this.config.minQuality, heartbeats: this.lowQualityHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Low quality detected — triggering recovery');
-              this.addEvent(qualityMsg);
-              this.discord.notifyRecovery(`Low quality recovery: ${msg.playbackQuality} (minimum: ${this.config.minQuality}) on video #${msg.videoIndex}`);
-              this.lowQualityHeartbeats = 0;
-              this.recoveryReason = 'quality';
-              this.executeStep(RecoveryStep.RefreshSource);
-            }
-          } else {
-            // Decay instead of hard reset to handle oscillation at threshold boundary
-            this.lowQualityHeartbeats = Math.max(0, this.lowQualityHeartbeats - 1);
-          }
-        } else if (msg.playerState !== 1) {
-          this.lowQualityHeartbeats = 0;
-        }
-        // Only write state when video is making progress — skip stale writes during stalls
-        if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {
-          const update: Record<string, unknown> = {
-            videoIndex: msg.videoIndex,
-            videoId: msg.videoId,
-            videoTitle: msg.videoTitle,
-            videoDuration: msg.videoDuration,
-            nextVideoId: msg.nextVideoId || '',
-          };
-          // Only update currentTime when playing or paused — don't overwrite
-          // a valid resume position with 0 during buffering/loading
-          if (msg.playerState === 1 || msg.playerState === 2 || msg.currentTime > 0) {
-            update.currentTime = msg.currentTime;
-          }
-          this.state.update(update);
-        }
-        // YT.PlayerState.PAUSED === 2 — only auto-resume after 2 consecutive paused heartbeats
-        if (msg.playerState === 2) {
-          this.consecutivePausedHeartbeats++;
-          if (this.consecutivePausedHeartbeats >= 2) {
-            this.handlePaused();
-          }
-        } else {
-          this.consecutivePausedHeartbeats = 0;
-        }
-        // Non-playing detection: player is connected and sending heartbeats but stuck in buffering/unstarted
-        // Skip detection before playlist is loaded — heartbeats during initial load are expected to be non-playing
-        if (msg.playerState === 1) {
-          this.nonPlayingHeartbeats = 0;
-        } else if (msg.playerState !== 2 && this.totalVideos > 0) { // paused is already handled above; skip before playlist loaded
-          this.nonPlayingHeartbeats++;
-          if (this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
-            const npMsg = `Player not playing (state ${msg.playerState}) for ${this.nonPlayingHeartbeats} heartbeats on video #${msg.videoIndex} (${msg.videoId})`;
-            logger.warn({ playerState: msg.playerState, heartbeats: this.nonPlayingHeartbeats, videoIndex: msg.videoIndex, videoId: msg.videoId }, 'Player stuck in non-playing state');
-            this.addEvent(npMsg);
-            this.discord.notifyRecovery('Non-playing recovery');
-            this.recoveryReason = 'non-playing';
-            this.startRecoverySequence();
-          }
-        }
-        break;
-
-      case 'stateChange':
-        this.lastHeartbeatAt = Date.now();
-        this.state.update({
-          videoIndex: msg.videoIndex,
-          videoId: msg.videoId,
-          videoTitle: msg.videoTitle,
-        });
-        // YT.PlayerState.PLAYING === 1
-        if (msg.playerState === 1) {
-          this.consecutiveErrors = 0;
-        }
-        // YT.PlayerState.ENDED === 0 — detect natural end of last video
-        if (msg.playerState === 0 && this.totalVideos > 0
-            && msg.videoIndex === this.totalVideos - 1
-            && this.config.playlists.length > 1) {
-          this.advanceToNextPlaylist();
-        }
-        break;
-
-      case 'playlistLoaded':
-        this.totalVideos = msg.totalVideos;
-        this.nonPlayingHeartbeats = 0;
-        logger.info({ totalVideos: msg.totalVideos }, 'Playlist loaded');
-        this.addEvent(`Playlist loaded with ${msg.totalVideos} videos`);
-        // Clamp videoIndex if out of bounds (e.g. state from a different playlist)
-        const currentVideoIndex = this.state.get().videoIndex;
-        if (msg.totalVideos > 0 && currentVideoIndex >= msg.totalVideos) {
-          logger.warn({ videoIndex: currentVideoIndex, totalVideos: msg.totalVideos }, 'videoIndex out of bounds, resetting to 0');
-          this.state.update({ videoIndex: 0 });
-          this.ws.send({ type: 'skip', index: 0 });
-        }
-        break;
-
-      case 'error':
-        this.handlePlaybackError(msg.errorCode, msg.videoIndex, msg.videoId);
-        break;
-    }
-  }
-
-  private async handlePlaybackError(errorCode: number, videoIndex: number, videoId: string) {
-    logger.error({ errorCode, videoIndex, videoId }, 'Playback error');
-    this.addEvent(`Playback error ${errorCode} on video #${videoIndex} (${videoId})`);
-
-    if (SKIP_ERROR_CODES.has(errorCode)) {
-      await this.skipVideo(videoIndex, videoId, `Error ${errorCode} (unavailable/not embeddable)`);
-      return;
-    }
-
-    this.consecutiveErrors++;
-    await this.discord.notifyError(videoIndex, videoId, errorCode, this.consecutiveErrors);
-
-    if (this.consecutiveErrors >= this.config.maxConsecutiveErrors) {
-      await this.skipVideo(videoIndex, videoId, `${this.consecutiveErrors} consecutive errors`);
+  private async onFileEnded(reason: string) {
+    if (reason === 'error') {
+      this.consecutiveErrors++;
+      const { videoIndex, videoId } = this.state.get();
+      logger.error({ videoIndex, videoId }, 'mpv playback error');
+      this.addEvent(`Playback error on video #${videoIndex} (${videoId})`);
+      await this.discord.notifyError(videoIndex, videoId, 0, this.consecutiveErrors);
+      if (this.consecutiveErrors >= this.config.maxConsecutiveErrors) {
+        try { await this.mpv.next(); } catch { /* ignore */ }
+        this.consecutiveErrors = 0;
+      }
+    } else if (reason === 'eof') {
       this.consecutiveErrors = 0;
-      return;
+      // Check if we need to advance to next playlist
+      if (this.totalVideos > 0 && this.config.playlists.length > 1) {
+        const currentState = this.state.get();
+        if (currentState.videoIndex >= this.totalVideos - 1) {
+          await this.advanceToNextPlaylist();
+        }
+      }
+    }
+  }
+
+  private onProcessExit() {
+    logger.warn('mpv process exited');
+    this.addEvent('mpv process exited');
+  }
+
+  // --- Private: heartbeat polling ---
+
+  private startHeartbeatPoll() {
+    this.lastHeartbeatAt = Date.now();
+    this.heartbeatPollTimer = setInterval(async () => {
+      if (!this.mpv.isConnected()) {
+        // Check for heartbeat timeout even when disconnected
+        const elapsed = Date.now() - this.lastHeartbeatAt;
+        if (elapsed > this.config.heartbeatTimeoutMs && this.recoveryStep === RecoveryStep.None) {
+          const mem = getSystemMemory();
+          logger.warn({ elapsedMs: elapsed, systemMemory: mem }, 'Heartbeat timeout, starting recovery');
+          this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
+          this.recoveryReason = 'heartbeat';
+          this.startRecoverySequence();
+        }
+        return;
+      }
+      try {
+        const hb = await this.pollMpvState();
+        this.lastHeartbeatAt = Date.now();
+        this.processHeartbeat(hb);
+      } catch {
+        // mpv may be restarting
+      }
+    }, this.config.heartbeatIntervalMs);
+  }
+
+  private stopHeartbeatPoll() {
+    if (this.heartbeatPollTimer) {
+      clearInterval(this.heartbeatPollTimer);
+      this.heartbeatPollTimer = null;
+    }
+  }
+
+  private async pollMpvState(): Promise<MpvHeartbeat> {
+    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename] =
+      await Promise.all([
+        this.mpv.getProperty('time-pos').catch(() => 0),
+        this.mpv.getProperty('duration').catch(() => 0),
+        this.mpv.getProperty('pause').catch(() => false),
+        this.mpv.getProperty('idle-active').catch(() => true),
+        this.mpv.getProperty('playlist-pos').catch(() => 0),
+        this.mpv.getProperty('playlist-count').catch(() => 0),
+        this.mpv.getProperty('media-title').catch(() => ''),
+        this.mpv.getProperty('filename').catch(() => ''),
+      ]);
+    return {
+      timePos: timePos as number,
+      duration: duration as number,
+      paused: paused as boolean,
+      idle: idle as boolean,
+      playlistPos: playlistPos as number,
+      playlistCount: playlistCount as number,
+      mediaTitle: mediaTitle as string,
+      filename: filename as string,
+    };
+  }
+
+  // --- Private: heartbeat processing ---
+
+  /** @internal — exposed name for testing via poll timer */
+  private processHeartbeat(hb: MpvHeartbeat) {
+    const isPlaying = !hb.paused && !hb.idle && hb.timePos > 0;
+    const videoId = this.extractVideoId(hb.filename);
+
+    // Update totalVideos from playlist count
+    if (hb.playlistCount > 0) {
+      this.totalVideos = hb.playlistCount;
     }
 
-    // Retry current video after delay
-    logger.info({ attempt: this.consecutiveErrors }, 'Retrying current video');
-    this.clearErrorRetryTimer();
-    this.errorRetryTimer = setTimeout(() => {
-      this.errorRetryTimer = null;
-      this.ws.send({ type: 'retryCurrent' });
-    }, this.config.recoveryDelayMs);
+    // Stall detection: mpv claims to be playing but timePos isn't advancing
+    if (isPlaying) {
+      if (Math.abs(hb.timePos - this.lastProgressTime) < 1) {
+        this.stalledHeartbeats++;
+        if (this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
+          const mem = getSystemMemory();
+          const stallMsg = `Player stalled at ${Math.floor(hb.timePos)}s on video #${hb.playlistPos} (${videoId}) — no progress for ${this.stalledHeartbeats} heartbeats (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`;
+          logger.warn({ timePos: hb.timePos, stalledHeartbeats: this.stalledHeartbeats, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Player stalled — video not advancing');
+          this.addEvent(stallMsg);
+          this.discord.notifyRecovery('Stall detected');
+          this.recoveryReason = 'stall';
+          this.startRecoverySequence();
+        }
+      } else {
+        this.stalledHeartbeats = 0;
+        this.lastProgressTime = hb.timePos;
+        this.resetRecovery();
+      }
+    } else {
+      this.stalledHeartbeats = 0;
+      this.lastProgressTime = hb.timePos;
+      if (this.recoveryStep !== RecoveryStep.None && isPlaying) {
+        this.resetRecovery();
+      }
+    }
+
+    // Only write state when video is making progress
+    if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {
+      const update: Record<string, unknown> = {
+        videoIndex: hb.playlistPos,
+        videoId,
+        videoTitle: hb.mediaTitle,
+        videoDuration: hb.duration,
+      };
+      if (isPlaying || hb.timePos > 0) {
+        update.currentTime = hb.timePos;
+      }
+      this.state.update(update);
+    }
+
+    // Non-playing detection: mpv is connected but stuck in idle/paused/buffering
+    if (isPlaying) {
+      this.nonPlayingHeartbeats = 0;
+    } else if (this.totalVideos > 0) {
+      this.nonPlayingHeartbeats++;
+      if (this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
+        const npMsg = `Player not playing for ${this.nonPlayingHeartbeats} heartbeats on video #${hb.playlistPos} (${videoId})`;
+        logger.warn({ paused: hb.paused, idle: hb.idle, heartbeats: this.nonPlayingHeartbeats, playlistPos: hb.playlistPos, videoId }, 'Player stuck in non-playing state');
+        this.addEvent(npMsg);
+        this.discord.notifyRecovery('Non-playing recovery');
+        this.recoveryReason = 'non-playing';
+        this.startRecoverySequence();
+      }
+    }
   }
+
+  private extractVideoId(filename: string): string {
+    if (!filename) return '';
+    const match = filename.match(/(?:v=|youtu\.be\/|\/watch\?.*v=)([^&\s]+)/);
+    return match ? match[1] : filename;
+  }
+
+  // --- Private: skip and playlist advancement ---
 
   private async skipVideo(fromIndex: number, videoId: string, reason: string) {
-    // If at last video in playlist, advance to next playlist
     if (this.totalVideos > 0 && fromIndex + 1 >= this.totalVideos) {
       await this.advanceToNextPlaylist(reason);
       return;
@@ -340,7 +338,7 @@ export class RecoveryEngine {
     this.addEvent(`Skipping video #${fromIndex} (${videoId}): ${reason}`);
     await this.discord.notifySkip(fromIndex, videoId, reason);
 
-    this.ws.send({ type: 'skip', index: nextIndex });
+    try { await this.mpv.jumpTo(nextIndex); } catch { /* ignore */ }
     this.state.update({ videoIndex: nextIndex });
     this.consecutiveErrors = 0;
   }
@@ -351,67 +349,48 @@ export class RecoveryEngine {
     const playlist = this.config.playlists[next];
     this.addEvent(`Playlist finished. Advancing to ${next + 1}/${this.config.playlists.length}: ${playlist.name || playlist.id}`);
     this.state.update({ playlistIndex: next, videoIndex: 0, videoId: '', currentTime: 0 });
-    this.state.flush(); // Critical transition — write immediately, don't wait for debounce
+    this.state.flush();
     this.totalVideos = 0;
-    this.ws.send({ type: 'loadPlaylist', playlistId: playlist.id, index: 0, loop: this.config.playlists.length === 1 });
+
+    const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
+    try { await this.mpv.loadPlaylist(url); } catch { /* ignore */ }
     this.consecutiveErrors = 0;
     this.stalledHeartbeats = 0;
     this.lowQualityHeartbeats = 0;
     this.nonPlayingHeartbeats = 0;
-    this.consecutivePausedHeartbeats = 0;
   }
 
-  // --- Heartbeat monitoring ---
+  // --- Private: periodic mpv restart ---
 
-  private startHeartbeatMonitor() {
-    this.lastHeartbeatAt = Date.now();
-    this.heartbeatCheckTimer = setInterval(() => {
-      if (!this.ws.isConnected()) return;
-
-      const elapsed = Date.now() - this.lastHeartbeatAt;
-      if (elapsed > this.config.heartbeatTimeoutMs && this.recoveryStep === RecoveryStep.None) {
-        const mem = getSystemMemory();
-        logger.warn({ elapsedMs: elapsed, systemMemory: mem }, 'Heartbeat timeout, starting recovery');
-        this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
-        this.recoveryReason = 'heartbeat';
-        this.startRecoverySequence();
-      }
-    }, 5000);
-  }
-
-  private stopHeartbeatMonitor() {
-    if (this.heartbeatCheckTimer) {
-      clearInterval(this.heartbeatCheckTimer);
-      this.heartbeatCheckTimer = null;
-    }
-  }
-
-  // --- Periodic source refresh ---
-
-  private startSourceRefreshTimer() {
-    this.stopSourceRefreshTimer();
+  private startPeriodicRestartTimer() {
+    this.stopPeriodicRestartTimer();
     if (this.config.sourceRefreshIntervalMs <= 0) return;
     const mins = Math.round(this.config.sourceRefreshIntervalMs / 60000);
     const label = mins >= 60 ? `${(mins / 60).toFixed(1)}h` : `${mins}m`;
-    logger.info({ intervalMs: this.config.sourceRefreshIntervalMs }, `Periodic source refresh enabled (every ${label})`);
-    this.sourceRefreshTimer = setInterval(() => {
+    logger.info({ intervalMs: this.config.sourceRefreshIntervalMs }, `Periodic mpv restart enabled (every ${label})`);
+    this.periodicRestartTimer = setInterval(async () => {
       if (this.recoveryStep !== RecoveryStep.None) return;
-      if (!this.ws.isConnected()) return;
+      if (!this.mpv.isConnected()) return;
       const mem = getSystemMemory();
-      logger.info({ systemMemory: mem }, 'Periodic browser source refresh');
-      this.addEvent(`Periodic browser source refresh (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
-      this.obs.refreshBrowserSource();
+      logger.info({ systemMemory: mem }, 'Periodic mpv restart');
+      this.addEvent(`Periodic mpv restart (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
+      try {
+        await this.mpv.restart();
+        await this.loadCurrentPlaylist();
+      } catch (err) {
+        logger.error({ err }, 'Periodic mpv restart failed');
+      }
     }, this.config.sourceRefreshIntervalMs);
   }
 
-  private stopSourceRefreshTimer() {
-    if (this.sourceRefreshTimer) {
-      clearInterval(this.sourceRefreshTimer);
-      this.sourceRefreshTimer = null;
+  private stopPeriodicRestartTimer() {
+    if (this.periodicRestartTimer) {
+      clearInterval(this.periodicRestartTimer);
+      this.periodicRestartTimer = null;
     }
   }
 
-  // --- Recovery escalation ---
+  // --- Private: recovery escalation ---
 
   private async startRecoverySequence() {
     await this.executeStep(RecoveryStep.RetryCurrent);
@@ -424,24 +403,19 @@ export class RecoveryEngine {
     await this.discord.notifyRecovery(step);
 
     switch (step) {
-      case RecoveryStep.RetryCurrent:
-        this.ws.send({ type: 'retryCurrent' });
-        this.scheduleNextStep(RecoveryStep.RefreshSource, this.config.recoveryDelayMs);
-        break;
-
-      case RecoveryStep.RefreshSource: {
-        const refreshed = await this.obs.refreshBrowserSource();
-        if (!refreshed) {
-          logger.warn('Refresh failed, escalating');
-        }
-        this.scheduleNextStep(RecoveryStep.ToggleVisibility, 15000);
+      case RecoveryStep.RetryCurrent: {
+        const pos = this.state.get().videoIndex;
+        try { await this.mpv.jumpTo(pos); } catch { /* may fail */ }
+        this.scheduleNextStep(RecoveryStep.RestartMpv, this.config.recoveryDelayMs);
         break;
       }
 
-      case RecoveryStep.ToggleVisibility: {
-        const toggled = await this.obs.toggleBrowserSource();
-        if (!toggled) {
-          logger.warn('Toggle failed, escalating');
+      case RecoveryStep.RestartMpv: {
+        try {
+          await this.mpv.restart();
+          await this.loadCurrentPlaylist();
+        } catch (err) {
+          logger.warn({ err }, 'mpv restart failed');
         }
         this.scheduleNextStep(RecoveryStep.CriticalAlert, 15000);
         break;
@@ -449,9 +423,8 @@ export class RecoveryEngine {
 
       case RecoveryStep.CriticalAlert:
         await this.discord.notifyCritical(
-          'All recovery steps exhausted. Player may be unresponsive. Will retry full sequence in 60s.',
+          'All recovery steps exhausted. Waiting 60s before retrying.',
         );
-        // Retry full sequence after 60s
         this.recoveryTimer = setTimeout(() => {
           this.recoveryStep = RecoveryStep.None;
           this.startRecoverySequence();
@@ -463,27 +436,17 @@ export class RecoveryEngine {
   private scheduleNextStep(nextStep: RecoveryStep, delayMs: number) {
     this.clearRecoveryTimer();
     this.recoveryTimer = setTimeout(() => {
-      // Check if recovery was cancelled (heartbeat came back)
       if (this.recoveryStep === RecoveryStep.None) return;
-      // Check if the problem persists based on what triggered recovery
       const elapsed = Date.now() - this.lastHeartbeatAt;
       const stillStalled = this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD;
       const stillNotPlaying = this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD;
-      const stillLowQuality = this.recoveryReason === 'quality' && this.isQualityBelowMinimum();
-      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying || stillLowQuality) {
+      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying) {
         this.executeStep(nextStep);
       } else {
         logger.info({ reason: this.recoveryReason }, 'Recovery condition resolved, cancelling recovery');
         this.resetRecovery();
       }
     }, delayMs);
-  }
-
-  private isQualityBelowMinimum(): boolean {
-    if (!this.playbackQuality) return false;
-    const currentRank = RecoveryEngine.QUALITY_RANKS[this.playbackQuality];
-    const minRank = RecoveryEngine.QUALITY_RANKS[this.config.minQuality] ?? 3;
-    return currentRank !== undefined && currentRank < minRank;
   }
 
   private resetRecovery() {
