@@ -191,12 +191,14 @@ describe('RecoveryEngine', () => {
     mpv._emit('connected');
     await vi.advanceTimersByTimeAsync(0);
 
-    // Should set start property for resume position
-    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+42');
+    // start should NOT be set before loading when jumpIndex > 0
+    // (would cause video 0 to attempt an impossible seek)
+    expect(mpv.setProperty).not.toHaveBeenCalledWith('start', '+42');
 
-    // fileLoaded triggers jump to saved index (start property handles seek)
+    // fileLoaded triggers: set start for the target video, then jump
     mpv._emit('fileLoaded');
     await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+42');
     expect(mpv.jumpTo).toHaveBeenCalledWith(5);
   });
 
@@ -217,6 +219,8 @@ describe('RecoveryEngine', () => {
         case 'playlist-count': return 10;
         case 'media-title': return 'Test Video';
         case 'filename': return 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+        case 'video-params': return { w: 1920, h: 1080 };
+        case 'estimated-vf-fps': return 30;
         default: return null;
       }
     });
@@ -324,6 +328,8 @@ describe('RecoveryEngine', () => {
           case 'playlist-count': return 10;
           case 'media-title': return 'Test';
           case 'filename': return 'test';
+          case 'video-params': return { w: 1920, h: 1080 };
+          case 'estimated-vf-fps': return 30;
           default: return null;
         }
       });
@@ -464,6 +470,8 @@ describe('RecoveryEngine', () => {
           case 'playlist-count': return 5;
           case 'media-title': return 'Last Video';
           case 'filename': return 'last';
+          case 'video-params': return { w: 1920, h: 1080 };
+          case 'estimated-vf-fps': return 30;
           default: return null;
         }
       });
@@ -507,6 +515,8 @@ describe('RecoveryEngine', () => {
           case 'playlist-count': return 2;
           case 'media-title': return 'Last';
           case 'filename': return 'last';
+          case 'video-params': return { w: 1920, h: 1080 };
+          case 'estimated-vf-fps': return 30;
           default: return null;
         }
       });
@@ -541,6 +551,8 @@ describe('RecoveryEngine', () => {
         case 'playlist-count': return 5;
         case 'media-title': return 'My Video';
         case 'filename': return 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+        case 'video-params': return { w: 1920, h: 1080 };
+        case 'estimated-vf-fps': return 30;
         default: return null;
       }
     });

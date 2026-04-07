@@ -31,6 +31,8 @@ interface PendingCommand {
  *  - processError(err: Error)
  */
 export class MpvClient extends EventEmitter {
+  private static readonly COMMAND_TIMEOUT_MS = 5000;
+
   private readonly mpvPath: string;
   private readonly pipePath: string;
   private readonly extraArgs: string[];
@@ -142,7 +144,15 @@ export class MpvClient extends EventEmitter {
     const msg = JSON.stringify({ command: args, request_id: id }) + '\n';
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('mpv IPC command timed out'));
+      }, MpvClient.COMMAND_TIMEOUT_MS);
+
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (reason) => { clearTimeout(timer); reject(reason); },
+      });
       this.socket!.write(msg);
     });
   }

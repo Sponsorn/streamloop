@@ -1,3 +1,18 @@
+## v2.1.1
+
+### Bug Fixes
+
+- **Fixed triple event handling after config reload.** Recovery engine event listeners accumulated on the mpv client each time the config was reloaded, causing 3x duplicate log messages and 3x competing playlist loads on every mpv restart. Listeners are now properly removed on stop.
+- **Video freeze detection.** When mpv's video output froze but audio continued playing, recovery never triggered because `time-pos` was still advancing. Now monitors `estimated-vf-fps` and triggers recovery when video framerate drops to zero for 4 consecutive heartbeats.
+- **Resume lands on wrong video after restart.** The mpv `start` property (seek position) was set before loading the playlist even when the target video wasn't index 0, causing video 0 to attempt an impossible seek and error out before the jump to the correct video could happen. Now only pre-sets seek for video 0; for other indices, seek is set right before the jump.
+- **IPC command timeout.** mpv IPC commands now time out after 5 seconds instead of hanging forever when mpv is unresponsive, allowing heartbeat timeout detection to work correctly.
+
+### Improvements
+
+- **Now-playing overlay readability.** Darkened overlay background from white 30% to black 70% opacity.
+
+---
+
 ## v2.1.0
 
 ### New Features

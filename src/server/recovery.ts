@@ -53,8 +53,16 @@ export class RecoveryEngine {
   private seekPending = false;
   private videoConfirmed = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
+  private videoFreezeHeartbeats = 0;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
+  private static readonly VIDEO_FREEZE_THRESHOLD = 4;
+
+  // Bound handlers so we can remove them from mpv EventEmitter
+  private boundOnConnect = () => this.onMpvConnect();
+  private boundOnDisconnect = () => this.onMpvDisconnect();
+  private boundOnFileEnded = (reason: string) => this.onFileEnded(reason);
+  private boundOnProcessExit = () => this.onProcessExit();
   private static readonly QUALITY_RANKS: Record<string, number> = {
     small: 0, medium: 1, large: 2, hd720: 3, hd1080: 4, hd1440: 5, hd2160: 6, highres: 7,
   };
@@ -74,10 +82,13 @@ export class RecoveryEngine {
   }
 
   start() {
-    this.mpv.on('connected', () => this.onMpvConnect());
-    this.mpv.on('disconnected', () => this.onMpvDisconnect());
-    this.mpv.on('fileEnded', (reason: string) => this.onFileEnded(reason));
-    this.mpv.on('processExit', () => this.onProcessExit());
+    // Remove any stale listeners (e.g. from a previous RecoveryEngine on the same mpv)
+    this.removeMpvListeners();
+
+    this.mpv.on('connected', this.boundOnConnect);
+    this.mpv.on('disconnected', this.boundOnDisconnect);
+    this.mpv.on('fileEnded', this.boundOnFileEnded);
+    this.mpv.on('processExit', this.boundOnProcessExit);
     this.startHeartbeatPoll();
     this.startPeriodicRestartTimer();
     if (this.mpv.isConnected()) {
@@ -86,10 +97,18 @@ export class RecoveryEngine {
   }
 
   stop() {
+    this.removeMpvListeners();
     this.stopHeartbeatPoll();
     this.stopPeriodicRestartTimer();
     this.clearRecoveryTimer();
     this.clearErrorRetryTimer();
+  }
+
+  private removeMpvListeners() {
+    this.mpv.removeListener('connected', this.boundOnConnect);
+    this.mpv.removeListener('disconnected', this.boundOnDisconnect);
+    this.mpv.removeListener('fileEnded', this.boundOnFileEnded);
+    this.mpv.removeListener('processExit', this.boundOnProcessExit);
   }
 
   getStatus() {
@@ -144,9 +163,14 @@ export class RecoveryEngine {
     logger.info({ playlistId: playlist.id, videoIndex: savedState.videoIndex, currentTime: savedState.currentTime }, 'Loading playlist in mpv');
     this.addEvent(`Loading playlist ${playlist.name || playlist.id}`);
 
-    // Set start position before loading so yt-dlp/mpv can request the correct byte range
     const seekTime = savedState.currentTime;
-    if (seekTime > 0) {
+    const jumpIndex = savedState.videoIndex;
+
+    // Only pre-set start when targeting video 0.
+    // For jumpIndex > 0, setting start here would cause video 0 to attempt
+    // an impossible seek (e.g. 6 hours into a 10-minute video), triggering
+    // end-file errors and preventing the fileLoaded → jumpTo sequence.
+    if (seekTime > 0 && jumpIndex === 0) {
       logger.info({ seekTime }, 'Setting start position for resume');
       this.seekPending = true;
       await this.mpv.setProperty('start', `+${seekTime}`).catch(() => {});
@@ -155,13 +179,13 @@ export class RecoveryEngine {
     await this.mpv.loadPlaylist(url);
 
     // Jump to saved video index after playlist loads
-    const jumpIndex = savedState.videoIndex;
     if (jumpIndex > 0) {
       const onFileLoaded = async () => {
         this.mpv.removeListener('fileLoaded', onFileLoaded);
         try {
-          // Set start position again before jumping (it resets per-file)
+          // Set start position before jumping so yt-dlp requests the correct byte range
           if (seekTime > 0) {
+            this.seekPending = true;
             await this.mpv.setProperty('start', `+${seekTime}`).catch(() => {});
           }
           await this.mpv.jumpTo(jumpIndex);
@@ -197,6 +221,7 @@ export class RecoveryEngine {
     this.resetRecovery();
     this.lastHeartbeatAt = Date.now();
     this.nonPlayingHeartbeats = 0;
+    this.videoFreezeHeartbeats = 0;
     await this.loadCurrentPlaylist();
   }
 
@@ -255,24 +280,26 @@ export class RecoveryEngine {
   private startHeartbeatPoll() {
     this.lastHeartbeatAt = Date.now();
     this.heartbeatPollTimer = setInterval(async () => {
-      if (!this.mpv.isConnected()) {
-        // Check for heartbeat timeout even when disconnected
-        const elapsed = Date.now() - this.lastHeartbeatAt;
-        if (elapsed > this.config.heartbeatTimeoutMs && this.recoveryStep === RecoveryStep.None) {
-          const mem = getSystemMemory();
-          logger.warn({ elapsedMs: elapsed, systemMemory: mem }, 'Heartbeat timeout, starting recovery');
-          this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
-          this.recoveryReason = 'heartbeat';
-          this.startRecoverySequence();
-        }
+      // Check for heartbeat timeout regardless of connection state.
+      // When mpv freezes (alive but unresponsive), the socket stays open
+      // so isConnected() is true, but IPC queries hang and lastHeartbeatAt
+      // never updates. This catches that case.
+      const elapsed = Date.now() - this.lastHeartbeatAt;
+      if (elapsed > this.config.heartbeatTimeoutMs && this.recoveryStep === RecoveryStep.None) {
+        const mem = getSystemMemory();
+        logger.warn({ elapsedMs: elapsed, systemMemory: mem }, 'Heartbeat timeout, starting recovery');
+        this.addEvent(`Heartbeat timeout (${Math.round(elapsed / 1000)}s), starting recovery (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`);
+        this.recoveryReason = 'heartbeat';
+        this.startRecoverySequence();
         return;
       }
+      if (!this.mpv.isConnected()) return;
       try {
         const hb = await this.pollMpvState();
         this.lastHeartbeatAt = Date.now();
         this.processHeartbeat(hb);
       } catch {
-        // mpv may be restarting
+        // mpv may be restarting or unresponsive — timeout check above will catch it
       }
     }, this.config.heartbeatIntervalMs);
   }
@@ -285,7 +312,7 @@ export class RecoveryEngine {
   }
 
   private async pollMpvState(): Promise<MpvHeartbeat> {
-    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename, videoParams] =
+    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename, videoParams, vfps] =
       await Promise.all([
         this.mpv.getProperty('time-pos').catch(() => 0),
         this.mpv.getProperty('duration').catch(() => 0),
@@ -296,6 +323,7 @@ export class RecoveryEngine {
         this.mpv.getProperty('media-title').catch(() => ''),
         this.mpv.getProperty('filename').catch(() => ''),
         this.mpv.getProperty('video-params').catch(() => null),
+        this.mpv.getProperty('estimated-vf-fps').catch(() => 0),
       ]);
     return {
       timePos: timePos as number,
@@ -307,6 +335,7 @@ export class RecoveryEngine {
       mediaTitle: mediaTitle as string,
       filename: filename as string,
       hasVideo: videoParams != null,
+      vfps: (vfps as number) || 0,
     };
   }
 
@@ -323,6 +352,11 @@ export class RecoveryEngine {
         logger.info('Video confirmed rendering — playback is visible');
         this.addEvent('Video confirmed rendering');
       }
+    }
+    // Clear seekPending once playback is confirmed — prevents stale flag
+    // from swallowing a real error later
+    if (isPlaying) {
+      this.seekPending = false;
     }
     this.lastKnownPaused = hb.paused;
     const videoId = this.extractVideoId(hb.filename);
@@ -357,6 +391,23 @@ export class RecoveryEngine {
       if (this.recoveryStep !== RecoveryStep.None && isPlaying) {
         this.resetRecovery();
       }
+    }
+
+    // Video freeze detection: audio plays (time-pos advances) but video output has stopped.
+    // estimated-vf-fps drops to 0 when the video rendering pipeline freezes.
+    if (isPlaying && this.videoConfirmed && hb.vfps < 1) {
+      this.videoFreezeHeartbeats++;
+      if (this.videoFreezeHeartbeats >= RecoveryEngine.VIDEO_FREEZE_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
+        const mem = getSystemMemory();
+        const freezeMsg = `Video freeze detected at ${Math.floor(hb.timePos)}s on video #${hb.playlistPos} (${videoId}) — audio playing but vfps=${hb.vfps} for ${this.videoFreezeHeartbeats} heartbeats (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`;
+        logger.warn({ timePos: hb.timePos, vfps: hb.vfps, videoFreezeHeartbeats: this.videoFreezeHeartbeats, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze — audio playing but video output stopped');
+        this.addEvent(freezeMsg);
+        this.discord.notifyRecovery('Video freeze detected');
+        this.recoveryReason = 'stall';
+        this.startRecoverySequence();
+      }
+    } else {
+      this.videoFreezeHeartbeats = 0;
     }
 
     // Only write state when video is making progress

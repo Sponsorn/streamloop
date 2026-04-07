@@ -10,6 +10,7 @@ export interface MpvHeartbeat {
   mediaTitle: string;
   filename: string;
   hasVideo: boolean;
+  vfps: number;
 }
 
 export interface MpvPlaylistEntry {
