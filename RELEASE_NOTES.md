@@ -1,3 +1,11 @@
+## v2.1.2
+
+### New Features
+
+- **"This is not live!" overlay badge.** Red banner in the top-right corner of the OBS overlay so viewers know the stream is pre-recorded.
+
+---
+
 ## v2.1.1
 
 ### Bug Fixes

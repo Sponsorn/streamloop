@@ -52,9 +52,25 @@
       text-overflow: ellipsis;
     }
     .np-hidden { opacity: 0; }
+    #not-live {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      font-family: 'Segoe UI', Roboto, sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #fff;
+      background: rgba(200, 0, 0, .75);
+      padding: 8px 20px;
+      border-radius: 8px;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
+  <div id="not-live">This is not live!</div>
   <div id="overlay" class="np-hidden">
     <div class="np-now">
       <div class="np-label" id="label">Now Playing</div>
