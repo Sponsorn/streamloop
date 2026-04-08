@@ -63,10 +63,10 @@ export class MpvClient extends EventEmitter {
     await this.connect();
   }
 
-  /** Disconnect and kill the mpv process. */
-  stop(): void {
+  /** Disconnect and kill the mpv process, waiting for it to fully exit. */
+  async stop(): Promise<void> {
     this.disconnect();
-    this.killProcess();
+    await this.killProcess();
   }
 
   /** Stop then start again. */
@@ -239,11 +239,29 @@ export class MpvClient extends EventEmitter {
     });
   }
 
-  private killProcess(): void {
-    if (this.process && this.process.exitCode === null) {
-      this.process.kill();
+  private killProcess(): Promise<void> {
+    const proc = this.process;
+    if (!proc || proc.exitCode !== null) {
       this.process = null;
+      return Promise.resolve();
     }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        // Force kill if still alive after 5s
+        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        this.process = null;
+        resolve();
+      }, 5000);
+
+      proc.once('exit', () => {
+        clearTimeout(timeout);
+        this.process = null;
+        resolve();
+      });
+
+      proc.kill();
+    });
   }
 
   // ── Private: IPC connection ────────────────────────────────

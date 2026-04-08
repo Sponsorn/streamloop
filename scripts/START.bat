@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 title StreamLoop
 echo ======================================
 echo   StreamLoop - 24/7 YouTube Streamer
@@ -48,7 +49,20 @@ if %ERRORLEVEL% equ 75 (
     if exist "%ROOT%_update_tmp\app" (
         echo Applying update...
         if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
-        rename "%ROOT%app" _update_old
+        :: Retry rename up to 5 times — Windows may still hold file locks
+        :: from the just-killed mpv process
+        set "RENAME_OK=0"
+        for /L %%i in (1,1,5) do (
+            if "!RENAME_OK!"=="0" (
+                rename "%ROOT%app" _update_old 2>nul
+                if not exist "%ROOT%app" (
+                    set "RENAME_OK=1"
+                ) else (
+                    echo   Waiting for file locks to release (attempt %%i/5^)...
+                    timeout /t 3 /nobreak >nul
+                )
+            )
+        )
         if not exist "%ROOT%app" (
             move "%ROOT%_update_tmp\app" "%ROOT%app"
             if exist "%ROOT%app\src\server\index.ts" (

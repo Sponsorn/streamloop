@@ -1,3 +1,11 @@
+## v2.1.3
+
+### Bug Fixes
+
+- **Update swap fails with "Access is denied".** `mpv.stop()` now waits for the process to fully exit (with 5s SIGKILL fallback) instead of fire-and-forget. START.bat also retries the app directory rename up to 5 times (with 3s delays) as a safety net.
+
+---
+
 ## v2.1.2
 
 ### New Features
