@@ -1,3 +1,17 @@
+## v2.1.4
+
+### Bug Fixes
+
+- **Video freeze recovery loops forever instead of escalating.** When video froze but audio kept playing, recovery started `retryCurrent` but never escalated to `restartMpv` because advancing `time-pos` (from audio) kept cancelling the recovery. Now freeze-triggered recovery properly escalates through the full sequence.
+- **Resume position lost after recovery restart.** During recovery, heartbeat polls could overwrite the saved `videoIndex` with a transient `playlistPos=0` from mpv mid-reload. State writes are now suppressed during active recovery.
+- **`mpv.restart()` didn't wait for process exit.** The `stop()` call inside `restart()` was not awaited, so the old mpv process might not have fully exited before spawning a new one.
+
+### Improvements
+
+- **Much faster update extraction.** Switched from PowerShell `Expand-Archive` to Windows built-in `tar.exe` (bsdtar) for both the updater and build script. Extraction that took 30+ minutes now completes in seconds.
+
+---
+
 ## v2.1.3
 
 ### Bug Fixes

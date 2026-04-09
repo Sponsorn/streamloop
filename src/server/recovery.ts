@@ -383,7 +383,11 @@ export class RecoveryEngine {
       } else {
         this.stalledHeartbeats = 0;
         this.lastProgressTime = hb.timePos;
-        this.resetRecovery();
+        // Don't cancel recovery if video freeze is still active —
+        // audio advancing doesn't mean the freeze resolved
+        if (this.videoFreezeHeartbeats < RecoveryEngine.VIDEO_FREEZE_THRESHOLD) {
+          this.resetRecovery();
+        }
       }
     } else {
       this.stalledHeartbeats = 0;
@@ -410,8 +414,10 @@ export class RecoveryEngine {
       this.videoFreezeHeartbeats = 0;
     }
 
-    // Only write state when video is making progress
-    if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD) {
+    // Only write state when video is making progress and not in recovery
+    // (during recovery, mpv may temporarily report playlistPos=0 which
+    // would overwrite the correct resume position)
+    if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
       const update: Record<string, unknown> = {
         videoIndex: hb.playlistPos,
         videoId,
@@ -590,7 +596,8 @@ export class RecoveryEngine {
       const elapsed = Date.now() - this.lastHeartbeatAt;
       const stillStalled = this.stalledHeartbeats >= RecoveryEngine.STALL_THRESHOLD;
       const stillNotPlaying = this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD;
-      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying) {
+      const stillFrozen = this.videoFreezeHeartbeats >= RecoveryEngine.VIDEO_FREEZE_THRESHOLD;
+      if (elapsed > this.config.heartbeatTimeoutMs || stillStalled || stillNotPlaying || stillFrozen) {
         this.executeStep(nextStep);
       } else {
         logger.info({ reason: this.recoveryReason }, 'Recovery condition resolved, cancelling recovery');

@@ -50,7 +50,7 @@ async function main() {
   await downloadFile(NODE_URL, nodeZip);
 
   console.log('Extracting Node.js...');
-  execSync(`powershell -Command "Expand-Archive -Path '${nodeZip}' -DestinationPath '${DIST}' -Force"`, { stdio: 'inherit' });
+  execSync(`C:\\Windows\\System32\\tar.exe -xf "${nodeZip}" -C "${DIST}"`, { stdio: 'inherit' });
 
   // Move node files to release/node/
   const extractedNodeDir = join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`);
@@ -129,7 +129,7 @@ async function main() {
       // Wait for antivirus to finish scanning new files
       if (attempt > 1) console.log(`  Retry ${attempt}/3 after 10s delay...`);
       await new Promise(r => setTimeout(r, attempt === 1 ? 5000 : 10000));
-      execSync(`powershell -Command "Compress-Archive -Path '${RELEASE}' -DestinationPath '${zipPath}' -Force"`, { stdio: 'inherit' });
+      execSync(`C:\\Windows\\System32\\tar.exe -acf "${zipPath}" -C "${DIST}" streamloop`, { stdio: 'inherit' });
       if (existsSync(zipPath)) break;
     } catch (err) {
       if (attempt === 3) throw err;

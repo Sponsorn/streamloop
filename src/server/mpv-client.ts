@@ -71,7 +71,7 @@ export class MpvClient extends EventEmitter {
 
   /** Stop then start again. */
   async restart(): Promise<void> {
-    this.stop();
+    await this.stop();
     // Brief delay to let the process fully exit and release the pipe
     await new Promise((r) => setTimeout(r, 500));
     await this.start();
