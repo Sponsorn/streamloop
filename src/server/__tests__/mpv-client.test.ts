@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import net from 'net';
-import { MpvClient } from '../mpv-client.js';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, utimesSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { MpvClient, pruneMpvLogs } from '../mpv-client.js';
 
 vi.mock('../logger.js', () => ({
   logger: {
@@ -439,6 +442,68 @@ describe('MpvClient', () => {
       expect(msg.command).toEqual(['quit']);
       serverSend(sock, { error: 'success', request_id: msg.request_id });
       await p;
+    });
+  });
+
+  describe('pruneMpvLogs', () => {
+    let tmpLogsDir: string;
+
+    beforeEach(() => {
+      tmpLogsDir = mkdtempSync(join(tmpdir(), 'streamloop-mpvlogs-'));
+    });
+
+    afterEach(() => {
+      try { rmSync(tmpLogsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it('keeps only the N newest mpv-*.log files by mtime', () => {
+      // Seed 8 mpv-*.log files with staggered mtimes (i=0 oldest, i=7 newest).
+      const baseSec = Date.now() / 1000 - 10000;
+      for (let i = 0; i < 8; i++) {
+        const f = join(tmpLogsDir, `mpv-fake-${i}.log`);
+        writeFileSync(f, `log ${i}`);
+        utimesSync(f, baseSec + i, baseSec + i);
+      }
+
+      pruneMpvLogs(tmpLogsDir, 3);
+
+      const remaining = readdirSync(tmpLogsDir).sort();
+      expect(remaining).toEqual(['mpv-fake-5.log', 'mpv-fake-6.log', 'mpv-fake-7.log']);
+    });
+
+    it('leaves non-matching files untouched', () => {
+      writeFileSync(join(tmpLogsDir, 'mpv-old.log'), 'a');
+      writeFileSync(join(tmpLogsDir, 'mpv-older.log'), 'b');
+      writeFileSync(join(tmpLogsDir, 'mpv-oldest.log'), 'c');
+      writeFileSync(join(tmpLogsDir, 'mpv-recent.log'), 'd');
+      writeFileSync(join(tmpLogsDir, 'streamloop-2026-04-16.log'), 'keep');
+      writeFileSync(join(tmpLogsDir, 'unrelated.txt'), 'keep');
+
+      pruneMpvLogs(tmpLogsDir, 1);
+
+      const files = readdirSync(tmpLogsDir);
+      expect(files).toContain('streamloop-2026-04-16.log');
+      expect(files).toContain('unrelated.txt');
+      // Exactly one mpv-*.log should remain.
+      expect(files.filter((f) => f.startsWith('mpv-') && f.endsWith('.log'))).toHaveLength(1);
+    });
+
+    it('no-ops gracefully when directory does not exist', () => {
+      expect(() => pruneMpvLogs(join(tmpLogsDir, 'does-not-exist'), 5)).not.toThrow();
+    });
+
+    it('no-ops when retention <= 0', () => {
+      writeFileSync(join(tmpLogsDir, 'mpv-a.log'), 'a');
+      writeFileSync(join(tmpLogsDir, 'mpv-b.log'), 'b');
+      pruneMpvLogs(tmpLogsDir, 0);
+      expect(readdirSync(tmpLogsDir)).toHaveLength(2);
+    });
+  });
+
+  describe('getCurrentLogFile', () => {
+    it('returns null before spawn', () => {
+      client = new MpvClient({ spawn: false });
+      expect(client.getCurrentLogFile()).toBeNull();
     });
   });
 });

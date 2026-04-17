@@ -202,6 +202,85 @@ describe('RecoveryEngine', () => {
     expect(mpv.jumpTo).toHaveBeenCalledWith(5);
   });
 
+  it('discards resume position when currentTime exceeds known videoDuration', async () => {
+    const mpv = mockMpv();
+    // Simulates the corruption case: state carries a currentTime that fit
+    // the previous (long) video but exceeds the target video's duration.
+    const state = mockState({ videoIndex: 5, currentTime: 23585, videoDuration: 300 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // State should have been reset to currentTime: 0
+    expect(state.update).toHaveBeenCalledWith(expect.objectContaining({ currentTime: 0 }));
+
+    // fileLoaded should NOT trigger a start=+23585 seek
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.setProperty).not.toHaveBeenCalledWith('start', '+23585');
+  });
+
+  it('keeps resume position when videoDuration is unknown (livestream or first load)', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5, currentTime: 23585, videoDuration: 0 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Don't reset when we can't verify — a 24/7 VOD or livestream may
+    // legitimately report duration=0.
+    expect(state.update).not.toHaveBeenCalledWith(expect.objectContaining({ currentTime: 0 }));
+
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+23585');
+  });
+
+  it('keeps resume position when seekTime is within videoDuration', async () => {
+    const mpv = mockMpv();
+    // Long VOD: 7-hour video with 6.5h resume position — valid.
+    const state = mockState({ videoIndex: 5, currentTime: 23585, videoDuration: 25200 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(state.update).not.toHaveBeenCalledWith(expect.objectContaining({ currentTime: 0 }));
+
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+23585');
+  });
+
+  it('clears mpv start property on seek-failure to break recovery loop', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5, currentTime: 42 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Trigger seek-failure path: fileLoaded sets seekPending+start, then error
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+42');
+
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // start must be cleared so the bad seek isn't re-applied to the next
+    // auto-advanced video (which would otherwise trigger the same error
+    // over and over until the 30s cleanup timer fires).
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', 'none');
+    expect(state.update).toHaveBeenCalledWith({ currentTime: 0 });
+  });
+
   it('updates state from heartbeat poll', async () => {
     const mpv = mockMpv();
     const state = mockState();
@@ -284,6 +363,49 @@ describe('RecoveryEngine', () => {
     mpv._emit('fileEnded', 'error');
     await vi.advanceTimersByTimeAsync(0);
     expect(mpv.next).toHaveBeenCalled();
+  });
+
+  it('resets non-playing counter on fileEnded error so skip mechanism can work', async () => {
+    // Regression: when mpv is cycling through broken videos (firing end-file
+    // errors every ~4-5s), non-playing recovery used to fire at 30s and
+    // restart mpv — throwing away skip progress and starting back at pos 0,
+    // causing a long recovery loop. Fix: end-file errors reset the counter
+    // because mpv is clearly not stuck.
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 0, videoId: 'v0' });
+    const config = makeConfig({ heartbeatIntervalMs: 5000, maxConsecutiveErrors: 99 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), discord);
+
+    // mpv reports non-playing state (videos failing to extract)
+    mpv.getProperty.mockImplementation(async (name: string) => {
+      switch (name) {
+        case 'time-pos': return 0;
+        case 'duration': return 0;
+        case 'pause': return false;
+        case 'idle-active': return false;
+        case 'playlist-pos': return 0;
+        case 'playlist-count': return 10;
+        case 'media-title': return '';
+        case 'filename': return '';
+        default: return null;
+      }
+    });
+
+    engine.start();
+
+    // Simulate the failure pattern: heartbeat every 5s, end-file error
+    // every ~4s. Over 50 seconds we'd accumulate 10 non-playing heartbeats
+    // (well past the 6-heartbeat threshold) without the reset.
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(5000);
+      mpv._emit('fileEnded', 'error');
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    // Non-playing recovery must NOT have fired — mpv was actively erroring,
+    // so the skip mechanism should get the full runway instead of a restart.
+    expect(discord.notifyRecovery).not.toHaveBeenCalledWith('Non-playing recovery');
   });
 
   it('resets consecutive errors on eof', async () => {

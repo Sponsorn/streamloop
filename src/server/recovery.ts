@@ -160,11 +160,24 @@ export class RecoveryEngine {
       ? savedState.playlistIndex : 0;
     const playlist = this.config.playlists[playlistIndex];
     const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
-    logger.info({ playlistId: playlist.id, videoIndex: savedState.videoIndex, currentTime: savedState.currentTime }, 'Loading playlist in mpv');
-    this.addEvent(`Loading playlist ${playlist.name || playlist.id}`);
 
-    const seekTime = savedState.currentTime;
+    let seekTime = savedState.currentTime;
     const jumpIndex = savedState.videoIndex;
+
+    // Guard against corrupted state: if the saved currentTime exceeds the
+    // last known video duration, the seek would be impossible and every
+    // video load would fail with start=+<too-large>, causing an infinite
+    // recovery loop. Duration=0 means unknown (livestream or not yet loaded),
+    // so we leave seekTime alone in that case.
+    if (seekTime > 0 && savedState.videoDuration > 0 && seekTime >= savedState.videoDuration) {
+      logger.warn({ seekTime, videoDuration: savedState.videoDuration }, 'Saved currentTime exceeds known video duration — discarding resume position');
+      this.addEvent(`Discarding stale resume position (${Math.floor(seekTime)}s > ${Math.floor(savedState.videoDuration)}s video)`);
+      this.state.update({ currentTime: 0 });
+      seekTime = 0;
+    }
+
+    logger.info({ playlistId: playlist.id, videoIndex: jumpIndex, currentTime: seekTime }, 'Loading playlist in mpv');
+    this.addEvent(`Loading playlist ${playlist.name || playlist.id}`);
 
     // Only pre-set start when targeting video 0.
     // For jumpIndex > 0, setting start here would cause video 0 to attempt
@@ -241,6 +254,10 @@ export class RecoveryEngine {
         logger.warn('Seek failed (YouTube may have rejected the position), replaying from start');
         this.addEvent('Seek to saved position failed — replaying from start');
         this.state.update({ currentTime: 0 });
+        // Clear mpv's start property so the bad seek isn't re-applied to
+        // subsequent video loads (otherwise every auto-advanced video fails
+        // the same way until the 30s cleanup timer fires).
+        await this.mpv.setProperty('start', 'none').catch(() => {});
         return;
       }
       // Ignore errors during initial playlist load or when nothing was playing
@@ -254,6 +271,10 @@ export class RecoveryEngine {
       logger.error({ videoIndex, videoId, consecutiveErrors: this.consecutiveErrors }, 'mpv playback error');
       this.addEvent(`Playback error on video #${videoIndex} (${videoId})`);
       await this.discord.notifyError(videoIndex, videoId, 0, this.consecutiveErrors);
+      // mpv is actively cycling through videos — not stuck — so don't let
+      // the non-playing counter escalate to a restart that would throw away
+      // the skip progress and start the cycle over from position 0.
+      this.nonPlayingHeartbeats = 0;
       if (this.consecutiveErrors >= this.config.maxConsecutiveErrors) {
         try { await this.mpv.next(); } catch { /* ignore */ }
         this.consecutiveErrors = 0;

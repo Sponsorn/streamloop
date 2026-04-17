@@ -47,6 +47,7 @@ function showDashboard() {
   loadSettings();
   loadAutostart();
   initPlaybackControls();
+  initMpvLogs();
 }
 
 // --- API helper ---
@@ -879,6 +880,71 @@ function renderEvents(events) {
   container.innerHTML = reversed.map(e =>
     `<div class="event-entry"><span class="event-time">${new Date(e.timestamp).toLocaleTimeString()}</span>${escapeHtml(e.message)}</div>`
   ).join('');
+}
+
+// --- mpv diagnostic logs ---
+
+let mpvLogsInitialized = false;
+
+async function loadMpvLogList() {
+  const select = $('#mpv-log-select');
+  if (!select) return;
+  try {
+    const { files, current } = await api('/api/mpv-logs');
+    if (!files.length) {
+      select.innerHTML = '<option value="">(no mpv log files yet)</option>';
+      $('#mpv-log-view').textContent = 'No mpv log files yet. Wait for mpv to spawn at least once.';
+      return;
+    }
+    const prevSelected = select.value;
+    select.innerHTML = files.map(f => {
+      const label = `${f.name}${f.name === current ? ' (current)' : ''} — ${formatBytes(f.size)} — ${new Date(f.mtime).toLocaleString()}`;
+      return `<option value="${escapeHtml(f.name)}">${escapeHtml(label)}</option>`;
+    }).join('');
+    // Preserve selection if possible; otherwise default to current.
+    const target = files.find(f => f.name === prevSelected) ? prevSelected
+      : (current && files.find(f => f.name === current) ? current : files[0].name);
+    select.value = target;
+    await viewMpvLog(target);
+  } catch (err) {
+    select.innerHTML = '<option value="">(failed to load)</option>';
+    $('#mpv-log-view').textContent = `Failed to list mpv logs: ${err.message}`;
+  }
+}
+
+async function viewMpvLog(filename) {
+  const view = $('#mpv-log-view');
+  if (!filename) {
+    view.textContent = 'Select a log file to view.';
+    return;
+  }
+  view.textContent = 'Loading…';
+  try {
+    const res = await fetch(`/api/mpv-logs/${encodeURIComponent(filename)}`, {
+      headers: apiToken ? { 'X-API-Token': apiToken } : {},
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    view.textContent = text || '(empty)';
+    // Scroll to bottom — yt-dlp errors are usually at the tail.
+    view.scrollTop = view.scrollHeight;
+  } catch (err) {
+    view.textContent = `Failed to load log: ${err.message}`;
+  }
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function initMpvLogs() {
+  if (mpvLogsInitialized) return;
+  mpvLogsInitialized = true;
+  $('#mpv-log-refresh').addEventListener('click', loadMpvLogList);
+  $('#mpv-log-select').addEventListener('change', (e) => viewMpvLog(e.target.value));
+  loadMpvLogList();
 }
 
 // --- Settings tab ---

@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { existsSync, writeFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { existsSync, writeFileSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
+import { join, basename } from 'path';
 import { ZodError } from 'zod';
 import { saveConfig, isFirstRun, getConfigPath, DEFAULT_DISCORD_TEMPLATES, DISCORD_TEMPLATE_VARIABLES } from './config.js';
 import { logger } from './logger.js';
@@ -379,6 +379,65 @@ export function createApiRouter(deps: ApiDependencies): Router {
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: 'Failed to restart mpv' });
+    }
+  });
+
+  // --- mpv log endpoints ---
+
+  router.get('/mpv-logs', (_req, res) => {
+    const logFile = deps.mpv.getCurrentLogFile();
+    if (!logFile) {
+      return res.json({ files: [], current: null });
+    }
+    try {
+      const logsDir = join(logFile, '..');
+      const files = readdirSync(logsDir)
+        .filter((f) => f.startsWith('mpv-') && f.endsWith('.log'))
+        .map((f) => {
+          const full = join(logsDir, f);
+          const stat = statSync(full);
+          return { name: f, size: stat.size, mtime: stat.mtime.toISOString() };
+        })
+        .sort((a, b) => b.mtime.localeCompare(a.mtime));
+      res.json({ files, current: basename(logFile) });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to list mpv logs' });
+    }
+  });
+
+  router.get('/mpv-logs/:filename', (req, res) => {
+    const logFile = deps.mpv.getCurrentLogFile();
+    if (!logFile) {
+      return res.status(404).json({ error: 'mpv logging not active' });
+    }
+    // Reject path traversal: only allow plain mpv-*.log filenames.
+    const requested = req.params.filename;
+    if (!/^mpv-[A-Za-z0-9_\-.]+\.log$/.test(requested)) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+    const logsDir = join(logFile, '..');
+    const full = join(logsDir, requested);
+    if (!existsSync(full)) {
+      return res.status(404).json({ error: 'Log file not found' });
+    }
+    try {
+      // Cap at 1MB — mpv logs can grow; dashboard only needs the tail.
+      const MAX_BYTES = 1024 * 1024;
+      const stat = statSync(full);
+      if (stat.size <= MAX_BYTES) {
+        res.type('text/plain').send(readFileSync(full, 'utf-8'));
+      } else {
+        const fd = openSync(full, 'r');
+        try {
+          const buf = Buffer.alloc(MAX_BYTES);
+          readSync(fd, buf, 0, MAX_BYTES, stat.size - MAX_BYTES);
+          res.type('text/plain').send('... (truncated, showing last 1 MB) ...\n' + buf.toString('utf-8'));
+        } finally {
+          closeSync(fd);
+        }
+      }
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to read log file' });
     }
   });
 

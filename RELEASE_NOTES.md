@@ -1,3 +1,16 @@
+## v2.1.5
+
+### Bug Fixes
+
+- **Infinite recovery loop when saved resume position exceeds the target video's duration.** If a long-playing video (e.g. a 6-hour VOD) left a stale `currentTime` in `state.json` and recovery then landed on a shorter video, every resume attempt applied an impossible `--start=+<too-large>` seek and failed immediately, triggering another restart — forever. Resume time is now discarded when it exceeds the last-known `videoDuration`, and mpv's `start` property is cleared immediately on seek-failure so a bad seek can't propagate to auto-advanced videos instead of waiting for the 30s cleanup timer.
+- **Non-playing recovery fired during legitimate broken-video skipping.** When a run of broken/unavailable videos appeared in the playlist, mpv would fire `end-file` errors every ~4-5s and try to skip past them — but the 30s non-playing threshold tripped first, restarting mpv and throwing away all skip progress back to position 0. The `nonPlayingHeartbeats` counter now resets on each `end-file` error (mpv is clearly not stuck when it's actively erroring), letting the skip mechanism do its job. Heartbeat-timeout and stall detection are unchanged.
+
+### Improvements
+
+- **mpv diagnostic logs.** Each mpv spawn now writes a dedicated `logs/mpv-<timestamp>.log` with `--msg-level=ytdl_hook=v`, capturing the actual yt-dlp extractor output (HTTP status codes, signature errors, network failures) that was previously invisible. The last 10 spawn logs are retained. New "mpv Diagnostic Logs" section on the dashboard Overview tab lets you pick any past spawn and view its contents — the next recovery loop self-documents instead of leaving you guessing.
+
+---
+
 ## v2.1.4
 
 ### Bug Fixes

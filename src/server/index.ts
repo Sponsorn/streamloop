@@ -59,9 +59,12 @@ async function main() {
     ? resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe')
     : resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
 
+  const logsDir = resolve(projectRoot, 'logs');
+
   const mpv = new MpvClient({
     mpvPath,
     pipePath: '\\\\.\\pipe\\mpv-streamloop',
+    logsDir,
     mpvArgs: [
       '--no-border',
       '--no-osc',

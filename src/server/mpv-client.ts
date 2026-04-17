@@ -1,6 +1,8 @@
 import { EventEmitter } from 'events';
 import net from 'net';
 import { spawn, type ChildProcess } from 'child_process';
+import { mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { join } from 'path';
 import { logger } from './logger.js';
 
 export interface MpvClientOptions {
@@ -8,6 +10,38 @@ export interface MpvClientOptions {
   pipePath?: string;
   mpvArgs?: string[];
   spawn?: boolean;
+  /** If set, mpv is launched with --log-file pointed at a timestamped file
+   *  inside this directory. Old files are pruned to `logRetention`. */
+  logsDir?: string;
+  /** Number of past mpv log files to retain (default 10). */
+  logRetention?: number;
+}
+
+const MPV_LOG_PREFIX = 'mpv-';
+const MPV_LOG_SUFFIX = '.log';
+
+/**
+ * Prune mpv-*.log files in `logsDir`, keeping only the `retention` newest.
+ * Files that don't match the mpv-*.log pattern are left alone.
+ * Exported for testing. Safe to call with a non-existent dir (no-op).
+ */
+export function pruneMpvLogs(logsDir: string, retention: number): void {
+  if (retention <= 0) return;
+  let entries;
+  try {
+    entries = readdirSync(logsDir)
+      .filter((f) => f.startsWith(MPV_LOG_PREFIX) && f.endsWith(MPV_LOG_SUFFIX))
+      .map((f) => {
+        const full = join(logsDir, f);
+        return { path: full, mtimeMs: statSync(full).mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return;
+  }
+  for (const entry of entries.slice(retention)) {
+    try { unlinkSync(entry.path); } catch { /* ignore */ }
+  }
 }
 
 interface PendingCommand {
@@ -37,6 +71,9 @@ export class MpvClient extends EventEmitter {
   private readonly pipePath: string;
   private readonly extraArgs: string[];
   private readonly shouldSpawn: boolean;
+  private readonly logsDir: string | null;
+  private readonly logRetention: number;
+  private currentLogFile: string | null = null;
 
   private process: ChildProcess | null = null;
   private socket: net.Socket | null = null;
@@ -51,6 +88,13 @@ export class MpvClient extends EventEmitter {
     this.pipePath = options.pipePath ?? '\\\\.\\pipe\\mpv-streamloop';
     this.extraArgs = options.mpvArgs ?? [];
     this.shouldSpawn = options.spawn ?? true;
+    this.logsDir = options.logsDir ?? null;
+    this.logRetention = options.logRetention ?? 10;
+  }
+
+  /** Path of the log file for the currently running mpv process, or null. */
+  getCurrentLogFile(): string | null {
+    return this.currentLogFile;
   }
 
   // ── Lifecycle ──────────────────────────────────────────────
@@ -212,11 +256,14 @@ export class MpvClient extends EventEmitter {
   // ── Private: process management ────────────────────────────
 
   private spawnProcess(): void {
+    const logArgs = this.prepareLogFile();
+
     const args = [
       '--idle',
       `--input-ipc-server=${this.pipePath}`,
       '--no-terminal',
       '--force-window=yes',
+      ...logArgs,
       ...this.extraArgs,
     ];
 
@@ -237,6 +284,34 @@ export class MpvClient extends EventEmitter {
       this.process = null;
       this.emit('processExit', code);
     });
+  }
+
+  /** Ensure logsDir exists, prune old mpv-*.log files down to retention, pick
+   *  a new timestamped filename, and return the `--log-file` + `--msg-level`
+   *  args. Returns [] if logsDir is not configured or preparation fails. */
+  private prepareLogFile(): string[] {
+    if (!this.logsDir) {
+      this.currentLogFile = null;
+      return [];
+    }
+    try {
+      mkdirSync(this.logsDir, { recursive: true });
+      // Prune to retention-1 so the about-to-be-created file becomes the N-th.
+      pruneMpvLogs(this.logsDir, Math.max(0, this.logRetention - 1));
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const path = join(this.logsDir, `${MPV_LOG_PREFIX}${ts}${MPV_LOG_SUFFIX}`);
+      this.currentLogFile = path;
+      return [
+        `--log-file=${path}`,
+        // ytdl_hook at verbose captures yt-dlp stderr (the actual extractor
+        // error); rest of mpv stays at default noise level.
+        '--msg-level=ytdl_hook=v',
+      ];
+    } catch (err) {
+      logger.warn({ err, logsDir: this.logsDir }, 'Failed to prepare mpv log file');
+      this.currentLogFile = null;
+      return [];
+    }
   }
 
   private killProcess(): Promise<void> {

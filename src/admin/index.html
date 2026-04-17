@@ -322,6 +322,20 @@
             <div class="event-empty">No events yet</div>
           </div>
         </div>
+
+        <!-- mpv diagnostic logs -->
+        <div class="section">
+          <div class="section-title">mpv Diagnostic Logs</div>
+          <div class="hint" style="margin-bottom: 8px;">
+            Per-spawn mpv log files. When a recovery loop happens, the file covering
+            that time window will contain the actual yt-dlp / mpv errors.
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+            <select id="mpv-log-select" style="flex: 1;"></select>
+            <button id="mpv-log-refresh" class="btn btn-secondary">Refresh</button>
+          </div>
+          <pre id="mpv-log-view" style="background: var(--bg-alt, #111); color: var(--fg, #ddd); padding: 8px; height: 320px; overflow: auto; font-size: 11px; white-space: pre-wrap; word-break: break-all; margin: 0;">Select a log file to view.</pre>
+        </div>
       </div>
 
       <!-- Playback tab -->
