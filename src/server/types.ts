@@ -116,4 +116,5 @@ export interface AppConfig {
   mpvGeometry: string;
   mpvYtdlFormat: string;
   mpvExtraArgs: string[];
+  ytdlCookiesFromBrowser: string;
 }

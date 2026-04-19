@@ -104,6 +104,7 @@ const configSchema = z.object({
   mpvGeometry: z.string().default('1920x1080+0+0'),
   mpvYtdlFormat: z.string().default('bestvideo[height<=?1080]+bestaudio/best'),
   mpvExtraArgs: z.array(z.string()).default([]),
+  ytdlCookiesFromBrowser: z.string().default(''),
 });
 
 let resolvedConfigPath = '';
