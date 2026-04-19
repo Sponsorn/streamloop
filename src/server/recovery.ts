@@ -403,6 +403,13 @@ export class RecoveryEngine {
     const videoId = this.extractVideoId(hb.filename);
     const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
 
+    // Reset URL-retry counter whenever the playlist position changes
+    // (auto-advance, successful retry that played through, manual jump).
+    if (hb.playlistPos !== this.lastSeenVideoIndex) {
+      this.urlRetryCount = 0;
+      this.lastSeenVideoIndex = hb.playlistPos;
+    }
+
     // Update totalVideos from playlist count
     if (hb.playlistCount > 0) {
       this.totalVideos = hb.playlistCount;
