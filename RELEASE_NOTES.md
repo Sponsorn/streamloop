@@ -1,3 +1,10 @@
+## v2.1.6
+
+- Added `ytdlCookiesFromBrowser` config (admin dashboard > Playback > Maintenance). When set (e.g. `brave`, `chrome:Profile 1`), yt-dlp passes the logged-in browser session via `--cookies-from-browser`. Resolves YouTube's "Sign in to confirm you're not a bot" challenge that blocks playback on flagged IPs.
+- Freeze recovery: premature stream-EOF and network errors (HTTP 5xx, TLS) now trigger an in-place retry at the last known playback position via `jumpTo(currentIndex)`. yt-dlp re-signs the googlevideo URL and playback resumes near the break. Up to 2 retries per video before falling through to the existing skip path. `keep-open=yes` preserved so viewers see the last frame during the ~2-5s retry, not a black cut.
+
+---
+
 ## v2.1.5
 
 ### Bug Fixes
