@@ -525,6 +525,20 @@ export class RecoveryEngine {
     return false;
   }
 
+  /** Reload the current playlist item at a given seek position via IPC.
+   *  Triggers yt-dlp re-resolution (refreshes googlevideo URL) and
+   *  resumes near the break. Clears the start flag after 30s so it
+   *  doesn't leak to auto-advanced videos. */
+  private async retryCurrentAtPosition(seekSeconds: number): Promise<void> {
+    const pos = this.state.get().videoIndex;
+    const secs = Math.floor(Math.max(0, seekSeconds));
+    try { await this.mpv.setProperty('start', `+${secs}`); } catch { /* ignore */ }
+    try { await this.mpv.jumpTo(pos); } catch { /* ignore */ }
+    setTimeout(async () => {
+      try { await this.mpv.setProperty('start', 'none'); } catch { /* ignore */ }
+    }, 30_000);
+  }
+
   // --- Private: skip and playlist advancement ---
 
   private async skipVideo(fromIndex: number, videoId: string, reason: string) {

@@ -748,3 +748,44 @@ describe('shouldRetryUrl', () => {
     expect((engine as any).shouldRetryUrl('eof', undefined)).toBe(false);
   });
 });
+
+describe('retryCurrentAtPosition', () => {
+  it('sets start, jumps to current video, clears start after delay', async () => {
+    vi.useFakeTimers();
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5 });
+    const engine = new RecoveryEngine(
+      makeConfig(),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      { notifyError: vi.fn(), notifyRecovery: vi.fn(), notifyCritical: vi.fn(), notifyResume: vi.fn(), notifySkip: vi.fn(), notifyObsDisconnect: vi.fn(), notifyObsReconnect: vi.fn(), notifyStreamDrop: vi.fn(), notifyStreamRestart: vi.fn() } as unknown as DiscordNotifier,
+    );
+
+    await (engine as any).retryCurrentAtPosition(123);
+
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+123');
+    expect(mpv.jumpTo).toHaveBeenCalledWith(5);
+
+    // The clear-start timer fires at 30s
+    vi.advanceTimersByTime(30_000);
+    await Promise.resolve();
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', 'none');
+
+    vi.useRealTimers();
+  });
+
+  it('rounds sub-second seek values to integer seconds for yt-dlp', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 0 });
+    const engine = new RecoveryEngine(
+      makeConfig(),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      { notifyError: vi.fn(), notifyRecovery: vi.fn(), notifyCritical: vi.fn(), notifyResume: vi.fn(), notifySkip: vi.fn(), notifyObsDisconnect: vi.fn(), notifyObsReconnect: vi.fn(), notifyStreamDrop: vi.fn(), notifyStreamRestart: vi.fn() } as unknown as DiscordNotifier,
+    );
+    await (engine as any).retryCurrentAtPosition(45.7);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+45');
+  });
+});
