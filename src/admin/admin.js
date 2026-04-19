@@ -1359,6 +1359,7 @@ async function loadPlaybackSettings() {
     $('#pb-quality-min').value = cfg.minQuality || 'hd720';
     $('#pb-quality-delay').value = String(cfg.qualityRecoveryDelayMs || 120000);
     $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
+    $('#pb-ytdl-cookies').value = cfg.ytdlCookiesFromBrowser || '';
     playbackSettingsLoaded = true;
   } catch (err) {
     console.error('Failed to load playback settings:', err);
@@ -1374,6 +1375,7 @@ async function handlePlaybackSave() {
     minQuality: $('#pb-quality-min').value,
     qualityRecoveryDelayMs: Number($('#pb-quality-delay').value),
     sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
+    ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim(),
   };
   try {
     btn.disabled = true;
