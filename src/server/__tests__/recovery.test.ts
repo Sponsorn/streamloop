@@ -854,3 +854,36 @@ describe('retryCurrentAtPosition', () => {
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+45');
   });
 });
+
+describe('urlRetryCount reset on video change', () => {
+  it('resets urlRetryCount when playlist-pos changes in heartbeat', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 3, videoDuration: 600, currentTime: 120 });
+    const engine = new RecoveryEngine(
+      makeConfig(),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      { notifyError: vi.fn(), notifyRecovery: vi.fn(), notifyCritical: vi.fn(), notifyResume: vi.fn(), notifySkip: vi.fn(), notifyObsDisconnect: vi.fn(), notifyObsReconnect: vi.fn(), notifyStreamDrop: vi.fn(), notifyStreamRestart: vi.fn() } as unknown as DiscordNotifier,
+    );
+    (engine as any).urlRetryCount = 2;
+    (engine as any).lastSeenVideoIndex = 3;
+
+    // Heartbeat on same video — no reset
+    (engine as any).processHeartbeat({
+      timePos: 130, duration: 600, paused: false, idle: false,
+      playlistPos: 3, playlistCount: 10, mediaTitle: 't', filename: 'f',
+      hasVideo: true, vfps: 30,
+    });
+    expect((engine as any).urlRetryCount).toBe(2);
+
+    // Heartbeat on a different video — counter resets
+    (engine as any).processHeartbeat({
+      timePos: 5, duration: 600, paused: false, idle: false,
+      playlistPos: 4, playlistCount: 10, mediaTitle: 't', filename: 'f',
+      hasVideo: true, vfps: 30,
+    });
+    expect((engine as any).urlRetryCount).toBe(0);
+    expect((engine as any).lastSeenVideoIndex).toBe(4);
+  });
+});
