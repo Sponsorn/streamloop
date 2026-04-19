@@ -63,7 +63,7 @@ export class RecoveryEngine {
   // Bound handlers so we can remove them from mpv EventEmitter
   private boundOnConnect = () => this.onMpvConnect();
   private boundOnDisconnect = () => this.onMpvDisconnect();
-  private boundOnFileEnded = (reason: string) => this.onFileEnded(reason);
+  private boundOnFileEnded = (reason: string, fileError?: string) => this.onFileEnded(reason, fileError);
   private boundOnProcessExit = () => this.onProcessExit();
   private static readonly QUALITY_RANKS: Record<string, number> = {
     small: 0, medium: 1, large: 2, hd720: 3, hd1080: 4, hd1440: 5, hd2160: 6, highres: 7,
@@ -247,7 +247,25 @@ export class RecoveryEngine {
     // Heartbeat poll will detect timeout and trigger recovery
   }
 
-  private async onFileEnded(reason: string) {
+  private async onFileEnded(reason: string, fileError?: string) {
+    // In-place URL retry for premature EOF / network errors.
+    // Runs before the existing error/eof handling so a signed-URL
+    // expiry doesn't burn a consecutiveErrors slot or get skipped.
+    if (this.shouldRetryUrl(reason, fileError)) {
+      if (this.urlRetryCount < 2) {
+        this.urlRetryCount++;
+        const seek = this.state.get().currentTime;
+        logger.warn({ reason, fileError, seek, attempt: this.urlRetryCount }, 'Premature stream end — retrying in place');
+        this.addEvent(`Premature stream end (${reason}) — retrying at ${Math.floor(seek)}s (attempt ${this.urlRetryCount}/2)`);
+        await this.discord.notifyRecovery('URL retry');
+        await this.retryCurrentAtPosition(seek);
+        return;
+      }
+      // Retries exhausted for this video — fall through to existing logic
+      logger.warn({ videoIndex: this.state.get().videoIndex }, 'URL retries exhausted — falling through to error handling');
+      this.addEvent('URL retries exhausted — escalating to error handling');
+    }
+
     if (reason === 'error') {
       // If a seek was pending, the error is likely due to YouTube rejecting the seek position.
       // Retry the same video from the beginning instead of counting it as a real error.

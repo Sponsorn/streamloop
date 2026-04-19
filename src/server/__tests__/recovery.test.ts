@@ -605,8 +605,10 @@ describe('RecoveryEngine', () => {
       await vi.advanceTimersByTimeAsync(5000);
 
       // Now emit eof on last video
-      // Update state to match what processHeartbeat would have set
-      (state.get as any).mockReturnValue({ playlistIndex: 0, videoIndex: 4, videoId: 'last', videoTitle: 'Last Video', currentTime: 100, videoDuration: 300, nextVideoId: '', updatedAt: '' });
+      // Update state to match what processHeartbeat would have set.
+      // currentTime must be within 5s of videoDuration so shouldRetryUrl
+      // doesn't treat it as a premature EOF and intercept the event.
+      (state.get as any).mockReturnValue({ playlistIndex: 0, videoIndex: 4, videoId: 'last', videoTitle: 'Last Video', currentTime: 299, videoDuration: 300, nextVideoId: '', updatedAt: '' });
 
       mpv._emit('fileEnded', 'eof');
       await vi.advanceTimersByTimeAsync(0);
@@ -746,6 +748,69 @@ describe('shouldRetryUrl', () => {
   it('returns false if videoDuration is zero (unknown)', () => {
     state.get = vi.fn(() => ({ playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 120, videoDuration: 0, nextVideoId: '', updatedAt: '' }));
     expect((engine as any).shouldRetryUrl('eof', undefined)).toBe(false);
+  });
+});
+
+describe('onFileEnded with premature-EOF retry', () => {
+  function buildEngine(stateOverrides = {}) {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 3, videoDuration: 600, currentTime: 120, ...stateOverrides });
+    const engine = new RecoveryEngine(
+      makeConfig(),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      { notifyError: vi.fn(), notifyRecovery: vi.fn(), notifyCritical: vi.fn(), notifyResume: vi.fn(), notifySkip: vi.fn(), notifyObsDisconnect: vi.fn(), notifyObsReconnect: vi.fn(), notifyStreamDrop: vi.fn(), notifyStreamRestart: vi.fn() } as unknown as DiscordNotifier,
+    );
+    engine.start();
+    (engine as any).lastHeartbeatAt = Date.now();
+    return { engine, mpv, state };
+  }
+
+  it('fires retry on premature eof and increments counter', async () => {
+    const { engine, mpv } = buildEngine();
+    mpv._emit('fileEnded', 'eof', undefined);
+    await new Promise((r) => setImmediate(r));
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+120');
+    expect(mpv.jumpTo).toHaveBeenCalledWith(3);
+    expect((engine as any).urlRetryCount).toBe(1);
+    engine.stop();
+  });
+
+  it('fires retry on network error and increments counter', async () => {
+    const { engine, mpv } = buildEngine();
+    mpv._emit('fileEnded', 'error', 'loading failed');
+    await new Promise((r) => setImmediate(r));
+    expect(mpv.jumpTo).toHaveBeenCalledWith(3);
+    expect((engine as any).urlRetryCount).toBe(1);
+    engine.stop();
+  });
+
+  it('stops retrying after 2 attempts for same video and falls through', async () => {
+    const { engine, mpv } = buildEngine();
+    mpv._emit('fileEnded', 'eof', undefined);
+    await new Promise((r) => setImmediate(r));
+    mpv._emit('fileEnded', 'eof', undefined);
+    await new Promise((r) => setImmediate(r));
+    expect((engine as any).urlRetryCount).toBe(2);
+
+    // Third call: should not call jumpTo again (should fall through; but
+    // this video was "playing" so the error path would increment
+    // consecutiveErrors instead). We just verify jumpTo wasn't called a 3rd time.
+    mpv.jumpTo.mockClear();
+    mpv._emit('fileEnded', 'eof', undefined);
+    await new Promise((r) => setImmediate(r));
+    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('does not fire retry on normal eof at duration', async () => {
+    const { engine, mpv } = buildEngine({ currentTime: 599, videoDuration: 600 });
+    mpv._emit('fileEnded', 'eof', undefined);
+    await new Promise((r) => setImmediate(r));
+    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    expect((engine as any).urlRetryCount).toBe(0);
+    engine.stop();
   });
 });
 
