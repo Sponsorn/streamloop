@@ -57,7 +57,7 @@ interface PendingCommand {
  *  - connected
  *  - disconnected
  *  - fileStarted
- *  - fileEnded(reason: string)
+ *  - fileEnded(reason: string, fileError?: string)
  *  - fileLoaded
  *  - shutdown
  *  - propertyChange(name: string, data: unknown)
