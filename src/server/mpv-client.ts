@@ -425,7 +425,7 @@ export class MpvClient extends EventEmitter {
         this.emit('fileStarted');
         break;
       case 'end-file':
-        this.emit('fileEnded', msg.reason ?? 'unknown');
+        this.emit('fileEnded', msg.reason ?? 'unknown', msg.file_error);
         break;
       case 'file-loaded':
         this.emit('fileLoaded');
