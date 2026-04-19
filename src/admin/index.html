@@ -413,6 +413,11 @@
               </select>
               <div class="hint">Proactively restart mpv to prevent memory buildup during long sessions</div>
             </div>
+            <div class="form-group">
+              <label for="pb-ytdl-cookies">yt-dlp cookies from browser</label>
+              <input type="text" id="pb-ytdl-cookies" class="wh-preview-select" placeholder="e.g. brave, chrome, firefox, chrome:Profile 2">
+              <div class="hint">Pass a logged-in session to yt-dlp to avoid "Sign in to confirm you're not a bot" errors. Leave blank to disable. Browser profile optional (after a colon).</div>
+            </div>
           </div>
         </div>
         <button type="button" id="pb-save-btn" class="btn btn-primary" style="margin-top: 20px;">Save Playback Settings</button>
