@@ -54,6 +54,8 @@ export class RecoveryEngine {
   private videoConfirmed = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private videoFreezeHeartbeats = 0;
+  private urlRetryCount = 0;
+  private lastSeenVideoIndex = -1;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
   private static readonly VIDEO_FREEZE_THRESHOLD = 4;
@@ -497,6 +499,30 @@ export class RecoveryEngine {
     // Try bare 11-char video ID (mpv sometimes reports just the ID)
     const bare = filename.match(/^([A-Za-z0-9_-]{11})$/);
     return bare ? bare[1] : '';
+  }
+
+  /** True when an end-file event looks like a signed-URL / CDN failure
+   *  worth retrying in place (premature EOF or network error mid-playback). */
+  private shouldRetryUrl(reason: string, fileError: string | undefined): boolean {
+    // Ignore events fired outside active playback (e.g. during initial
+    // playlist resolution). Mirrors the `elapsed > heartbeat * 2` guard
+    // already used in onFileEnded's error branch.
+    const elapsed = Date.now() - this.lastHeartbeatAt;
+    if (elapsed > this.config.heartbeatIntervalMs * 2) return false;
+
+    const { currentTime, videoDuration } = this.state.get();
+
+    if (reason === 'eof') {
+      // Need a known duration to call an EOF "premature".
+      if (videoDuration <= 0) return false;
+      return currentTime < videoDuration - 5;
+    }
+
+    if (reason === 'error' && fileError) {
+      return /http|network|loading failed|tls|ssl/i.test(fileError);
+    }
+
+    return false;
   }
 
   // --- Private: skip and playlist advancement ---

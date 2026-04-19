@@ -690,3 +690,61 @@ describe('RecoveryEngine', () => {
     );
   });
 });
+
+describe('shouldRetryUrl', () => {
+  let engine: RecoveryEngine;
+  let mpv: MockMpv;
+  let state: ReturnType<typeof mockState>;
+
+  beforeEach(() => {
+    mpv = mockMpv();
+    state = mockState({ videoDuration: 600, currentTime: 120 }) as any;
+    engine = new RecoveryEngine(
+      makeConfig({ heartbeatIntervalMs: 5000 }),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      { notifyError: vi.fn(), notifyRecovery: vi.fn(), notifyCritical: vi.fn(), notifyResume: vi.fn(), notifySkip: vi.fn(), notifyObsDisconnect: vi.fn(), notifyObsReconnect: vi.fn(), notifyStreamDrop: vi.fn(), notifyStreamRestart: vi.fn() } as unknown as DiscordNotifier,
+    );
+    // Simulate a recent heartbeat so shouldRetryUrl sees "actively playing"
+    (engine as any).lastHeartbeatAt = Date.now();
+  });
+
+  it('returns true on premature eof', () => {
+    const result = (engine as any).shouldRetryUrl('eof', undefined);
+    expect(result).toBe(true);
+  });
+
+  it('returns false on eof at duration', () => {
+    state.get = vi.fn(() => ({ playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 598, videoDuration: 600, nextVideoId: '', updatedAt: '' }));
+    const result = (engine as any).shouldRetryUrl('eof', undefined);
+    expect(result).toBe(false);
+  });
+
+  it('returns true on network error', () => {
+    const result = (engine as any).shouldRetryUrl('error', 'loading failed');
+    expect(result).toBe(true);
+  });
+
+  it('returns true on tls error string', () => {
+    expect((engine as any).shouldRetryUrl('error', 'tls: IO error')).toBe(true);
+  });
+
+  it('returns false on non-network error', () => {
+    expect((engine as any).shouldRetryUrl('error', 'generic decode failure')).toBe(false);
+  });
+
+  it('returns false on error with no file_error', () => {
+    expect((engine as any).shouldRetryUrl('error', undefined)).toBe(false);
+  });
+
+  it('returns false if no recent heartbeat (playlist-load phase)', () => {
+    (engine as any).lastHeartbeatAt = Date.now() - 60_000;
+    expect((engine as any).shouldRetryUrl('eof', undefined)).toBe(false);
+  });
+
+  it('returns false if videoDuration is zero (unknown)', () => {
+    state.get = vi.fn(() => ({ playlistIndex: 0, videoIndex: 0, videoId: '', videoTitle: '', currentTime: 120, videoDuration: 0, nextVideoId: '', updatedAt: '' }));
+    expect((engine as any).shouldRetryUrl('eof', undefined)).toBe(false);
+  });
+});
