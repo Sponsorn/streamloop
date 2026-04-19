@@ -79,6 +79,25 @@ describe('loadConfig', () => {
     }));
     expect(() => loadConfig(tmpConfig)).toThrow();
   });
+
+  it('accepts ytdlCookiesFromBrowser string and defaults to empty', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PL1' }],
+      obsBrowserSourceName: 'Source',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.ytdlCookiesFromBrowser).toBe('');
+  });
+
+  it('preserves ytdlCookiesFromBrowser when set', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PL1' }],
+      obsBrowserSourceName: 'Source',
+      ytdlCookiesFromBrowser: 'brave:Profile 1',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.ytdlCookiesFromBrowser).toBe('brave:Profile 1');
+  });
 });
 
 describe('isFirstRun', () => {

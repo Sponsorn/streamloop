@@ -53,5 +53,6 @@
   "twitchClientSecret": "",
   "twitchChannel": "",
   "twitchLivenessEnabled": false,
-  "twitchPollIntervalMs": 60000
+  "twitchPollIntervalMs": 60000,
+  "ytdlCookiesFromBrowser": ""
 }
