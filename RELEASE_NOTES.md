@@ -1,3 +1,12 @@
+## v2.1.7
+
+- Bundle Deno with the release. YouTube's player JavaScript now requires solving an "n-parameter" challenge before video URLs resolve. yt-dlp's EJS subsystem can solve it but needs a JS runtime — we ship `deno.exe` alongside `yt-dlp.exe` and yt-dlp picks it up automatically. Without this, v2.1.6 fails with "Only images are available for download" on every video.
+- Switch bundled yt-dlp from stable to nightly builds. YouTube rotates challenge shapes faster than yt-dlp's stable cadence; nightly tracks them more reliably. If nightly ever breaks, manually replacing `yt-dlp/yt-dlp.exe` with a stable build is always a valid fallback.
+
+**Upgrade note for existing v2.1.6 installs:** the admin dashboard auto-updater only swaps the `app/` directory, so it won't drop a new `deno.exe` into your existing `yt-dlp/` folder. After auto-updating, either manually download `deno.exe` from https://github.com/denoland/deno/releases/latest (Windows x64) and place it at `streamloop/yt-dlp/deno.exe`, or do a clean reinstall from the v2.1.7 ZIP.
+
+---
+
 ## v2.1.6
 
 - Added `ytdlCookiesFromBrowser` config (admin dashboard > Playback > Maintenance). When set (e.g. `brave`, `chrome:Profile 1`), yt-dlp passes the logged-in browser session via `--cookies-from-browser`. Resolves YouTube's "Sign in to confirm you're not a bot" challenge that blocks playback on flagged IPs.

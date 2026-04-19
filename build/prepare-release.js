@@ -25,7 +25,8 @@ import { pipeline } from 'stream/promises';
 const NODE_VERSION = '22.12.0';
 const NODE_ARCH = 'win-x64';
 const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`;
-const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
+const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe';
+const DENO_URL = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const DIST = join(ROOT, 'dist');
@@ -56,10 +57,18 @@ async function main() {
   const extractedNodeDir = join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`);
   cpSync(extractedNodeDir, join(RELEASE, 'node'), { recursive: true });
 
-  // Step 2: Download yt-dlp
-  console.log('Downloading yt-dlp...');
+  // Step 2: Download yt-dlp (nightly — YouTube rotates challenge shapes faster
+  // than stable releases; nightly tracks them) and deno (required to solve the
+  // n-param JS challenge; yt-dlp's EJS subsystem picks it up automatically
+  // when placed alongside yt-dlp.exe).
+  console.log('Downloading yt-dlp (nightly)...');
   mkdirSync(join(RELEASE, 'yt-dlp'), { recursive: true });
   await downloadFile(YTDLP_URL, join(RELEASE, 'yt-dlp', 'yt-dlp.exe'));
+
+  console.log('Downloading deno...');
+  const denoZip = join(DIST, 'deno.zip');
+  await downloadFile(DENO_URL, denoZip);
+  execSync(`C:\\Windows\\System32\\tar.exe -xf "${denoZip}" -C "${join(RELEASE, 'yt-dlp')}"`, { stdio: 'inherit' });
 
   // Step 3: Bundle mpv
   console.log('Bundling mpv...');
