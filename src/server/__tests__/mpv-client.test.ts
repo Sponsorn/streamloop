@@ -217,6 +217,34 @@ describe('MpvClient', () => {
       expect(reason).toBe('eof');
     });
 
+    it('should emit fileEnded with reason and file_error on end-file event', async () => {
+      const c = createClient();
+      await c.connect();
+      const sock = await waitForServerConnection();
+
+      const eventPromise = new Promise<[string, string | undefined]>((resolve) => {
+        c.on('fileEnded', (reason: string, fileError?: string) => resolve([reason, fileError]));
+      });
+      serverSend(sock, { event: 'end-file', reason: 'error', file_error: 'loading failed' });
+      const [reason, fileError] = await eventPromise;
+      expect(reason).toBe('error');
+      expect(fileError).toBe('loading failed');
+    });
+
+    it('should emit fileEnded with undefined file_error when not present', async () => {
+      const c = createClient();
+      await c.connect();
+      const sock = await waitForServerConnection();
+
+      const eventPromise = new Promise<[string, string | undefined]>((resolve) => {
+        c.on('fileEnded', (reason: string, fileError?: string) => resolve([reason, fileError]));
+      });
+      serverSend(sock, { event: 'end-file', reason: 'eof' });
+      const [reason, fileError] = await eventPromise;
+      expect(reason).toBe('eof');
+      expect(fileError).toBeUndefined();
+    });
+
     it('should emit fileLoaded on file-loaded event', async () => {
       const c = createClient();
       await c.connect();
