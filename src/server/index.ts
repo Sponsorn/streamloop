@@ -61,25 +61,30 @@ async function main() {
 
   const logsDir = resolve(projectRoot, 'logs');
 
+  const mpvArgs = [
+    '--no-border',
+    '--no-osc',
+    '--osd-level=0',
+    `--geometry=${config.mpvGeometry}`,
+    '--hwdec=auto',
+    `--ytdl-format=${config.mpvYtdlFormat}`,
+    '--loop-playlist=inf',
+    '--ytdl-raw-options=yes-playlist=,js-runtimes=node',
+    `--script-opts=ytdl_hook-ytdl_path=${ytdlpPath}`,
+  ];
+  if (config.ytdlCookiesFromBrowser) {
+    mpvArgs.push(`--ytdl-raw-options-append=cookies-from-browser=${config.ytdlCookiesFromBrowser}`);
+  }
+  mpvArgs.push(...config.mpvExtraArgs);
+
   const mpv = new MpvClient({
     mpvPath,
     pipePath: '\\\\.\\pipe\\mpv-streamloop',
     logsDir,
-    mpvArgs: [
-      '--no-border',
-      '--no-osc',
-      '--osd-level=0',
-      `--geometry=${config.mpvGeometry}`,
-      '--hwdec=auto',
-      `--ytdl-format=${config.mpvYtdlFormat}`,
-      '--loop-playlist=inf',
-      '--ytdl-raw-options=yes-playlist=,js-runtimes=node',
-      `--script-opts=ytdl_hook-ytdl_path=${ytdlpPath}`,
-      ...config.mpvExtraArgs,
-    ],
+    mpvArgs,
   });
 
-  const playlistCache = new PlaylistMetadataCache(ytdlpPath);
+  const playlistCache = new PlaylistMetadataCache(ytdlpPath, config.ytdlCookiesFromBrowser);
 
   // OBS client
   let obs = new OBSClient(config);
