@@ -50,11 +50,24 @@ interface CacheEntry {
 
 export class PlaylistMetadataCache {
   private readonly ytdlpPath: string;
+  private readonly cookiesFromBrowser: string;
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inFlight = new Map<string, Promise<PlaylistMetadata>>();
 
-  constructor(ytdlpPath: string) {
+  constructor(ytdlpPath: string, cookiesFromBrowser: string = '') {
     this.ytdlpPath = ytdlpPath;
+    this.cookiesFromBrowser = cookiesFromBrowser;
+  }
+
+  /** Build the argv yt-dlp is invoked with. Exposed via class so tests can inspect. */
+  private buildArgv(playlistId: string): string[] {
+    const url = `https://www.youtube.com/playlist?list=${playlistId}`;
+    const args: string[] = [];
+    if (this.cookiesFromBrowser) {
+      args.push('--cookies-from-browser', this.cookiesFromBrowser);
+    }
+    args.push('--flat-playlist', '--dump-json', '--no-warnings', url);
+    return args;
   }
 
   async fetch(playlistId: string): Promise<PlaylistMetadata> {
@@ -92,12 +105,11 @@ export class PlaylistMetadataCache {
   }
 
   private async _doFetch(playlistId: string): Promise<PlaylistMetadata> {
-    const url = `https://www.youtube.com/playlist?list=${playlistId}`;
     logger.info({ playlistId }, 'Fetching playlist metadata via yt-dlp');
 
     const { stdout } = await execFile(
       this.ytdlpPath,
-      ['--flat-playlist', '--dump-json', '--no-warnings', url],
+      this.buildArgv(playlistId),
       { maxBuffer: 50 * 1024 * 1024, timeout: 120_000 },
     );
 

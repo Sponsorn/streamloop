@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePlaylistOutput } from '../playlist-metadata.js';
+import { parsePlaylistOutput, PlaylistMetadataCache } from '../playlist-metadata.js';
 
 describe('parsePlaylistOutput', () => {
   it('parses valid JSON lines into PlaylistVideo array with correct indices', () => {
@@ -54,5 +54,29 @@ describe('parsePlaylistOutput', () => {
     expect(parsePlaylistOutput('   ')).toEqual([]);
     expect(parsePlaylistOutput('\n\n\n')).toEqual([]);
     expect(parsePlaylistOutput('  \n  \n  ')).toEqual([]);
+  });
+});
+
+describe('PlaylistMetadataCache argv', () => {
+  it('omits cookies flag when not configured', () => {
+    const cache = new PlaylistMetadataCache('/tmp/yt-dlp');
+    const argv = (cache as any).buildArgv('PL123');
+    expect(argv).not.toContain('--cookies-from-browser');
+  });
+
+  it('includes cookies flag when configured', () => {
+    const cache = new PlaylistMetadataCache('/tmp/yt-dlp', 'brave');
+    const argv = (cache as any).buildArgv('PL123');
+    const idx = argv.indexOf('--cookies-from-browser');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(argv[idx + 1]).toBe('brave');
+  });
+
+  it('includes cookies flag with profile spec', () => {
+    const cache = new PlaylistMetadataCache('/tmp/yt-dlp', 'chrome:Profile 2');
+    const argv = (cache as any).buildArgv('PL123');
+    const idx = argv.indexOf('--cookies-from-browser');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(argv[idx + 1]).toBe('chrome:Profile 2');
   });
 });
