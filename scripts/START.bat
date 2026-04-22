@@ -75,6 +75,39 @@ if %ERRORLEVEL% equ 75 (
                     copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul
                 )
                 echo Update applied successfully.
+
+                :: Swap yt-dlp/ if the update bundled new binaries (yt-dlp.exe,
+                :: deno.exe). YouTube rotates challenge shapes faster than our
+                :: release cadence; refreshing on every update keeps things working.
+                if exist "%ROOT%_update_tmp\yt-dlp" (
+                    if exist "%ROOT%_update_old_ytdlp" rmdir /s /q "%ROOT%_update_old_ytdlp" 2>nul
+                    set "YTDLP_OK=0"
+                    for /L %%j in (1,1,5) do (
+                        if "!YTDLP_OK!"=="0" (
+                            rename "%ROOT%yt-dlp" _update_old_ytdlp 2>nul
+                            if not exist "%ROOT%yt-dlp" (
+                                set "YTDLP_OK=1"
+                            ) else (
+                                echo   Waiting for yt-dlp file locks (attempt %%j/5^)...
+                                timeout /t 3 /nobreak >nul
+                            )
+                        )
+                    )
+                    if not exist "%ROOT%yt-dlp" (
+                        move "%ROOT%_update_tmp\yt-dlp" "%ROOT%yt-dlp"
+                        if exist "%ROOT%yt-dlp\yt-dlp.exe" (
+                            echo yt-dlp updated.
+                            if exist "%ROOT%_update_old_ytdlp" rmdir /s /q "%ROOT%_update_old_ytdlp" 2>nul
+                        ) else (
+                            echo [WARNING] New yt-dlp directory incomplete, rolling back yt-dlp.
+                            if exist "%ROOT%yt-dlp" rmdir /s /q "%ROOT%yt-dlp" 2>nul
+                            rename "%ROOT%_update_old_ytdlp" yt-dlp
+                        )
+                    ) else (
+                        echo [WARNING] Could not rename old yt-dlp directory, keeping existing.
+                    )
+                )
+
                 :: Clean up temp directories only after successful swap
                 if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
                 if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul

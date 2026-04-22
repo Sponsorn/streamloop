@@ -1,3 +1,9 @@
+## v2.1.8
+
+- Auto-updater now refreshes the bundled `yt-dlp/` directory (yt-dlp.exe + deno.exe) on every update, not just `app/`. YouTube rotates its player JS challenge faster than our release cadence — without this, updating wouldn't carry new yt-dlp/deno binaries into existing installs. Same retry-and-rollback safety as the existing app swap.
+
+---
+
 ## v2.1.7
 
 - Bundle Deno with the release. YouTube's player JavaScript now requires solving an "n-parameter" challenge before video URLs resolve. yt-dlp's EJS subsystem can solve it but needs a JS runtime — we ship `deno.exe` alongside `yt-dlp.exe` and yt-dlp picks it up automatically. Without this, v2.1.6 fails with "Only images are available for download" on every video.

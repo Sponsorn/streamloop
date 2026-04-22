@@ -239,6 +239,16 @@ export class Updater {
       const stagedAppDir = join(tmpDir, 'app');
       renameSync(newAppDir, stagedAppDir);
 
+      // Also stage yt-dlp/ (contains yt-dlp.exe + deno.exe) if the ZIP includes
+      // it. START.bat swaps it alongside app/ so new yt-dlp/deno binaries land
+      // on every update — YouTube's challenge shape rotates faster than we cut
+      // releases, and nightly yt-dlp helps track those rotations.
+      const newYtdlpDir = join(extractDir, 'streamloop', 'yt-dlp');
+      if (existsSync(newYtdlpDir)) {
+        const stagedYtdlpDir = join(tmpDir, 'yt-dlp');
+        renameSync(newYtdlpDir, stagedYtdlpDir);
+      }
+
       this.status = 'ready';
       logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');
     } catch (err) {
