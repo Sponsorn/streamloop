@@ -55,10 +55,17 @@ export class RecoveryEngine {
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private videoFreezeHeartbeats = 0;
   private urlRetryCount = 0;
+  private videoFreezeRetryCount = 0;
   private lastSeenVideoIndex = -1;
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
   private static readonly VIDEO_FREEZE_THRESHOLD = 4;
+  /** Don't treat the brief video-EOF burst at a video's natural end as a freeze. */
+  private static readonly VIDEO_FREEZE_END_GUARD_SEC = 10;
+  /** video-bitrate (bits/s) at or below this means no video bytes are arriving. */
+  private static readonly FROZEN_VIDEO_BITRATE = 1000;
+  /** In-place URL retries for a video freeze before escalating to a restart. */
+  private static readonly MAX_VIDEO_FREEZE_RETRIES = 3;
 
   // Bound handlers so we can remove them from mpv EventEmitter
   private boundOnConnect = () => this.onMpvConnect();
@@ -237,6 +244,7 @@ export class RecoveryEngine {
     this.lastHeartbeatAt = Date.now();
     this.nonPlayingHeartbeats = 0;
     this.videoFreezeHeartbeats = 0;
+    this.videoFreezeRetryCount = 0;
     await this.loadCurrentPlaylist();
   }
 
@@ -353,7 +361,7 @@ export class RecoveryEngine {
   }
 
   private async pollMpvState(): Promise<MpvHeartbeat> {
-    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename, videoParams, vfps] =
+    const [timePos, duration, paused, idle, playlistPos, playlistCount, mediaTitle, filename, videoParams, vfps, videoBitrate, audioBitrate] =
       await Promise.all([
         this.mpv.getProperty('time-pos').catch(() => 0),
         this.mpv.getProperty('duration').catch(() => 0),
@@ -365,6 +373,8 @@ export class RecoveryEngine {
         this.mpv.getProperty('filename').catch(() => ''),
         this.mpv.getProperty('video-params').catch(() => null),
         this.mpv.getProperty('estimated-vf-fps').catch(() => 0),
+        this.mpv.getProperty('video-bitrate').catch(() => null),
+        this.mpv.getProperty('audio-bitrate').catch(() => null),
       ]);
     return {
       timePos: timePos as number,
@@ -377,6 +387,9 @@ export class RecoveryEngine {
       filename: filename as string,
       hasVideo: videoParams != null,
       vfps: (vfps as number) || 0,
+      // -1 means "unknown" so the freeze check never trips on a missing reading.
+      videoBitrate: typeof videoBitrate === 'number' ? videoBitrate : -1,
+      audioBitrate: typeof audioBitrate === 'number' ? audioBitrate : -1,
     };
   }
 
@@ -407,6 +420,7 @@ export class RecoveryEngine {
     // (auto-advance, successful retry that played through, manual jump).
     if (hb.playlistPos !== this.lastSeenVideoIndex) {
       this.urlRetryCount = 0;
+      this.videoFreezeRetryCount = 0;
       this.lastSeenVideoIndex = hb.playlistPos;
     }
 
@@ -445,21 +459,47 @@ export class RecoveryEngine {
       }
     }
 
-    // Video freeze detection: audio plays (time-pos advances) but video output has stopped.
-    // estimated-vf-fps drops to 0 when the video rendering pipeline freezes.
-    if (isPlaying && this.videoConfirmed && hb.vfps < 1) {
+    // Video freeze detection: audio keeps flowing (time-pos advances) but the
+    // video stream has stalled. YouTube serves video and audio as separate DASH
+    // streams; when the *video* stream stalls/EOFs, mpv holds the last frame and
+    // never emits a file-level end-file (the file stays alive on audio), so this
+    // heartbeat check is the only thing that can catch it. Two independent
+    // signals: estimated-vf-fps collapses, and/or video-bitrate drops to ~0
+    // while audio-bitrate keeps flowing.
+    const nearEndOfFile = hb.duration > 0
+      && hb.duration - hb.timePos < RecoveryEngine.VIDEO_FREEZE_END_GUARD_SEC;
+    const videoFramesStalled = hb.vfps < 1;
+    const videoBytesStalled = hb.videoBitrate >= 0 && hb.videoBitrate < RecoveryEngine.FROZEN_VIDEO_BITRATE;
+    const videoStalled = videoFramesStalled || videoBytesStalled;
+
+    if (isPlaying && this.videoConfirmed && videoStalled && !nearEndOfFile) {
       this.videoFreezeHeartbeats++;
       if (this.videoFreezeHeartbeats >= RecoveryEngine.VIDEO_FREEZE_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
         const mem = getSystemMemory();
-        const freezeMsg = `Video freeze detected at ${Math.floor(hb.timePos)}s on video #${hb.playlistPos} (${videoId}) — audio playing but vfps=${hb.vfps} for ${this.videoFreezeHeartbeats} heartbeats (RAM: ${mem.usedGB}/${mem.totalGB}GB, ${mem.usedPercent}%)`;
-        logger.warn({ timePos: hb.timePos, vfps: hb.vfps, videoFreezeHeartbeats: this.videoFreezeHeartbeats, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze — audio playing but video output stopped');
-        this.addEvent(freezeMsg);
-        this.discord.notifyRecovery('Video freeze detected');
-        this.recoveryReason = 'stall';
-        this.startRecoverySequence();
+        if (this.videoFreezeRetryCount < RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES) {
+          // In-place URL retry: re-resolve a fresh stream and resume at the
+          // current audio position. No mpv restart — restarts black out the
+          // OBS capture for viewers (see recovery constraints).
+          this.videoFreezeRetryCount++;
+          const seek = hb.timePos;
+          logger.warn({ timePos: hb.timePos, vfps: hb.vfps, videoBitrate: hb.videoBitrate, audioBitrate: hb.audioBitrate, videoFreezeHeartbeats: this.videoFreezeHeartbeats, attempt: this.videoFreezeRetryCount, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze (audio alive) — retrying URL in place');
+          this.addEvent(`Video freeze at ${Math.floor(hb.timePos)}s on video #${hb.playlistPos} (${videoId}) — audio playing but video stalled (vfps=${hb.vfps}, video-bitrate=${hb.videoBitrate}) — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
+          this.discord.notifyRecovery('Video freeze — URL retry');
+          this.videoFreezeHeartbeats = 0; // cooldown: require a fresh window before re-firing
+          this.retryCurrentAtPosition(seek);
+        } else {
+          // In-place retries exhausted for this video — fall back to the
+          // escalating sequence (mpv restart) as a last resort.
+          logger.warn({ timePos: hb.timePos, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze URL retries exhausted — escalating to recovery sequence');
+          this.addEvent(`Video freeze retries exhausted on video #${hb.playlistPos} (${videoId}) — escalating recovery`);
+          this.recoveryReason = 'stall';
+          this.startRecoverySequence();
+        }
       }
-    } else {
-      this.videoFreezeHeartbeats = 0;
+    } else if (this.videoFreezeHeartbeats > 0) {
+      // Tolerate a single healthy heartbeat (vfps/bitrate can blip) without
+      // fully resetting — decrement so a real sustained freeze still escalates.
+      this.videoFreezeHeartbeats--;
     }
 
     // Only write state when video is making progress and not in recovery

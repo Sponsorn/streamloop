@@ -1,3 +1,14 @@
+## v2.1.9
+
+- **Video-freeze recovery now fixes the freeze in place instead of restarting mpv.** YouTube serves video and audio as separate streams; when the *video* stream stalls or EOFs but audio keeps playing, mpv holds the last frame and never fires a file-level `end-file` — so the existing URL-retry never triggered, and the heartbeat detector almost never caught it (Emma's logs: the condition occurred constantly but auto-recovery fired ~once a week, so the app had to be restarted by hand). The detector now:
+  - trips on `estimated-vf-fps < 1` **or** `video-bitrate ≈ 0` (two independent signals — a frozen video stream shows up in at least one);
+  - ignores the brief normal video-EOF burst at a video's natural end (`duration − time-pos < 10s`) and tolerates single-heartbeat blips, cutting false positives;
+  - responds with an **in-place URL retry at the current position** (re-resolves a fresh stream, resumes near the break) — **no mpv restart**, so OBS never captures a black screen — escalating to the old restart sequence only after 3 in-place retries fail;
+  - logs `vfps`, `video-bitrate`, `audio-bitrate`, `time-pos`, and `duration` whenever it trips, so each freeze self-documents in the logs.
+- Separately confirmed the recurring ~6-hour `Premature stream end (eof)` events are normal YouTube signed-URL expiry, already handled cleanly by the existing in-place URL retry — left unchanged.
+
+---
+
 ## v2.1.8
 
 - Auto-updater now refreshes the bundled `yt-dlp/` directory (yt-dlp.exe + deno.exe) on every update, not just `app/`. YouTube rotates its player JS challenge faster than our release cadence — without this, updating wouldn't carry new yt-dlp/deno binaries into existing installs. Same retry-and-rollback safety as the existing app swap.

@@ -11,6 +11,10 @@ export interface MpvHeartbeat {
   filename: string;
   hasVideo: boolean;
   vfps: number;
+  /** Video stream bitrate in bits/s, or -1 when unknown/unavailable. */
+  videoBitrate: number;
+  /** Audio stream bitrate in bits/s, or -1 when unknown/unavailable. */
+  audioBitrate: number;
 }
 
 export interface MpvPlaylistEntry {

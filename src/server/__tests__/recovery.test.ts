@@ -873,7 +873,7 @@ describe('urlRetryCount reset on video change', () => {
     (engine as any).processHeartbeat({
       timePos: 130, duration: 600, paused: false, idle: false,
       playlistPos: 3, playlistCount: 10, mediaTitle: 't', filename: 'f',
-      hasVideo: true, vfps: 30,
+      hasVideo: true, vfps: 30, videoBitrate: 3000000, audioBitrate: 128000,
     });
     expect((engine as any).urlRetryCount).toBe(2);
 
@@ -881,9 +881,111 @@ describe('urlRetryCount reset on video change', () => {
     (engine as any).processHeartbeat({
       timePos: 5, duration: 600, paused: false, idle: false,
       playlistPos: 4, playlistCount: 10, mediaTitle: 't', filename: 'f',
-      hasVideo: true, vfps: 30,
+      hasVideo: true, vfps: 30, videoBitrate: 3000000, audioBitrate: 128000,
     });
     expect((engine as any).urlRetryCount).toBe(0);
     expect((engine as any).lastSeenVideoIndex).toBe(4);
+  });
+});
+
+describe('video freeze (audio alive) recovery', () => {
+  function build(stateOverrides = {}) {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 0, videoDuration: 600, currentTime: 100, ...stateOverrides });
+    const engine = new RecoveryEngine(
+      makeConfig(),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      discord,
+    );
+    (engine as any).lastHeartbeatAt = Date.now();
+    return { engine, mpv, discord, state };
+  }
+
+  // A heartbeat where the video stream has stalled (no frames, no video bytes)
+  // but audio is still flowing — the "video freezes, audio continues" case.
+  function hb(overrides: Record<string, unknown> = {}) {
+    return {
+      timePos: 100, duration: 600, paused: false, idle: false,
+      playlistPos: 0, playlistCount: 10, mediaTitle: 't', filename: 'f',
+      hasVideo: true, vfps: 0, videoBitrate: 0, audioBitrate: 128000,
+      ...overrides,
+    };
+  }
+
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it('retries the URL in place (no mpv restart) when video stalls but audio keeps playing', async () => {
+    const { engine, mpv } = build();
+    // Confirm video is rendering first
+    (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, timePos: 100 }));
+    // 4 freeze heartbeats, audio advancing (time-pos keeps moving)
+    for (const t of [105, 110, 115, 120]) (engine as any).processHeartbeat(hb({ timePos: t }));
+    await flush();
+
+    // In-place reload at the current audio position — NOT an mpv restart.
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+120');
+    expect(mpv.jumpTo).toHaveBeenCalledWith(0);
+    expect(mpv.restart).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('does not retry near the end of the file (normal end-of-video video EOF burst)', async () => {
+    const { engine, mpv } = build();
+    (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, timePos: 590 }));
+    for (const t of [595, 596, 597, 598]) (engine as any).processHeartbeat(hb({ timePos: t, duration: 600 }));
+    await flush();
+
+    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('detects the freeze via video-bitrate collapse even when vfps reads nonzero', async () => {
+    const { engine, mpv } = build();
+    (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, timePos: 100 }));
+    // vfps stays above the fps floor, but no video bytes are arriving.
+    for (const t of [105, 110, 115, 120]) (engine as any).processHeartbeat(hb({ vfps: 8, videoBitrate: 0, timePos: t }));
+    await flush();
+
+    expect(mpv.jumpTo).toHaveBeenCalledWith(0);
+    engine.stop();
+  });
+
+  it('does not retry during healthy playback', async () => {
+    const { engine, mpv } = build();
+    for (const t of [100, 105, 110, 115, 120, 125]) {
+      (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, timePos: t }));
+    }
+    await flush();
+
+    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    expect(mpv.restart).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('escalates to the standard recovery sequence after in-place retries are exhausted', async () => {
+    const { engine, mpv, discord } = build();
+    (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, timePos: 100 }));
+    let t = 100;
+    // Each fire needs a fresh freeze window; run more cycles than the cap.
+    for (let cycle = 0; cycle < 4; cycle++) {
+      for (let i = 0; i < 4; i++) { t += 5; (engine as any).processHeartbeat(hb({ timePos: t })); }
+      await flush();
+    }
+
+    expect((engine as any).videoFreezeRetryCount).toBe(3);
+    expect(discord.notifyRecovery).toHaveBeenCalledWith(RecoveryStep.RetryCurrent);
+    engine.stop();
+  });
+
+  it('resets the freeze retry counter when the video changes', () => {
+    const { engine } = build();
+    (engine as any).videoFreezeRetryCount = 2;
+    (engine as any).lastSeenVideoIndex = 0;
+    (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, playlistPos: 1, timePos: 5 }));
+    expect((engine as any).videoFreezeRetryCount).toBe(0);
+    engine.stop();
   });
 });
