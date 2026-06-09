@@ -1,3 +1,12 @@
+## v2.2.0
+
+- **Ground-truth output-freeze detection.** A new watchdog screenshots the OBS capture source every 10s and detects when the *streamed picture itself* is frozen — catching failures the mpv-side detectors can't see (a "video unavailable" still that mpv reports as healthy playback, or OBS losing the window capture). It compares frame hashes only — **no screenshots are ever written to disk**. When the picture stays byte-identical for a configurable window it takes a second confirmation screenshot a moment later before acting, then recovers **in place** at the current position (re-resolves a fresh stream) — **no mpv restart**, so OBS never captures a black screen. It shares the existing in-place URL-retry budget with the bitrate/vfps freeze detector and escalates to the old restart sequence only after those retries are exhausted. Two new settings under **Playback > Recovery**: *Detect frozen output* (on by default) and *Output freeze window* (default 30s — raise it if you ever stream legitimately static content). The window is editable from the dashboard, so it can be tuned without a new release.
+- **Persistent recovery event log.** The dashboard's recovery-event timeline is now written to daily-rotated JSONL files in `logs/` (7-day retention) and reloaded on startup, so the history survives auto-updates, mpv restarts, and crashes instead of resetting to empty each time.
+- **"Video skipped" Discord alerts now actually fire.** When a video is dropped after repeated playback errors (`maxConsecutiveErrors`), a skip notification is sent — previously the skip event was advertised in the dashboard but never triggered.
+- Removed the orphaned quality-recovery feature (config keys, engine code, and the dashboard "Quality" display + "Quality Recovery" settings). It was v1-era scaffolding built around the YouTube IFrame player's quality signal, which mpv doesn't expose, so it never did anything. Existing `config.json` files migrate automatically — the stale keys are dropped on next load.
+
+---
+
 ## v2.1.9
 
 - **Video-freeze recovery now fixes the freeze in place instead of restarting mpv.** YouTube serves video and audio as separate streams; when the *video* stream stalls or EOFs but audio keeps playing, mpv holds the last frame and never fires a file-level `end-file` — so the existing URL-retry never triggered, and the heartbeat detector almost never caught it (Emma's logs: the condition occurred constantly but auto-recovery fired ~once a week, so the app had to be restarted by hand). The detector now:
