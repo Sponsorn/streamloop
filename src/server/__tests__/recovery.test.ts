@@ -115,6 +115,7 @@ function mockObs() {
   return {
     refreshBrowserSource: vi.fn(async () => true),
     toggleBrowserSource: vi.fn(async () => true),
+    getSourceScreenshot: vi.fn(async () => null),
   } as unknown as OBSClient;
 }
 
@@ -1004,6 +1005,66 @@ describe('video freeze (audio alive) recovery', () => {
     (engine as any).lastSeenVideoIndex = 0;
     (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, playlistPos: 1, timePos: 5 }));
     expect((engine as any).videoFreezeRetryCount).toBe(0);
+    engine.stop();
+  });
+});
+
+describe('output freeze (screenshot) recovery', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  function build() {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 0, videoDuration: 600, currentTime: 100 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), discord);
+    return { engine, mpv, discord, state };
+  }
+
+  it('creates a frame monitor on start when outputCheckEnabled', () => {
+    const { engine } = build();
+    engine.start();
+    expect((engine as any).frameMonitor).not.toBeNull();
+    engine.stop();
+  });
+
+  it('does not create a frame monitor when outputCheckEnabled is false', () => {
+    const mpv = mockMpv();
+    const engine = new RecoveryEngine(
+      makeConfig({ outputCheckEnabled: false }),
+      mpv as unknown as MpvClient, mockState(), mockObs(), mockDiscord(),
+    );
+    engine.start();
+    expect((engine as any).frameMonitor).toBeNull();
+    engine.stop();
+  });
+
+  it('onOutputFreeze does an in-place retry and spends the shared freeze budget', () => {
+    const { engine, mpv } = build();
+    // Simulate the gate being open: playing, video confirmed, not paused, not recovering.
+    (engine as any).lastPlaying = true;
+    (engine as any).videoConfirmed = true;
+    (engine as any).lastKnownPaused = false;
+    (engine as any).intentionallyStopped = false;
+    (engine as any).recoveryStep = RecoveryStep.None;
+    (engine as any).lastTimePos = 142;
+    (engine as any).onOutputFreeze();
+    expect((engine as any).videoFreezeRetryCount).toBe(1);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+142');
+    expect(mpv.jumpTo).toHaveBeenCalledWith(0);
+    expect(mpv.restart).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('onOutputFreeze is a no-op when the gate is closed (paused)', () => {
+    const { engine, mpv } = build();
+    (engine as any).lastPlaying = true;
+    (engine as any).videoConfirmed = true;
+    (engine as any).lastKnownPaused = true; // paused -> gate closed
+    (engine as any).lastTimePos = 142;
+    (engine as any).onOutputFreeze();
+    expect((engine as any).videoFreezeRetryCount).toBe(0);
+    expect(mpv.jumpTo).not.toHaveBeenCalled();
     engine.stop();
   });
 });

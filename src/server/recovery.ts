@@ -5,6 +5,7 @@ import type { StateManager } from './state.js';
 import type { OBSClient } from './obs-client.js';
 import type { DiscordNotifier } from './discord.js';
 import { logger } from './logger.js';
+import { FrameMonitor } from './frame-monitor.js';
 
 function getSystemMemory() {
   const totalBytes = totalmem();
@@ -47,6 +48,9 @@ export class RecoveryEngine {
   private consecutivePausedHeartbeats = 0;
   private intentionallyStopped = false;
   private lastKnownPaused = false;
+  private lastPlaying = false;
+  private lastTimePos = 0;
+  private frameMonitor: FrameMonitor | null = null;
   private seekPending = false;
   private videoConfirmed = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
@@ -94,6 +98,7 @@ export class RecoveryEngine {
     this.mpv.on('processExit', this.boundOnProcessExit);
     this.startHeartbeatPoll();
     this.startPeriodicRestartTimer();
+    this.startFrameMonitor();
     if (this.mpv.isConnected()) {
       this.onMpvConnect();
     }
@@ -103,6 +108,8 @@ export class RecoveryEngine {
     this.removeMpvListeners();
     this.stopHeartbeatPoll();
     this.stopPeriodicRestartTimer();
+    this.frameMonitor?.stop();
+    this.frameMonitor = null;
     this.clearRecoveryTimer();
   }
 
@@ -408,6 +415,8 @@ export class RecoveryEngine {
       this.seekPending = false;
     }
     this.lastKnownPaused = hb.paused;
+    this.lastPlaying = isPlaying;
+    this.lastTimePos = hb.timePos;
     const videoId = this.extractVideoId(hb.filename);
     const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
 
@@ -573,11 +582,11 @@ export class RecoveryEngine {
    *  Triggers yt-dlp re-resolution (refreshes googlevideo URL) and
    *  resumes near the break. Clears the start flag after 30s so it
    *  doesn't leak to auto-advanced videos. */
-  private async retryCurrentAtPosition(seekSeconds: number): Promise<void> {
+  private retryCurrentAtPosition(seekSeconds: number): void {
     const pos = this.state.get().videoIndex;
     const secs = Math.floor(Math.max(0, seekSeconds));
-    try { await this.mpv.setProperty('start', `+${secs}`); } catch { /* ignore */ }
-    try { await this.mpv.jumpTo(pos); } catch { /* ignore */ }
+    this.mpv.setProperty('start', `+${secs}`).catch(() => {});
+    this.mpv.jumpTo(pos).catch(() => {});
     setTimeout(async () => {
       try { await this.mpv.setProperty('start', 'none'); } catch { /* ignore */ }
     }, 30_000);
@@ -603,6 +612,45 @@ export class RecoveryEngine {
       this.recoveryReason = 'stall';
       this.startRecoverySequence();
     }
+  }
+
+  // --- Private: output (screenshot) freeze detection ---
+
+  private startFrameMonitor() {
+    this.frameMonitor?.stop();
+    this.frameMonitor = null;
+    if (!this.config.outputCheckEnabled) {
+      logger.info('Output freeze monitor disabled by config');
+      return;
+    }
+    logger.info({ windowMs: this.config.outputFreezeWindowMs }, 'Output freeze monitor enabled');
+    this.frameMonitor = new FrameMonitor({
+      captureFrame: () => this.obs.getSourceScreenshot(),
+      shouldCapture: () => this.canCheckOutput(),
+      onFreeze: () => this.onOutputFreeze(),
+      onSuspect: () => logger.debug('Output appears static — confirming with a second screenshot'),
+      onFalseAlarm: () => logger.info({ windowMs: this.config.outputFreezeWindowMs }, 'Output freeze suspected but confirmation frame changed — false alarm'),
+      getWindowMs: () => this.config.outputFreezeWindowMs,
+    });
+    this.frameMonitor.start();
+  }
+
+  /** Gate for screenshot capture: only meaningful during confirmed live playback. */
+  private canCheckOutput(): boolean {
+    return this.mpv.isConnected()
+      && this.lastPlaying
+      && this.videoConfirmed
+      && !this.lastKnownPaused
+      && !this.intentionallyStopped
+      && this.recoveryStep === RecoveryStep.None;
+  }
+
+  private onOutputFreeze() {
+    if (!this.canCheckOutput()) return; // re-check at fire time
+    logger.debug('Output freeze confirmed by screenshot — entering recovery');
+    this.handleVideoFreeze(this.lastTimePos, 'Output freeze', {
+      detectedBy: 'screenshot', playlistPos: this.lastSeenVideoIndex,
+    });
   }
 
   // --- Private: playlist advancement ---
