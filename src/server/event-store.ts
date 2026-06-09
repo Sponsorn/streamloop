@@ -15,6 +15,8 @@ export class EventStore {
   private readonly dir: string;
   private readonly retentionDays: number;
   private readonly prefix: string;
+  /** Serializes appends so rapid successive events keep their order on disk. */
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(opts: EventStoreOptions) {
     this.dir = opts.dir;
@@ -32,10 +34,14 @@ export class EventStore {
     return join(this.dir, `${this.prefix}${date}.jsonl`);
   }
 
-  /** Append one event. Fire-and-forget; failures are logged, never thrown. */
+  /** Append one event. Fire-and-forget; failures are logged, never thrown.
+   *  Writes are chained so concurrent calls are written in call order
+   *  (independent appendFile calls can otherwise interleave/reorder). */
   append(entry: EventLogEntry): void {
     const line = JSON.stringify(entry) + '\n';
-    appendFile(this.fileFor(this.dateString(new Date())), line, 'utf-8')
+    const path = this.fileFor(this.dateString(new Date()));
+    this.writeChain = this.writeChain
+      .then(() => appendFile(path, line, 'utf-8'))
       .catch((err) => logger.warn({ err }, 'Failed to persist event'));
   }
 
