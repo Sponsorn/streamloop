@@ -86,7 +86,6 @@ export function createApiRouter(deps: ApiDependencies): Router {
       uptimeMs: status.uptimeMs,
       playlistIndex: status.playlistIndex,
       totalPlaylists: status.totalPlaylists,
-      playbackQuality: status.playbackQuality,
       systemMemory: status.systemMemory,
       paused: status.paused,
       intentionallyStopped: status.intentionallyStopped,

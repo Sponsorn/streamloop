@@ -38,14 +38,11 @@ export class RecoveryEngine {
   private recoveryStep = RecoveryStep.None;
   private recoveryReason: 'heartbeat' | 'stall' | 'non-playing' | null = null;
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
-  private errorRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private totalVideos = 0;
   private startedAt = Date.now();
   private eventLog: EventLogEntry[] = [];
   private lastProgressTime = 0;
   private stalledHeartbeats = 0;
-  private playbackQuality = '';
-  private lowQualityHeartbeats = 0;
   private nonPlayingHeartbeats = 0;
   private consecutivePausedHeartbeats = 0;
   private intentionallyStopped = false;
@@ -72,9 +69,6 @@ export class RecoveryEngine {
   private boundOnDisconnect = () => this.onMpvDisconnect();
   private boundOnFileEnded = (reason: string, fileError?: string) => this.onFileEnded(reason, fileError);
   private boundOnProcessExit = () => this.onProcessExit();
-  private static readonly QUALITY_RANKS: Record<string, number> = {
-    small: 0, medium: 1, large: 2, hd720: 3, hd1080: 4, hd1440: 5, hd2160: 6, highres: 7,
-  };
 
   constructor(
     config: AppConfig,
@@ -110,7 +104,6 @@ export class RecoveryEngine {
     this.stopHeartbeatPoll();
     this.stopPeriodicRestartTimer();
     this.clearRecoveryTimer();
-    this.clearErrorRetryTimer();
   }
 
   private removeMpvListeners() {
@@ -133,7 +126,6 @@ export class RecoveryEngine {
       playlistIndex,
       totalPlaylists: this.config.playlists.length,
       currentPlaylistId: this.config.playlists[playlistIndex].id,
-      playbackQuality: this.playbackQuality,
       systemMemory: getSystemMemory(),
       mpvConnected: this.mpv.isConnected(),
       mpvRunning: this.mpv.isRunning(),
@@ -304,6 +296,9 @@ export class RecoveryEngine {
       // the skip progress and start the cycle over from position 0.
       this.nonPlayingHeartbeats = 0;
       if (this.consecutiveErrors >= this.config.maxConsecutiveErrors) {
+        const reason = `${this.consecutiveErrors} consecutive playback errors`;
+        this.addEvent(`Skipping video #${videoIndex} (${videoId}): ${reason}`);
+        await this.discord.notifySkip(videoIndex, videoId, reason);
         try { await this.mpv.next(); } catch { /* ignore */ }
         this.consecutiveErrors = 0;
       }
@@ -604,28 +599,9 @@ export class RecoveryEngine {
     }, 30_000);
   }
 
-  // --- Private: skip and playlist advancement ---
+  // --- Private: playlist advancement ---
 
-  private async skipVideo(fromIndex: number, videoId: string, reason: string) {
-    if (this.totalVideos > 0 && fromIndex + 1 >= this.totalVideos) {
-      await this.advanceToNextPlaylist(reason);
-      return;
-    }
-
-    const nextIndex = this.totalVideos > 0
-      ? (fromIndex + 1) % this.totalVideos
-      : fromIndex + 1;
-
-    logger.warn({ fromIndex, nextIndex, reason }, 'Skipping video');
-    this.addEvent(`Skipping video #${fromIndex} (${videoId}): ${reason}`);
-    await this.discord.notifySkip(fromIndex, videoId, reason);
-
-    try { await this.mpv.jumpTo(nextIndex); } catch { /* ignore */ }
-    this.state.update({ videoIndex: nextIndex });
-    this.consecutiveErrors = 0;
-  }
-
-  private async advanceToNextPlaylist(reason?: string) {
+  private async advanceToNextPlaylist() {
     const current = this.state.get();
     const next = (current.playlistIndex + 1) % this.config.playlists.length;
     const playlist = this.config.playlists[next];
@@ -638,7 +614,6 @@ export class RecoveryEngine {
     try { await this.mpv.loadPlaylist(url); } catch { /* ignore */ }
     this.consecutiveErrors = 0;
     this.stalledHeartbeats = 0;
-    this.lowQualityHeartbeats = 0;
     this.nonPlayingHeartbeats = 0;
   }
 
@@ -748,13 +723,6 @@ export class RecoveryEngine {
     if (this.recoveryTimer) {
       clearTimeout(this.recoveryTimer);
       this.recoveryTimer = null;
-    }
-  }
-
-  private clearErrorRetryTimer() {
-    if (this.errorRetryTimer) {
-      clearTimeout(this.errorRetryTimer);
-      this.errorRetryTimer = null;
     }
   }
 }

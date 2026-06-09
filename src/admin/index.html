@@ -305,10 +305,6 @@
               <div class="np-value" id="np-time">-</div>
             </div>
             <div class="np-item">
-              <div class="np-label">Quality</div>
-              <div class="np-value" id="np-quality">-</div>
-            </div>
-            <div class="np-item">
               <div class="np-label">Last Updated</div>
               <div class="np-value" id="np-updated">-</div>
             </div>
@@ -360,38 +356,6 @@
                 <option value="5">5 errors</option>
               </select>
               <div class="hint">How many errors on the same video before skipping to the next</div>
-            </div>
-          </div>
-        </div>
-        <div class="section" style="margin-top: 20px;">
-          <div class="section-title">Quality Recovery</div>
-          <div class="settings-panel">
-            <div class="toggle-row" style="border: none; padding: 0; background: none; margin-bottom: 12px;">
-              <div>
-                <div class="toggle-label">Recover from low quality</div>
-                <div class="toggle-desc">Restart playback if quality stays below minimum for too long</div>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="pb-quality-toggle">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="form-group">
-              <label for="pb-quality-min">Minimum acceptable quality</label>
-              <select id="pb-quality-min" class="wh-preview-select">
-                <option value="large">480p</option>
-                <option value="hd720">720p</option>
-                <option value="hd1080">1080p</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="pb-quality-delay">Wait before recovering</label>
-              <select id="pb-quality-delay" class="wh-preview-select">
-                <option value="60000">60 seconds</option>
-                <option value="120000">120 seconds</option>
-                <option value="300000">5 minutes</option>
-              </select>
-              <div class="hint">How long quality must stay below minimum before triggering recovery</div>
             </div>
           </div>
         </div>

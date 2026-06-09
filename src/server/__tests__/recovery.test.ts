@@ -36,9 +36,6 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     obsPath: '',
     autoUpdateCheck: true,
     updateCheckIntervalMs: 21600000,
-    qualityRecoveryEnabled: true,
-    minQuality: 'hd720',
-    qualityRecoveryDelayMs: 120000,
     sourceRefreshIntervalMs: 0,
     twitchClientId: '',
     twitchClientSecret: '',
@@ -66,7 +63,7 @@ function mockMpv() {
     }),
     isConnected: vi.fn(() => true),
     isRunning: vi.fn(() => true),
-    getProperty: vi.fn(async (name: string) => {
+    getProperty: vi.fn(async (name: string): Promise<unknown> => {
       switch (name) {
         case 'time-pos': return 0;
         case 'duration': return 0;
@@ -364,6 +361,25 @@ describe('RecoveryEngine', () => {
     mpv._emit('fileEnded', 'error');
     await vi.advanceTimersByTimeAsync(0);
     expect(mpv.next).toHaveBeenCalled();
+  });
+
+  it('sends a skip notification when skipping after repeated errors', async () => {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 1, videoId: 'v1' });
+    const config = makeConfig({ maxConsecutiveErrors: 2 });
+    const engine = new RecoveryEngine(config, mpv as unknown as MpvClient, state, mockObs(), discord);
+    engine.start();
+
+    // First error — no skip yet
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(discord.notifySkip).not.toHaveBeenCalled();
+
+    // Second error — skip fires and notifies
+    mpv._emit('fileEnded', 'error');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(discord.notifySkip).toHaveBeenCalledWith(1, 'v1', expect.any(String));
   });
 
   it('resets non-playing counter on fileEnded error so skip mechanism can work', async () => {

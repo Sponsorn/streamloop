@@ -698,7 +698,7 @@ async function pollOnce() {
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
     renderStatus(status);
-    renderNowPlaying(state, status.totalVideos, status);
+    renderNowPlaying(state, status.totalVideos);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
 
@@ -834,18 +834,7 @@ function setCard(id, text, cls) {
   el.className = 'card-value ' + cls;
 }
 
-const QUALITY_LABELS = {
-  small: '240p',
-  medium: '360p',
-  large: '480p',
-  hd720: '720p',
-  hd1080: '1080p',
-  hd1440: '1440p',
-  hd2160: '4K',
-  highres: '4K+',
-};
-
-function renderNowPlaying(s, totalVideos, status) {
+function renderNowPlaying(s, totalVideos) {
   $('#np-title').textContent = s.videoTitle || '-';
   $('#np-index').textContent = totalVideos ? `${s.videoIndex + 1} / ${totalVideos}` : `${s.videoIndex + 1}`;
   const vidEl = $('#np-videoid');
@@ -857,15 +846,6 @@ function renderNowPlaying(s, totalVideos, status) {
   const timeStr = formatTime(s.currentTime);
   const durationStr = s.videoDuration ? formatTime(s.videoDuration) : '--:--:--';
   $('#np-time').textContent = `${timeStr} / ${durationStr}`;
-  const quality = status.playbackQuality;
-  const qualityEl = $('#np-quality');
-  qualityEl.textContent = quality ? (QUALITY_LABELS[quality] || quality) : '-';
-  const QUALITY_RANKS = { small: 0, medium: 1, large: 2, hd720: 3, hd1080: 4, hd1440: 5, hd2160: 6, highres: 7 };
-  if (quality && (QUALITY_RANKS[quality] ?? 99) < 3) {
-    qualityEl.classList.add('warn');
-  } else {
-    qualityEl.classList.remove('warn');
-  }
   $('#np-updated').textContent = s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : '-';
 }
 
@@ -1355,9 +1335,6 @@ async function loadPlaybackSettings() {
     const cfg = await api('/api/config');
     $('#pb-recovery-delay').value = String(cfg.recoveryDelayMs || 5000);
     $('#pb-max-errors').value = String(cfg.maxConsecutiveErrors || 3);
-    $('#pb-quality-toggle').checked = cfg.qualityRecoveryEnabled !== false;
-    $('#pb-quality-min').value = cfg.minQuality || 'hd720';
-    $('#pb-quality-delay').value = String(cfg.qualityRecoveryDelayMs || 120000);
     $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
     $('#pb-ytdl-cookies').value = cfg.ytdlCookiesFromBrowser || '';
     playbackSettingsLoaded = true;
@@ -1371,9 +1348,6 @@ async function handlePlaybackSave() {
   const body = {
     recoveryDelayMs: Number($('#pb-recovery-delay').value),
     maxConsecutiveErrors: Number($('#pb-max-errors').value),
-    qualityRecoveryEnabled: $('#pb-quality-toggle').checked,
-    minQuality: $('#pb-quality-min').value,
-    qualityRecoveryDelayMs: Number($('#pb-quality-delay').value),
     sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
     ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim(),
   };
