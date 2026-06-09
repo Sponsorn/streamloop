@@ -1335,6 +1335,8 @@ async function loadPlaybackSettings() {
     const cfg = await api('/api/config');
     $('#pb-recovery-delay').value = String(cfg.recoveryDelayMs || 5000);
     $('#pb-max-errors').value = String(cfg.maxConsecutiveErrors || 3);
+    $('#pb-output-toggle').checked = cfg.outputCheckEnabled !== false;
+    $('#pb-output-window').value = String(cfg.outputFreezeWindowMs || 30000);
     $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
     $('#pb-ytdl-cookies').value = cfg.ytdlCookiesFromBrowser || '';
     playbackSettingsLoaded = true;
@@ -1348,6 +1350,8 @@ async function handlePlaybackSave() {
   const body = {
     recoveryDelayMs: Number($('#pb-recovery-delay').value),
     maxConsecutiveErrors: Number($('#pb-max-errors').value),
+    outputCheckEnabled: $('#pb-output-toggle').checked,
+    outputFreezeWindowMs: Number($('#pb-output-window').value),
     sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
     ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim(),
   };

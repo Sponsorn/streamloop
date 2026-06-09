@@ -357,6 +357,26 @@
               </select>
               <div class="hint">How many errors on the same video before skipping to the next</div>
             </div>
+            <div class="toggle-row" style="border: none; padding: 0; background: none; margin: 12px 0;">
+              <div>
+                <div class="toggle-label">Detect frozen output</div>
+                <div class="toggle-desc">Screenshot the OBS capture and reload in place if the streamed picture freezes</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="pb-output-toggle">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="pb-output-window">Output freeze window</label>
+              <select id="pb-output-window" class="wh-preview-select">
+                <option value="20000">20 seconds</option>
+                <option value="30000">30 seconds</option>
+                <option value="45000">45 seconds</option>
+                <option value="60000">60 seconds</option>
+              </select>
+              <div class="hint">How long the streamed picture must stay frozen before an in-place reload. Raise this if you ever stream legitimately static content.</div>
+            </div>
           </div>
         </div>
         <div class="section" style="margin-top: 20px;">

@@ -103,6 +103,8 @@ export interface AppConfig {
   maxConsecutiveErrors: number;
   stateFilePath: string;
   recoveryDelayMs: number;
+  outputCheckEnabled: boolean;
+  outputFreezeWindowMs: number;
   obsAutoRestart: boolean;
   obsAutoStream: boolean;
   obsPath: string;
@@ -118,4 +120,11 @@ export interface AppConfig {
   mpvYtdlFormat: string;
   mpvExtraArgs: string[];
   ytdlCookiesFromBrowser: string;
+}
+
+// --- Event log ---
+
+export interface EventLogEntry {
+  timestamp: string;
+  message: string;
 }

@@ -1,10 +1,12 @@
 import { freemem, totalmem } from 'os';
-import { RecoveryStep, type AppConfig, type MpvHeartbeat } from './types.js';
+import { RecoveryStep, type AppConfig, type MpvHeartbeat, type EventLogEntry } from './types.js';
 import type { MpvClient } from './mpv-client.js';
 import type { StateManager } from './state.js';
 import type { OBSClient } from './obs-client.js';
 import type { DiscordNotifier } from './discord.js';
 import { logger } from './logger.js';
+import { FrameMonitor } from './frame-monitor.js';
+import type { EventStore } from './event-store.js';
 
 function getSystemMemory() {
   const totalBytes = totalmem();
@@ -20,17 +22,13 @@ function getSystemMemory() {
 
 const MAX_EVENT_LOG = 100;
 
-export interface EventLogEntry {
-  timestamp: string;
-  message: string;
-}
-
 export class RecoveryEngine {
   private config: AppConfig;
   private mpv: MpvClient;
   private state: StateManager;
   private obs: OBSClient;
   private discord: DiscordNotifier;
+  private eventStore: EventStore | null;
 
   private consecutiveErrors = 0;
   private lastHeartbeatAt = Date.now();
@@ -47,6 +45,9 @@ export class RecoveryEngine {
   private consecutivePausedHeartbeats = 0;
   private intentionallyStopped = false;
   private lastKnownPaused = false;
+  private lastPlaying = false;
+  private lastTimePos = 0;
+  private frameMonitor: FrameMonitor | null = null;
   private seekPending = false;
   private videoConfirmed = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
@@ -76,12 +77,17 @@ export class RecoveryEngine {
     state: StateManager,
     obs: OBSClient,
     discord: DiscordNotifier,
+    eventStore?: EventStore,
   ) {
     this.config = config;
     this.mpv = mpv;
     this.state = state;
     this.obs = obs;
     this.discord = discord;
+    this.eventStore = eventStore ?? null;
+    if (this.eventStore) {
+      this.eventLog = this.eventStore.loadRecent(MAX_EVENT_LOG);
+    }
   }
 
   start() {
@@ -94,6 +100,7 @@ export class RecoveryEngine {
     this.mpv.on('processExit', this.boundOnProcessExit);
     this.startHeartbeatPoll();
     this.startPeriodicRestartTimer();
+    this.startFrameMonitor();
     if (this.mpv.isConnected()) {
       this.onMpvConnect();
     }
@@ -103,6 +110,8 @@ export class RecoveryEngine {
     this.removeMpvListeners();
     this.stopHeartbeatPoll();
     this.stopPeriodicRestartTimer();
+    this.frameMonitor?.stop();
+    this.frameMonitor = null;
     this.clearRecoveryTimer();
   }
 
@@ -220,10 +229,12 @@ export class RecoveryEngine {
   // --- Private: event log ---
 
   private addEvent(message: string) {
-    this.eventLog.push({ timestamp: new Date().toISOString(), message });
+    const entry = { timestamp: new Date().toISOString(), message };
+    this.eventLog.push(entry);
     if (this.eventLog.length > MAX_EVENT_LOG) {
       this.eventLog.shift();
     }
+    this.eventStore?.append(entry);
   }
 
   // --- Private: mpv event handlers ---
@@ -408,6 +419,8 @@ export class RecoveryEngine {
       this.seekPending = false;
     }
     this.lastKnownPaused = hb.paused;
+    this.lastPlaying = isPlaying;
+    this.lastTimePos = hb.timePos;
     const videoId = this.extractVideoId(hb.filename);
     const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
 
@@ -470,26 +483,10 @@ export class RecoveryEngine {
     if (isPlaying && this.videoConfirmed && videoStalled && !nearEndOfFile) {
       this.videoFreezeHeartbeats++;
       if (this.videoFreezeHeartbeats >= RecoveryEngine.VIDEO_FREEZE_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
-        const mem = getSystemMemory();
-        if (this.videoFreezeRetryCount < RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES) {
-          // In-place URL retry: re-resolve a fresh stream and resume at the
-          // current audio position. No mpv restart — restarts black out the
-          // OBS capture for viewers (see recovery constraints).
-          this.videoFreezeRetryCount++;
-          const seek = hb.timePos;
-          logger.warn({ timePos: hb.timePos, vfps: hb.vfps, videoBitrate: hb.videoBitrate, audioBitrate: hb.audioBitrate, videoFreezeHeartbeats: this.videoFreezeHeartbeats, attempt: this.videoFreezeRetryCount, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze (audio alive) — retrying URL in place');
-          this.addEvent(`Video freeze at ${Math.floor(hb.timePos)}s on video #${hb.playlistPos} (${videoId}) — audio playing but video stalled (vfps=${hb.vfps}, video-bitrate=${hb.videoBitrate}) — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
-          this.discord.notifyRecovery('Video freeze — URL retry');
-          this.videoFreezeHeartbeats = 0; // cooldown: require a fresh window before re-firing
-          this.retryCurrentAtPosition(seek);
-        } else {
-          // In-place retries exhausted for this video — fall back to the
-          // escalating sequence (mpv restart) as a last resort.
-          logger.warn({ timePos: hb.timePos, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze URL retries exhausted — escalating to recovery sequence');
-          this.addEvent(`Video freeze retries exhausted on video #${hb.playlistPos} (${videoId}) — escalating recovery`);
-          this.recoveryReason = 'stall';
-          this.startRecoverySequence();
-        }
+        this.handleVideoFreeze(hb.timePos, 'Video freeze', {
+          vfps: hb.vfps, videoBitrate: hb.videoBitrate, audioBitrate: hb.audioBitrate,
+          videoFreezeHeartbeats: this.videoFreezeHeartbeats, playlistPos: hb.playlistPos, videoId,
+        });
       }
     } else if (this.videoFreezeHeartbeats > 0) {
       // Tolerate a single healthy heartbeat (vfps/bitrate can blip) without
@@ -592,11 +589,77 @@ export class RecoveryEngine {
   private async retryCurrentAtPosition(seekSeconds: number): Promise<void> {
     const pos = this.state.get().videoIndex;
     const secs = Math.floor(Math.max(0, seekSeconds));
+    // Order matters: the start position must be registered before the jump
+    // triggers yt-dlp re-resolution, or the seek silently won't apply.
     try { await this.mpv.setProperty('start', `+${secs}`); } catch { /* ignore */ }
     try { await this.mpv.jumpTo(pos); } catch { /* ignore */ }
     setTimeout(async () => {
       try { await this.mpv.setProperty('start', 'none'); } catch { /* ignore */ }
     }, 30_000);
+  }
+
+  /** Shared freeze-recovery path for both the bitrate/vfps detector and the
+   *  screenshot detector. Spends the in-place URL-retry budget first, then
+   *  escalates to the standard recovery sequence. No-op if already recovering. */
+  private handleVideoFreeze(seekSeconds: number, label: 'Video freeze' | 'Output freeze', detail: Record<string, unknown>) {
+    if (this.recoveryStep !== RecoveryStep.None) return;
+    const mem = getSystemMemory();
+    const pos = Math.floor(seekSeconds);
+    // The bitrate/vfps detector sees audio advancing while video bytes stall;
+    // the screenshot detector sees a frozen picture without knowing the audio state.
+    const symptom = label === 'Output freeze' ? 'streamed picture frozen' : 'audio playing but video stalled';
+    if (this.videoFreezeRetryCount < RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES) {
+      this.videoFreezeRetryCount++;
+      logger.warn({ ...detail, timePos: seekSeconds, attempt: this.videoFreezeRetryCount, systemMemory: mem }, `${label} — retrying URL in place`);
+      this.addEvent(`${label} at ${pos}s — ${symptom} — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
+      this.discord.notifyRecovery(`${label} — URL retry`);
+      this.videoFreezeHeartbeats = 0; // cooldown: require a fresh window before re-firing
+      this.retryCurrentAtPosition(seekSeconds);
+    } else {
+      logger.warn({ ...detail, timePos: seekSeconds, systemMemory: mem }, `${label} URL retries exhausted — escalating to recovery sequence`);
+      this.addEvent(`${label} retries exhausted — escalating recovery`);
+      this.recoveryReason = 'stall';
+      this.startRecoverySequence();
+    }
+  }
+
+  // --- Private: output (screenshot) freeze detection ---
+
+  private startFrameMonitor() {
+    this.frameMonitor?.stop();
+    this.frameMonitor = null;
+    if (!this.config.outputCheckEnabled) {
+      logger.info('Output freeze monitor disabled by config');
+      return;
+    }
+    logger.info({ windowMs: this.config.outputFreezeWindowMs }, 'Output freeze monitor enabled');
+    this.frameMonitor = new FrameMonitor({
+      captureFrame: () => this.obs.getSourceScreenshot(),
+      shouldCapture: () => this.canCheckOutput(),
+      onFreeze: () => this.onOutputFreeze(),
+      onSuspect: () => logger.debug('Output appears static — confirming with a second screenshot'),
+      onFalseAlarm: () => logger.info({ windowMs: this.config.outputFreezeWindowMs }, 'Output freeze suspected but confirmation frame changed — false alarm'),
+      getWindowMs: () => this.config.outputFreezeWindowMs,
+    });
+    this.frameMonitor.start();
+  }
+
+  /** Gate for screenshot capture: only meaningful during confirmed live playback. */
+  private canCheckOutput(): boolean {
+    return this.mpv.isConnected()
+      && this.lastPlaying
+      && this.videoConfirmed
+      && !this.lastKnownPaused
+      && !this.intentionallyStopped
+      && this.recoveryStep === RecoveryStep.None;
+  }
+
+  private onOutputFreeze() {
+    if (!this.canCheckOutput()) return; // re-check at fire time
+    logger.debug('Output freeze confirmed by screenshot — entering recovery');
+    this.handleVideoFreeze(this.lastTimePos, 'Output freeze', {
+      detectedBy: 'screenshot', playlistPos: this.lastSeenVideoIndex,
+    });
   }
 
   // --- Private: playlist advancement ---
