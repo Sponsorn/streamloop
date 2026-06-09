@@ -6,6 +6,7 @@ import type { OBSClient } from './obs-client.js';
 import type { DiscordNotifier } from './discord.js';
 import { logger } from './logger.js';
 import { FrameMonitor } from './frame-monitor.js';
+import type { EventStore } from './event-store.js';
 
 function getSystemMemory() {
   const totalBytes = totalmem();
@@ -27,6 +28,7 @@ export class RecoveryEngine {
   private state: StateManager;
   private obs: OBSClient;
   private discord: DiscordNotifier;
+  private eventStore: EventStore | null;
 
   private consecutiveErrors = 0;
   private lastHeartbeatAt = Date.now();
@@ -75,12 +77,17 @@ export class RecoveryEngine {
     state: StateManager,
     obs: OBSClient,
     discord: DiscordNotifier,
+    eventStore?: EventStore,
   ) {
     this.config = config;
     this.mpv = mpv;
     this.state = state;
     this.obs = obs;
     this.discord = discord;
+    this.eventStore = eventStore ?? null;
+    if (this.eventStore) {
+      this.eventLog = this.eventStore.loadRecent(MAX_EVENT_LOG);
+    }
   }
 
   start() {
@@ -222,10 +229,12 @@ export class RecoveryEngine {
   // --- Private: event log ---
 
   private addEvent(message: string) {
-    this.eventLog.push({ timestamp: new Date().toISOString(), message });
+    const entry = { timestamp: new Date().toISOString(), message };
+    this.eventLog.push(entry);
     if (this.eventLog.length > MAX_EVENT_LOG) {
       this.eventLog.shift();
     }
+    this.eventStore?.append(entry);
   }
 
   // --- Private: mpv event handlers ---

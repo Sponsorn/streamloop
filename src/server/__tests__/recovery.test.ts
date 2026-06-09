@@ -1071,3 +1071,41 @@ describe('output freeze (screenshot) recovery', () => {
     engine.stop();
   });
 });
+
+describe('event persistence', () => {
+  function fakeStore() {
+    return {
+      append: vi.fn(),
+      loadRecent: vi.fn(() => [{ timestamp: 't0', message: 'seeded event' }]),
+    };
+  }
+
+  it('seeds the in-memory event log from the store on construction', () => {
+    const store = fakeStore();
+    const engine = new RecoveryEngine(
+      makeConfig(), mockMpv() as unknown as MpvClient, mockState(), mockObs(), mockDiscord(),
+      store as any,
+    );
+    expect(store.loadRecent).toHaveBeenCalled();
+    expect(engine.getEvents().some((e) => e.message === 'seeded event')).toBe(true);
+  });
+
+  it('appends each new event to the store', () => {
+    const store = fakeStore();
+    const engine = new RecoveryEngine(
+      makeConfig(), mockMpv() as unknown as MpvClient, mockState(), mockObs(), mockDiscord(),
+      store as any,
+    );
+    (engine as any).addEvent('hello');
+    expect(store.append).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'hello' }),
+    );
+  });
+
+  it('works without a store (store is optional)', () => {
+    const engine = new RecoveryEngine(
+      makeConfig(), mockMpv() as unknown as MpvClient, mockState(), mockObs(), mockDiscord(),
+    );
+    expect(() => (engine as any).addEvent('hi')).not.toThrow();
+  });
+});

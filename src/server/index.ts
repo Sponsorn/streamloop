@@ -16,6 +16,7 @@ import { RecoveryEngine } from './recovery.js';
 import { createApiRouter } from './api.js';
 import { Updater } from './updater.js';
 import { TwitchLivenessChecker } from './twitch.js';
+import { EventStore } from './event-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +61,7 @@ async function main() {
     : resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
 
   const logsDir = resolve(projectRoot, 'logs');
+  const eventStore = new EventStore({ dir: logsDir });
 
   const mpvArgs = [
     '--no-border',
@@ -95,7 +97,7 @@ async function main() {
   let discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
 
   // Recovery engine
-  let recovery = new RecoveryEngine(config, mpv, state, obs, discord);
+  let recovery = new RecoveryEngine(config, mpv, state, obs, discord, eventStore);
   recovery.start();
 
   // Twitch liveness checker
@@ -159,7 +161,7 @@ async function main() {
     await obs.connect();
     // Restart recovery with new config
     recovery.stop();
-    recovery = new RecoveryEngine(config, mpv, state, obs, discord);
+    recovery = new RecoveryEngine(config, mpv, state, obs, discord, eventStore);
     recovery.start();
     startStreamMonitor();
     // Restart Twitch liveness checker with new config
