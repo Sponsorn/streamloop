@@ -338,6 +338,23 @@ export class OBSClient {
     }
   }
 
+  /** Screenshot the capture source as a small base64 PNG, or null if unavailable. */
+  async getSourceScreenshot(): Promise<string | null> {
+    if (!this.connected) return null;
+    try {
+      const { imageData } = await this.obs.call('GetSourceScreenshot', {
+        sourceName: this.config.obsBrowserSourceName,
+        imageFormat: 'png',
+        imageWidth: 64,
+        imageHeight: 64,
+      });
+      return imageData as string;
+    } catch (err) {
+      logger.warn({ err }, 'Failed to capture OBS source screenshot');
+      return null;
+    }
+  }
+
   async stopStream(): Promise<boolean> {
     if (!this.connected) return false;
     try {
