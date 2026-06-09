@@ -8,6 +8,7 @@ state.json
 logs/
 .test-tmp/
 .claude/
+docs/
 todo.txt
 RELEASE_NOTES.md
 review_v1.md
