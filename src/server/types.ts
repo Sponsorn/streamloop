@@ -121,3 +121,10 @@ export interface AppConfig {
   mpvExtraArgs: string[];
   ytdlCookiesFromBrowser: string;
 }
+
+// --- Event log ---
+
+export interface EventLogEntry {
+  timestamp: string;
+  message: string;
+}

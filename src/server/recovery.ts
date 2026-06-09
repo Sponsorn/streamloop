@@ -1,5 +1,5 @@
 import { freemem, totalmem } from 'os';
-import { RecoveryStep, type AppConfig, type MpvHeartbeat } from './types.js';
+import { RecoveryStep, type AppConfig, type MpvHeartbeat, type EventLogEntry } from './types.js';
 import type { MpvClient } from './mpv-client.js';
 import type { StateManager } from './state.js';
 import type { OBSClient } from './obs-client.js';
@@ -20,11 +20,6 @@ function getSystemMemory() {
 }
 
 const MAX_EVENT_LOG = 100;
-
-export interface EventLogEntry {
-  timestamp: string;
-  message: string;
-}
 
 export class RecoveryEngine {
   private config: AppConfig;
