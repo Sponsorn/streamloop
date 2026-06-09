@@ -80,6 +80,16 @@ describe('loadConfig', () => {
     expect(() => loadConfig(tmpConfig)).toThrow();
   });
 
+  it('defaults output freeze detection on with a 30s window', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PL1' }],
+      obsBrowserSourceName: 'Source',
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect(cfg.outputCheckEnabled).toBe(true);
+    expect(cfg.outputFreezeWindowMs).toBe(30000);
+  });
+
   it('accepts ytdlCookiesFromBrowser string and defaults to empty', () => {
     writeFileSync(tmpConfig, JSON.stringify({
       playlists: [{ id: 'PL1' }],

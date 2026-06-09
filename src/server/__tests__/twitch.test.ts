@@ -28,6 +28,8 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxConsecutiveErrors: 3,
     stateFilePath: './state.json',
     recoveryDelayMs: 5000,
+    outputCheckEnabled: true,
+    outputFreezeWindowMs: 30000,
     obsAutoRestart: false,
     obsAutoStream: false,
     obsPath: '',

@@ -103,6 +103,8 @@ export interface AppConfig {
   maxConsecutiveErrors: number;
   stateFilePath: string;
   recoveryDelayMs: number;
+  outputCheckEnabled: boolean;
+  outputFreezeWindowMs: number;
   obsAutoRestart: boolean;
   obsAutoStream: boolean;
   obsPath: string;

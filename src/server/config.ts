@@ -80,6 +80,8 @@ const configSchema = z.object({
   ),
   maxConsecutiveErrors: z.number().int().positive().default(3),
   recoveryDelayMs: z.number().int().positive().default(5000),
+  outputCheckEnabled: z.boolean().default(true),
+  outputFreezeWindowMs: z.number().int().min(10000).default(30000),
   obsAutoRestart: z.boolean().default(false),
   obsAutoStream: z.boolean().default(false),
   obsPath: z.string().default('').refine(
