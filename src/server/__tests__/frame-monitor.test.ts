@@ -31,9 +31,13 @@ describe('FrameMonitor', () => {
   it('fires once after a sustained static window confirmed by a second screenshot', async () => {
     const { monitor, onFreeze } = setup({ frames: () => 'AAAA', windowMs: 30_000 });
     monitor.start();
-    // 3 ticks at 10s each reach the 30s window (counts 1,2,3 -> 30s on the 3rd)
-    await vi.advanceTimersByTimeAsync(INTERVAL * 3);
-    expect(onFreeze).not.toHaveBeenCalled(); // confirmation pending
+    // staticCount = number of frames identical to the previous one, so frozen
+    // duration = staticCount * interval. A 30s window / 10s interval needs
+    // staticCount 3, i.e. a baseline capture plus 3 identical ones (4 ticks).
+    await vi.advanceTimersByTimeAsync(INTERVAL * 3); // staticCount 2 (20s) — not enough
+    expect(onFreeze).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(INTERVAL);     // staticCount 3 (30s) — confirm scheduled
+    expect(onFreeze).not.toHaveBeenCalled();         // confirmation still pending
     await vi.advanceTimersByTimeAsync(CONFIRM);
     expect(onFreeze).toHaveBeenCalledTimes(1);
     monitor.stop();
@@ -43,7 +47,7 @@ describe('FrameMonitor', () => {
     let val = 'AAAA';
     const { monitor, onFreeze, onSuspect, onFalseAlarm } = setup({ frames: () => val, windowMs: 30_000 });
     monitor.start();
-    await vi.advanceTimersByTimeAsync(INTERVAL * 3); // window reached, confirm scheduled
+    await vi.advanceTimersByTimeAsync(INTERVAL * 4); // window reached, confirm scheduled
     expect(onSuspect).toHaveBeenCalledTimes(1);
     val = 'BBBB';                                    // picture moved during confirm delay
     await vi.advanceTimersByTimeAsync(CONFIRM);
@@ -56,7 +60,7 @@ describe('FrameMonitor', () => {
     let val: string | null = 'AAAA';
     const { monitor, onFreeze } = setup({ frames: () => val, windowMs: 30_000 });
     monitor.start();
-    await vi.advanceTimersByTimeAsync(INTERVAL * 3);
+    await vi.advanceTimersByTimeAsync(INTERVAL * 4);
     val = null;
     await vi.advanceTimersByTimeAsync(CONFIRM);
     expect(onFreeze).not.toHaveBeenCalled();
@@ -67,9 +71,9 @@ describe('FrameMonitor', () => {
     let val = 'AAAA';
     const { monitor, onFreeze } = setup({ frames: () => val, windowMs: 30_000 });
     monitor.start();
-    await vi.advanceTimersByTimeAsync(INTERVAL * 2); // count = 2
-    val = 'CCCC';                                    // change -> reset
-    await vi.advanceTimersByTimeAsync(INTERVAL * 2); // count back to 2, not enough
+    await vi.advanceTimersByTimeAsync(INTERVAL * 3); // staticCount 2
+    val = 'CCCC';                                    // change -> reset baseline
+    await vi.advanceTimersByTimeAsync(INTERVAL * 3); // staticCount back to 2, not enough
     await vi.advanceTimersByTimeAsync(CONFIRM);
     expect(onFreeze).not.toHaveBeenCalled();
     monitor.stop();
@@ -81,7 +85,7 @@ describe('FrameMonitor', () => {
     monitor.start();
     await vi.advanceTimersByTimeAsync(INTERVAL * 2);
     val = null;
-    await vi.advanceTimersByTimeAsync(INTERVAL * 2 + CONFIRM);
+    await vi.advanceTimersByTimeAsync(INTERVAL * 4 + CONFIRM);
     expect(onFreeze).not.toHaveBeenCalled();
     monitor.stop();
   });
@@ -103,12 +107,12 @@ describe('FrameMonitor', () => {
     let val = 'AAAA';
     const { monitor, onFreeze } = setup({ frames: () => val, windowMs: 30_000 });
     monitor.start();
-    await vi.advanceTimersByTimeAsync(INTERVAL * 3 + CONFIRM);
+    await vi.advanceTimersByTimeAsync(INTERVAL * 4 + CONFIRM);
     expect(onFreeze).toHaveBeenCalledTimes(1);
-    val = 'DDDD';                                    // picture moves -> cooldown clears
-    await vi.advanceTimersByTimeAsync(INTERVAL);     // new prevHash
+    val = 'DDDD';                                    // picture moves -> cooldown clears, new baseline
+    await vi.advanceTimersByTimeAsync(INTERVAL);
     val = 'DDDD';
-    await vi.advanceTimersByTimeAsync(INTERVAL * 3 + CONFIRM); // freeze again
+    await vi.advanceTimersByTimeAsync(INTERVAL * 4 + CONFIRM); // freeze again
     expect(onFreeze).toHaveBeenCalledTimes(2);
     monitor.stop();
   });

@@ -75,10 +75,11 @@ export class FrameMonitor {
     const hash = fnv1a(frame);
     if (hash !== this.prevHash) {
       this.prevHash = hash;
-      this.staticCount = 1; // first observation of this hash counts as 1
+      this.staticCount = 0; // baseline frame: zero elapsed static time yet
       this.fired = false; // picture moved -> re-arm
       return;
     }
+    // Each identical-to-previous frame == one interval of confirmed-static time.
     this.staticCount++;
     if (!this.fired && this.staticCount * this.intervalMs >= this.opts.getWindowMs()) {
       this.startConfirm();
