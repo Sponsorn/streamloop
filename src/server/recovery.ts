@@ -470,26 +470,10 @@ export class RecoveryEngine {
     if (isPlaying && this.videoConfirmed && videoStalled && !nearEndOfFile) {
       this.videoFreezeHeartbeats++;
       if (this.videoFreezeHeartbeats >= RecoveryEngine.VIDEO_FREEZE_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
-        const mem = getSystemMemory();
-        if (this.videoFreezeRetryCount < RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES) {
-          // In-place URL retry: re-resolve a fresh stream and resume at the
-          // current audio position. No mpv restart — restarts black out the
-          // OBS capture for viewers (see recovery constraints).
-          this.videoFreezeRetryCount++;
-          const seek = hb.timePos;
-          logger.warn({ timePos: hb.timePos, vfps: hb.vfps, videoBitrate: hb.videoBitrate, audioBitrate: hb.audioBitrate, videoFreezeHeartbeats: this.videoFreezeHeartbeats, attempt: this.videoFreezeRetryCount, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze (audio alive) — retrying URL in place');
-          this.addEvent(`Video freeze at ${Math.floor(hb.timePos)}s on video #${hb.playlistPos} (${videoId}) — audio playing but video stalled (vfps=${hb.vfps}, video-bitrate=${hb.videoBitrate}) — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
-          this.discord.notifyRecovery('Video freeze — URL retry');
-          this.videoFreezeHeartbeats = 0; // cooldown: require a fresh window before re-firing
-          this.retryCurrentAtPosition(seek);
-        } else {
-          // In-place retries exhausted for this video — fall back to the
-          // escalating sequence (mpv restart) as a last resort.
-          logger.warn({ timePos: hb.timePos, playlistPos: hb.playlistPos, videoId, systemMemory: mem }, 'Video freeze URL retries exhausted — escalating to recovery sequence');
-          this.addEvent(`Video freeze retries exhausted on video #${hb.playlistPos} (${videoId}) — escalating recovery`);
-          this.recoveryReason = 'stall';
-          this.startRecoverySequence();
-        }
+        this.handleVideoFreeze(hb.timePos, 'Video freeze', {
+          vfps: hb.vfps, videoBitrate: hb.videoBitrate, audioBitrate: hb.audioBitrate,
+          videoFreezeHeartbeats: this.videoFreezeHeartbeats, playlistPos: hb.playlistPos, videoId,
+        });
       }
     } else if (this.videoFreezeHeartbeats > 0) {
       // Tolerate a single healthy heartbeat (vfps/bitrate can blip) without
@@ -597,6 +581,28 @@ export class RecoveryEngine {
     setTimeout(async () => {
       try { await this.mpv.setProperty('start', 'none'); } catch { /* ignore */ }
     }, 30_000);
+  }
+
+  /** Shared freeze-recovery path for both the bitrate/vfps detector and the
+   *  screenshot detector. Spends the in-place URL-retry budget first, then
+   *  escalates to the standard recovery sequence. No-op if already recovering. */
+  private handleVideoFreeze(seekSeconds: number, label: 'Video freeze' | 'Output freeze', detail: Record<string, unknown>) {
+    if (this.recoveryStep !== RecoveryStep.None) return;
+    const mem = getSystemMemory();
+    const pos = Math.floor(seekSeconds);
+    if (this.videoFreezeRetryCount < RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES) {
+      this.videoFreezeRetryCount++;
+      logger.warn({ ...detail, timePos: seekSeconds, attempt: this.videoFreezeRetryCount, systemMemory: mem }, `${label} — retrying URL in place`);
+      this.addEvent(`${label} at ${pos}s — audio playing but video stalled — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
+      this.discord.notifyRecovery(`${label} — URL retry`);
+      this.videoFreezeHeartbeats = 0; // cooldown: require a fresh window before re-firing
+      this.retryCurrentAtPosition(seekSeconds);
+    } else {
+      logger.warn({ ...detail, timePos: seekSeconds, systemMemory: mem }, `${label} URL retries exhausted — escalating to recovery sequence`);
+      this.addEvent(`${label} retries exhausted — escalating recovery`);
+      this.recoveryReason = 'stall';
+      this.startRecoverySequence();
+    }
   }
 
   // --- Private: playlist advancement ---
