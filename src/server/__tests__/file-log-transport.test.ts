@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, readdirSync, rmSync, utimesSync, existsSync } from 'fs';
 import { join } from 'path';
+// @ts-ignore — plain JS module without a declaration file
 import { formatLogLine, cleanupOldFiles } from '../file-log-transport.js';
 
 const tmpDir = join(import.meta.dirname, '..', '..', '..', '.test-tmp');
