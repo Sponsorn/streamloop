@@ -1039,7 +1039,7 @@ describe('output freeze (screenshot) recovery', () => {
     engine.stop();
   });
 
-  it('onOutputFreeze does an in-place retry and spends the shared freeze budget', () => {
+  it('onOutputFreeze does an in-place retry and spends the shared freeze budget', async () => {
     const { engine, mpv } = build();
     // Simulate the gate being open: playing, video confirmed, not paused, not recovering.
     (engine as any).lastPlaying = true;
@@ -1050,6 +1050,9 @@ describe('output freeze (screenshot) recovery', () => {
     (engine as any).lastTimePos = 142;
     (engine as any).onOutputFreeze();
     expect((engine as any).videoFreezeRetryCount).toBe(1);
+    // retryCurrentAtPosition awaits setProperty before jumpTo (ordering matters),
+    // so flush the microtask queue before asserting the jump.
+    await vi.advanceTimersByTimeAsync(0);
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+142');
     expect(mpv.jumpTo).toHaveBeenCalledWith(0);
     expect(mpv.restart).not.toHaveBeenCalled();

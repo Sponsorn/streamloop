@@ -582,11 +582,13 @@ export class RecoveryEngine {
    *  Triggers yt-dlp re-resolution (refreshes googlevideo URL) and
    *  resumes near the break. Clears the start flag after 30s so it
    *  doesn't leak to auto-advanced videos. */
-  private retryCurrentAtPosition(seekSeconds: number): void {
+  private async retryCurrentAtPosition(seekSeconds: number): Promise<void> {
     const pos = this.state.get().videoIndex;
     const secs = Math.floor(Math.max(0, seekSeconds));
-    this.mpv.setProperty('start', `+${secs}`).catch(() => {});
-    this.mpv.jumpTo(pos).catch(() => {});
+    // Order matters: the start position must be registered before the jump
+    // triggers yt-dlp re-resolution, or the seek silently won't apply.
+    try { await this.mpv.setProperty('start', `+${secs}`); } catch { /* ignore */ }
+    try { await this.mpv.jumpTo(pos); } catch { /* ignore */ }
     setTimeout(async () => {
       try { await this.mpv.setProperty('start', 'none'); } catch { /* ignore */ }
     }, 30_000);
