@@ -40,6 +40,7 @@ export class FrameMonitor {
   private staticCount = 0;
   private fired = false;
   private confirming = false;
+  private stopped = false;
 
   constructor(opts: FrameMonitorOptions) {
     this.opts = opts;
@@ -49,6 +50,7 @@ export class FrameMonitor {
 
   start(): void {
     this.stop();
+    this.stopped = false;
     this.timer = setInterval(() => { void this.tick(); }, this.intervalMs);
   }
 
@@ -56,6 +58,7 @@ export class FrameMonitor {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.confirmTimer) { clearTimeout(this.confirmTimer); this.confirmTimer = null; }
     this.confirming = false;
+    this.stopped = true;
   }
 
   private resetCount(): void {
@@ -93,6 +96,7 @@ export class FrameMonitor {
       this.confirmTimer = null;
       try {
         const frame = await this.opts.captureFrame();
+        if (this.stopped) return; // monitor was stopped while the capture was in flight
         if (frame == null) return; // can't confirm; re-evaluate next tick
         const hash = fnv1a(frame);
         if (hash === this.prevHash) {

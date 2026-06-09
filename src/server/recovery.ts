@@ -605,10 +605,13 @@ export class RecoveryEngine {
     if (this.recoveryStep !== RecoveryStep.None) return;
     const mem = getSystemMemory();
     const pos = Math.floor(seekSeconds);
+    // The bitrate/vfps detector sees audio advancing while video bytes stall;
+    // the screenshot detector sees a frozen picture without knowing the audio state.
+    const symptom = label === 'Output freeze' ? 'streamed picture frozen' : 'audio playing but video stalled';
     if (this.videoFreezeRetryCount < RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES) {
       this.videoFreezeRetryCount++;
       logger.warn({ ...detail, timePos: seekSeconds, attempt: this.videoFreezeRetryCount, systemMemory: mem }, `${label} — retrying URL in place`);
-      this.addEvent(`${label} at ${pos}s — audio playing but video stalled — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
+      this.addEvent(`${label} at ${pos}s — ${symptom} — URL retry in place (attempt ${this.videoFreezeRetryCount}/${RecoveryEngine.MAX_VIDEO_FREEZE_RETRIES})`);
       this.discord.notifyRecovery(`${label} — URL retry`);
       this.videoFreezeHeartbeats = 0; // cooldown: require a fresh window before re-firing
       this.retryCurrentAtPosition(seekSeconds);
