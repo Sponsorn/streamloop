@@ -43,10 +43,20 @@ async function main() {
   const SLIM = process.argv.includes('--slim');
   console.log(`=== StreamLoop Release Builder ${SLIM ? '(slim / update-only)' : '(full)'} ===\n`);
 
-  // Clean previous build
-  if (existsSync(DIST)) {
-    console.log('Cleaning previous dist...');
-    rmSync(DIST, { recursive: true, force: true });
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  const suffix = SLIM ? '-update' : '';
+  const zipFilename = `streamloop-v${pkg.version}${suffix}.zip`;
+  const checksumFilename = `streamloop-v${pkg.version}${suffix}.sha256`;
+
+  // Clean only this build's staging dir, temp downloads, and its own previous
+  // outputs — NOT the whole dist/ — so the full and slim bundles can be built
+  // back-to-back without wiping each other's ZIP.
+  console.log('Cleaning previous build artifacts for this mode...');
+  mkdirSync(DIST, { recursive: true });
+  rmSync(RELEASE, { recursive: true, force: true });
+  rmSync(join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`), { recursive: true, force: true });
+  for (const f of ['node.zip', 'deno.zip', zipFilename, checksumFilename]) {
+    rmSync(join(DIST, f), { force: true });
   }
 
   // Create release directory structure
@@ -146,9 +156,6 @@ async function main() {
 
   // Step 7: Create ZIP (retry up to 3 times — antivirus may lock newly created files)
   console.log('Creating ZIP archive...');
-  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-  const suffix = SLIM ? '-update' : '';
-  const zipFilename = `streamloop-v${pkg.version}${suffix}.zip`;
   const zipPath = join(DIST, zipFilename);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
@@ -168,7 +175,7 @@ async function main() {
   console.log('Generating SHA-256 checksum...');
   const zipData = readFileSync(zipPath);
   const hash = createHash('sha256').update(zipData).digest('hex');
-  const checksumPath = join(DIST, `streamloop-v${pkg.version}${suffix}.sha256`);
+  const checksumPath = join(DIST, checksumFilename);
   writeFileSync(checksumPath, `${hash}  ${zipFilename}\n`);
 
   console.log(`\nRelease built successfully!`);
