@@ -249,6 +249,15 @@ export class MpvClient extends EventEmitter {
     return this.setProperty('playlist-pos', index);
   }
 
+  /** Force a reload of a playlist entry, re-resolving its URL via yt-dlp,
+   *  even when it is already the current index. Unlike jumpTo (set playlist-pos),
+   *  this is NOT a no-op when the target equals the current position — mpv's own
+   *  "Reload" uses this command. Essential for in-place freeze recovery, where the
+   *  frozen video is still the current index and a plain playlist-pos set does nothing. */
+  reloadIndex(index: number): Promise<unknown> {
+    return this.command('playlist-play-index', index);
+  }
+
   quit(): Promise<unknown> {
     return this.command('quit');
   }
@@ -303,9 +312,14 @@ export class MpvClient extends EventEmitter {
       this.currentLogFile = path;
       return [
         `--log-file=${path}`,
-        // ytdl_hook at verbose captures yt-dlp stderr (the actual extractor
-        // error); rest of mpv stays at default noise level.
-        '--msg-level=ytdl_hook=v',
+        // --log-file defaults to debug for every module. cplayer's debug stream
+        // is almost entirely `video EOF (status=4)` — emitted thousands of times
+        // per second for the full duration of every freeze (one freeze ≈ a 30 MB,
+        // 98%-identical log). Cap cplayer at verbose to drop that debug spam while
+        // keeping its useful [v]/[i] lines (reloads, Playing:, audio EOF reached).
+        // ytdl_hook stays at verbose to capture yt-dlp stderr (the real extractor
+        // error). The freeze itself is still recorded in the app event log.
+        '--msg-level=cplayer=v,ytdl_hook=v',
       ];
     } catch (err) {
       logger.warn({ err, logsDir: this.logsDir }, 'Failed to prepare mpv log file');

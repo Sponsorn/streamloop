@@ -1,4 +1,5 @@
 import { freemem, totalmem } from 'os';
+import { performance } from 'node:perf_hooks';
 import { RecoveryStep, type AppConfig, type MpvHeartbeat, type EventLogEntry } from './types.js';
 import type { MpvClient } from './mpv-client.js';
 import type { StateManager } from './state.js';
@@ -55,6 +56,12 @@ export class RecoveryEngine {
   private urlRetryCount = 0;
   private videoFreezeRetryCount = 0;
   private lastSeenVideoIndex = -1;
+  /** Monotonic timestamp (performance.now(), ms) of when the current video's URL
+   *  was last resolved (file-loaded). Drives the proactive pre-expiry refresh.
+   *  Monotonic, NOT Date.now(): a wall-clock step (NTP correcting a bad RTC after
+   *  a power outage) must not make a 6h-old URL look fresh, or a fresh one look
+   *  expired. perf clock ticks at real rate and is immune to clock adjustments. */
+  private urlResolvedAt = performance.now();
   private static readonly STALL_THRESHOLD = 3;
   private static readonly NON_PLAYING_THRESHOLD = 6;
   private static readonly VIDEO_FREEZE_THRESHOLD = 4;
@@ -70,6 +77,7 @@ export class RecoveryEngine {
   private boundOnDisconnect = () => this.onMpvDisconnect();
   private boundOnFileEnded = (reason: string, fileError?: string) => this.onFileEnded(reason, fileError);
   private boundOnProcessExit = () => this.onProcessExit();
+  private boundOnFileLoaded = () => { this.urlResolvedAt = performance.now(); };
 
   constructor(
     config: AppConfig,
@@ -98,6 +106,7 @@ export class RecoveryEngine {
     this.mpv.on('disconnected', this.boundOnDisconnect);
     this.mpv.on('fileEnded', this.boundOnFileEnded);
     this.mpv.on('processExit', this.boundOnProcessExit);
+    this.mpv.on('fileLoaded', this.boundOnFileLoaded);
     this.startHeartbeatPoll();
     this.startPeriodicRestartTimer();
     this.startFrameMonitor();
@@ -120,6 +129,7 @@ export class RecoveryEngine {
     this.mpv.removeListener('disconnected', this.boundOnDisconnect);
     this.mpv.removeListener('fileEnded', this.boundOnFileEnded);
     this.mpv.removeListener('processExit', this.boundOnProcessExit);
+    this.mpv.removeListener('fileLoaded', this.boundOnFileLoaded);
   }
 
   getStatus() {
@@ -248,6 +258,7 @@ export class RecoveryEngine {
     this.nonPlayingHeartbeats = 0;
     this.videoFreezeHeartbeats = 0;
     this.videoFreezeRetryCount = 0;
+    this.urlResolvedAt = performance.now();
     await this.loadCurrentPlaylist();
   }
 
@@ -494,6 +505,27 @@ export class RecoveryEngine {
       this.videoFreezeHeartbeats--;
     }
 
+    // Proactive signed-URL refresh: a YouTube googlevideo URL expires ~6h after
+    // yt-dlp resolves it, so any video longer than the TTL freezes/EOFs mid-play
+    // around the 6h mark. Pre-empt it with an in-place reload once the URL has
+    // aged past the configured threshold, turning an unplanned freeze (+ detection
+    // lag, + possible restart) into a planned ~few-second rebuffer. Short videos
+    // end and reset urlResolvedAt long before the threshold, so this never fires
+    // for them. nearEndOfFile skips a pointless reload right before a natural end.
+    if (this.config.proactiveUrlRefreshMs > 0
+      && isPlaying && this.videoConfirmed && !hb.paused
+      && !this.intentionallyStopped && this.recoveryStep === RecoveryStep.None
+      && !nearEndOfFile
+      && performance.now() - this.urlResolvedAt >= this.config.proactiveUrlRefreshMs) {
+      const ageMin = Math.round((performance.now() - this.urlResolvedAt) / 60000);
+      logger.info({ ageMin, timePos: hb.timePos, playlistPos: hb.playlistPos, videoId }, 'Proactive signed-URL refresh before TTL expiry');
+      this.addEvent(`Proactive URL refresh at ${Math.floor(hb.timePos)}s (URL ~${ageMin}min old) — pre-empting signed-URL expiry`);
+      // Stamp now so we don't re-fire on the next heartbeat while the reload is
+      // in flight; the resulting file-loaded resets it to the precise moment.
+      this.urlResolvedAt = performance.now();
+      this.retryCurrentAtPosition(hb.timePos);
+    }
+
     // Only write state when video is making progress and not in recovery
     // (during recovery, mpv may temporarily report playlistPos=0 which
     // would overwrite the correct resume position)
@@ -589,10 +621,15 @@ export class RecoveryEngine {
   private async retryCurrentAtPosition(seekSeconds: number): Promise<void> {
     const pos = this.state.get().videoIndex;
     const secs = Math.floor(Math.max(0, seekSeconds));
-    // Order matters: the start position must be registered before the jump
+    // Order matters: the start position must be registered before the reload
     // triggers yt-dlp re-resolution, or the seek silently won't apply.
     try { await this.mpv.setProperty('start', `+${secs}`); } catch { /* ignore */ }
-    try { await this.mpv.jumpTo(pos); } catch { /* ignore */ }
+    // Force a reload via playlist-play-index, NOT jumpTo. During a video-stream
+    // freeze mpv is still "playing" this same index, so setting playlist-pos to
+    // its current value is a no-op and the stream never re-resolves — the frozen
+    // frame just persists until the audio track EOFs. playlist-play-index restarts
+    // the entry unconditionally, which is what actually refreshes the URL.
+    try { await this.mpv.reloadIndex(pos); } catch { /* ignore */ }
     setTimeout(async () => {
       try { await this.mpv.setProperty('start', 'none'); } catch { /* ignore */ }
     }, 30_000);
@@ -725,7 +762,12 @@ export class RecoveryEngine {
     switch (step) {
       case RecoveryStep.RetryCurrent: {
         const pos = this.state.get().videoIndex;
-        try { await this.mpv.jumpTo(pos); } catch { /* may fail */ }
+        // Force a reload, not jumpTo: when a stall leaves mpv "playing" the
+        // current index, setting playlist-pos to that same value is a no-op,
+        // so RetryCurrent did nothing and always burned through to RestartMpv
+        // (a full mpv restart = black screen). reloadIndex re-resolves the URL
+        // in place, giving this step a real chance to fix things first.
+        try { await this.mpv.reloadIndex(pos); } catch { /* may fail */ }
         this.scheduleNextStep(RecoveryStep.RestartMpv, this.config.recoveryDelayMs);
         break;
       }

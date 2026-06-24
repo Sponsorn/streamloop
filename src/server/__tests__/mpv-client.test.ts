@@ -460,6 +460,18 @@ describe('MpvClient', () => {
       await p;
     });
 
+    it('reloadIndex should send playlist-play-index to force a reload', async () => {
+      const c = createClient();
+      await c.connect();
+      const sock = await waitForServerConnection();
+
+      const p = c.reloadIndex(5);
+      const msg = await readLine(sock) as any;
+      expect(msg.command).toEqual(['playlist-play-index', 5]);
+      serverSend(sock, { error: 'success', request_id: msg.request_id });
+      await p;
+    });
+
     it('quit should send quit command', async () => {
       const c = createClient();
       await c.connect();

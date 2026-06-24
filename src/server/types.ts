@@ -105,6 +105,7 @@ export interface AppConfig {
   recoveryDelayMs: number;
   outputCheckEnabled: boolean;
   outputFreezeWindowMs: number;
+  proactiveUrlRefreshMs: number;
   obsAutoRestart: boolean;
   obsAutoStream: boolean;
   obsPath: string;

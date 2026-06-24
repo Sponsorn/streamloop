@@ -30,6 +30,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     recoveryDelayMs: 5000,
     outputCheckEnabled: true,
     outputFreezeWindowMs: 30000,
+    proactiveUrlRefreshMs: 19800000,
     obsAutoRestart: false,
     obsAutoStream: false,
     obsPath: '',

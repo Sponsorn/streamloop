@@ -33,6 +33,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     recoveryDelayMs: 5000,
     outputCheckEnabled: true,
     outputFreezeWindowMs: 30000,
+    proactiveUrlRefreshMs: 19800000,
     obsAutoRestart: false,
     obsAutoStream: false,
     obsPath: '',
@@ -82,6 +83,7 @@ function mockMpv() {
     setProperty: vi.fn(async () => {}),
     loadPlaylist: vi.fn(async () => {}),
     jumpTo: vi.fn(async () => {}),
+    reloadIndex: vi.fn(async () => {}),
     seek: vi.fn(async () => {}),
     next: vi.fn(async () => {}),
     restart: vi.fn(async () => {}),
@@ -582,7 +584,7 @@ describe('RecoveryEngine', () => {
 
       // Should have started recovery with RetryCurrent
       expect(discord.notifyRecovery).toHaveBeenCalledWith(RecoveryStep.RetryCurrent);
-      expect(mpv.jumpTo).toHaveBeenCalled();
+      expect(mpv.reloadIndex).toHaveBeenCalled();
 
       // Advance past recoveryDelayMs for next step
       await vi.advanceTimersByTimeAsync(5000);
@@ -792,7 +794,7 @@ describe('onFileEnded with premature-EOF retry', () => {
     mpv._emit('fileEnded', 'eof', undefined);
     await new Promise((r) => setImmediate(r));
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+120');
-    expect(mpv.jumpTo).toHaveBeenCalledWith(3);
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(3);
     expect((engine as any).urlRetryCount).toBe(1);
     engine.stop();
   });
@@ -801,7 +803,7 @@ describe('onFileEnded with premature-EOF retry', () => {
     const { engine, mpv } = buildEngine();
     mpv._emit('fileEnded', 'error', 'loading failed');
     await new Promise((r) => setImmediate(r));
-    expect(mpv.jumpTo).toHaveBeenCalledWith(3);
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(3);
     expect((engine as any).urlRetryCount).toBe(1);
     engine.stop();
   });
@@ -814,13 +816,13 @@ describe('onFileEnded with premature-EOF retry', () => {
     await new Promise((r) => setImmediate(r));
     expect((engine as any).urlRetryCount).toBe(2);
 
-    // Third call: should not call jumpTo again (should fall through; but
+    // Third call: should not reload again (should fall through; but
     // this video was "playing" so the error path would increment
-    // consecutiveErrors instead). We just verify jumpTo wasn't called a 3rd time.
-    mpv.jumpTo.mockClear();
+    // consecutiveErrors instead). We just verify no reload on the 3rd attempt.
+    mpv.reloadIndex.mockClear();
     mpv._emit('fileEnded', 'eof', undefined);
     await new Promise((r) => setImmediate(r));
-    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
     engine.stop();
   });
 
@@ -828,7 +830,7 @@ describe('onFileEnded with premature-EOF retry', () => {
     const { engine, mpv } = buildEngine({ currentTime: 599, videoDuration: 600 });
     mpv._emit('fileEnded', 'eof', undefined);
     await new Promise((r) => setImmediate(r));
-    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
     expect((engine as any).urlRetryCount).toBe(0);
     engine.stop();
   });
@@ -850,7 +852,11 @@ describe('retryCurrentAtPosition', () => {
     await (engine as any).retryCurrentAtPosition(123);
 
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+123');
-    expect(mpv.jumpTo).toHaveBeenCalledWith(5);
+    // Must force a reload of the current index, NOT a plain playlist-pos set:
+    // when the frozen video is still the current index, jumpTo is a no-op and
+    // the stream never re-resolves.
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(5);
+    expect(mpv.jumpTo).not.toHaveBeenCalled();
 
     // The clear-start timer fires at 30s
     vi.advanceTimersByTime(30_000);
@@ -947,7 +953,7 @@ describe('video freeze (audio alive) recovery', () => {
 
     // In-place reload at the current audio position — NOT an mpv restart.
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+120');
-    expect(mpv.jumpTo).toHaveBeenCalledWith(0);
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(0);
     expect(mpv.restart).not.toHaveBeenCalled();
     engine.stop();
   });
@@ -958,7 +964,7 @@ describe('video freeze (audio alive) recovery', () => {
     for (const t of [595, 596, 597, 598]) (engine as any).processHeartbeat(hb({ timePos: t, duration: 600 }));
     await flush();
 
-    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
     engine.stop();
   });
 
@@ -969,7 +975,7 @@ describe('video freeze (audio alive) recovery', () => {
     for (const t of [105, 110, 115, 120]) (engine as any).processHeartbeat(hb({ vfps: 8, videoBitrate: 0, timePos: t }));
     await flush();
 
-    expect(mpv.jumpTo).toHaveBeenCalledWith(0);
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(0);
     engine.stop();
   });
 
@@ -1006,6 +1012,76 @@ describe('video freeze (audio alive) recovery', () => {
     (engine as any).lastSeenVideoIndex = 0;
     (engine as any).processHeartbeat(hb({ vfps: 30, videoBitrate: 3000000, playlistPos: 1, timePos: 5 }));
     expect((engine as any).videoFreezeRetryCount).toBe(0);
+    engine.stop();
+  });
+});
+
+describe('proactive signed-URL refresh', () => {
+  function build(configOverrides = {}, stateOverrides = {}) {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 0, videoDuration: 30000, currentTime: 100, ...stateOverrides });
+    const engine = new RecoveryEngine(
+      makeConfig(configOverrides),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      discord,
+    );
+    return { engine, mpv, discord };
+  }
+
+  // A healthy, playing heartbeat. Long video (duration 30000s) so nearEndOfFile is false.
+  const healthy = (overrides: Record<string, unknown> = {}) => ({
+    timePos: 100, duration: 30000, paused: false, idle: false,
+    playlistPos: 0, playlistCount: 10, mediaTitle: 't', filename: 'f',
+    hasVideo: true, vfps: 30, videoBitrate: 3000000, audioBitrate: 128000,
+    ...overrides,
+  });
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it('reloads in place once the URL ages past the threshold', async () => {
+    const { engine, mpv, discord } = build({ proactiveUrlRefreshMs: 1000 });
+    // First heartbeat confirms video is rendering.
+    (engine as any).processHeartbeat(healthy({ timePos: 100 }));
+    // Age the URL beyond the threshold (monotonic clock).
+    (engine as any).urlResolvedAt = performance.now() - 5000;
+    (engine as any).processHeartbeat(healthy({ timePos: 105 }));
+    await flush();
+
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(0);
+    expect(mpv.setProperty).toHaveBeenCalledWith('start', '+105');
+    expect(mpv.restart).not.toHaveBeenCalled();
+    expect(discord.notifyRecovery).not.toHaveBeenCalled(); // it's a quiet pre-empt, not a recovery
+    engine.stop();
+  });
+
+  it('does not fire during healthy playback within the threshold', async () => {
+    const { engine, mpv } = build({ proactiveUrlRefreshMs: 19800000 });
+    for (const t of [100, 105, 110, 115]) (engine as any).processHeartbeat(healthy({ timePos: t }));
+    await flush();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('is disabled when proactiveUrlRefreshMs is 0 even with a very old URL', async () => {
+    const { engine, mpv } = build({ proactiveUrlRefreshMs: 0 });
+    (engine as any).processHeartbeat(healthy({ timePos: 100 }));
+    (engine as any).urlResolvedAt = performance.now() - 100_000_000; // ~28h old
+    (engine as any).processHeartbeat(healthy({ timePos: 105 }));
+    await flush();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('does not fire near the end of the video', async () => {
+    const { engine, mpv } = build({ proactiveUrlRefreshMs: 1000 });
+    (engine as any).processHeartbeat(healthy({ timePos: 100, duration: 105 }));
+    (engine as any).urlResolvedAt = performance.now() - 5000;
+    // 3s from the end -> nearEndOfFile guard suppresses the reload.
+    (engine as any).processHeartbeat(healthy({ timePos: 102, duration: 105 }));
+    await flush();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
     engine.stop();
   });
 });
@@ -1051,11 +1127,13 @@ describe('output freeze (screenshot) recovery', () => {
     (engine as any).lastTimePos = 142;
     (engine as any).onOutputFreeze();
     expect((engine as any).videoFreezeRetryCount).toBe(1);
-    // retryCurrentAtPosition awaits setProperty before jumpTo (ordering matters),
-    // so flush the microtask queue before asserting the jump.
+    // retryCurrentAtPosition awaits setProperty before the reload (ordering matters),
+    // so flush the microtask queue before asserting the reload.
     await vi.advanceTimersByTimeAsync(0);
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+142');
-    expect(mpv.jumpTo).toHaveBeenCalledWith(0);
+    // Must force a reload, not a plain playlist-pos set: the frozen video is still
+    // the current index, so jumpTo would be a no-op and the picture would stay frozen.
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(0);
     expect(mpv.restart).not.toHaveBeenCalled();
     engine.stop();
   });
@@ -1068,7 +1146,7 @@ describe('output freeze (screenshot) recovery', () => {
     (engine as any).lastTimePos = 142;
     (engine as any).onOutputFreeze();
     expect((engine as any).videoFreezeRetryCount).toBe(0);
-    expect(mpv.jumpTo).not.toHaveBeenCalled();
+    expect(mpv.reloadIndex).not.toHaveBeenCalled();
     engine.stop();
   });
 });

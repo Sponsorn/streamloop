@@ -82,6 +82,10 @@ const configSchema = z.object({
   recoveryDelayMs: z.number().int().positive().default(5000),
   outputCheckEnabled: z.boolean().default(true),
   outputFreezeWindowMs: z.number().int().min(10000).default(30000),
+  // Proactively reload the current video this long after its URL was resolved,
+  // pre-empting YouTube's ~6h signed-URL expiry on videos longer than the TTL.
+  // 5.5h leaves a ~30min margin before the observed ~6.1h failure window. 0 disables.
+  proactiveUrlRefreshMs: z.number().int().min(0).default(19800000),
   obsAutoRestart: z.boolean().default(false),
   obsAutoStream: z.boolean().default(false),
   obsPath: z.string().default('').refine(
