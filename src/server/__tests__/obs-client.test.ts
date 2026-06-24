@@ -13,7 +13,7 @@ function makeConfig(): AppConfig {
     },
     heartbeatIntervalMs: 5000, heartbeatTimeoutMs: 15000, maxConsecutiveErrors: 3,
     stateFilePath: './state.json', recoveryDelayMs: 5000, obsAutoRestart: false,
-    obsAutoStream: false, obsPath: '', autoUpdateCheck: true, updateCheckIntervalMs: 21600000,
+    obsAutoStream: false, obsPath: '', autoUpdateCheck: true, autoUpdateYtdlp: true, updateCheckIntervalMs: 21600000,
     outputCheckEnabled: true, outputFreezeWindowMs: 30000,
     sourceRefreshIntervalMs: 0, twitchClientId: '', twitchClientSecret: '', twitchChannel: '',
     twitchLivenessEnabled: false, twitchPollIntervalMs: 60000, mpvGeometry: '1920x1080+0+0',

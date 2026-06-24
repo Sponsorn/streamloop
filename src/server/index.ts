@@ -17,6 +17,7 @@ import { createApiRouter } from './api.js';
 import { Updater } from './updater.js';
 import { TwitchLivenessChecker } from './twitch.js';
 import { EventStore } from './event-store.js';
+import { updateYtdlp } from './ytdlp-updater.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -176,6 +177,7 @@ async function main() {
     getRecovery: () => recovery,
     mpv,
     playlistCache,
+    ytdlpPath,
     getObs: () => obs,
     state,
     reloadConfig,
@@ -247,6 +249,20 @@ async function main() {
   // Start auto-update check if enabled
   if (config.autoUpdateCheck) {
     updater.startAutoCheck(config.updateCheckIntervalMs);
+  }
+
+  // Keep yt-dlp current. An outdated yt-dlp silently truncates YouTube playlists
+  // (it stops after the first ~100-entry page), so refresh it in the background on
+  // startup. Fire-and-forget: it must never block server boot or playback.
+  if (config.autoUpdateYtdlp) {
+    void updateYtdlp(ytdlpPath).then((result) => {
+      if (result.ok) {
+        logger.info({ version: result.version }, 'yt-dlp auto-update complete');
+        playlistCache.clear();
+      } else {
+        logger.warn({ error: result.error }, 'yt-dlp auto-update skipped');
+      }
+    });
   }
 
   // Start HTTP server

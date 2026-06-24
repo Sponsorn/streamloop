@@ -13,12 +13,14 @@ import type { StateManager } from './state.js';
 import type { Updater } from './updater.js';
 import type { DiscordNotifier } from './discord.js';
 import type { TwitchLivenessChecker } from './twitch.js';
+import { updateYtdlp } from './ytdlp-updater.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
   getRecovery: () => RecoveryEngine;
   mpv: MpvClient;
   playlistCache: PlaylistMetadataCache;
+  ytdlpPath: string;
   getObs: () => OBSClient;
   state: StateManager;
   reloadConfig: () => Promise<void>;
@@ -443,20 +445,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
   // --- yt-dlp endpoints ---
 
   router.post('/yt-dlp/update', async (_req, res) => {
-    try {
-      const { execFileSync } = await import('child_process');
-      // yt-dlp is at <install>/yt-dlp/yt-dlp.exe, resolve relative to server dir
-      const { resolve, dirname } = await import('path');
-      const { fileURLToPath } = await import('url');
-      const __dirname = dirname(fileURLToPath(import.meta.url));
-      const installRoot = resolve(__dirname, '..', '..', '..');
-      const ytdlpPath = resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
-      execFileSync(ytdlpPath, ['-U'], { timeout: 120000 });
-      const version = execFileSync(ytdlpPath, ['--version'], { timeout: 10000 }).toString().trim();
-      res.json({ ok: true, version });
-    } catch (err) {
-      logger.error({ err }, 'Failed to update yt-dlp');
-      res.status(500).json({ error: 'Failed to update yt-dlp' });
+    const result = await updateYtdlp(deps.ytdlpPath);
+    if (result.ok) {
+      // A newer yt-dlp may resolve more playlist entries than the old one did,
+      // so drop the cached metadata to force a fresh fetch on next request.
+      deps.playlistCache.clear();
+      logger.info({ version: result.version }, 'yt-dlp updated');
+      res.json({ ok: true, version: result.version });
+    } else {
+      logger.error({ error: result.error }, 'Failed to update yt-dlp');
+      res.status(500).json({ error: result.error ?? 'Failed to update yt-dlp' });
     }
   });
 

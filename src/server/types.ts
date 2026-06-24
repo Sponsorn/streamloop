@@ -110,6 +110,7 @@ export interface AppConfig {
   obsPath: string;
   autoUpdateCheck: boolean;
   updateCheckIntervalMs: number;
+  autoUpdateYtdlp: boolean;
   sourceRefreshIntervalMs: number;
   twitchClientId: string;
   twitchClientSecret: string;

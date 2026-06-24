@@ -37,6 +37,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     obsAutoStream: false,
     obsPath: '',
     autoUpdateCheck: true,
+    autoUpdateYtdlp: true,
     updateCheckIntervalMs: 21600000,
     sourceRefreshIntervalMs: 0,
     twitchClientId: '',

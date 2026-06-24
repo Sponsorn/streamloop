@@ -1545,6 +1545,25 @@ async function handleCheckUpdate() {
   btn.disabled = false;
 }
 
+async function handleYtdlpUpdate() {
+  const btn = $('#update-ytdlp-btn');
+  const result = $('#update-ytdlp-result');
+  btn.disabled = true;
+  btn.textContent = 'Updating...';
+  result.textContent = '';
+
+  try {
+    const res = await api('/api/yt-dlp/update', { method: 'POST' });
+    result.textContent = `Updated — yt-dlp ${res.version}`;
+    result.style.color = 'var(--accent)';
+  } catch (err) {
+    result.textContent = 'Update failed: ' + err.message;
+    result.style.color = 'var(--red)';
+  }
+  btn.textContent = 'Update yt-dlp';
+  btn.disabled = false;
+}
+
 // --- Boot ---
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -1566,6 +1585,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Check for updates button
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
+
+  // Update yt-dlp button
+  $('#update-ytdlp-btn').addEventListener('click', handleYtdlpUpdate);
 
   // Shutdown button
   const shutdownBtn = document.getElementById('shutdown-btn');

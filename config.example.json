@@ -48,6 +48,7 @@
   "sourceRefreshIntervalMs": 0,
   "autoUpdateCheck": true,
   "updateCheckIntervalMs": 21600000,
+  "autoUpdateYtdlp": true,
   "twitchClientId": "",
   "twitchClientSecret": "",
   "twitchChannel": "",

@@ -669,6 +669,11 @@
             <button type="button" id="settings-update-btn" class="btn btn-update hidden" onclick="handleUpdate()">Update Now</button>
             <span id="check-update-result" style="font-size: 13px; color: var(--text-muted);"></span>
           </div>
+          <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
+            <button type="button" id="update-ytdlp-btn" class="btn btn-secondary">Update yt-dlp</button>
+            <span id="update-ytdlp-result" style="font-size: 13px; color: var(--text-muted);"></span>
+          </div>
+          <div class="hint" style="margin-top: 6px;">yt-dlp is updated automatically on startup. Update it manually if playlists show fewer videos than expected — an outdated yt-dlp stops loading after ~100 videos.</div>
         </div>
 
         <!-- Server Control -->
