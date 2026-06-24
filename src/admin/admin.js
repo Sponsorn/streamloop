@@ -1337,6 +1337,8 @@ async function loadPlaybackSettings() {
     $('#pb-max-errors').value = String(cfg.maxConsecutiveErrors || 3);
     $('#pb-output-toggle').checked = cfg.outputCheckEnabled !== false;
     $('#pb-output-window').value = String(cfg.outputFreezeWindowMs || 30000);
+    // ?? not ||: 0 (disabled) is a valid value that must not fall back to the default.
+    $('#pb-url-refresh').value = String(cfg.proactiveUrlRefreshMs ?? 19800000);
     $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
     $('#pb-ytdl-cookies').value = cfg.ytdlCookiesFromBrowser || '';
     playbackSettingsLoaded = true;
@@ -1352,6 +1354,7 @@ async function handlePlaybackSave() {
     maxConsecutiveErrors: Number($('#pb-max-errors').value),
     outputCheckEnabled: $('#pb-output-toggle').checked,
     outputFreezeWindowMs: Number($('#pb-output-window').value),
+    proactiveUrlRefreshMs: Number($('#pb-url-refresh').value),
     sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
     ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim(),
   };

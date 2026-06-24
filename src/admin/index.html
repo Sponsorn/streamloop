@@ -377,6 +377,17 @@
               </select>
               <div class="hint">How long the streamed picture must stay frozen before an in-place reload. Raise this if you ever stream legitimately static content.</div>
             </div>
+            <div class="form-group">
+              <label for="pb-url-refresh">Proactive URL refresh</label>
+              <select id="pb-url-refresh" class="wh-preview-select">
+                <option value="0">Disabled</option>
+                <option value="14400000">After 4 hours</option>
+                <option value="16200000">After 4.5 hours</option>
+                <option value="18000000">After 5 hours</option>
+                <option value="19800000">After 5.5 hours</option>
+              </select>
+              <div class="hint">YouTube stream URLs expire ~6 hours after they're resolved, freezing videos longer than that mid-playback. This reloads the current video in place before the URL expires (a brief rebuffer instead of a freeze). Only fires on videos that run past this age; leave below 6 hours.</div>
+            </div>
           </div>
         </div>
         <div class="section" style="margin-top: 20px;">
