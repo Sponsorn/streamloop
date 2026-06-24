@@ -9,9 +9,16 @@
  *   5. Installs production dependencies
  *   6. Packages everything into a ZIP
  *
- * Usage: node build/prepare-release.js
+ * Usage:
+ *   node build/prepare-release.js          full bundle (node + mpv + yt-dlp + app)
+ *   node build/prepare-release.js --slim   update-only bundle: app + yt-dlp only,
+ *                                          no node/ or mpv/ (the auto-updater never
+ *                                          swaps those). Produces streamloop-vX.Y.Z-
+ *                                          update.zip — much smaller, and the updater
+ *                                          prefers it over the full ZIP. Use the full
+ *                                          bundle for first-time installs.
  *
- * Note: mpv.exe must be manually placed in build/mpv/mpv.exe before building.
+ * Note: mpv.exe must be manually placed in build/mpv/mpv.exe before building (full only).
  * Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases
  * (mpv releases use .7z archives which are complex to extract in a build script)
  */
@@ -33,7 +40,8 @@ const DIST = join(ROOT, 'dist');
 const RELEASE = join(DIST, 'streamloop');
 
 async function main() {
-  console.log('=== StreamLoop Release Builder ===\n');
+  const SLIM = process.argv.includes('--slim');
+  console.log(`=== StreamLoop Release Builder ${SLIM ? '(slim / update-only)' : '(full)'} ===\n`);
 
   // Clean previous build
   if (existsSync(DIST)) {
@@ -43,19 +51,22 @@ async function main() {
 
   // Create release directory structure
   mkdirSync(join(RELEASE, 'app', 'src'), { recursive: true });
-  mkdirSync(join(RELEASE, 'node'), { recursive: true });
+  if (!SLIM) mkdirSync(join(RELEASE, 'node'), { recursive: true });
 
-  // Step 1: Download portable Node.js
-  console.log(`Downloading Node.js v${NODE_VERSION} (${NODE_ARCH})...`);
-  const nodeZip = join(DIST, 'node.zip');
-  await downloadFile(NODE_URL, nodeZip);
+  // Step 1: Download portable Node.js (full bundle only — the auto-updater never
+  // delivers node/, so a slim update relies on the existing install's runtime).
+  if (!SLIM) {
+    console.log(`Downloading Node.js v${NODE_VERSION} (${NODE_ARCH})...`);
+    const nodeZip = join(DIST, 'node.zip');
+    await downloadFile(NODE_URL, nodeZip);
 
-  console.log('Extracting Node.js...');
-  execSync(`C:\\Windows\\System32\\tar.exe -xf "${nodeZip}" -C "${DIST}"`, { stdio: 'inherit' });
+    console.log('Extracting Node.js...');
+    execSync(`C:\\Windows\\System32\\tar.exe -xf "${nodeZip}" -C "${DIST}"`, { stdio: 'inherit' });
 
-  // Move node files to release/node/
-  const extractedNodeDir = join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`);
-  cpSync(extractedNodeDir, join(RELEASE, 'node'), { recursive: true });
+    // Move node files to release/node/
+    const extractedNodeDir = join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`);
+    cpSync(extractedNodeDir, join(RELEASE, 'node'), { recursive: true });
+  }
 
   // Step 2: Download yt-dlp (nightly — YouTube rotates challenge shapes faster
   // than stable releases; nightly tracks them) and deno (required to solve the
@@ -70,31 +81,33 @@ async function main() {
   await downloadFile(DENO_URL, denoZip);
   execSync(`C:\\Windows\\System32\\tar.exe -xf "${denoZip}" -C "${join(RELEASE, 'yt-dlp')}"`, { stdio: 'inherit' });
 
-  // Step 3: Bundle mpv
-  console.log('Bundling mpv...');
-  mkdirSync(join(RELEASE, 'mpv'), { recursive: true });
-  const localMpv = join(ROOT, 'build', 'mpv', 'mpv.exe');
-  if (existsSync(localMpv)) {
-    cpSync(localMpv, join(RELEASE, 'mpv', 'mpv.exe'));
-    console.log('  Copied mpv.exe from build/mpv/');
-  } else {
-    console.warn('  WARNING: mpv.exe not found at build/mpv/mpv.exe');
-    console.warn('  Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases');
-    console.warn('  Place mpv.exe in build/mpv/ and re-run this script');
-  }
+  // Step 3: Bundle mpv (full bundle only — the auto-updater never delivers mpv/).
+  if (!SLIM) {
+    console.log('Bundling mpv...');
+    mkdirSync(join(RELEASE, 'mpv'), { recursive: true });
+    const localMpv = join(ROOT, 'build', 'mpv', 'mpv.exe');
+    if (existsSync(localMpv)) {
+      cpSync(localMpv, join(RELEASE, 'mpv', 'mpv.exe'));
+      console.log('  Copied mpv.exe from build/mpv/');
+    } else {
+      console.warn('  WARNING: mpv.exe not found at build/mpv/mpv.exe');
+      console.warn('  Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases');
+      console.warn('  Place mpv.exe in build/mpv/ and re-run this script');
+    }
 
-  // Write default mpv.conf
-  writeFileSync(join(RELEASE, 'mpv', 'mpv.conf'), [
-    'no-border',
-    'no-osc',
-    'osd-level=0',
-    'hwdec=auto',
-    'ytdl-format=bestvideo[height<=?1080]+bestaudio/best',
-    'ytdl-raw-options=yes-playlist=',
-    'loop-playlist=inf',
-    'keep-open=yes',
-  ].join('\n'));
-  console.log('  Wrote default mpv.conf');
+    // Write default mpv.conf
+    writeFileSync(join(RELEASE, 'mpv', 'mpv.conf'), [
+      'no-border',
+      'no-osc',
+      'osd-level=0',
+      'hwdec=auto',
+      'ytdl-format=bestvideo[height<=?1080]+bestaudio/best',
+      'ytdl-raw-options=yes-playlist=',
+      'loop-playlist=inf',
+      'keep-open=yes',
+    ].join('\n'));
+    console.log('  Wrote default mpv.conf');
+  }
 
   // Step 4: Copy application files
   console.log('Copying application files...');
@@ -115,14 +128,16 @@ async function main() {
   }
   cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.json'));
 
-  // Step 5: Install production dependencies
+  // Step 5: Install production dependencies. The full bundle uses its own
+  // bundled npm (pinned Node version); the slim bundle skips node/, so it falls
+  // back to the build machine's npm — the installed packages are platform-neutral
+  // JS either way.
   console.log('Installing production dependencies...');
-  const nodeExe = join(RELEASE, 'node', 'node.exe');
-  const npmCmd = join(RELEASE, 'node', 'npm.cmd');
-  execSync(`"${npmCmd}" install --omit=dev`, { cwd: appDir, stdio: 'inherit' });
+  const npmCmd = SLIM ? 'npm' : `"${join(RELEASE, 'node', 'npm.cmd')}"`;
+  execSync(`${npmCmd} install --omit=dev`, { cwd: appDir, stdio: 'inherit' });
 
   // tsx is a devDependency but needed at runtime for the portable bundle
-  execSync(`"${npmCmd}" install tsx@4`, { cwd: appDir, stdio: 'inherit' });
+  execSync(`${npmCmd} install tsx@4`, { cwd: appDir, stdio: 'inherit' });
 
   // Step 6: Copy scripts
   console.log('Copying scripts...');
@@ -132,7 +147,9 @@ async function main() {
   // Step 7: Create ZIP (retry up to 3 times — antivirus may lock newly created files)
   console.log('Creating ZIP archive...');
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-  const zipPath = join(DIST, `streamloop-v${pkg.version}.zip`);
+  const suffix = SLIM ? '-update' : '';
+  const zipFilename = `streamloop-v${pkg.version}${suffix}.zip`;
+  const zipPath = join(DIST, zipFilename);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       // Wait for antivirus to finish scanning new files
@@ -151,8 +168,7 @@ async function main() {
   console.log('Generating SHA-256 checksum...');
   const zipData = readFileSync(zipPath);
   const hash = createHash('sha256').update(zipData).digest('hex');
-  const zipFilename = `streamloop-v${pkg.version}.zip`;
-  const checksumPath = join(DIST, `streamloop-v${pkg.version}.sha256`);
+  const checksumPath = join(DIST, `streamloop-v${pkg.version}${suffix}.sha256`);
   writeFileSync(checksumPath, `${hash}  ${zipFilename}\n`);
 
   console.log(`\nRelease built successfully!`);

@@ -33,6 +33,31 @@ export interface UpdateInfo {
   isDevMode: boolean;
 }
 
+/** Pick the best ZIP asset and its matching checksum from a release's assets.
+ *  Prefers a slim "-update.zip" (app + yt-dlp only, no node/mpv — for in-place
+ *  updates, much smaller) over the full bundle, falling back to any ".zip". The
+ *  checksum is matched to the *chosen* ZIP by name so a release carrying both
+ *  bundles can't cross the wires. Accepts either "<file>.zip.sha256" or
+ *  "<file>.sha256", since both naming conventions have shipped. */
+export function selectReleaseAssets(
+  assets: Array<{ name: string; browser_download_url: string }>,
+): { zipUrl: string | null; checksumUrl: string | null } {
+  const zipAsset =
+    assets.find((a) => a.name.endsWith('-update.zip')) ??
+    assets.find((a) => a.name.endsWith('.zip'));
+  if (!zipAsset) return { zipUrl: null, checksumUrl: null };
+
+  const zipName = zipAsset.name;
+  const zipBase = zipName.replace(/\.zip$/, '');
+  const checksumAsset = assets.find(
+    (a) => a.name === `${zipName}.sha256` || a.name === `${zipBase}.sha256`,
+  );
+  return {
+    zipUrl: zipAsset.browser_download_url,
+    checksumUrl: checksumAsset?.browser_download_url ?? null,
+  };
+}
+
 export function compareVersions(a: string, b: string): number {
   const pa = a.replace(/^v/, '').split('.').map(Number);
   const pb = b.replace(/^v/, '').split('.').map(Number);
@@ -117,22 +142,16 @@ export class Updater {
       this.latestVersion = release.tag_name.replace(/^v/, '');
       this.updateAvailable = compareVersions(this.latestVersion, this.currentVersion) > 0;
 
-      // Find the ZIP and checksum assets, validate URLs against allowed domains
+      // Pick the ZIP (slim -update.zip preferred) + its matching checksum,
+      // then validate URLs against allowed domains.
       if (this.updateAvailable) {
-        const zipAsset = release.assets.find(a => a.name.endsWith('.zip'));
-        const zipUrl = zipAsset?.browser_download_url ?? null;
+        const { zipUrl, checksumUrl } = selectReleaseAssets(release.assets);
         if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
           throw new Error(`Untrusted download URL domain: ${zipUrl}`);
         }
         this.releaseAssetUrl = zipUrl;
-
-        const checksumAsset = release.assets.find(a => a.name.endsWith('.sha256'));
-        const checksumUrl = checksumAsset?.browser_download_url ?? null;
-        if (checksumUrl && !isAllowedDownloadUrl(checksumUrl)) {
-          this.releaseChecksumUrl = null;
-        } else {
-          this.releaseChecksumUrl = checksumUrl;
-        }
+        this.releaseChecksumUrl =
+          checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
       }
 
       this.status = 'idle';
