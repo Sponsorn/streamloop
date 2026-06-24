@@ -80,6 +80,10 @@ const configSchema = z.object({
   ),
   maxConsecutiveErrors: z.number().int().positive().default(3),
   recoveryDelayMs: z.number().int().positive().default(5000),
+  // Grace window after each mpv connect during which the non-playing watchdog
+  // won't escalate to a restart. Covers slow cold yt-dlp resolve/seek on
+  // startup so a normal resume isn't mistaken for a fault. 0 disables the grace.
+  initialLoadGraceMs: z.number().int().min(0).default(90000),
   outputCheckEnabled: z.boolean().default(true),
   outputFreezeWindowMs: z.number().int().min(10000).default(30000),
   // Proactively reload the current video this long after its URL was resolved,

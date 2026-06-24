@@ -12,7 +12,7 @@ function makeConfig(): AppConfig {
       templates: { error: '', skip: '', recovery: '', critical: '', resume: '', obsDisconnect: '', obsReconnect: '', streamDrop: '', streamRestart: '', twitchMismatch: '', twitchRestart: '' },
     },
     heartbeatIntervalMs: 5000, heartbeatTimeoutMs: 15000, maxConsecutiveErrors: 3,
-    stateFilePath: './state.json', recoveryDelayMs: 5000, obsAutoRestart: false,
+    stateFilePath: './state.json', recoveryDelayMs: 5000, initialLoadGraceMs: 90000, obsAutoRestart: false,
     obsAutoStream: false, obsPath: '', autoUpdateCheck: true, autoUpdateYtdlp: true, updateCheckIntervalMs: 21600000,
     outputCheckEnabled: true, outputFreezeWindowMs: 30000, proactiveUrlRefreshMs: 19800000,
     sourceRefreshIntervalMs: 0, twitchClientId: '', twitchClientSecret: '', twitchChannel: '',

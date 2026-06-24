@@ -103,6 +103,7 @@ export interface AppConfig {
   maxConsecutiveErrors: number;
   stateFilePath: string;
   recoveryDelayMs: number;
+  initialLoadGraceMs: number;
   outputCheckEnabled: boolean;
   outputFreezeWindowMs: number;
   proactiveUrlRefreshMs: number;

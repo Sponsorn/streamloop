@@ -51,6 +51,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     maxConsecutiveErrors: 3,
     stateFilePath: './state.json',
     recoveryDelayMs: 5000,
+    initialLoadGraceMs: 90000,
     outputCheckEnabled: true,
     outputFreezeWindowMs: 30000,
     proactiveUrlRefreshMs: 19800000,

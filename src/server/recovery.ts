@@ -51,6 +51,15 @@ export class RecoveryEngine {
   private frameMonitor: FrameMonitor | null = null;
   private seekPending = false;
   private videoConfirmed = false;
+  /** True once playback has progressed at least once since the current mpv
+   *  connect. Gates the startup grace below. */
+  private firstPlaybackConfirmed = false;
+  /** Wall-clock (ms) of the current mpv connect. Drives the startup grace
+   *  window. Date.now() (not perf clock) to match the non-playing/heartbeat
+   *  code; a clock step within the first ~90s post-connect is negligible. */
+  private mpvConnectedAt = Date.now();
+  /** Ensures the "holding off during startup grace" event logs once per connect. */
+  private startupGraceLogged = false;
   private periodicRestartTimer: ReturnType<typeof setInterval> | null = null;
   private videoFreezeHeartbeats = 0;
   private urlRetryCount = 0;
@@ -256,6 +265,9 @@ export class RecoveryEngine {
     this.resetRecovery();
     this.lastHeartbeatAt = Date.now();
     this.nonPlayingHeartbeats = 0;
+    this.firstPlaybackConfirmed = false;
+    this.mpvConnectedAt = Date.now();
+    this.startupGraceLogged = false;
     this.videoFreezeHeartbeats = 0;
     this.videoFreezeRetryCount = 0;
     this.urlResolvedAt = performance.now();
@@ -428,6 +440,9 @@ export class RecoveryEngine {
     // from swallowing a real error later
     if (isPlaying) {
       this.seekPending = false;
+      // Playback has progressed at least once this connect — end the startup
+      // grace so the non-playing watchdog behaves normally from here on.
+      this.firstPlaybackConfirmed = true;
     }
     this.lastKnownPaused = hb.paused;
     this.lastPlaying = isPlaying;
@@ -560,7 +575,26 @@ export class RecoveryEngine {
       this.nonPlayingHeartbeats = 0;
     } else if (this.totalVideos > 0) {
       this.nonPlayingHeartbeats++;
-      if (this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
+      // Startup grace: a cold resume (yt-dlp resolving the playlist, then a
+      // second resolution for a deep-jump video, then seek) keeps mpv
+      // non-playing well past the ~30s non-playing budget. Without this, the
+      // watchdog mistakes the resume for a fault and escalates to an mpv
+      // restart on every server start. Suppress it until playback is confirmed
+      // once, or the grace window elapses — after which it behaves as before,
+      // so genuine mid-stream stalls still recover. Re-applies on every connect
+      // (incl. periodic restarts), which is correct.
+      const inStartupGrace =
+        !this.firstPlaybackConfirmed &&
+        (Date.now() - this.mpvConnectedAt) < this.config.initialLoadGraceMs;
+      if (inStartupGrace) {
+        // Log once so the dashboard shows the hold-off is deliberate, not a hang.
+        if (!this.startupGraceLogged && this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD) {
+          const graceS = Math.round(this.config.initialLoadGraceMs / 1000);
+          logger.info({ heartbeats: this.nonPlayingHeartbeats, graceMs: this.config.initialLoadGraceMs, playlistPos: hb.playlistPos }, 'Still loading — holding off non-playing recovery during startup grace');
+          this.addEvent(`Still loading playlist/video — holding off recovery during startup grace (up to ${graceS}s)`);
+          this.startupGraceLogged = true;
+        }
+      } else if (this.nonPlayingHeartbeats >= RecoveryEngine.NON_PLAYING_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
         const npMsg = `Player not playing for ${this.nonPlayingHeartbeats} heartbeats on video #${hb.playlistPos} (${videoId})`;
         logger.warn({ paused: hb.paused, idle: hb.idle, heartbeats: this.nonPlayingHeartbeats, playlistPos: hb.playlistPos, videoId }, 'Player stuck in non-playing state');
         this.addEvent(npMsg);

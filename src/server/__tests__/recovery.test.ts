@@ -31,6 +31,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxConsecutiveErrors: 3,
     stateFilePath: './state.json',
     recoveryDelayMs: 5000,
+    initialLoadGraceMs: 90000,
     outputCheckEnabled: true,
     outputFreezeWindowMs: 30000,
     proactiveUrlRefreshMs: 19800000,
@@ -1147,6 +1148,93 @@ describe('output freeze (screenshot) recovery', () => {
     (engine as any).onOutputFreeze();
     expect((engine as any).videoFreezeRetryCount).toBe(0);
     expect(mpv.reloadIndex).not.toHaveBeenCalled();
+    engine.stop();
+  });
+});
+
+describe('startup grace (non-playing watchdog)', () => {
+  function build(configOverrides = {}, stateOverrides = {}) {
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 5, currentTime: 100, ...stateOverrides });
+    const engine = new RecoveryEngine(
+      makeConfig({ heartbeatIntervalMs: 5000, ...configOverrides }),
+      mpv as unknown as MpvClient,
+      state as StateManager,
+      mockObs(),
+      discord,
+    );
+    return { engine, mpv, discord };
+  }
+
+  // mpv connected + playlist resolved (playlistCount > 0) but never reaching
+  // playback — the cold resolve/seek window where idle stays true.
+  const nonPlaying = (overrides: Record<string, unknown> = {}) => ({
+    timePos: 0, duration: 0, paused: false, idle: true,
+    playlistPos: 0, playlistCount: 10, mediaTitle: '', filename: '',
+    hasVideo: false, vfps: 0, videoBitrate: -1, audioBitrate: -1,
+    ...overrides,
+  });
+  const playing = (overrides: Record<string, unknown> = {}) => ({
+    timePos: 5, duration: 600, paused: false, idle: false,
+    playlistPos: 0, playlistCount: 10, mediaTitle: 't', filename: 'f',
+    hasVideo: true, vfps: 30, videoBitrate: 3000000, audioBitrate: 128000,
+    ...overrides,
+  });
+  const flush = () => new Promise((r) => setImmediate(r));
+
+  it('does not start recovery during the grace even past the non-playing threshold', async () => {
+    const { engine, mpv, discord } = build();
+    // Fresh connect: grace active, no playback yet.
+    (engine as any).mpvConnectedAt = Date.now();
+    (engine as any).firstPlaybackConfirmed = false;
+
+    // Well past NON_PLAYING_THRESHOLD (6) — would normally escalate at ~30s.
+    for (let i = 0; i < 10; i++) (engine as any).processHeartbeat(nonPlaying());
+    await flush();
+
+    expect(discord.notifyRecovery).not.toHaveBeenCalledWith('Non-playing recovery');
+    expect(mpv.restart).not.toHaveBeenCalled();
+    engine.stop();
+  });
+
+  it('logs a visible event so the hold-off is observable in the dashboard', () => {
+    const { engine } = build();
+    (engine as any).mpvConnectedAt = Date.now();
+    (engine as any).firstPlaybackConfirmed = false;
+
+    for (let i = 0; i < 8; i++) (engine as any).processHeartbeat(nonPlaying());
+
+    expect(engine.getEvents().some((e) => /startup grace/i.test(e.message))).toBe(true);
+    engine.stop();
+  });
+
+  it('escalates non-playing recovery after playback has been confirmed once', async () => {
+    const { engine, discord } = build();
+    (engine as any).mpvConnectedAt = Date.now();
+    (engine as any).firstPlaybackConfirmed = false;
+
+    // Confirm playback once — ends the grace permanently for this connect.
+    (engine as any).processHeartbeat(playing());
+
+    // Now stall into non-playing: the watchdog must behave exactly as before.
+    for (let i = 0; i < 10; i++) (engine as any).processHeartbeat(nonPlaying());
+    await flush();
+
+    expect(discord.notifyRecovery).toHaveBeenCalledWith('Non-playing recovery');
+    engine.stop();
+  });
+
+  it('escalates once the grace window has elapsed even without playback', async () => {
+    const { engine, discord } = build({ initialLoadGraceMs: 90000 });
+    // Connected long enough ago that the grace window has expired.
+    (engine as any).mpvConnectedAt = Date.now() - 95000;
+    (engine as any).firstPlaybackConfirmed = false;
+
+    for (let i = 0; i < 10; i++) (engine as any).processHeartbeat(nonPlaying());
+    await flush();
+
+    expect(discord.notifyRecovery).toHaveBeenCalledWith('Non-playing recovery');
     engine.stop();
   });
 });
