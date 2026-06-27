@@ -1,3 +1,12 @@
+## v2.3.1
+
+- **Fixed the "update applied, terminal never reappears" hang.** When an update shipped a new `START.bat`, the running launcher copied the new file over its own path mid-execution. cmd.exe reads a batch file from disk by byte offset as it runs, so replacing it desynced the read position and usually closed the window before the relaunch — the update's `app/` swap had already happened, but the server never came back up. `START.bat` now **never overwrites itself in place**: it stages a changed launcher to `START.bat.new` (only when it actually differs, via `fc /b`) and hands off to a detached one-shot script that swaps the launcher and relaunches in a fresh window after the original exits.
+- **Self-heal a half-swapped install on launch.** The `app/` update swap is non-atomic (rename old app aside, then move the new app into place). If the process was interrupted between those steps there was no `app/` at all, and every subsequent launch died at the preflight check — one bad update bricked the box. `START.bat` now restores `app/` from `_update_old/` (or promotes the staged `_update_tmp\app`) at startup before preflight, so an interrupted update recovers itself.
+
+  > **Note for existing installs:** this update is applied by your *current* (pre-fix) `START.bat`, so the delivering update can still hit the old self-overwrite hang. If the window closes and the server doesn't come back, the new `app/` is already in place — just relaunch `START.bat` once. After that, the new trampoline launcher makes all future updates safe. For a guaranteed-clean transition, replace `START.bat` (or reinstall from the full ZIP) out-of-band.
+
+---
+
 ## v2.3.0
 
 - **In-place freeze/EOF recovery actually re-resolves the stream now.** The "URL retry" used by freeze and premature-EOF recovery reloaded via `jumpTo(pos)` (`set_property playlist-pos`). During a video-stream freeze mpv is still "playing" the current index, so setting `playlist-pos` to its own value was a **no-op** — mpv never re-resolved the URL, and the frozen frame persisted (logs showed ~8 min, until the audio track ran out) while recovery silently burned through to a full mpv restart. Both `retryCurrentAtPosition` and the `RetryCurrent` recovery step now reload via `playlist-play-index` (`reloadIndex`), which restarts the current entry even when it's already current — so the in-place retry gets a real chance to fix the freeze before any restart.
