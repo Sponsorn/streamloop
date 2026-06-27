@@ -11,6 +11,21 @@ set "ROOT=%~dp0"
 set "NODE=%ROOT%node\node.exe"
 set "APP=%ROOT%app"
 
+:: Self-heal: a previous update may have left app/ half-swapped (old app renamed
+:: to _update_old but the new app never moved into place). Restore it so a failed
+:: or interrupted update doesn't permanently brick startup.
+if not exist "%APP%\src\server\index.ts" (
+    if exist "%ROOT%_update_old\src\server\index.ts" (
+        echo [RECOVER] app missing - restoring from _update_old ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        rename "%ROOT%_update_old" app
+    ) else if exist "%ROOT%_update_tmp\app\src\server\index.ts" (
+        echo [RECOVER] app missing - promoting staged _update_tmp\app ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        move "%ROOT%_update_tmp\app" "%APP%"
+    )
+)
+
 :: Pre-flight checks
 if not exist "%NODE%" (
     echo [ERROR] Portable Node.js not found at: %NODE%
@@ -70,9 +85,13 @@ if %ERRORLEVEL% equ 75 (
                 if exist "%ROOT%_update_old\config.json" copy /y "%ROOT%_update_old\config.json" "%ROOT%app\config.json" >nul
                 if exist "%ROOT%_update_old\state.json" copy /y "%ROOT%_update_old\state.json" "%ROOT%app\state.json" >nul
                 if exist "%ROOT%_update_old\logs" xcopy "%ROOT%_update_old\logs" "%ROOT%app\logs\" /E /I /Y >nul 2>nul
-                :: Copy new START.bat if included in the update
+                :: Stage the new launcher only if it actually differs - never
+                :: overwrite the running script in place. A .bat that replaces
+                :: itself desyncs cmd's on-disk read position and usually closes
+                :: the window before the relaunch. The swap is handed off below.
                 if exist "%ROOT%_update_tmp\START.bat" (
-                    copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul
+                    fc /b "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul 2>&1
+                    if errorlevel 1 copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat.new" >nul
                 )
                 echo Update applied successfully.
 
@@ -119,6 +138,23 @@ if %ERRORLEVEL% equ 75 (
         ) else (
             echo [ERROR] Failed to rename old app directory, aborting update.
         )
+    )
+
+    :: If a new launcher was staged, hand off to a detached one-shot script that
+    :: swaps START.bat and relaunches in a fresh window. The swapping script and
+    :: the swapped script must never be the same file (a self-replacing .bat
+    :: desyncs cmd and closes the window before it can relaunch).
+    if exist "%ROOT%START.bat.new" (
+        echo Applying new launcher and restarting...
+        set "TRAMP=%ROOT%_apply_launcher.bat"
+        > "!TRAMP!" echo @echo off
+        >> "!TRAMP!" echo timeout /t 2 /nobreak ^>nul
+        >> "!TRAMP!" echo move /y "%ROOT%START.bat.new" "%ROOT%START.bat" ^>nul
+        >> "!TRAMP!" echo cd /d "%ROOT%"
+        >> "!TRAMP!" echo start "StreamLoop" "%ROOT%START.bat"
+        >> "!TRAMP!" echo del "%%~f0"
+        start "" cmd /c "!TRAMP!"
+        exit /b 0
     )
 
     echo Restarting server...
