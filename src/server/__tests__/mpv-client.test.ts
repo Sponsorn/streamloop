@@ -3,7 +3,7 @@ import net from 'net';
 import { mkdtempSync, rmSync, writeFileSync, readdirSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { MpvClient, pruneMpvLogs } from '../mpv-client.js';
+import { MpvClient, pruneMpvLogs, treeKillCommand } from '../mpv-client.js';
 
 vi.mock('../logger.js', () => ({
   logger: {
@@ -544,6 +544,19 @@ describe('MpvClient', () => {
     it('returns null before spawn', () => {
       client = new MpvClient({ spawn: false });
       expect(client.getCurrentLogFile()).toBeNull();
+    });
+  });
+
+  describe('treeKillCommand', () => {
+    it('kills the whole process tree via taskkill on Windows', () => {
+      // /T is the critical flag: mpv spawns yt-dlp -> node (js challenge solver);
+      // without /T those grandchildren are orphaned with cwd=app\ and keep the
+      // directory locked, breaking the updater's rename of app/.
+      expect(treeKillCommand(1234, 'win32')).toEqual({ cmd: 'taskkill', args: ['/pid', '1234', '/T', '/F'] });
+    });
+
+    it('returns null on non-Windows platforms (signal kill suffices)', () => {
+      expect(treeKillCommand(1234, 'linux')).toBeNull();
     });
   });
 });

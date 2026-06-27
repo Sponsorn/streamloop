@@ -50,6 +50,26 @@ interface PendingCommand {
 }
 
 /**
+ * Build the command to terminate a process *and its whole tree* on Windows.
+ * mpv spawns yt-dlp.exe, which spawns node.exe (the `js-runtimes=node` n-param
+ * challenge solver). A plain `proc.kill()` (TerminateProcess) only kills mpv,
+ * orphaning those grandchildren — and because they inherit cwd=`app\`, they
+ * keep the directory locked, which makes the updater's `rename app _update_old`
+ * fail and the whole update swap silently abort. `taskkill /T` walks the tree.
+ * Returns null off Windows, where a SIGKILL on the pid is sufficient.
+ * Exported for testing.
+ */
+export function treeKillCommand(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): { cmd: string; args: string[] } | null {
+  if (platform === 'win32') {
+    return { cmd: 'taskkill', args: ['/pid', String(pid), '/T', '/F'] };
+  }
+  return null;
+}
+
+/**
  * MpvClient spawns mpv as a child process and communicates via
  * Windows named pipe IPC using mpv's JSON IPC protocol.
  *
@@ -337,8 +357,8 @@ export class MpvClient extends EventEmitter {
 
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
-        // Force kill if still alive after 5s
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        // Force kill the whole tree if a graceful exit didn't land in time.
+        this.forceKillTree(proc);
         this.process = null;
         resolve();
       }, 5000);
@@ -349,8 +369,26 @@ export class MpvClient extends EventEmitter {
         resolve();
       });
 
-      proc.kill();
+      // Kill mpv AND its descendants (yt-dlp -> node). See treeKillCommand:
+      // orphaned grandchildren hold cwd=app\ open and break the update swap.
+      this.forceKillTree(proc);
     });
+  }
+
+  /** Terminate mpv and all descendant processes. On Windows that means
+   *  `taskkill /T`; elsewhere a SIGKILL on the pid. Best-effort. */
+  private forceKillTree(proc: ChildProcess): void {
+    const pid = proc.pid;
+    const tk = pid != null ? treeKillCommand(pid) : null;
+    if (tk) {
+      try {
+        spawn(tk.cmd, tk.args, { stdio: 'ignore' });
+        return;
+      } catch (err) {
+        logger.warn({ err, pid }, 'taskkill tree-kill failed, falling back to signal');
+      }
+    }
+    try { proc.kill('SIGKILL'); } catch { /* ignore */ }
   }
 
   // ── Private: IPC connection ────────────────────────────────

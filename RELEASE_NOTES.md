@@ -1,3 +1,11 @@
+## v2.3.3
+
+- **Fixed auto-update silently failing to apply (server had to be updated by hand).** Every update exited cleanly and the server restarted — but on the *old* app, leaving `_update_tmp` full, because `START.bat`'s `rename app _update_old` failed with "the process cannot access the file because it is being used by another process." Root cause: mpv is spawned with no working directory, so it (and the `yt-dlp.exe` → `node.exe` n-param challenge solver it launches) inherits `cwd = app\`. On shutdown the server called `proc.kill()`, which on Windows terminates **only mpv.exe** and orphans those `node` grandchildren — and since they hold `app\` as their working directory, the directory stays locked and the swap can never rename it. `mpv.stop()` now kills the **entire process tree** (`taskkill /T` on Windows) so no descendants survive to lock `app\`, and the update swap completes on its own.
+  - Note: this fix lands *in* 2.3.3, but the update that delivers it is still applied by the pre-fix 2.3.2 process — so installing 2.3.3 itself may need one last manual swap of `_update_tmp\app` → `app`. Every update after 2.3.3 applies automatically.
+- **Internal:** extracted `treeKillCommand` for the platform-specific tree kill, with unit tests.
+
+---
+
 ## v2.3.2
 
 - **Fixed videos being skipped with "no audio or video data played."** YouTube has been returning **HTTP 403 Forbidden** on the stream URLs resolved by yt-dlp's default `tv` (TVHTML5) client — it now requires a GVS PO token that headless extraction doesn't have. yt-dlp resolved each video fine, but the CDN rejected the stream the instant mpv opened it, so the video "played" zero bytes and got counted as a playback error; three of those in a row skipped a perfectly good video (logs showed bursts of "Playback error … — no audio or video data played"). This was **not** the screenshot freeze monitor — it never fired on the skipped videos; the skips came entirely from the 403s. Two changes fix it:
