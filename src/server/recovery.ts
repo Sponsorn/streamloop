@@ -9,14 +9,16 @@ import { logger } from './logger.js';
 import { FrameMonitor } from './frame-monitor.js';
 import type { EventStore } from './event-store.js';
 
+const GiB = 1024 ** 3; // 1073741824
+
 function getSystemMemory() {
   const totalBytes = totalmem();
   const freeBytes = freemem();
   const usedBytes = totalBytes - freeBytes;
   return {
-    totalGB: +(totalBytes / 1073741824).toFixed(1),
-    freeGB: +(freeBytes / 1073741824).toFixed(1),
-    usedGB: +(usedBytes / 1073741824).toFixed(1),
+    totalGB: +(totalBytes / GiB).toFixed(1),
+    freeGB: +(freeBytes / GiB).toFixed(1),
+    usedGB: +(usedBytes / GiB).toFixed(1),
     usedPercent: Math.round((usedBytes / totalBytes) * 100),
   };
 }
@@ -141,10 +143,16 @@ export class RecoveryEngine {
     this.mpv.removeListener('fileLoaded', this.boundOnFileLoaded);
   }
 
+  /** Saved playlist index, clamped into [0, playlists.length). Guards both an
+   *  out-of-range upper bound and a negative/NaN index (either would make
+   *  `this.config.playlists[i]` undefined and throw on `.id`). */
+  private currentPlaylistIndex(): number {
+    const i = this.state.get().playlistIndex;
+    return Number.isInteger(i) && i >= 0 && i < this.config.playlists.length ? i : 0;
+  }
+
   getStatus() {
-    const currentState = this.state.get();
-    const playlistIndex = currentState.playlistIndex < this.config.playlists.length
-      ? currentState.playlistIndex : 0;
+    const playlistIndex = this.currentPlaylistIndex();
     return {
       recoveryStep: this.recoveryStep,
       lastHeartbeatAt: this.lastHeartbeatAt,
@@ -185,8 +193,7 @@ export class RecoveryEngine {
 
   async loadCurrentPlaylist() {
     const savedState = this.state.get();
-    const playlistIndex = savedState.playlistIndex < this.config.playlists.length
-      ? savedState.playlistIndex : 0;
+    const playlistIndex = this.currentPlaylistIndex();
     const playlist = this.config.playlists[playlistIndex];
     const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
 
@@ -330,9 +337,9 @@ export class RecoveryEngine {
       // the skip progress and start the cycle over from position 0.
       this.nonPlayingHeartbeats = 0;
       if (this.consecutiveErrors >= this.config.maxConsecutiveErrors) {
-        const reason = `${this.consecutiveErrors} consecutive playback errors`;
-        this.addEvent(`Skipping video #${videoIndex} (${videoId}): ${reason}`);
-        await this.discord.notifySkip(videoIndex, videoId, reason);
+        const skipReason = `${this.consecutiveErrors} consecutive playback errors`;
+        this.addEvent(`Skipping video #${videoIndex} (${videoId}): ${skipReason}`);
+        await this.discord.notifySkip(videoIndex, videoId, skipReason);
         try { await this.mpv.next(); } catch { /* ignore */ }
         this.consecutiveErrors = 0;
       }
@@ -424,10 +431,34 @@ export class RecoveryEngine {
 
   // --- Private: heartbeat processing ---
 
-  /** @internal — exposed name for testing via poll timer */
+  /**
+   * @internal — exposed name for testing via poll timer.
+   *
+   * Runs the per-heartbeat detector sequence top to bottom every poll. Each
+   * step self-gates (most on `recoveryStep === None`); suppression is per-step
+   * by design, NOT via early return — blocks like the video-freeze decrement
+   * and state-persist must still run after another detector fires. Order is
+   * load-bearing: detectStall reads last heartbeat's videoFreezeHeartbeats
+   * before detectVideoFreeze updates it, and persistState reads stalledHeartbeats
+   * after detectStall sets it.
+   */
   private processHeartbeat(hb: MpvHeartbeat) {
     const isPlaying = !hb.paused && !hb.idle && hb.timePos > 0;
+    const videoId = this.extractVideoId(hb.filename);
+    const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
 
+    this.trackPlaybackFlags(hb, isPlaying);
+    this.resetCountersOnVideoChange(hb);
+    this.detectStall(hb, isPlaying, videoId);
+    this.detectVideoFreeze(hb, isPlaying, videoId);
+    this.maybeProactiveRefresh(hb, isPlaying, videoId);
+    this.persistState(hb, isPlaying, videoId, mediaTitle);
+    this.autoResumeIfPaused(hb);
+    this.detectNonPlaying(hb, isPlaying, videoId);
+  }
+
+  /** Update the rolling playback-state flags read by the detectors below. */
+  private trackPlaybackFlags(hb: MpvHeartbeat, isPlaying: boolean) {
     // Track whether video is confirmed rendering (not just audio/black screen)
     if (isPlaying && hb.hasVideo) {
       if (!this.videoConfirmed) {
@@ -447,9 +478,9 @@ export class RecoveryEngine {
     this.lastKnownPaused = hb.paused;
     this.lastPlaying = isPlaying;
     this.lastTimePos = hb.timePos;
-    const videoId = this.extractVideoId(hb.filename);
-    const mediaTitle = this.sanitizeTitle(hb.mediaTitle);
+  }
 
+  private resetCountersOnVideoChange(hb: MpvHeartbeat) {
     // Reset URL-retry counter whenever the playlist position changes
     // (auto-advance, successful retry that played through, manual jump).
     if (hb.playlistPos !== this.lastSeenVideoIndex) {
@@ -462,8 +493,10 @@ export class RecoveryEngine {
     if (hb.playlistCount > 0) {
       this.totalVideos = hb.playlistCount;
     }
+  }
 
-    // Stall detection: mpv claims to be playing but timePos isn't advancing
+  /** Stall detection: mpv claims to be playing but timePos isn't advancing. */
+  private detectStall(hb: MpvHeartbeat, isPlaying: boolean, videoId: string) {
     if (isPlaying) {
       if (Math.abs(hb.timePos - this.lastProgressTime) < 1) {
         this.stalledHeartbeats++;
@@ -488,20 +521,24 @@ export class RecoveryEngine {
     } else {
       this.stalledHeartbeats = 0;
       this.lastProgressTime = hb.timePos;
-      if (this.recoveryStep !== RecoveryStep.None && isPlaying) {
-        this.resetRecovery();
-      }
+      // Note: recovery is NOT cancelled here. A non-playing heartbeat is
+      // expected mid-recovery (mpv restarting); the eager clear happens above
+      // only when playback is actually progressing. Cancellation otherwise is
+      // timer-driven via scheduleNextStep.
     }
+  }
 
-    // Video freeze detection: audio keeps flowing (time-pos advances) but the
-    // video stream has stalled. YouTube serves video and audio as separate DASH
-    // streams; when the *video* stream stalls/EOFs, mpv holds the last frame and
-    // never emits a file-level end-file (the file stays alive on audio), so this
-    // heartbeat check is the only thing that can catch it. Two independent
-    // signals: estimated-vf-fps collapses, and/or video-bitrate drops to ~0
-    // while audio-bitrate keeps flowing.
-    const nearEndOfFile = hb.duration > 0
-      && hb.duration - hb.timePos < RecoveryEngine.VIDEO_FREEZE_END_GUARD_SEC;
+  /**
+   * Video freeze detection: audio keeps flowing (time-pos advances) but the
+   * video stream has stalled. YouTube serves video and audio as separate DASH
+   * streams; when the *video* stream stalls/EOFs, mpv holds the last frame and
+   * never emits a file-level end-file (the file stays alive on audio), so this
+   * heartbeat check is the only thing that can catch it. Two independent
+   * signals: estimated-vf-fps collapses, and/or video-bitrate drops to ~0
+   * while audio-bitrate keeps flowing.
+   */
+  private detectVideoFreeze(hb: MpvHeartbeat, isPlaying: boolean, videoId: string) {
+    const nearEndOfFile = this.isNearEndOfFile(hb);
     const videoFramesStalled = hb.vfps < 1;
     const videoBytesStalled = hb.videoBitrate >= 0 && hb.videoBitrate < RecoveryEngine.FROZEN_VIDEO_BITRATE;
     const videoStalled = videoFramesStalled || videoBytesStalled;
@@ -519,18 +556,22 @@ export class RecoveryEngine {
       // fully resetting — decrement so a real sustained freeze still escalates.
       this.videoFreezeHeartbeats--;
     }
+  }
 
-    // Proactive signed-URL refresh: a YouTube googlevideo URL expires ~6h after
-    // yt-dlp resolves it, so any video longer than the TTL freezes/EOFs mid-play
-    // around the 6h mark. Pre-empt it with an in-place reload once the URL has
-    // aged past the configured threshold, turning an unplanned freeze (+ detection
-    // lag, + possible restart) into a planned ~few-second rebuffer. Short videos
-    // end and reset urlResolvedAt long before the threshold, so this never fires
-    // for them. nearEndOfFile skips a pointless reload right before a natural end.
+  /**
+   * Proactive signed-URL refresh: a YouTube googlevideo URL expires ~6h after
+   * yt-dlp resolves it, so any video longer than the TTL freezes/EOFs mid-play
+   * around the 6h mark. Pre-empt it with an in-place reload once the URL has
+   * aged past the configured threshold, turning an unplanned freeze (+ detection
+   * lag, + possible restart) into a planned ~few-second rebuffer. Short videos
+   * end and reset urlResolvedAt long before the threshold, so this never fires
+   * for them. nearEndOfFile skips a pointless reload right before a natural end.
+   */
+  private maybeProactiveRefresh(hb: MpvHeartbeat, isPlaying: boolean, videoId: string) {
     if (this.config.proactiveUrlRefreshMs > 0
       && isPlaying && this.videoConfirmed && !hb.paused
       && !this.intentionallyStopped && this.recoveryStep === RecoveryStep.None
-      && !nearEndOfFile
+      && !this.isNearEndOfFile(hb)
       && performance.now() - this.urlResolvedAt >= this.config.proactiveUrlRefreshMs) {
       const ageMin = Math.round((performance.now() - this.urlResolvedAt) / 60000);
       logger.info({ ageMin, timePos: hb.timePos, playlistPos: hb.playlistPos, videoId }, 'Proactive signed-URL refresh before TTL expiry');
@@ -540,10 +581,14 @@ export class RecoveryEngine {
       this.urlResolvedAt = performance.now();
       this.retryCurrentAtPosition(hb.timePos);
     }
+  }
 
-    // Only write state when video is making progress and not in recovery
-    // (during recovery, mpv may temporarily report playlistPos=0 which
-    // would overwrite the correct resume position)
+  /**
+   * Only write state when video is making progress and not in recovery
+   * (during recovery, mpv may temporarily report playlistPos=0 which
+   * would overwrite the correct resume position).
+   */
+  private persistState(hb: MpvHeartbeat, isPlaying: boolean, videoId: string, mediaTitle: string) {
     if (this.stalledHeartbeats < RecoveryEngine.STALL_THRESHOLD && this.recoveryStep === RecoveryStep.None) {
       const update: Record<string, unknown> = {
         videoIndex: hb.playlistPos,
@@ -556,8 +601,10 @@ export class RecoveryEngine {
       }
       this.state.update(update);
     }
+  }
 
-    // Auto-resume if paused (unless intentionally stopped via dashboard)
+  /** Auto-resume if paused (unless intentionally stopped via dashboard). */
+  private autoResumeIfPaused(hb: MpvHeartbeat) {
     if (hb.paused && !this.intentionallyStopped) {
       this.consecutivePausedHeartbeats++;
       if (this.consecutivePausedHeartbeats >= 2) {
@@ -569,8 +616,10 @@ export class RecoveryEngine {
     } else {
       this.consecutivePausedHeartbeats = 0;
     }
+  }
 
-    // Non-playing detection: mpv is connected but stuck in idle/buffering
+  /** Non-playing detection: mpv is connected but stuck in idle/buffering. */
+  private detectNonPlaying(hb: MpvHeartbeat, isPlaying: boolean, videoId: string) {
     if (isPlaying || hb.paused) {
       this.nonPlayingHeartbeats = 0;
     } else if (this.totalVideos > 0) {
@@ -603,6 +652,13 @@ export class RecoveryEngine {
         this.startRecoverySequence();
       }
     }
+  }
+
+  /** Don't treat the brief video-EOF burst at a video's natural end as a freeze
+   *  or fire a pointless proactive reload right before it. */
+  private isNearEndOfFile(hb: MpvHeartbeat): boolean {
+    return hb.duration > 0
+      && hb.duration - hb.timePos < RecoveryEngine.VIDEO_FREEZE_END_GUARD_SEC;
   }
 
   private sanitizeTitle(title: string): string {
