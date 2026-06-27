@@ -1103,7 +1103,7 @@ const EVENT_LEVELS = {
 };
 
 const PREVIEW_SAMPLE_VARS = {
-  error: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', errorCode: 150, attempt: 2 },
+  error: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', errorCode: 'HTTP error 403', attempt: 2 },
   skip: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', reason: 'Error 150 (unavailable/not embeddable)' },
   recovery: { step: 'refreshSource' },
   critical: { message: 'All recovery steps exhausted. Player may be unresponsive.' },
@@ -1254,7 +1254,7 @@ function updatePreview() {
   fieldsContainer.innerHTML = '';
   if (eventType === 'error') {
     const fieldData = [
-      { name: 'Error Code', value: String(vars.errorCode || '') },
+      { name: 'Reason', value: String(vars.errorCode || '') },
       { name: 'Video', value: `#${vars.videoIndex} (${vars.videoId})` },
       { name: 'Attempt', value: String(vars.attempt || '') },
     ];

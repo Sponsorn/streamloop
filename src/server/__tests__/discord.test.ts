@@ -193,7 +193,7 @@ describe('DiscordNotifier', () => {
       webhookUrl: 'https://discord.com/api/webhooks/test',
       events: { ...defaultDiscord.events, error: false },
     });
-    await notifier.notifyError(1, 'abc', 5, 1);
+    await notifier.notifyError(1, 'abc', 'loading failed', 1);
     await vi.advanceTimersByTimeAsync(60000);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -269,13 +269,13 @@ describe('DiscordNotifier', () => {
     );
     const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
     // notifyError uses warn level, need to flush manually
-    await notifier.notifyError(3, 'abc123', 150, 2);
+    await notifier.notifyError(3, 'abc123', 'HTTP error 403', 2);
     await vi.advanceTimersByTimeAsync(30000);
     const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
     expect(body.embeds[0].fields).toBeDefined();
     expect(body.embeds[0].fields).toHaveLength(3);
-    expect(body.embeds[0].fields[0].name).toBe('Error Code');
-    expect(body.embeds[0].fields[0].value).toBe('150');
+    expect(body.embeds[0].fields[0].name).toBe('Reason');
+    expect(body.embeds[0].fields[0].value).toBe('HTTP error 403');
   });
 
   it('includes structured fields on critical notification', async () => {

@@ -161,13 +161,15 @@ export class DiscordNotifier {
     }
   }
 
-  async notifyError(videoIndex: number, videoId: string, errorCode: number, attempt: number): Promise<void> {
+  async notifyError(videoIndex: number, videoId: string, reason: string, attempt: number): Promise<void> {
     if (!this.discord.events.error) return;
     const content = this.renderTemplate(this.discord.templates.error, {
-      videoIndex, videoId, errorCode, attempt,
+      // `errorCode` kept as a template var name for backwards compatibility
+      // with existing user templates; it now carries mpv's error string.
+      videoIndex, videoId, errorCode: reason, attempt,
     });
     const fields: EmbedField[] = [
-      { name: 'Error Code', value: String(errorCode), inline: true },
+      { name: 'Reason', value: reason, inline: true },
       { name: 'Video', value: `#${videoIndex} (\`${videoId}\`)`, inline: true },
       { name: 'Attempt', value: String(attempt), inline: true },
     ];
