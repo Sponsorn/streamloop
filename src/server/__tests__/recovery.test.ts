@@ -200,11 +200,75 @@ describe('RecoveryEngine', () => {
     // (would cause video 0 to attempt an impossible seek)
     expect(mpv.setProperty).not.toHaveBeenCalledWith('start', '+42');
 
-    // fileLoaded triggers: set start for the target video, then jump
+    // fileLoaded triggers: set start for the target video, then force a reload
+    // of the target index. reloadIndex (not jumpTo) so the seek still applies
+    // when playlist-start already left us sitting on the target index.
     mpv._emit('fileLoaded');
     await vi.advanceTimersByTimeAsync(0);
     expect(mpv.setProperty).toHaveBeenCalledWith('start', '+42');
-    expect(mpv.jumpTo).toHaveBeenCalledWith(5);
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(5);
+  });
+
+  it('sets playlist-start to the resume index before loading so mpv does not walk the playlist head', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5, currentTime: 42 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // playlist-start must be set, and before loadPlaylist, so mpv begins
+    // playback directly at the resume entry instead of resolving (and failing
+    // on) videos #0..#4 first.
+    expect(mpv.setProperty).toHaveBeenCalledWith('playlist-start', 5);
+    const startCallOrder = mpv.setProperty.mock.invocationCallOrder[
+      mpv.setProperty.mock.calls.findIndex(
+        (c: unknown[]) => c[0] === 'playlist-start',
+      )
+    ];
+    const loadCallOrder = mpv.loadPlaylist.mock.invocationCallOrder[0];
+    expect(startCallOrder).toBeLessThan(loadCallOrder);
+  });
+
+  it('still performs the resume jump when the first fileLoaded is delayed past the old 15s window', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 5, currentTime: 42 });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Simulate a slow/failing playlist head: the first successful fileLoaded
+    // only arrives after 30s of mpv cascading through dead videos #0..#4.
+    await vi.advanceTimersByTimeAsync(30000);
+    mpv._emit('fileLoaded');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The resume jump must NOT have been dropped — otherwise playback resumes
+    // on the wrong video at the wrong position.
+    expect(mpv.reloadIndex).toHaveBeenCalledWith(5);
+  });
+
+  it('includes the mpv failure reason in the playback-error event', async () => {
+    const mpv = mockMpv();
+    const state = mockState({ videoIndex: 7, videoId: 'abc123' });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), mockDiscord());
+    engine.start();
+
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A non-retryable playback failure carries mpv's file_error string.
+    // (Use one that doesn't match the URL-retry regex so it reaches the
+    // playback-error branch rather than the in-place retry path.)
+    mpv._emit('fileEnded', 'error', 'Unrecognized file format');
+    await vi.advanceTimersByTimeAsync(0);
+
+    const events = engine.getEvents();
+    const errorEvent = events.find((e) => e.message.includes('Playback error'));
+    expect(errorEvent?.message).toContain('Unrecognized file format');
   });
 
   it('discards resume position when currentTime exceeds known videoDuration', async () => {
@@ -348,7 +412,7 @@ describe('RecoveryEngine', () => {
     mpv._emit('fileEnded', 'error');
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(discord.notifyError).toHaveBeenCalledWith(2, 'v1', 0, 1);
+    expect(discord.notifyError).toHaveBeenCalledWith(2, 'v1', 'unknown', 1);
   });
 
   it('skips to next video after maxConsecutiveErrors file-ended errors', async () => {
@@ -452,7 +516,7 @@ describe('RecoveryEngine', () => {
     // Another error — should be count 1, not 2
     mpv._emit('fileEnded', 'error');
     await vi.advanceTimersByTimeAsync(0);
-    expect(discord.notifyError).toHaveBeenLastCalledWith(1, 'v1', 0, 1);
+    expect(discord.notifyError).toHaveBeenLastCalledWith(1, 'v1', 'unknown', 1);
   });
 
   describe('stall detection', () => {

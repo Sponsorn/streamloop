@@ -218,6 +218,17 @@ export class RecoveryEngine {
       await this.mpv.setProperty('start', `+${seekTime}`).catch(() => {});
     }
 
+    // Tell mpv to begin playback directly at the resume entry instead of the
+    // top of the playlist. Without this, mpv always starts at index 0 and
+    // resolves/plays videos #0..#jumpIndex-1 before the jump below fires —
+    // so when those head videos are failing (expired URLs, 403s) the viewer
+    // sees a burst of errors on every reload. Best-effort: if mpv doesn't
+    // honour playlist-start for an ytdl-resolved playlist it simply starts at
+    // 0 and the fileLoaded → reloadIndex fallback still lands on the target.
+    if (jumpIndex > 0) {
+      await this.mpv.setProperty('playlist-start', jumpIndex).catch(() => {});
+    }
+
     await this.mpv.loadPlaylist(url);
 
     // Jump to saved video index after playlist loads
@@ -230,13 +241,22 @@ export class RecoveryEngine {
             this.seekPending = true;
             await this.mpv.setProperty('start', `+${seekTime}`).catch(() => {});
           }
-          await this.mpv.jumpTo(jumpIndex);
+          // reloadIndex (playlist-play-index), not jumpTo (set playlist-pos):
+          // when playlist-start already left mpv sitting on the target index,
+          // a plain playlist-pos set is a no-op and the seek above would never
+          // be applied. reloadIndex forces the (re)load so the resume position
+          // takes effect in both cases.
+          await this.mpv.reloadIndex(jumpIndex);
         } catch { /* ignore */ }
       };
       this.mpv.on('fileLoaded', onFileLoaded);
+      // Generous teardown window: a slow or failing playlist head can take far
+      // longer than the first heartbeat to surface a successful fileLoaded.
+      // The old 15s window dropped the jump entirely when videos #0..#N were
+      // erroring (~5s each), silently resuming on the wrong video/position.
       setTimeout(() => {
         this.mpv.removeListener('fileLoaded', onFileLoaded);
-      }, 15000);
+      }, 120000);
     }
 
     // Clear start property after initial load so future videos start at 0
@@ -322,9 +342,12 @@ export class RecoveryEngine {
       }
       this.consecutiveErrors++;
       const { videoIndex, videoId } = this.state.get();
-      logger.error({ videoIndex, videoId, consecutiveErrors: this.consecutiveErrors }, 'mpv playback error');
-      this.addEvent(`Playback error on video #${videoIndex} (${videoId})`);
-      await this.discord.notifyError(videoIndex, videoId, 0, this.consecutiveErrors);
+      logger.error({ videoIndex, videoId, fileError, consecutiveErrors: this.consecutiveErrors }, 'mpv playback error');
+      // Surface mpv's file_error string so the events timeline / dashboard
+      // shows *why* a video failed instead of a bare "Playback error".
+      const reasonSuffix = fileError ? ` — ${fileError}` : '';
+      this.addEvent(`Playback error on video #${videoIndex} (${videoId})${reasonSuffix}`);
+      await this.discord.notifyError(videoIndex, videoId, fileError ?? 'unknown', this.consecutiveErrors);
       // mpv is actively cycling through videos — not stuck — so don't let
       // the non-playing counter escalate to a restart that would throw away
       // the skip progress and start the cycle over from position 0.
