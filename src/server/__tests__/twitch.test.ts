@@ -48,6 +48,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
     mpvExtraArgs: [],
     ytdlCookiesFromBrowser: '',
+    ytdlPlayerClient: '',
     ...overrides,
   };
 }

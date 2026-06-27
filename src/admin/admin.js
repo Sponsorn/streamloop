@@ -1341,6 +1341,7 @@ async function loadPlaybackSettings() {
     $('#pb-url-refresh').value = String(cfg.proactiveUrlRefreshMs ?? 19800000);
     $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
     $('#pb-ytdl-cookies').value = cfg.ytdlCookiesFromBrowser || '';
+    $('#pb-ytdl-player-client').value = cfg.ytdlPlayerClient ?? '';
     playbackSettingsLoaded = true;
   } catch (err) {
     console.error('Failed to load playback settings:', err);
@@ -1357,6 +1358,7 @@ async function handlePlaybackSave() {
     proactiveUrlRefreshMs: Number($('#pb-url-refresh').value),
     sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
     ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim(),
+    ytdlPlayerClient: $('#pb-ytdl-player-client').value.trim(),
   };
   try {
     btn.disabled = true;

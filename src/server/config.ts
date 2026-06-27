@@ -113,6 +113,13 @@ const configSchema = z.object({
   mpvYtdlFormat: z.string().default('bestvideo[height<=?1080]+bestaudio/best'),
   mpvExtraArgs: z.array(z.string()).default([]),
   ytdlCookiesFromBrowser: z.string().default(''),
+  // yt-dlp YouTube player_client override (single client, no commas). Passed to
+  // mpv as --extractor-args youtube:player_client=<value>. Defaults to
+  // `web_safari` because yt-dlp's own default (`tv`/TVHTML5) gets its stream
+  // URLs 403'd at the CDN without a GVS PO token, while web_safari's HLS path is
+  // still served (verified: tv→403, web_safari→206). Set to '' to fall back to
+  // yt-dlp's default client selection.
+  ytdlPlayerClient: z.string().default('web_safari'),
 });
 
 let resolvedConfigPath = '';

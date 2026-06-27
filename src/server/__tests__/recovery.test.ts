@@ -51,6 +51,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
     mpvExtraArgs: [],
     ytdlCookiesFromBrowser: '',
+    ytdlPlayerClient: '',
     ...overrides,
   };
 }
@@ -817,6 +818,17 @@ describe('shouldRetryUrl', () => {
 
   it('returns true on tls error string', () => {
     expect((engine as any).shouldRetryUrl('error', 'tls: IO error')).toBe(true);
+  });
+
+  it('returns true on "no audio or video data played" (CDN 403 reject)', () => {
+    // mpv surfaces a googlevideo 403 as this string, not "http"/"403" — yet
+    // re-resolving the URL often lands a working CDN host, so it must retry
+    // in place rather than burning a consecutive-error slot toward a skip.
+    expect((engine as any).shouldRetryUrl('error', 'no audio or video data played')).toBe(true);
+  });
+
+  it('returns true on explicit 403 forbidden error string', () => {
+    expect((engine as any).shouldRetryUrl('error', 'HTTP error 403 Forbidden')).toBe(true);
   });
 
   it('returns false on non-network error', () => {

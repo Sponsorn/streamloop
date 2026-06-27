@@ -71,6 +71,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
     mpvExtraArgs: [],
     ytdlCookiesFromBrowser: '',
+    ytdlPlayerClient: '',
     ...overrides,
   };
 }

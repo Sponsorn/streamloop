@@ -721,7 +721,11 @@ export class RecoveryEngine {
     }
 
     if (reason === 'error' && fileError) {
-      return /http|network|loading failed|tls|ssl/i.test(fileError);
+      // "no audio or video data played" is how mpv surfaces a googlevideo
+      // HTTP 403 (the CDN rejects a freshly-resolved signed URL — a YouTube
+      // anti-bot wave, not a dead video). Re-resolving in place often lands a
+      // working CDN host/client, so treat it as retryable instead of skipping.
+      return /http|network|loading failed|tls|ssl|forbidden|no (audio or video|video or audio)/i.test(fileError);
     }
 
     return false;

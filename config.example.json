@@ -56,5 +56,6 @@
   "twitchChannel": "",
   "twitchLivenessEnabled": false,
   "twitchPollIntervalMs": 60000,
-  "ytdlCookiesFromBrowser": ""
+  "ytdlCookiesFromBrowser": "",
+  "ytdlPlayerClient": "web_safari"
 }

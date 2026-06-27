@@ -123,6 +123,7 @@ export interface AppConfig {
   mpvYtdlFormat: string;
   mpvExtraArgs: string[];
   ytdlCookiesFromBrowser: string;
+  ytdlPlayerClient: string;
 }
 
 // --- Event log ---

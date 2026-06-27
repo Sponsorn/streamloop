@@ -61,6 +61,7 @@ describe('loadConfig', () => {
     expect(cfg.recoveryDelayMs).toBe(5000);
     expect(cfg.discord.webhookUrl).toBe('');
     expect(cfg.obsWebsocketPassword).toBe('');
+    expect(cfg.ytdlPlayerClient).toBe('web_safari');
   });
 
   it('throws on missing required fields', () => {

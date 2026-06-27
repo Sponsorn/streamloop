@@ -17,7 +17,7 @@ function makeConfig(): AppConfig {
     outputCheckEnabled: true, outputFreezeWindowMs: 30000, proactiveUrlRefreshMs: 19800000,
     sourceRefreshIntervalMs: 0, twitchClientId: '', twitchClientSecret: '', twitchChannel: '',
     twitchLivenessEnabled: false, twitchPollIntervalMs: 60000, mpvGeometry: '1920x1080+0+0',
-    mpvYtdlFormat: 'best', mpvExtraArgs: [], ytdlCookiesFromBrowser: '',
+    mpvYtdlFormat: 'best', mpvExtraArgs: [], ytdlCookiesFromBrowser: '', ytdlPlayerClient: '',
   };
 }
 

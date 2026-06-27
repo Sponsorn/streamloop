@@ -9,6 +9,7 @@ import { loadConfig, isFirstRun } from './config.js';
 import { logger } from './logger.js';
 import { StateManager } from './state.js';
 import { MpvClient } from './mpv-client.js';
+import { buildMpvArgs } from './mpv-args.js';
 import { PlaylistMetadataCache } from './playlist-metadata.js';
 import { OBSClient } from './obs-client.js';
 import { DiscordNotifier } from './discord.js';
@@ -64,21 +65,7 @@ async function main() {
   const logsDir = resolve(projectRoot, 'logs');
   const eventStore = new EventStore({ dir: logsDir });
 
-  const mpvArgs = [
-    '--no-border',
-    '--no-osc',
-    '--osd-level=0',
-    `--geometry=${config.mpvGeometry}`,
-    '--hwdec=auto',
-    `--ytdl-format=${config.mpvYtdlFormat}`,
-    '--loop-playlist=inf',
-    '--ytdl-raw-options=yes-playlist=,js-runtimes=node',
-    `--script-opts=ytdl_hook-ytdl_path=${ytdlpPath}`,
-  ];
-  if (config.ytdlCookiesFromBrowser) {
-    mpvArgs.push(`--ytdl-raw-options-append=cookies-from-browser=${config.ytdlCookiesFromBrowser}`);
-  }
-  mpvArgs.push(...config.mpvExtraArgs);
+  const mpvArgs = buildMpvArgs(config, ytdlpPath);
 
   const mpv = new MpvClient({
     mpvPath,

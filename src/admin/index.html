@@ -413,6 +413,11 @@
               <input type="text" id="pb-ytdl-cookies" class="wh-preview-select" placeholder="e.g. brave, chrome, firefox, chrome:Profile 2">
               <div class="hint">Pass a logged-in session to yt-dlp to avoid "Sign in to confirm you're not a bot" errors. Leave blank to disable. Browser profile optional (after a colon). Requires server restart to take effect.</div>
             </div>
+            <div class="form-group">
+              <label for="pb-ytdl-player-client">yt-dlp player client</label>
+              <input type="text" id="pb-ytdl-player-client" class="wh-preview-select" placeholder="e.g. web_safari (default), tv, mweb">
+              <div class="hint">Which YouTube client yt-dlp uses to resolve streams. Default <code>web_safari</code> avoids the HTTP 403 ("no audio or video data played") that the default <code>tv</code> client now hits without a PO token. Single client only (no commas). Leave blank for yt-dlp's own default. Requires server restart to take effect.</div>
+            </div>
           </div>
         </div>
         <button type="button" id="pb-save-btn" class="btn btn-primary" style="margin-top: 20px;">Save Playback Settings</button>
