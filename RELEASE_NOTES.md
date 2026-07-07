@@ -1,3 +1,9 @@
+## v2.3.4
+
+- **Player client is now a multi-client fallback list, default `tv,web_safari` — fixes the "unrecognized file format" skips.** YouTube's per-client stream availability keeps shifting: on June 27 the `tv` client 403'd every video (so 2.3.2 switched the default to `web_safari`), but by July 7 `web_safari` had started returning *only* thumbnails ("Requested format is not available" → "unrecognized file format" → skip) for older VODs, while `tv` worked again. Pinning any single client just moves the breakage around. `ytdlPlayerClient` now accepts a **comma-separated list** that yt-dlp tries in order, merging formats, so if one client goes thin or gets CDN-403'd for a given video the other covers it (verified end-to-end that mpv passes the comma through to yt-dlp intact, and that `tv,web_safari` serves videos that `tv` alone 403s). The default is `tv,web_safari`; the dashboard field and `config.example.json` are updated to match. An explicitly-set value is preserved on update, and `''` still falls back to yt-dlp's own default selection.
+
+---
+
 ## v2.3.3
 
 - **Fixed auto-update silently failing to apply (server had to be updated by hand).** Every update exited cleanly and the server restarted — but on the *old* app, leaving `_update_tmp` full, because `START.bat`'s `rename app _update_old` failed with "the process cannot access the file because it is being used by another process." Root cause: mpv is spawned with no working directory, so it (and the `yt-dlp.exe` → `node.exe` n-param challenge solver it launches) inherits `cwd = app\`. On shutdown the server called `proc.kill()`, which on Windows terminates **only mpv.exe** and orphans those `node` grandchildren — and since they hold `app\` as their working directory, the directory stays locked and the swap can never rename it. `mpv.stop()` now kills the **entire process tree** (`taskkill /T` on Windows) so no descendants survive to lock `app\`, and the update swap completes on its own.

@@ -415,8 +415,8 @@
             </div>
             <div class="form-group">
               <label for="pb-ytdl-player-client">yt-dlp player client</label>
-              <input type="text" id="pb-ytdl-player-client" class="wh-preview-select" placeholder="e.g. web_safari (default), tv, mweb">
-              <div class="hint">Which YouTube client yt-dlp uses to resolve streams. Default <code>web_safari</code> avoids the HTTP 403 ("no audio or video data played") that the default <code>tv</code> client now hits without a PO token. Single client only (no commas). Leave blank for yt-dlp's own default. Requires server restart to take effect.</div>
+              <input type="text" id="pb-ytdl-player-client" class="wh-preview-select" placeholder="e.g. tv,web_safari (default)">
+              <div class="hint">Which YouTube client(s) yt-dlp uses to resolve streams. Accepts a comma-separated fallback list — yt-dlp tries each in order and merges formats, so if one client gets a 403 or returns no usable formats for a video, the next one covers it. Default <code>tv,web_safari</code>. Leave blank for yt-dlp's own default. Requires server restart to take effect.</div>
             </div>
           </div>
         </div>
