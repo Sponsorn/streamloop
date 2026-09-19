@@ -273,6 +273,28 @@ describe('RecoveryEngine', () => {
     expect(errorEvent?.message).toContain('Unrecognized file format');
   });
 
+  it('reports a yt-dlp bot check as a cookies problem instead of mpv\'s format error', async () => {
+    // Arrange
+    const mpv = mockMpv();
+    const discord = mockDiscord();
+    const state = mockState({ videoIndex: 7, videoId: 'abc123' });
+    const engine = new RecoveryEngine(makeConfig(), mpv as unknown as MpvClient, state, mockObs(), discord);
+    engine.start();
+    mpv._emit('connected');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Act
+    mpv._emit('fileEnded', 'error', 'Unrecognized file format',
+      "ERROR: [youtube] abc123: Sign in to confirm you're not a bot. Use --cookies-from-browser");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Assert
+    const errorEvent = engine.getEvents().find((e) => e.message.includes('Playback error'));
+    expect(errorEvent?.message).toContain('YouTube bot check');
+    expect(errorEvent?.message).not.toContain('Unrecognized file format');
+    expect(discord.notifyError).toHaveBeenCalledWith(7, 'abc123', expect.stringContaining('cookies'), 1);
+  });
+
   it('discards resume position when currentTime exceeds known videoDuration', async () => {
     const mpv = mockMpv();
     // Simulates the corruption case: state carries a currentTime that fit

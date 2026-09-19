@@ -23,6 +23,15 @@ function getSystemMemory() {
   };
 }
 
+/** Name the real cause of a yt-dlp failure. The bot check means yt-dlp has no
+ *  logged-in YouTube cookies, which no format or client change fixes. */
+function describeYtdlError(ytdlError: string | undefined): string | undefined {
+  if (ytdlError && /sign in to confirm you.re not a bot/i.test(ytdlError)) {
+    return 'YouTube bot check: yt-dlp has no logged-in YouTube cookies (check the browser set in ytdlCookiesFromBrowser)';
+  }
+  return ytdlError;
+}
+
 const MAX_EVENT_LOG = 100;
 
 export class RecoveryEngine {
@@ -86,7 +95,7 @@ export class RecoveryEngine {
   // Bound handlers so we can remove them from mpv EventEmitter
   private boundOnConnect = () => this.onMpvConnect();
   private boundOnDisconnect = () => this.onMpvDisconnect();
-  private boundOnFileEnded = (reason: string, fileError?: string) => this.onFileEnded(reason, fileError);
+  private boundOnFileEnded = (reason: string, fileError?: string, ytdlError?: string) => this.onFileEnded(reason, fileError, ytdlError);
   private boundOnProcessExit = () => this.onProcessExit();
   private boundOnFileLoaded = () => { this.urlResolvedAt = performance.now(); };
 
@@ -308,7 +317,7 @@ export class RecoveryEngine {
     // Heartbeat poll will detect timeout and trigger recovery
   }
 
-  private async onFileEnded(reason: string, fileError?: string) {
+  private async onFileEnded(reason: string, fileError?: string, ytdlError?: string) {
     // In-place URL retry for premature EOF / network errors.
     // Runs before the existing error/eof handling so a signed-URL
     // expiry doesn't burn a consecutiveErrors slot or get skipped.
@@ -349,12 +358,13 @@ export class RecoveryEngine {
       }
       this.consecutiveErrors++;
       const { videoIndex, videoId } = this.state.get();
-      logger.error({ videoIndex, videoId, fileError, consecutiveErrors: this.consecutiveErrors }, 'mpv playback error');
-      // Surface mpv's file_error string so the events timeline / dashboard
-      // shows *why* a video failed instead of a bare "Playback error".
-      const reasonSuffix = fileError ? ` — ${fileError}` : '';
+      logger.error({ videoIndex, videoId, fileError, ytdlError, consecutiveErrors: this.consecutiveErrors }, 'mpv playback error');
+      // Show why the video failed. yt-dlp's error wins: when extraction fails,
+      // mpv's file_error is a misleading "Unrecognized file format".
+      const cause = describeYtdlError(ytdlError) ?? fileError;
+      const reasonSuffix = cause ? ` — ${cause}` : '';
       this.addEvent(`Playback error on video #${videoIndex} (${videoId})${reasonSuffix}`);
-      await this.discord.notifyError(videoIndex, videoId, fileError ?? 'unknown', this.consecutiveErrors);
+      await this.discord.notifyError(videoIndex, videoId, cause ?? 'unknown', this.consecutiveErrors);
       // mpv is actively cycling through videos — not stuck — so don't let
       // the non-playing counter escalate to a restart that would throw away
       // the skip progress and start the cycle over from position 0.

@@ -77,7 +77,7 @@ export function treeKillCommand(
  *  - connected
  *  - disconnected
  *  - fileStarted
- *  - fileEnded(reason: string, fileError?: string)
+ *  - fileEnded(reason: string, fileError?: string, ytdlError?: string)
  *  - fileLoaded
  *  - shutdown
  *  - propertyChange(name: string, data: unknown)
@@ -100,6 +100,9 @@ export class MpvClient extends EventEmitter {
   private connected = false;
   private buffer = '';
   private requestId = 0;
+  /** yt-dlp's own `ERROR:` line for the file being loaded. mpv's file_error
+   *  for a failed extraction is a generic "Unrecognized file format". */
+  private ytdlError: string | undefined;
   private pending = new Map<number, PendingCommand>();
 
   constructor(options: MpvClientOptions = {}) {
@@ -424,6 +427,9 @@ export class MpvClient extends EventEmitter {
           }
         });
 
+        // mpv sends log-message events (yt-dlp errors, see handleEvent) only once asked.
+        this.command('request_log_messages', 'error').catch(() => {});
+
         logger.info({ pipePath: this.pipePath }, 'Connected to mpv IPC');
         this.emit('connected');
         resolve();
@@ -474,10 +480,19 @@ export class MpvClient extends EventEmitter {
   private handleEvent(msg: any): void {
     switch (msg.event) {
       case 'start-file':
+        this.ytdlError = undefined;
         this.emit('fileStarted');
         break;
       case 'end-file':
-        this.emit('fileEnded', msg.reason ?? 'unknown', msg.file_error);
+        this.emit('fileEnded', msg.reason ?? 'unknown', msg.file_error, this.ytdlError);
+        this.ytdlError = undefined;
+        break;
+      case 'log-message':
+        // ytdl_hook relays yt-dlp's stderr at error level, then adds its own
+        // "youtube-dl failed" line, which says nothing about the cause.
+        if (msg.prefix === 'ytdl_hook' && typeof msg.text === 'string' && msg.text.startsWith('ERROR:')) {
+          this.ytdlError = msg.text.trim();
+        }
         break;
       case 'file-loaded':
         this.emit('fileLoaded');

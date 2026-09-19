@@ -94,20 +94,30 @@ describe('MpvClient', () => {
   function readLine(socket: net.Socket, timeout = 3000): Promise<object> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Timed out waiting for data')), timeout);
-      let buffer = '';
-      const onData = (chunk: Buffer) => {
-        buffer += chunk.toString();
-        const newlineIdx = buffer.indexOf('\n');
-        if (newlineIdx !== -1) {
+      const onData = (chunk?: Buffer) => {
+        let buffer = (unread.get(socket) ?? '') + (chunk?.toString() ?? '');
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+          const msg = JSON.parse(buffer.slice(0, newlineIdx));
+          buffer = buffer.slice(newlineIdx + 1);
+          // The client subscribes to log messages on connect; tests want
+          // the command they sent.
+          if (msg.command?.[0] === 'request_log_messages') continue;
           clearTimeout(timer);
           socket.off('data', onData);
-          const line = buffer.slice(0, newlineIdx);
-          resolve(JSON.parse(line));
+          unread.set(socket, buffer);
+          resolve(msg);
+          return;
         }
+        unread.set(socket, buffer);
       };
       socket.on('data', onData);
+      onData();
     });
   }
+
+  /** Lines that arrived in the same chunk as one readLine already returned. */
+  const unread = new WeakMap<net.Socket, string>();
 
   describe('connect', () => {
     it('should connect to the named pipe and emit connected', async () => {
@@ -229,6 +239,25 @@ describe('MpvClient', () => {
       const [reason, fileError] = await eventPromise;
       expect(reason).toBe('error');
       expect(fileError).toBe('loading failed');
+    });
+
+    it('passes the yt-dlp error logged for the current file along with fileEnded', async () => {
+      // Arrange
+      const c = createClient();
+      await c.connect();
+      const sock = await waitForServerConnection();
+      const eventPromise = new Promise<unknown[]>((resolve) => {
+        c.on('fileEnded', (...args: unknown[]) => resolve(args));
+      });
+
+      // Act
+      serverSend(sock, { event: 'start-file' });
+      serverSend(sock, { event: 'log-message', prefix: 'ytdl_hook', level: 'error', text: 'ERROR: [youtube] x: Sign in to confirm\n' });
+      serverSend(sock, { event: 'log-message', prefix: 'ytdl_hook', level: 'error', text: 'youtube-dl failed: unexpected error occurred\n' });
+      serverSend(sock, { event: 'end-file', reason: 'error', file_error: 'Unrecognized file format' });
+
+      // Assert
+      expect(await eventPromise).toEqual(['error', 'Unrecognized file format', 'ERROR: [youtube] x: Sign in to confirm']);
     });
 
     it('should emit fileEnded with undefined file_error when not present', async () => {
