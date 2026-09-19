@@ -258,7 +258,7 @@ async function main() {
     logger.info(`Admin URL: ${adminUrl}`);
 
     // Auto-open browser to admin dashboard
-    if (process.platform === 'win32') {
+    if (config.autoOpenAdmin && process.platform === 'win32') {
       exec(`start "" "${adminUrl}"`);
     }
   });

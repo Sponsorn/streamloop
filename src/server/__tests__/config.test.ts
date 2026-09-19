@@ -91,6 +91,21 @@ describe('loadConfig', () => {
     expect(cfg.outputFreezeWindowMs).toBe(30000);
   });
 
+  it('opens the admin panel on boot unless autoOpenAdmin is false', () => {
+    // Arrange
+    const base = { playlists: [{ id: 'PL1' }], obsBrowserSourceName: 'Source' };
+
+    // Act
+    writeFileSync(tmpConfig, JSON.stringify(base));
+    const byDefault = loadConfig(tmpConfig);
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, autoOpenAdmin: false }));
+    const disabled = loadConfig(tmpConfig);
+
+    // Assert
+    expect(byDefault.autoOpenAdmin).toBe(true);
+    expect(disabled.autoOpenAdmin).toBe(false);
+  });
+
   it('accepts ytdlCookiesFromBrowser string and defaults to empty', () => {
     writeFileSync(tmpConfig, JSON.stringify({
       playlists: [{ id: 'PL1' }],

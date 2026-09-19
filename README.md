@@ -78,6 +78,7 @@ Open `http://localhost:7654/admin` to monitor player status, review recovery eve
 | `sourceRefreshIntervalMs` | `1800000` (30m) | Periodic proactive mpv restart to curb memory growth; `0` disables |
 | `twitchLivenessEnabled` | `false` | Cross-check Twitch liveness (needs `twitchClientId`/`Secret`/`Channel`) |
 | `autoUpdateCheck` | `true` | Periodically check GitHub Releases for updates |
+| `autoOpenAdmin` | `true` | Open the admin dashboard in the default browser on start; `false` skips it |
 | `mpvYtdlFormat` | `bestvideo[height<=?1080]+bestaudio/best` | yt-dlp format string passed to mpv |
 | `ytdlCookiesFromBrowser` | `""` | Browser name to pull cookies from (for age/region-gated videos) |
 

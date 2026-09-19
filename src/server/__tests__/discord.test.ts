@@ -60,6 +60,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     obsPath: '',
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
+    autoOpenAdmin: true,
     updateCheckIntervalMs: 21600000,
     sourceRefreshIntervalMs: 0,
     twitchClientId: '',

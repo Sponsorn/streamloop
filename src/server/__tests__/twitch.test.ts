@@ -37,6 +37,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     obsPath: '',
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
+    autoOpenAdmin: true,
     updateCheckIntervalMs: 21600000,
     sourceRefreshIntervalMs: 0,
     twitchClientId: 'test-client-id',

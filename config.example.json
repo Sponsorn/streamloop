@@ -51,6 +51,7 @@
   "autoUpdateCheck": true,
   "updateCheckIntervalMs": 21600000,
   "autoUpdateYtdlp": true,
+  "autoOpenAdmin": true,
   "twitchClientId": "",
   "twitchClientSecret": "",
   "twitchChannel": "",

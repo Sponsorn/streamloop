@@ -103,6 +103,7 @@ const configSchema = z.object({
   autoUpdateCheck: z.boolean().default(true),
   updateCheckIntervalMs: z.number().int().positive().default(21600000),
   autoUpdateYtdlp: z.boolean().default(true),
+  autoOpenAdmin: z.boolean().default(true),
   sourceRefreshIntervalMs: z.number().int().min(0).default(1800000),
   twitchClientId: z.string().default(''),
   twitchClientSecret: z.string().default(''),
