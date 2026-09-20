@@ -4,6 +4,8 @@ use tauri::{Url, WebviewUrl, WebviewWindowBuilder};
 
 const BACKEND_PORT: u16 = 7654;
 
+// `tauri dev` serves ui/ from 127.0.0.1:1430, which this guard blocks on purpose;
+// run the built exe instead of loosening the guard.
 /// The window may show the bundled fallback page and the local backend, nothing else.
 fn is_allowed(url: &Url) -> bool {
     match (url.scheme(), url.host_str()) {
