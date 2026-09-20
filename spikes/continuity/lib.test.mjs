@@ -37,6 +37,14 @@ describe('encoder arguments', () => {
     expect(args.filter((a) => a === '-map')).toHaveLength(2);
   });
 
+  it('corrects audio drift at every seam instead of waiting for 100 ms to build up', () => {
+    // Each seam adds up to one 24 ms audio frame of overlap. With ffmpeg's default
+    // min_hard_comp of 0.1 the A/V offset saw-tooths from 10 to 90 ms across seams.
+    const args = encoderArgs('x');
+
+    expect(args[args.indexOf('-af') + 1]).toBe('aresample=async=1:min_hard_comp=0.01');
+  });
+
   it('switches the video encoder to NVENC on request', () => {
     expect(encoderArgs('x', { codec: 'h264_nvenc' })).toContain('h264_nvenc');
   });
@@ -158,7 +166,7 @@ describe('delivery lag', () => {
 describe('verdict', () => {
   const good = {
     backwards: 0, readerDisconnects: 0, encoderExitedEarly: false, maxRiseMs: 180,
-    overallSpeed: 1.0004, avFirstMs: 12, avLastMs: 31,
+    overallSpeed: 1.0004, avFirstMs: 12, avLastMs: 31, avFirstMaxMs: 24, avLastMaxMs: 40,
   };
 
   it('passes a clean run', () => {
@@ -172,7 +180,11 @@ describe('verdict', () => {
     expect(verdict({ ...good, encoderExitedEarly: true }).pass).toBe(false);
   });
 
+  it('fails when the worst offset in a segment is over 100 ms even though the median is fine', () => {
+    expect(verdict({ ...good, avLastMaxMs: 114 }).avInSync).toBe(false);
+  });
+
   it('fails when the A/V offset could not be measured at all', () => {
-    expect(verdict({ ...good, avFirstMs: NaN, avLastMs: NaN }).pass).toBe(false);
+    expect(verdict({ ...good, avFirstMs: NaN, avLastMs: NaN, avFirstMaxMs: NaN, avLastMaxMs: NaN }).pass).toBe(false);
   });
 });

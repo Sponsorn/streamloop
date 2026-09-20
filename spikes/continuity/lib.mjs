@@ -49,7 +49,9 @@ export function encoderArgs(target, { codec = 'libx264', tee = false } = {}) {
     '-re', '-f', 'mpegts', '-i', 'pipe:0',
     ...video,
     '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k', '-g', '60', '-pix_fmt', 'yuv420p',
-    '-af', 'aresample=async=1', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000',
+    // Each seam overlaps audio by up to one 24 ms frame. The default min_hard_comp of 0.1 lets
+    // that build to 100 ms before correcting; 0.01 trims it at the seam, where a cut is inaudible.
+    '-af', 'aresample=async=1:min_hard_comp=0.01', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000',
     ...(tee
       ? ['-map', '0:v', '-map', '0:a', '-flags', '+global_header', '-f', 'tee', target]
       : ['-f', 'flv', target]),
@@ -127,7 +129,8 @@ export function verdict(m) {
     encoderStayed: !m.encoderExitedEarly,
     seamLag: m.maxRiseMs < 500,
     speed: m.overallSpeed >= 0.99 && m.overallSpeed <= 1.01,
-    avInSync: Math.abs(m.avFirstMs) < 100 && Math.abs(m.avLastMs) < 100,
+    // The worst second, not the median: drift that builds over seams and snaps back hides in a median.
+    avInSync: m.avFirstMaxMs < 100 && m.avLastMaxMs < 100,
     avStable: Math.abs(m.avLastMs - m.avFirstMs) <= 50,
   };
   return { ...result, pass: Object.values(result).every(Boolean) };
