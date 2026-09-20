@@ -1,3 +1,13 @@
+## v2.3.5
+
+- **Playback errors now show yt-dlp's real error instead of "unrecognized file format".** When yt-dlp fails to extract a video, mpv tries to open the YouTube watch page as media and reports a generic "unrecognized file format", so every extraction failure looked like a format problem. The server now subscribes to mpv's error-level log messages over IPC, keeps yt-dlp's own `ERROR:` line for the file being loaded, and shows that line in the playback-error event and the Discord alert.
+  - **The YouTube bot check is named as a cookies problem.** "Sign in to confirm you're not a bot" is reported as "YouTube bot check: yt-dlp has no logged-in YouTube cookies (check the browser set in ytdlCookiesFromBrowser)". The usual cause is the cookie browser being logged out of YouTube; no format or player-client change fixes it.
+  - Recovery behaviour is unchanged: the same retry and skip rules apply, only the reported cause is different.
+- **New `autoOpenAdmin` config option (default `true`).** Set it to `false` to stop the server opening the admin dashboard in the default browser on every start. On a streaming box that saves the 500-700 MB a browser uses for that one tab; the dashboard is still reachable at `http://localhost:7654/admin` whenever you want it. Set it in `config.json`; there is no dashboard toggle yet.
+- **Internal:** the repo gains `shell/`, an experimental Tauri window for the dashboard plus a memory measurement script. It is not part of either release ZIP and nothing in the app uses it.
+
+---
+
 ## v2.3.4
 
 - **Player client is now a multi-client fallback list, default `tv,web_safari` — fixes the "unrecognized file format" skips.** YouTube's per-client stream availability keeps shifting: on June 27 the `tv` client 403'd every video (so 2.3.2 switched the default to `web_safari`), but by July 7 `web_safari` had started returning *only* thumbnails ("Requested format is not available" → "unrecognized file format" → skip) for older VODs, while `tv` worked again. Pinning any single client just moves the breakage around. `ytdlPlayerClient` now accepts a **comma-separated list** that yt-dlp tries in order, merging formats, so if one client goes thin or gets CDN-403'd for a given video the other covers it (verified end-to-end that mpv passes the comma through to yt-dlp intact, and that `tv,web_safari` serves videos that `tv` alone 403s). The default is `tv,web_safari`; the dashboard field and `config.example.json` are updated to match. An explicitly-set value is preserved on update, and `''` still falls back to yt-dlp's own default selection.
