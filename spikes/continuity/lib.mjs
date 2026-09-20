@@ -15,11 +15,12 @@ export const CLIPS = [
 // Same formats, 13 s per cycle: a 2 h run sees about as many seams as a day of CLIPS.
 export const SHORT_CLIPS = CLIPS.map((clip, i) => ({ ...clip, name: `${clip.name}-short`, seconds: [6, 4, 3][i] }));
 
-/** A flash and a 1 kHz beep in the first 100 ms of every second, so A/V sync is measurable. */
+/** A flash and a 1 kHz beep in the first 100 ms of every second, so A/V sync is measurable.
+ *  The noise makes the encoder spend its bitrate; flat colour compresses to 60 kbit/s. */
 export function inputArgs(clip, outFile) {
   return [
     '-v', 'error', '-y',
-    '-f', 'lavfi', '-i', `color=c=${clip.color}:s=${clip.size}:r=${clip.rate},drawbox=c=white:t=fill:enable='lt(mod(t,1),0.1)'`,
+    '-f', 'lavfi', '-i', `color=c=${clip.color}:s=${clip.size}:r=${clip.rate},noise=alls=30:allf=t+u,drawbox=c=white:t=fill:enable='lt(mod(t,1),0.1)'`,
     '-f', 'lavfi', '-i', `aevalsrc='0.5*sin(2*PI*1000*t)*lt(mod(t,1),0.1)':s=${clip.sampleRate}`,
     '-t', String(clip.seconds), '-ac', String(clip.channels),
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k',
