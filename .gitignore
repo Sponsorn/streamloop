@@ -14,3 +14,6 @@ RELEASE_NOTES.md
 review_v1.md
 shell/src-tauri/target/
 shell/src-tauri/gen/
+spikes/continuity/media/
+spikes/continuity/rec/
+spikes/continuity/tools/
