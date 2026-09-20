@@ -71,9 +71,9 @@ if (mode === 'watch') {
   const rows = readFileSync('logs/encoder.csv', 'utf8').trim().split(/\r?\n/)
     .map((l) => l.split(',')).map(([wallMs, mediaUs]) => ({ wallMs: Number(wallMs), mediaUs: Number(mediaUs) }));
   // The reader always loses the stream when the run ends on purpose; only earlier losses count.
-  // Segments under 30 MB (about a minute at 4 Mbit/s) are run tails with too few seams to judge.
   const endedAt = run.endedAt ?? Date.now();
   const disconnects = events.filter(([iso, type]) => type === 'disconnect' && Date.parse(iso) < endedAt - 5000).length;
+  // Segments under 30 MB (about a minute at 4 Mbit/s) are run tails with too few seams to judge.
   const segments = existsSync('rec')
     ? readdirSync('rec').filter((f) => f.endsWith('.mkv')).sort().map((f) => `rec/${f}`).filter((f) => statSync(f).size > 30_000_000) : [];
   const first = segments.length ? avsync(segments[0]) : { medianMs: NaN, maxAbsMs: NaN };
