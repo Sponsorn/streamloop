@@ -3,8 +3,30 @@
 <head>
 <meta charset="utf-8">
 <title>StreamLoop</title>
+<style>
+  body { margin: 0; height: 100vh; display: grid; place-items: center; background: #14161a; color: #d7dae0; font: 16px "Segoe UI", sans-serif; text-align: center; }
+  p { color: #8b919c; }
+</style>
 </head>
 <body>
-<h1>StreamLoop backend is not running</h1>
+<main>
+  <h1>StreamLoop backend is not running</h1>
+  <p>Start it with START.bat. This window switches to the dashboard when the backend is up.</p>
+</main>
+<script>
+  // Must match BACKEND_PORT in src-tauri/src/main.rs.
+  const BACKEND = 'http://127.0.0.1:7654';
+
+  // no-cors: the response is unreadable, but the fetch only resolves when something listens on the port.
+  async function probe() {
+    try {
+      await fetch(BACKEND + '/', { mode: 'no-cors', cache: 'no-store' });
+      location.replace(BACKEND + '/admin');
+    } catch {
+      setTimeout(probe, 2000);
+    }
+  }
+  probe();
+</script>
 </body>
 </html>
