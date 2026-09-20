@@ -19,8 +19,9 @@ const rtmpUp = () => new Promise((resolve) => {
 
 let mediamtx = null;
 if (!(await rtmpUp())) {
-  if (!existsSync('tools/mediamtx.exe')) { console.error('Nothing listens on :1935 and tools/mediamtx.exe is missing.'); process.exit(2); }
-  mediamtx = spawn('tools/mediamtx.exe', [], { cwd: 'tools', stdio: 'ignore' });
+  const toolsDir = ['tools', '../tools'].find((dir) => existsSync(`${dir}/mediamtx.exe`));
+  if (!toolsDir) { console.error('Nothing listens on :1935 and mediamtx.exe is in neither tools/ nor ../tools/.'); process.exit(2); }
+  mediamtx = spawn(`${toolsDir}/mediamtx.exe`, [], { cwd: toolsDir, stdio: 'ignore' });
   await sleep(3000);
   if (!(await rtmpUp())) { console.error('MediaMTX did not open :1935.'); process.exit(2); }
 }
