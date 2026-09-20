@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { logger } from './logger.js';
+import { SPAWN_CWD } from './spawn-cwd.js';
 
 export interface MpvClientOptions {
   mpvPath?: string;
@@ -302,6 +303,7 @@ export class MpvClient extends EventEmitter {
     logger.info({ mpvPath: this.mpvPath, args }, 'Spawning mpv');
 
     this.process = spawn(this.mpvPath, args, {
+      cwd: SPAWN_CWD,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: false,
     });
@@ -385,7 +387,7 @@ export class MpvClient extends EventEmitter {
     const tk = pid != null ? treeKillCommand(pid) : null;
     if (tk) {
       try {
-        spawn(tk.cmd, tk.args, { stdio: 'ignore' });
+        spawn(tk.cmd, tk.args, { cwd: SPAWN_CWD, stdio: 'ignore' });
         return;
       } catch (err) {
         logger.warn({ err, pid }, 'taskkill tree-kill failed, falling back to signal');

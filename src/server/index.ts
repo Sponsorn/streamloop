@@ -19,6 +19,7 @@ import { Updater } from './updater.js';
 import { TwitchLivenessChecker } from './twitch.js';
 import { EventStore } from './event-store.js';
 import { updateYtdlp } from './ytdlp-updater.js';
+import { SPAWN_CWD } from './spawn-cwd.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -259,7 +260,7 @@ async function main() {
 
     // Auto-open browser to admin dashboard
     if (config.autoOpenAdmin && process.platform === 'win32') {
-      exec(`start "" "${adminUrl}"`);
+      exec(`start "" "${adminUrl}"`, { cwd: SPAWN_CWD });
     }
   });
 

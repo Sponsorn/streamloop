@@ -1,6 +1,7 @@
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import { logger } from './logger.js';
+import { SPAWN_CWD } from './spawn-cwd.js';
 
 const execFile = promisify(execFileCb);
 
@@ -110,7 +111,7 @@ export class PlaylistMetadataCache {
     const { stdout } = await execFile(
       this.ytdlpPath,
       this.buildArgv(playlistId),
-      { maxBuffer: 50 * 1024 * 1024, timeout: 120_000 },
+      { cwd: SPAWN_CWD, maxBuffer: 50 * 1024 * 1024, timeout: 120_000 },
     );
 
     const videos = parsePlaylistOutput(stdout);

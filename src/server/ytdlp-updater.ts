@@ -1,6 +1,7 @@
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
 import { existsSync } from 'fs';
+import { SPAWN_CWD } from './spawn-cwd.js';
 
 const execFile = promisify(execFileCb);
 
@@ -13,7 +14,7 @@ export interface YtdlpUpdateResult {
 type ExecFn = (
   file: string,
   args: string[],
-  opts: { timeout: number },
+  opts: { cwd: string; timeout: number },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 interface UpdateOptions {
@@ -41,8 +42,8 @@ export async function updateYtdlp(
   }
 
   try {
-    await exec(ytdlpPath, ['-U'], { timeout: 120_000 });
-    const { stdout } = await exec(ytdlpPath, ['--version'], { timeout: 10_000 });
+    await exec(ytdlpPath, ['-U'], { cwd: SPAWN_CWD, timeout: 120_000 });
+    const { stdout } = await exec(ytdlpPath, ['--version'], { cwd: SPAWN_CWD, timeout: 10_000 });
     return { ok: true, version: stdout.trim() };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

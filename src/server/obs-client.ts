@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'path';
 import OBSWebSocket from 'obs-websocket-js';
 import type { AppConfig } from './types.js';
 import { logger } from './logger.js';
+import { SPAWN_CWD } from './spawn-cwd.js';
 
 const DEFAULT_OBS_PATHS = [
   'C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe',
@@ -115,7 +116,7 @@ export class OBSClient {
 
     // Check if OBS is still running before launching (use execFile to avoid shell injection)
     const exeName = basename(obsPath);
-    execFile('tasklist', ['/FI', `IMAGENAME eq ${exeName}`, '/NH'], (err, stdout) => {
+    execFile('tasklist', ['/FI', `IMAGENAME eq ${exeName}`, '/NH'], { cwd: SPAWN_CWD }, (err, stdout) => {
       if (err) {
         logger.error({ err }, 'Failed to check if OBS is running');
         return;
@@ -124,7 +125,7 @@ export class OBSClient {
         this.zombieCheckCount++;
         if (this.zombieCheckCount >= OBSClient.ZOMBIE_KILL_THRESHOLD) {
           logger.warn({ checks: this.zombieCheckCount }, 'OBS process unresponsive — force-killing');
-          execFile('taskkill', ['/F', '/IM', exeName], (killErr) => {
+          execFile('taskkill', ['/F', '/IM', exeName], { cwd: SPAWN_CWD }, (killErr) => {
             if (killErr) {
               logger.error({ err: killErr }, 'Failed to kill OBS process');
             } else {
@@ -314,7 +315,7 @@ export class OBSClient {
     ].join('\n');
 
     execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', psScript],
-      { timeout: 15_000 },
+      { cwd: SPAWN_CWD, timeout: 15_000 },
       (err, stdout) => {
         if (err) {
           logger.warn({ err }, 'Failed to dismiss OBS dialogs');

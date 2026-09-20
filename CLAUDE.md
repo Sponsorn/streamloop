@@ -121,6 +121,8 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - `START.bat` verifies swap success before cleanup; rolls back on failure
 - `START.bat` never replaces itself in place — launcher updates hand off to a detached trampoline (see above)
 - `START.bat` self-heals a half-swapped `app/` at startup before preflight
+- Inside `START.bat`'s parenthesized blocks, comments are `rem` without parentheses, never `::`. cmd parses the whole exit-code block on every server exit, and a `::` line in it aborts the launcher (window closes, no crash restart). `launcher.test.ts` enforces this.
+- Every process the server starts gets `cwd: SPAWN_CWD` (`spawn-cwd.ts`, the temp folder). A child that inherits `cwd=app\` and outlives the server (browser, yt-dlp) blocks the `rename app _update_old` step. `spawn-cwd.test.ts` fails when a spawn site lacks a `cwd`.
 - Dashboard `waitForRestart()` times out after 60s instead of looping forever
 - Checksum verification uses streaming hash (no full ZIP in memory)
 
