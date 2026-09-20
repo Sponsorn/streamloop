@@ -1,7 +1,8 @@
 <#
 Sums the memory of a process tree, for the stage 1 memory check.
-  .\measure.ps1 -RootName streamloop-shell -OutCsv shell.csv
-  .\measure.ps1 -Analyze -OutCsv shell.csv
+A pass needs MemoryPass, TrendPass, LongEnough, and Continuous all true.
+  .\measure.ps1 -RootName streamloop-shell -OutCsv $env:TEMP\shell.csv
+  .\measure.ps1 -Analyze -OutCsv $env:TEMP\shell.csv
   .\measure.ps1 -SelfTest
 #>
 [CmdletBinding(DefaultParameterSetName = 'Measure')]
@@ -53,15 +54,24 @@ function Get-Verdict($rows) {
   $live = @($rows | Where-Object { [int]$_.Processes -gt 0 })
   if ($live.Count -eq 0) { throw 'No samples with a running process tree.' }
 
+  # DateTimeOffset keeps all arithmetic on the real UTC instant, so a DST change can't distort Hours or gaps.
+  $parse = { param($s) [datetimeoffset]::Parse($s, [cultureinfo]::InvariantCulture) }
   $sorted = @($live | ForEach-Object { [int]$_.PrivateMB } | Sort-Object)
   $p95 = $sorted[[math]::Ceiling(0.95 * $sorted.Count) - 1]
 
-  $start = [datetime]$live[0].Timestamp
-  $end = [datetime]$live[-1].Timestamp
-  $first = $live | Where-Object { [datetime]$_.Timestamp -lt $start.AddHours(6) } | ForEach-Object { [int]$_.PrivateMB }
-  $last = $live | Where-Object { [datetime]$_.Timestamp -gt $end.AddHours(-6) } | ForEach-Object { [int]$_.PrivateMB }
+  $start = & $parse $live[0].Timestamp
+  $end = & $parse $live[-1].Timestamp
+  $first = $live | Where-Object { (& $parse $_.Timestamp) -lt $start.AddHours(6) } | ForEach-Object { [int]$_.PrivateMB }
+  $last = $live | Where-Object { (& $parse $_.Timestamp) -gt $end.AddHours(-6) } | ForEach-Object { [int]$_.PrivateMB }
   $firstMean = ($first | Measure-Object -Average).Average
   $lastMean = ($last | Measure-Object -Average).Average
+
+  $times = @($live | ForEach-Object { & $parse $_.Timestamp })
+  $maxGapMinutes = 0
+  for ($i = 1; $i -lt $times.Count; $i++) {
+    $gap = ($times[$i] - $times[$i - 1]).TotalMinutes
+    if ($gap -gt $maxGapMinutes) { $maxGapMinutes = $gap }
+  }
 
   [pscustomobject]@{
     Samples = $live.Count
@@ -69,9 +79,11 @@ function Get-Verdict($rows) {
     P95MB = $p95
     FirstMeanMB = [int][math]::Round($firstMean)
     LastMeanMB = [int][math]::Round($lastMean)
+    MaxGapMin = [int][math]::Ceiling($maxGapMinutes)
     MemoryPass = ($p95 -lt 200)
     TrendPass = ($lastMean -le 1.10 * $firstMean)
     LongEnough = (($end - $start).TotalHours -ge 24)
+    Continuous = ($maxGapMinutes -le 5)
   }
 }
 
@@ -86,12 +98,38 @@ function New-FakeProcess([int]$id, [int]$parentId, [string]$name, [int]$startedM
   }
 }
 
+function New-FakeTimestamp([int]$minute, [timespan]$offset = [timespan]::Zero) {
+  ([datetimeoffset]::new([datetime]::new(2026, 1, 1), $offset)).AddMinutes($minute).ToString('o')
+}
+
 function New-FakeRows([int]$hours, [scriptblock]$privateMbAtHour) {
-  $start = Get-Date '2026-01-01'
   0..($hours * 60) | ForEach-Object {
     [pscustomobject]@{
-      Timestamp = $start.AddMinutes($_).ToString('s'); Processes = '5'
+      Timestamp = New-FakeTimestamp $_; Processes = '5'
       PrivateMB = [string](& $privateMbAtHour ($_ / 60)); WorkingSetMB = '0'
+    }
+  }
+}
+
+function New-HoleRows([switch]$FillDead) {
+  0..1500 | Where-Object { $FillDead -or $_ -lt 700 -or $_ -gt 1298 } | ForEach-Object {
+    $processes = if ($FillDead -and $_ -ge 700 -and $_ -le 1298) { '0' } else { '5' }
+    [pscustomobject]@{
+      Timestamp = New-FakeTimestamp $_; Processes = $processes
+      PrivateMB = '150'; WorkingSetMB = '0'
+    }
+  }
+}
+
+function New-DstRows([int]$realMinutes, [int]$switchMinute, [timespan]$offsetBefore, [timespan]$offsetAfter) {
+  # Wall-clock offset flips mid-run while the underlying UTC instant keeps advancing by exactly 1 real minute per row.
+  $anchor = [datetime]::new(2026, 1, 1)
+  0..$realMinutes | ForEach-Object {
+    $utc = $anchor.AddMinutes($_)
+    $offset = if ($_ -lt $switchMinute) { $offsetBefore } else { $offsetAfter }
+    [pscustomobject]@{
+      Timestamp = ([datetimeoffset]::new($utc.Add($offset), $offset)).ToString('o'); Processes = '5'
+      PrivateMB = '150'; WorkingSetMB = '0'
     }
   }
 }
@@ -122,7 +160,8 @@ function Invoke-SelfTest {
 
   $flat = Get-Verdict (New-FakeRows 25 { param($h) 150 })
   Assert-That ($flat.P95MB -eq 150) "flat p95 was $($flat.P95MB)"
-  Assert-That ($flat.MemoryPass -and $flat.TrendPass -and $flat.LongEnough) 'flat 150 MB for 25 h must pass everything'
+  Assert-That ($flat.MemoryPass -and $flat.TrendPass -and $flat.LongEnough -and $flat.Continuous) 'flat 150 MB for 25 h must pass everything'
+  Assert-That ($flat.MaxGapMin -eq 1) "flat maxGap was $($flat.MaxGapMin)"
 
   $leak = Get-Verdict (New-FakeRows 25 { param($h) 100 + [int]($h * 3) })
   Assert-That ($leak.MemoryPass) 'leak run stays under 200 MB'
@@ -136,7 +175,7 @@ function Invoke-SelfTest {
 
   $deadRows = -30..-1 | ForEach-Object {
     [pscustomobject]@{
-      Timestamp = (Get-Date '2026-01-01').AddMinutes($_).ToString('s'); Processes = '0'
+      Timestamp = New-FakeTimestamp $_; Processes = '0'
       PrivateMB = '0'; WorkingSetMB = '0'
     }
   }
@@ -147,6 +186,19 @@ function Invoke-SelfTest {
   $allDeadThrew = $false
   try { Get-Verdict $deadRows } catch { $allDeadThrew = $true }
   Assert-That $allDeadThrew 'a run with no live samples must throw'
+
+  $holeAbsent = Get-Verdict (New-HoleRows)
+  Assert-That (-not $holeAbsent.Continuous) 'a 10 h hole with rows absent must not be continuous'
+  Assert-That ([math]::Abs($holeAbsent.MaxGapMin - 600) -le 1) "absent-hole maxGap was $($holeAbsent.MaxGapMin)"
+
+  $holeDead = Get-Verdict (New-HoleRows -FillDead)
+  Assert-That (-not $holeDead.Continuous) 'a 10 h hole filled with dead rows must still not be continuous'
+
+  $dstAutumn = Get-Verdict (New-DstRows (24 * 60) (12 * 60) ([timespan]::FromHours(2)) ([timespan]::FromHours(1)))
+  Assert-That ($dstAutumn.LongEnough -and $dstAutumn.Continuous) 'a 24 real-hour run across an autumn DST change must stay LongEnough and Continuous'
+
+  $dstSpring = Get-Verdict (New-DstRows (23 * 60) (12 * 60) ([timespan]::FromHours(1)) ([timespan]::FromHours(2)))
+  Assert-That (-not $dstSpring.LongEnough) '23 real hours spanning a 24 wall-clock-hour spring change must not be LongEnough'
 
   'SelfTest passed'
 }
@@ -170,7 +222,7 @@ function Get-Sample([string]$rootName) {
     }
   }
   [pscustomobject]@{
-    Timestamp = (Get-Date).ToString('s')
+    Timestamp = [datetimeoffset]::Now.ToString('o')
     Processes = $tree.Count
     PrivateMB = [int][math]::Round($private / 1MB)
     WorkingSetMB = [int][math]::Round($workingSet / 1MB)
@@ -178,14 +230,17 @@ function Get-Sample([string]$rootName) {
 }
 
 "Sampling the $RootName process tree every $IntervalSec s into $OutCsv. Ctrl+C to stop."
+$wroteFirstSample = $false
 while ($true) {
   try {
     $sample = Get-Sample $RootName
     $sample | Export-Csv -Path $OutCsv -Append -NoTypeInformation
+    $wroteFirstSample = $true
     "$($sample.Timestamp)  processes=$($sample.Processes)  private=$($sample.PrivateMB) MB"
   } catch {
-    # A transient WMI hiccup must not end a 24h unattended run; skip this sample and keep polling.
-    "$((Get-Date).ToString('s'))  WARN sample failed: $($_.Exception.Message)"
+    # Fail fast on a bad -OutCsv path so it doesn't loop forever; later hiccups are downgraded once one sample has succeeded.
+    if (-not $wroteFirstSample) { throw }
+    "$([datetimeoffset]::Now.ToString('o'))  WARN sample failed: $($_.Exception.Message)"
   }
   Start-Sleep -Seconds $IntervalSec
 }
