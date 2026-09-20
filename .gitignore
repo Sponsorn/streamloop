@@ -12,3 +12,5 @@ docs/
 todo.txt
 RELEASE_NOTES.md
 review_v1.md
+shell/src-tauri/target/
+shell/src-tauri/gen/
