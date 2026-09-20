@@ -134,6 +134,20 @@ function Invoke-SelfTest {
   $short = Get-Verdict (New-FakeRows 3 { param($h) 150 })
   Assert-That (-not $short.LongEnough) 'a 3 h run is not long enough'
 
+  $deadRows = -30..-1 | ForEach-Object {
+    [pscustomobject]@{
+      Timestamp = (Get-Date '2026-01-01').AddMinutes($_).ToString('s'); Processes = '0'
+      PrivateMB = '0'; WorkingSetMB = '0'
+    }
+  }
+  $padded = Get-Verdict (@($deadRows) + (New-FakeRows 25 { param($h) 150 }))
+  Assert-That ($padded.Samples -eq $flat.Samples) "padded samples was $($padded.Samples), expected $($flat.Samples)"
+  Assert-That ($padded.P95MB -eq $flat.P95MB -and $padded.MemoryPass -and $padded.TrendPass -and $padded.LongEnough) 'leading dead rows must not change the verdict'
+
+  $allDeadThrew = $false
+  try { Get-Verdict $deadRows } catch { $allDeadThrew = $true }
+  Assert-That $allDeadThrew 'a run with no live samples must throw'
+
   'SelfTest passed'
 }
 
@@ -165,8 +179,13 @@ function Get-Sample([string]$rootName) {
 
 "Sampling the $RootName process tree every $IntervalSec s into $OutCsv. Ctrl+C to stop."
 while ($true) {
-  $sample = Get-Sample $RootName
-  $sample | Export-Csv -Path $OutCsv -Append -NoTypeInformation
-  "$($sample.Timestamp)  processes=$($sample.Processes)  private=$($sample.PrivateMB) MB"
+  try {
+    $sample = Get-Sample $RootName
+    $sample | Export-Csv -Path $OutCsv -Append -NoTypeInformation
+    "$($sample.Timestamp)  processes=$($sample.Processes)  private=$($sample.PrivateMB) MB"
+  } catch {
+    # A transient WMI hiccup must not end a 24h unattended run; skip this sample and keep polling.
+    "$((Get-Date).ToString('s'))  WARN sample failed: $($_.Exception.Message)"
+  }
   Start-Sleep -Seconds $IntervalSec
 }
