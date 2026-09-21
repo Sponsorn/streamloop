@@ -28,10 +28,17 @@ export function inputArgs(clip, outFile) {
   ];
 }
 
-export function feederArgs(file, offsetSeconds) {
+export function normalizeVideoFilter(fps = FPS) {
+  return `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=${fps},format=yuv420p`;
+}
+
+// filterScript, when given, replaces the plain normalisation -vf with a file (-filter_script:v):
+// spike 3's hook so the feeder can also draw a per-video overlay, without touching this signature's callers.
+export function feederArgs(file, offsetSeconds, { filterScript } = {}) {
+  const videoFilterArgs = filterScript ? ['-filter_script:v', filterScript] : ['-vf', normalizeVideoFilter()];
   return [
     '-v', 'error', '-nostats', '-progress', 'pipe:2', '-i', file,
-    '-vf', `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=${FPS},format=yuv420p`,
+    ...videoFilterArgs,
     '-af', 'aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo',
     // -bf 0 keeps dts equal to pts, so no clip starts with a negative dts.
     '-c:v', 'mpeg2video', '-q:v', '2', '-g', '15', '-bf', '0', '-c:a', 'mp2', '-b:a', '384k',

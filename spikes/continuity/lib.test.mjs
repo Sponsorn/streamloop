@@ -16,6 +16,21 @@ describe('feeder arguments', () => {
   });
 });
 
+describe('feeder arguments with a filter script', () => {
+  it('swaps the plain -vf normalisation for -filter_script:v when a script path is given', () => {
+    // Arrange + Act
+    const plain = feederArgs('media/a.mp4', 0);
+    const withScript = feederArgs('media/a.mp4', 0, { filterScript: 'out/filters.txt' });
+
+    // Assert: same shape, only the video-filter flag and value differ
+    expect(plain).toContain('-vf');
+    expect(withScript).not.toContain('-vf');
+    expect(withScript.slice(withScript.indexOf('-filter_script:v'), withScript.indexOf('-filter_script:v') + 2))
+      .toEqual(['-filter_script:v', 'out/filters.txt']);
+    expect(withScript.length).toBe(plain.length);
+  });
+});
+
 describe('encoder arguments', () => {
   it('reads stdin in real time and pushes FLV to a single target', () => {
     // Arrange + Act
