@@ -32,8 +32,8 @@ export function normalizeVideoFilter(fps = FPS) {
   return `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=${fps},format=yuv420p`;
 }
 
-// filterScript, when given, replaces the plain normalisation -vf with a file (-filter_script:v):
-// spike 3's hook so the feeder can also draw a per-video overlay, without touching this signature's callers.
+// filterScript, when given, swaps the plain -vf normalisation for a file (-filter_script:v) so
+// the feeder can also draw a per-video overlay; existing callers are unaffected.
 export function feederArgs(file, offsetSeconds, { filterScript } = {}) {
   const videoFilterArgs = filterScript ? ['-filter_script:v', filterScript] : ['-vf', normalizeVideoFilter()];
   return [

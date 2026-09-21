@@ -6,9 +6,10 @@ export const FRAME_H = 1080;
 export const ANCHORS = ['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right'];
 export const DEFAULT_FONT = 'C:/Windows/Fonts/segoeui.ttf';
 
-// Average glyph width for proportional Latin text (Segoe UI) relative to font size,
-// eyeballed against real rendered frames. Used only to budget space; not exact per-glyph metrics.
+// Average glyph width for Segoe UI as a fraction of font size, tuned against rendered frames.
 const CHAR_WIDTH_RATIO = 0.55;
+// Digits/colons/spaces in the progress clock render narrower than average Latin text.
+const DIGIT_WIDTH_RATIO = 0.46;
 
 export function estimateTextWidth(text, fontSize) {
   return [...text].length * fontSize * CHAR_WIDTH_RATIO;
@@ -25,8 +26,7 @@ export function truncateText(text, fontSize, maxWidthPx) {
   return `${chars.slice(0, Math.max(0, max - 1)).join('')}\u2026`;
 }
 
-// ffmpeg's filtergraph parser treats ':' as the option separator and '\' as its escape,
-// so a Windows path needs forward slashes and an escaped drive-letter colon.
+// ':' is the filtergraph option separator, so a Windows path needs forward slashes and an escaped drive colon.
 function escapePath(p) {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:');
 }
@@ -80,8 +80,8 @@ function anchorExpr(anchor, margin, widthVar = 'text_w', heightVar = 'text_h') {
 }
 
 /** Literal pixel x,y for a block of known width/height, anchored by name. Used for the
- *  progress element, whose fixed-format text has a width we can estimate ourselves in JS
- *  instead of needing ffmpeg's per-frame text_w (which no sibling filter can read). */
+ *  progress element: its fixed-format text has an estimable width, sidestepping the fact
+ *  that no drawtext filter can read another filter's text_w. */
 function anchorBox(anchor, margin, w, h) {
   let x;
   if (anchor.endsWith('left') || anchor === 'left') x = margin;
@@ -120,17 +120,16 @@ function textClause({ font, textPath, x, y, fontSize, color, box, enable }) {
   return `drawtext=${parts.join(':')}`;
 }
 
-/** Two drawtext clauses: a dynamic clock+percentage (expansion=normal, no bare '%' in its
- *  own text) and a literal '%' with expansion=none. Splitting them is the fix for the
- *  known "Stray %" trap: any '%' after a %{...} expansion breaks normal-mode parsing,
- *  in every quoting/escaping variant tried (%%, \%, \\%) - only a sibling drawtext with
- *  expansion=none renders a literal percent sign reliably. */
+/** Two drawtext clauses: a dynamic clock+percentage, and a literal '%' in its own
+ *  expansion=none clause. A '%' after a %{...} expansion is a "Stray %" parse error in
+ *  every escaping tried (%%, \%, \\%); only a separate expansion=none clause renders it. */
 function progressClauses({ font, video, el, enable }) {
   const totalHms = escapeColons(fmtHms(video.durationSeconds));
   const numberText = `%{pts\\:hms} / ${totalHms}  %{eif\\:100*t/${video.durationSeconds}\\:d\\:3}`;
-  const widthSample = `00:00:00 / ${fmtHms(video.durationSeconds)}  000`;
-  const numW = estimateTextWidth(widthSample, el.fontSize);
-  const pctW = estimateTextWidth('%', el.fontSize);
+  // %{pts\:hms} always renders HH:MM:SS.mmm (with milliseconds); the width estimate must match.
+  const widthSample = `00:00:00.000 / ${fmtHms(video.durationSeconds)}  000`;
+  const numW = [...widthSample].length * el.fontSize * DIGIT_WIDTH_RATIO;
+  const pctW = el.fontSize * DIGIT_WIDTH_RATIO;
   const gap = 4;
   const h = Math.round(el.fontSize * 1.3);
   const { x, y } = anchorBox(el.anchor, el.margin, numW + gap + pctW, h);
@@ -151,9 +150,8 @@ function progressClauses({ font, video, el, enable }) {
   return clauses;
 }
 
-/** Pure: builds the video filter chain (or filter-script content, for a logo) to append
- *  after the feeder's normalisation. Reads text from `paths` (from prepareOverlayFiles);
- *  never receives raw title/label strings itself. */
+/** Pure: builds the video filter chain to append after the feeder's normalisation.
+ *  Reads text from `paths` (from prepareOverlayFiles); never receives raw title/label strings. */
 export function overlayFilters(config, video, paths) {
   const font = config.fontFile ?? DEFAULT_FONT;
   const clauses = [];
@@ -175,9 +173,11 @@ export function overlayFilters(config, video, paths) {
   const mainChain = clauses.join(',');
   if (logos.length === 0) return mainChain;
 
-  const parts = [];
+  // The main chain must come first: it's the only segment with no input label, so it's the
+  // one that implicitly receives whatever the caller prepends (the feeder's normalisation).
+  // ffmpeg resolves [logoN] labels wherever they're declared, so the movie= sources can follow.
+  const parts = [`${mainChain}[base]`];
   logos.forEach(({ el }, n) => parts.push(`movie=${q(escapePath(el.path))},scale=-1:${el.height}[logo${n}]`));
-  parts.push(`${mainChain}[base]`);
   let prevLabel = 'base';
   logos.forEach(({ el, enable }, n) => {
     const [x, y] = anchorExpr(el.anchor, el.margin, 'overlay_w', 'overlay_h');
@@ -197,8 +197,7 @@ function playlistLine(video) {
 }
 
 /** Writes the UTF-8 text files overlayFilters' textfile= clauses read, one per enabled
- *  text-bearing element, truncated to fit (1920 - 2*margin) px at that element's font size.
- *  Untrusted YouTube text never touches the ffmpeg command line or filter script directly. */
+ *  text-bearing element, truncated to fit (1920 - 2*margin) px at that element's font size. */
 export function prepareOverlayFiles(video, dir, config = defaultOverlayConfig()) {
   mkdirSync(dir, { recursive: true });
   const paths = {};

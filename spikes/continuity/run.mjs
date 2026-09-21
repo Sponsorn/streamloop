@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import {
-  CLIPS, SHORT_CLIPS, BASE_OFFSET, LOCAL_URL, feederArgs, encoderArgs, offsetAfter, parseProgress,
+  CLIPS, SHORT_CLIPS, BASE_OFFSET, LOCAL_URL, feederArgs, encoderArgs, offsetAfter, parseProgress, normalizeVideoFilter,
 } from './lib.mjs';
+import { defaultOverlayConfig, overlayFilters, prepareOverlayFiles } from '../overlay/lib.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => (argv.includes(`--${name}`) ? argv[argv.indexOf(`--${name}`) + 1] : fallback);
@@ -17,6 +18,11 @@ const bufferMb = Number(opt('buffer-mb', '192'));
 // Test only: wait this long before starting each feeder, to imitate a machine hiccup at a seam.
 const seamDelayMs = Number(opt('seam-delay-ms', '0'));
 const clips = short ? SHORT_CLIPS : CLIPS;
+// Spike 3: draw a title/progress/next-up overlay per clip, with fake per-seam metadata.
+const overlayOn = argv.includes('--overlay');
+const overlayConfig = defaultOverlayConfig();
+overlayConfig.elements.find((e) => e.type === 'nextUp').enabled = true;
+const fakeTitles = clips.map((clip, i) => `${clip.name} demo title ${i + 1}`);
 
 let target = opt('target', LOCAL_URL);
 let label = target;
@@ -72,9 +78,9 @@ encoder.on('close', (code) => {
   console.log(`Done: ${run.seams} seams in ${((run.endedAt - run.startedAt) / 3600_000).toFixed(2)} h`);
 });
 
-function runFeeder(file, offset) {
+function runFeeder(file, offset, filterScript) {
   return new Promise((resolve) => {
-    const feeder = spawn('ffmpeg', feederArgs(file, offset), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const feeder = spawn('ffmpeg', feederArgs(file, offset, filterScript ? { filterScript } : {}), { stdio: ['ignore', 'pipe', 'pipe'] });
     currentFeeder = feeder;
     let frames = 0;
     let errors = '';
@@ -92,10 +98,22 @@ console.log(`Streaming to ${label} with ${codec} for ${hours} h. Ctrl+C ends the
 const deadline = run.startedAt + hours * 3600_000;
 let offset = baseOffset;
 while (encoderAlive && Date.now() < deadline) {
-  const clip = clips[run.seams % clips.length];
+  const idx = run.seams % clips.length;
+  const clip = clips[idx];
   if (seamDelayMs) await new Promise((resolve) => setTimeout(resolve, seamDelayMs));
   const startedIso = new Date().toISOString();
-  const { frames, code, errors } = await runFeeder(`media/${clip.name}.mp4`, offset);
+  let filterScript;
+  if (overlayOn) {
+    const seamDir = `logs/overlay/${run.seams}`;
+    const video = {
+      title: fakeTitles[idx], playlistName: 'Spike overlay seam test', position: idx + 1, count: clips.length,
+      nextTitle: fakeTitles[(idx + 1) % clips.length], durationSeconds: clip.seconds,
+    };
+    const paths = prepareOverlayFiles(video, seamDir, overlayConfig);
+    filterScript = `${seamDir}/filters.txt`;
+    writeFileSync(filterScript, `${normalizeVideoFilter()},${overlayFilters(overlayConfig, video, paths)}`, 'utf8');
+  }
+  const { frames, code, errors } = await runFeeder(`media/${clip.name}.mp4`, offset, filterScript);
   log('seams.csv', [run.seams, clip.name, startedIso, offset.toFixed(6), frames, code]);
   if (code !== 0) console.error(`feeder failed on ${clip.name} (code ${code}): ${errors.trim()}`);
   offset = offsetAfter(offset, frames);
