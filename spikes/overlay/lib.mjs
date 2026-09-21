@@ -184,6 +184,8 @@ function progressBarFillStage(el, video, enable) {
     x: q(progressBarFillXExpr(barWidth, video.durationSeconds, el.margin)),
     y: `${y}`,
     enable,
+    // color= never reaches EOF on its own, so this stage alone must stop at the main video's end.
+    shortest: true,
   };
 }
 
@@ -202,6 +204,9 @@ export function overlayFilters(config, video, paths) {
         source: `movie=${q(escapePath(el.path))},scale=-1:${el.height}`,
         ...(() => { const [x, y] = anchorExpr(el.anchor, el.margin, 'overlay_w', 'overlay_h'); return { x, y }; })(),
         enable,
+        // movie= on a static image decodes exactly one frame then EOFs; shortest=1 here would
+        // cut the whole composite to 1 frame instead of holding the logo for the full video.
+        shortest: false,
       });
       return;
     }
@@ -231,9 +236,8 @@ export function overlayFilters(config, video, paths) {
   overlayStages.forEach((stage, n) => {
     const outLabel = n === overlayStages.length - 1 ? 'outv' : `merged${n}`;
     const enablePart = stage.enable ? `:enable=${q(stage.enable)}` : '';
-    // shortest=1: movie=/color= sources have no natural EOF of their own (a static image repeats,
-    // a color source is infinite), so without it the output runs forever past the real video's end.
-    parts.push(`[${prevLabel}][stage${n}]overlay=x=${stage.x}:y=${stage.y}:shortest=1${enablePart}[${outLabel}]`);
+    const shortestPart = stage.shortest ? ':shortest=1' : '';
+    parts.push(`[${prevLabel}][stage${n}]overlay=x=${stage.x}:y=${stage.y}${shortestPart}${enablePart}[${outLabel}]`);
     prevLabel = outLabel;
   });
   return parts.join(';\n');

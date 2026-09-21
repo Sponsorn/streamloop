@@ -322,16 +322,26 @@ describe('overlayFilters', () => {
     expect(filters).toContain('[outv]');
   });
 
-  it('marks every overlay stage shortest=1, so a generated source with no EOF of its own cannot extend the output past the real video', () => {
+  it('marks the progress bar fill shortest=1, so its infinite colour source cannot extend the output past the real video', () => {
     // Regression: color= (progress bar fill) never reaches EOF on its own; without shortest=1
     // the composited output runs forever past the point the real input ends.
+    const config = defaultOverlayConfig();
+    const filters = overlayFilters(config, video, {});
+    const fillClause = filters.split(';\n').find((c) => c.includes('overlay=x=') && c.includes('[stage0]'));
+    expect(fillClause).toContain(':shortest=1');
+  });
+
+  it('leaves the logo overlay without shortest=1, since its single-frame movie= source must hold for the whole video', () => {
+    // Regression: shortest=1 here would end the whole composite after the logo's one frame,
+    // since movie= on a static image EOFs immediately, unlike the still-live main video.
     const config = defaultOverlayConfig();
     byType(config, 'logo').enabled = true;
     byType(config, 'logo').path = 'C:/x/logo.png';
     const filters = overlayFilters(config, video, {});
-    const overlayClauses = filters.split(';\n').filter((c) => c.includes('overlay=x='));
-    expect(overlayClauses.length).toBeGreaterThan(0);
-    for (const clause of overlayClauses) expect(clause).toContain(':shortest=1');
+    const logoClause = filters.split(';\n').find((c) => c.includes('overlay=x=') && c.includes('[stage0]'));
+    expect(logoClause).not.toContain('shortest');
+    const fillClause = filters.split(';\n').find((c) => c.includes('overlay=x=') && c.includes('[stage1]'));
+    expect(fillClause).toContain(':shortest=1');
   });
 });
 
