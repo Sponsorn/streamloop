@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 import {
   CLIPS, SHORT_CLIPS, BASE_OFFSET, LOCAL_URL, feederArgs, encoderArgs, offsetAfter, parseProgress,
@@ -10,6 +11,11 @@ const hours = Number(opt('hours', '2'));
 const codec = opt('codec', 'libx264');
 const baseOffset = Number(opt('base-offset', String(BASE_OFFSET)));
 const short = argv.includes('--short');
+// Read-ahead between feeder and encoder. The noisy test clips push about 20 MB/s through
+// the pipe, real video about 5, so 192 MB is 9 s here and half a minute in practice.
+const bufferMb = Number(opt('buffer-mb', '192'));
+// Test only: wait this long before starting each feeder, to imitate a machine hiccup at a seam.
+const seamDelayMs = Number(opt('seam-delay-ms', '0'));
 const clips = short ? SHORT_CLIPS : CLIPS;
 
 let target = opt('target', LOCAL_URL);
@@ -25,7 +31,7 @@ if (argv.includes('--twitch')) {
 mkdirSync('logs', { recursive: true });
 const log = (file, row) => appendFileSync(`logs/${file}`, `${row.join(',')}\n`);
 const run = {
-  startedAt: Date.now(), target: label, codec, hours, short, baseOffset,
+  startedAt: Date.now(), target: label, codec, hours, short, baseOffset, bufferMb, seamDelayMs,
   endedAt: null, seams: 0, encoderExitedEarly: false,
 };
 const saveRun = () => writeFileSync('logs/run.json', JSON.stringify(run, null, 2));
@@ -35,6 +41,10 @@ const notProgress = (text) => String(text).split(/\r?\n/).filter((l) => l.trim()
 
 // A target in tee syntax starts with an option block, e.g. [f=flv]rtmp://...
 const encoder = spawn('ffmpeg', encoderArgs(target, { codec, tee: target.startsWith('[') }), { stdio: ['pipe', 'ignore', 'pipe'] });
+// Without this the encoder starves the instant a feeder stalls or the next one is slow to start:
+// it reads in real time and an OS pipe holds only a few milliseconds of video.
+const readAhead = new PassThrough({ highWaterMark: Math.max(1, bufferMb) * 1024 * 1024 });
+readAhead.pipe(encoder.stdin);
 let encoderAlive = true;
 let finishing = false;
 let currentFeeder = null;
@@ -73,7 +83,7 @@ function runFeeder(file, offset) {
       if (progress.frame) frames = Number(progress.frame);
       errors += notProgress(chunk).join('\n');
     });
-    feeder.stdout.pipe(encoder.stdin, { end: false });
+    feeder.stdout.pipe(readAhead, { end: false });
     feeder.on('close', (code) => resolve({ frames, code, errors }));
   });
 }
@@ -83,6 +93,7 @@ const deadline = run.startedAt + hours * 3600_000;
 let offset = baseOffset;
 while (encoderAlive && Date.now() < deadline) {
   const clip = clips[run.seams % clips.length];
+  if (seamDelayMs) await new Promise((resolve) => setTimeout(resolve, seamDelayMs));
   const startedIso = new Date().toISOString();
   const { frames, code, errors } = await runFeeder(`media/${clip.name}.mp4`, offset);
   log('seams.csv', [run.seams, clip.name, startedIso, offset.toFixed(6), frames, code]);
@@ -92,4 +103,4 @@ while (encoderAlive && Date.now() < deadline) {
   if (run.seams % 25 === 0) { saveRun(); console.log(`${startedIso}  seams=${run.seams}  timeline=${offset.toFixed(1)} s`); }
 }
 finishing = true;
-encoder.stdin.end();
+readAhead.end();
