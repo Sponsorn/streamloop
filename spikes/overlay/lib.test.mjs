@@ -103,6 +103,17 @@ describe('emoji stripping', () => {
   it('reduces to an empty string when the text is only emoji', () => {
     expect(stripEmoji('\u{1F3B5}\u{1F525}')).toBe('');
   });
+
+  it('strips every emoji kind at once from the hostile fix-round title, keeping the words', () => {
+    // Arrange: music note + fire (pictographs), thumbs-up + medium skin tone (modifier), Sweden flag (regional pair)
+    const hostile = 'emoji \u{1F3B5}\u{1F525} title \u{1F44D}\u{1F3FD} flag \u{1F1F8}\u{1F1EA}';
+
+    // Act
+    const result = stripEmoji(hostile);
+
+    // Assert
+    expect(result).toBe('emoji title flag');
+  });
 });
 
 describe('progress format string', () => {
@@ -309,6 +320,18 @@ describe('overlayFilters', () => {
     expect(filters).toContain('[stage1]');
     expect(filters).toContain('[merged0]');
     expect(filters).toContain('[outv]');
+  });
+
+  it('marks every overlay stage shortest=1, so a generated source with no EOF of its own cannot extend the output past the real video', () => {
+    // Regression: color= (progress bar fill) never reaches EOF on its own; without shortest=1
+    // the composited output runs forever past the point the real input ends.
+    const config = defaultOverlayConfig();
+    byType(config, 'logo').enabled = true;
+    byType(config, 'logo').path = 'C:/x/logo.png';
+    const filters = overlayFilters(config, video, {});
+    const overlayClauses = filters.split(';\n').filter((c) => c.includes('overlay=x='));
+    expect(overlayClauses.length).toBeGreaterThan(0);
+    for (const clause of overlayClauses) expect(clause).toContain(':shortest=1');
   });
 });
 

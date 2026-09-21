@@ -231,7 +231,9 @@ export function overlayFilters(config, video, paths) {
   overlayStages.forEach((stage, n) => {
     const outLabel = n === overlayStages.length - 1 ? 'outv' : `merged${n}`;
     const enablePart = stage.enable ? `:enable=${q(stage.enable)}` : '';
-    parts.push(`[${prevLabel}][stage${n}]overlay=x=${stage.x}:y=${stage.y}${enablePart}[${outLabel}]`);
+    // shortest=1: movie=/color= sources have no natural EOF of their own (a static image repeats,
+    // a color source is infinite), so without it the output runs forever past the real video's end.
+    parts.push(`[${prevLabel}][stage${n}]overlay=x=${stage.x}:y=${stage.y}:shortest=1${enablePart}[${outLabel}]`);
     prevLabel = outLabel;
   });
   return parts.join(';\n');
