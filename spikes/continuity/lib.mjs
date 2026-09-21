@@ -123,12 +123,48 @@ export function lagStats(rows) {
   return { maxRiseMs, overallSpeed };
 }
 
+/** Lag rise at each seam and between seams, each against the minute before it.
+ *  rows: { wallMs, mediaUs }; seamMediaSeconds: where each seam sits in the encoder's media time. */
+export function seamLag(rows, seamMediaSeconds) {
+  const first = rows[0];
+  const points = rows.map((r) => ({ t: (r.mediaUs - first.mediaUs) / 1e6, lag: (r.wallMs - first.wallMs) - (r.mediaUs - first.mediaUs) / 1000 }));
+  let from = 0;
+  // Windows only move forward, so one index walks the rows instead of filtering them per window.
+  const riseIn = (start, end) => {
+    while (from < points.length && points[from].t < start - 60) from += 1;
+    const baseline = [];
+    let peak = -Infinity;
+    for (let i = from; i < points.length && points[i].t < end; i += 1) {
+      if (points[i].t < start - 1) baseline.push(points[i].lag);
+      else if (points[i].t >= start) peak = Math.max(peak, points[i].lag);
+    }
+    return baseline.length && peak > -Infinity ? peak - median(baseline) : null;
+  };
+  // The first 90 s hold ffmpeg's start-up burst and have no full minute of baseline.
+  const seams = seamMediaSeconds.filter((t) => t >= 90).sort((a, b) => a - b);
+  const seamRises = seams.map((t) => riseIn(t - 1, t + 4)).filter((v) => v !== null);
+  const nearSeam = new Set(seams.flatMap((t) => Array.from({ length: 8 }, (_, i) => Math.floor(t) - 2 + i)));
+  from = 0;
+  const otherRises = [];
+  for (let t = 90; t < Math.floor(points[points.length - 1].t); t += 1) {
+    if (nearSeam.has(t)) continue;
+    const rise = riseIn(t, t + 1);
+    if (rise !== null) otherRises.push(rise);
+  }
+  const max = (values) => values.reduce((a, b) => (b > a ? b : a), -Infinity);
+  return {
+    maxSeamRiseMs: seamRises.length ? max(seamRises) : NaN,
+    medianSeamRiseMs: seamRises.length ? median(seamRises) : NaN,
+    maxOtherRiseMs: otherRises.length ? max(otherRises) : NaN,
+  };
+}
+
 export function verdict(m) {
   const result = {
     noBackwards: m.backwards === 0,
     readerStayed: m.readerDisconnects === 0,
     encoderStayed: !m.encoderExitedEarly,
-    seamLag: m.maxRiseMs < 500,
+    seamLag: m.maxSeamRiseMs < 500,
     speed: m.overallSpeed >= 0.99 && m.overallSpeed <= 1.01,
     // The worst second, not the median: drift that builds over seams and snaps back hides in a median.
     avInSync: m.avFirstMaxMs < 100 && m.avLastMaxMs < 100,

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { LOCAL_URL, createAnalyzer, pairOffsets, lagStats, verdict } from './lib.mjs';
+import { LOCAL_URL, createAnalyzer, pairOffsets, lagStats, seamLag, verdict } from './lib.mjs';
 
 const [mode, arg] = process.argv.slice(2);
 mkdirSync('logs', { recursive: true });
@@ -65,13 +65,17 @@ if (mode === 'watch') {
 } else if (mode === 'avsync') {
   console.log(avsync(arg));
 } else if (mode === 'verdict') {
-  const run = JSON.parse(readFileSync('logs/run.json', 'utf8'));
-  const events = existsSync('logs/events.csv')
-    ? readFileSync('logs/events.csv', 'utf8').trim().split(/\r?\n/).filter(Boolean).map((l) => l.split(',')) : [];
-  const rows = readFileSync('logs/encoder.csv', 'utf8').trim().split(/\r?\n/)
+  const dir = arg ?? 'logs';
+  const run = JSON.parse(readFileSync(`${dir}/run.json`, 'utf8'));
+  const events = existsSync(`${dir}/events.csv`)
+    ? readFileSync(`${dir}/events.csv`, 'utf8').trim().split(/\r?\n/).filter(Boolean).map((l) => l.split(',')) : [];
+  const rows = readFileSync(`${dir}/encoder.csv`, 'utf8').trim().split(/\r?\n/)
     .map((l) => l.split(',')).map(([wallMs, mediaUs]) => ({ wallMs: Number(wallMs), mediaUs: Number(mediaUs) }));
   // The reader always loses the stream when the run ends on purpose; only earlier losses count.
   const endedAt = run.endedAt ?? Date.now();
+  const seamOffsets = readFileSync(`${dir}/seams.csv`, 'utf8').trim().split(/\r?\n/).map((l) => Number(l.split(',')[3]));
+  // The encoder's media time starts at 0 where the first clip starts; seams.csv holds timeline offsets.
+  const seamMedia = seamOffsets.slice(1).map((offset) => offset - seamOffsets[0]);
   const disconnects = events.filter(([iso, type]) => type === 'disconnect' && Date.parse(iso) < endedAt - 5000).length;
   // Segments under 30 MB (about a minute at 4 Mbit/s) are run tails with too few seams to judge.
   const segments = existsSync('rec')
@@ -84,6 +88,7 @@ if (mode === 'watch') {
     readerDisconnects: disconnects,
     encoderExitedEarly: run.encoderExitedEarly,
     ...lagStats(rows),
+    ...seamLag(rows, seamMedia),
     avFirstMs: first.medianMs,
     avLastMs: last.medianMs,
     avFirstMaxMs: first.maxAbsMs,
@@ -95,6 +100,6 @@ if (mode === 'watch') {
   console.log(measured);
   console.log(verdict(measured));
 } else {
-  console.error('usage: node check.mjs watch [url|file] | record [url] | avsync <file> | verdict');
+  console.error('usage: node check.mjs watch [url|file] | record [url] | avsync <file> | verdict [logs dir]');
   process.exit(2);
 }

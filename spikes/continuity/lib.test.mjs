@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   FPS, BASE_OFFSET, CLIPS, SHORT_CLIPS, PTS_WRAP_SECONDS, feederArgs, encoderArgs, offsetAfter,
-  parseProgress, createAnalyzer, pairOffsets, lagStats, verdict,
+  parseProgress, createAnalyzer, pairOffsets, lagStats, seamLag, verdict,
 } from './lib.mjs';
 
 describe('feeder arguments', () => {
@@ -163,9 +163,41 @@ describe('delivery lag', () => {
   });
 });
 
+describe('lag at seams', () => {
+  // 10 rows per second; lagMsAt(mediaSecond) gives the delivery lag at that point of the stream.
+  const rowsFrom = (seconds, lagMsAt) => Array.from({ length: seconds * 10 + 1 }, (_, i) => {
+    const media = i / 10;
+    return { wallMs: 1_000_000 + media * 1000 + lagMsAt(media), mediaUs: media * 1e6 };
+  });
+
+  it('measures the rise at each seam against the minute before it, not against the whole run', () => {
+    // Arrange: the lead over real time shifts by 1.2 s at second 300; a seam at 500 starves for 400 ms.
+    const rows = rowsFrom(900, (t) => (t < 300 ? 0 : -1200) + (t >= 500 && t < 502 ? 400 : 0));
+
+    // Act
+    const result = seamLag(rows, [200, 500, 800]);
+
+    // Assert
+    expect(result.maxSeamRiseMs).toBeCloseTo(400, 0);
+    expect(result.maxOtherRiseMs).toBeLessThan(5);
+  });
+
+  it('reports a dip between seams separately from the seams', () => {
+    // Arrange: 900 ms dip at second 650, far from the seams at 200, 500 and 800.
+    const rows = rowsFrom(900, (t) => (t >= 650 && t < 651 ? 900 : 0));
+
+    // Act
+    const result = seamLag(rows, [200, 500, 800]);
+
+    // Assert
+    expect(result.maxSeamRiseMs).toBeLessThan(5);
+    expect(result.maxOtherRiseMs).toBeCloseTo(900, 0);
+  });
+});
+
 describe('verdict', () => {
   const good = {
-    backwards: 0, readerDisconnects: 0, encoderExitedEarly: false, maxRiseMs: 180,
+    backwards: 0, readerDisconnects: 0, encoderExitedEarly: false, maxSeamRiseMs: 180,
     overallSpeed: 1.0004, avFirstMs: 12, avLastMs: 31, avFirstMaxMs: 24, avLastMaxMs: 40,
   };
 
@@ -175,7 +207,7 @@ describe('verdict', () => {
 
   it('fails on a backwards timestamp, a slow seam, growing A/V offset or an early encoder exit', () => {
     expect(verdict({ ...good, backwards: 1 }).pass).toBe(false);
-    expect(verdict({ ...good, maxRiseMs: 640 }).seamLag).toBe(false);
+    expect(verdict({ ...good, maxSeamRiseMs: 640 }).seamLag).toBe(false);
     expect(verdict({ ...good, avLastMs: 90 }).avStable).toBe(false);
     expect(verdict({ ...good, encoderExitedEarly: true }).pass).toBe(false);
   });
