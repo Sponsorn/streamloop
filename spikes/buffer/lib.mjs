@@ -4,17 +4,15 @@ import { fileURLToPath } from 'node:url';
 export const YTDLP = fileURLToPath(new URL('../../yt-dlp/yt-dlp.exe', import.meta.url));
 export const SLATE = fileURLToPath(new URL('./media/slate.mp4', import.meta.url));
 export const SLATE_SECONDS = 10;
-// yt-dlp tries each client and merges what they offer. mweb needs a GVS PO token, which the
-// bgutil provider supplies; without the provider its formats are skipped and web_embedded — which
-// needs no token but is the kind of client YouTube eventually gates — carries the download.
-// web, web_safari and tv yield nothing today: the first two are SABR-only, tv answers
-// "the page needs to be reloaded", and android_vr wants a token bgutil cannot mint.
+// yt-dlp merges what each client offers: mweb needs the bgutil PO token, web_embedded needs none
+// and carries the download when the provider is missing. web, web_safari, tv and android_vr give
+// nothing today.
 export const PLAYER_CLIENT = 'mweb,web_embedded';
 // avc1 first: the feeder decodes on CPU beside the encoder, and av1 1080p costs several cores.
 export const FORMAT = 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]';
 // Without a JS runtime yt-dlp cannot solve the player challenge and every client is format-less.
-// The release puts deno next to yt-dlp.exe (build/prepare-release.js step 2); off a dev machine
-// that folder is empty, so fall through to yt-dlp's own PATH lookup.
+// The release unzips deno next to yt-dlp.exe; on a dev box that folder is empty, so let yt-dlp
+// find deno on PATH instead.
 const DENO = fileURLToPath(new URL('../../yt-dlp/deno.exe', import.meta.url));
 
 const watchUrl = (id) => `https://www.youtube.com/watch?v=${id}`;
