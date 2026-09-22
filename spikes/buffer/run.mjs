@@ -24,6 +24,8 @@ const bufferMb = Number(opt('buffer-mb', '192'));
 const readAheadSeconds = Number(opt('read-ahead-seconds', '20'));
 // Criterion 7: a bogus id after the first entry, to prove a dead video is retried once and skipped.
 const injectBroken = argv.includes('--inject-broken');
+// --start/--max-videos cut the playlist down to the slice a test needs (one big video, four short ones).
+const start = Number(opt('start', '0'));
 const maxVideos = Number(opt('max-videos', '0'));
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +41,7 @@ const resolved = spawnSync(YTDLP, playlistArgs(playlist, client), { encoding: 'u
 const entries = resolved.stdout.trim().split(/\r?\n/).filter(Boolean)
   .map((line) => { const [id, title] = line.split('\t'); return { id, title: title ?? '' }; });
 if (!entries.length) { console.error(`yt-dlp resolved no entries:\n${resolved.stderr}`); process.exit(2); }
+if (start) entries.splice(0, start);
 if (injectBroken) entries.splice(1, 0, { id: 'aaaaaaaaaaa', title: 'INJECTED BROKEN ENTRY' });
 if (maxVideos) entries.length = Math.min(entries.length, maxVideos);
 writeFileSync('logs/playlist.json', JSON.stringify(entries, null, 2));
@@ -46,7 +49,7 @@ console.log(`${entries.length} entries, budget ${(budgetBytes / 1048576).toFixed
 
 const run = {
   startedAt: Date.now(), target, codec, hours, baseOffset: BASE_OFFSET, bufferMb, readAheadSeconds,
-  playlist, budgetBytes, limitRate, client, injectBroken, entries: entries.length,
+  playlist, budgetBytes, limitRate, client, injectBroken, start, maxVideos, entries: entries.length,
   endedAt: null, seams: 0, encoderExitedEarly: false, maxCacheBytes: 0, slateSeams: 0, videoSeams: 0, skipped: [],
 };
 const saveRun = () => writeFileSync('logs/run.json', JSON.stringify(run, null, 2));
