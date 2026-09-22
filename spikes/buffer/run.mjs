@@ -184,7 +184,7 @@ async function downloader() {
 const bufferLogger = setInterval(() => {
   const bytes = cacheBytes();
   run.maxCacheBytes = Math.max(run.maxCacheBytes, bytes);
-  log('buffer.csv', [new Date().toISOString(), bytes, onDisk.filter((v) => !v.played).length,
+  log('buffer.csv', [new Date().toISOString(), bytes, onDisk.length,
     downloading?.id ?? '', downloading ? downloading.percent.toFixed(1) : '', playing, encoderMedia.toFixed(1)]);
 }, 10_000);
 // The 10 s log can miss a peak between two samples; this catches the real maximum.
