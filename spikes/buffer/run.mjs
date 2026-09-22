@@ -111,9 +111,12 @@ function runFeeder(file, offset) {
   });
 }
 
+let currentYtdlp = null;
+
 function ytdlp(args, onLine) {
   return new Promise((resolve) => {
     const proc = spawn(YTDLP, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    currentYtdlp = proc;
     let out = '';
     let err = '';
     let rest = '';
@@ -231,6 +234,11 @@ while (encoderAlive && Date.now() < deadline) {
 }
 
 finishing = true;
+// The downloader only re-reads `finishing` between videos, and a throttled 170 MB fetch runs
+// for half an hour. Without this kill the run hangs long after the last seam.
+// ponytail: taskkill /T because yt-dlp.exe is a PyInstaller stub and the real worker is its
+// child; killing only the stub leaves an orphan holding a file in cache/.
+if (currentYtdlp?.pid) spawnSync('taskkill', ['/PID', String(currentYtdlp.pid), '/T', '/F'], { stdio: 'ignore' });
 clearInterval(bufferLogger);
 clearInterval(bytesPoller);
 readAhead.end();
