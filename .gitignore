@@ -20,3 +20,6 @@ spikes/continuity/tools/
 spikes/continuity/results/
 spikes/tools/
 spikes/overlay/out/
+spikes/buffer/cache/
+spikes/buffer/media/
+spikes/buffer/results/
