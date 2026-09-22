@@ -122,10 +122,13 @@ function ytdlp(args, onLine) {
     let rest = '';
     proc.stdout.on('data', (chunk) => {
       out += chunk;
-      if (!onLine) return;
       const lines = (rest + chunk).split(/\r?\n/);
       rest = lines.pop();
-      for (const line of lines) onLine(line);
+      for (const line of lines) {
+        // The PO-token provider reports on stdout, but ytdlp.log is where a run's evidence lives.
+        if (line.includes('[pot')) appendFileSync('logs/ytdlp.log', `${line}\n`);
+        onLine?.(line);
+      }
     });
     // Kept whole: a successful download can still hide a rename or merge that limped.
     proc.stderr.on('data', (chunk) => { err += chunk; appendFileSync('logs/ytdlp.log', chunk); });
