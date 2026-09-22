@@ -57,6 +57,7 @@ const readAhead = new PassThrough({ highWaterMark: Math.max(1, bufferMb) * 1024 
 readAhead.pipe(encoder.stdin);
 let encoderAlive = true;
 let encoderMedia = 0;
+let encoderStarted = false;
 let finishing = false;
 let currentFeeder = null;
 let pending = '';
@@ -66,6 +67,7 @@ encoder.stderr.on('data', (chunk) => {
   const progress = parseProgress(lines.join('\n'));
   if (progress.out_time_us && progress.out_time_us !== 'N/A') {
     encoderMedia = Number(progress.out_time_us) / 1e6;
+    encoderStarted = true;
     log('encoder.csv', [Date.now(), progress.out_time_us, progress.speed ?? '']);
   }
   const other = notProgress(lines.join('\n'));
@@ -192,7 +194,9 @@ downloader();
 let offset = BASE_OFFSET;
 while (encoderAlive && Date.now() < deadline) {
   // Hold the seam until the encoder is close behind, so slate/video is chosen on live state.
-  while (encoderAlive && offset - BASE_OFFSET - encoderMedia > readAheadSeconds) await sleep(250);
+  // Until ffmpeg's first progress row encoderMedia reads 0, which would wave several clips
+  // through at once; on a cold start that is the difference between 20 s and 40 s of slate.
+  while (encoderAlive && ((run.seams > 0 && !encoderStarted) || offset - BASE_OFFSET - encoderMedia > readAheadSeconds)) await sleep(250);
   if (!encoderAlive) break;
   const video = nextAtSeam(onDisk);
   if (!video && walkDone && !downloading) break;
@@ -202,7 +206,8 @@ while (encoderAlive && Date.now() < deadline) {
   const startedIso = new Date().toISOString();
   const { frames, code, errors } = await runFeeder(video?.file ?? SLATE, offset);
   if (video) video.feederAlive = false;
-  log('seams.csv', [run.seams, name, startedIso, offset.toFixed(6), frames, code]);
+  // check.mjs reads column 3 as the timeline offset; the exit time is appended for the delete audit.
+  log('seams.csv', [run.seams, name, startedIso, offset.toFixed(6), frames, code, new Date().toISOString()]);
   if (code !== 0) console.error(`feeder failed on ${name} (code ${code}): ${errors.trim()}`);
   offset = offsetAfter(offset, frames);
   run.seams += 1;
@@ -210,6 +215,8 @@ while (encoderAlive && Date.now() < deadline) {
   for (const done of deletable(onDisk)) {
     unlinkSync(done.file);
     onDisk.splice(onDisk.indexOf(done), 1);
+    // Timestamped so "no file deleted while a feeder read it" is checkable against seams.csv.
+    log('deletes.csv', [new Date().toISOString(), done.id, done.bytes]);
   }
   saveRun();
   console.log(`${startedIso}  seam=${run.seams} ${name}  timeline=${offset.toFixed(1)}s  cache=${(cacheBytes() / 1048576).toFixed(0)}MB`);
