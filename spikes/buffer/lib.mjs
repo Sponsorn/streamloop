@@ -10,8 +10,9 @@ export const PLAYER_CLIENT = 'web_embedded';
 // avc1 first: the feeder decodes on CPU beside the encoder, and av1 1080p costs several cores.
 export const FORMAT = 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]';
 // Without a JS runtime yt-dlp cannot solve the player challenge and every client is format-less.
-// ponytail: borrowed from the last release build; install deno properly if this spike grows up.
-const DENO = fileURLToPath(new URL('../../dist/streamloop/yt-dlp/deno.exe', import.meta.url));
+// The release puts deno next to yt-dlp.exe (build/prepare-release.js step 2); off a dev machine
+// that folder is empty, so fall through to yt-dlp's own PATH lookup.
+const DENO = fileURLToPath(new URL('../../yt-dlp/deno.exe', import.meta.url));
 
 const watchUrl = (id) => `https://www.youtube.com/watch?v=${id}`;
 const base = (client) => [
