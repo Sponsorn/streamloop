@@ -14,6 +14,14 @@ describe('feeder arguments', () => {
     expect(args.slice(-3)).toEqual(['-f', 'mpegts', 'pipe:1']);
     expect(args).toContain('+initial_discontinuity');
   });
+
+  it('ends every clip with its video, so an overlong audio track cannot bleed past the seam', () => {
+    // Arrange + Act
+    const args = feederArgs('media/a.mp4', 0);
+
+    // Assert
+    expect(args).toContain('-shortest');
+  });
 });
 
 describe('feeder arguments with a filter script', () => {

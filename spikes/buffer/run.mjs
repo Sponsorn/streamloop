@@ -24,7 +24,6 @@ const bufferMb = Number(opt('buffer-mb', '192'));
 const readAheadSeconds = Number(opt('read-ahead-seconds', '20'));
 // Criterion 7: a bogus id after the first entry, to prove a dead video is retried once and skipped.
 const injectBroken = argv.includes('--inject-broken');
-const shortest = argv.includes('--shortest');
 // --start/--max-videos cut the playlist down to the slice a test needs (one big video, four short ones).
 const start = Number(opt('start', '0'));
 const maxVideos = Number(opt('max-videos', '0'));
@@ -50,7 +49,7 @@ console.log(`${entries.length} entries, budget ${(budgetBytes / 1048576).toFixed
 
 const run = {
   startedAt: Date.now(), target, codec, hours, baseOffset: BASE_OFFSET, bufferMb, readAheadSeconds,
-  playlist, budgetBytes, limitRate, client, injectBroken, shortest, start, maxVideos, entries: entries.length,
+  playlist, budgetBytes, limitRate, client, injectBroken, start, maxVideos, entries: entries.length,
   endedAt: null, seams: 0, encoderExitedEarly: false, maxCacheBytes: 0, slateSeams: 0, videoSeams: 0, skipped: [],
 };
 const saveRun = () => writeFileSync('logs/run.json', JSON.stringify(run, null, 2));
@@ -98,11 +97,7 @@ let playing = 'none';
 
 function runFeeder(file, offset) {
   return new Promise((resolve) => {
-    const args = feederArgs(file, offset);
-    // A source's audio can outrun its video (Glass Half by 262 ms) and offsetAfter counts video
-    // frames, so the tail overlaps the next clip. Opt-in because feederArgs is spike 1's.
-    if (shortest) args.splice(args.lastIndexOf('-f'), 0, '-shortest');
-    const feeder = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const feeder = spawn('ffmpeg', feederArgs(file, offset), { stdio: ['ignore', 'pipe', 'pipe'] });
     currentFeeder = feeder;
     let frames = 0;
     let errors = '';

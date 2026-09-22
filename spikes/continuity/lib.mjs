@@ -42,6 +42,9 @@ export function feederArgs(file, offsetSeconds, { filterScript } = {}) {
     '-af', 'aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo',
     // -bf 0 keeps dts equal to pts, so no clip starts with a negative dts.
     '-c:v', 'mpeg2video', '-q:v', '2', '-g', '15', '-bf', '0', '-c:a', 'mp2', '-b:a', '384k',
+    // A source's audio can outrun its video (Glass Half by 262 ms). The caller advances the
+    // timeline by the video frame count, so the tail would play under the next clip.
+    '-shortest',
     '-muxdelay', '0', '-muxpreload', '0', '-mpegts_flags', '+initial_discontinuity',
     '-output_ts_offset', offsetSeconds.toFixed(6), '-f', 'mpegts', 'pipe:1',
   ];
