@@ -4,9 +4,12 @@ import { fileURLToPath } from 'node:url';
 export const YTDLP = fileURLToPath(new URL('../../yt-dlp/yt-dlp.exe', import.meta.url));
 export const SLATE = fileURLToPath(new URL('./media/slate.mp4', import.meta.url));
 export const SLATE_SECONDS = 10;
-// tv answers "the page needs to be reloaded" and web_safari is SABR-only, so neither yields a
-// downloadable format here; web_embedded does.
-export const PLAYER_CLIENT = 'web_embedded';
+// yt-dlp tries each client and merges what they offer. mweb needs a GVS PO token, which the
+// bgutil provider supplies; without the provider its formats are skipped and web_embedded — which
+// needs no token but is the kind of client YouTube eventually gates — carries the download.
+// web, web_safari and tv yield nothing today: the first two are SABR-only, tv answers
+// "the page needs to be reloaded", and android_vr wants a token bgutil cannot mint.
+export const PLAYER_CLIENT = 'mweb,web_embedded';
 // avc1 first: the feeder decodes on CPU beside the encoder, and av1 1080p costs several cores.
 export const FORMAT = 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]';
 // Without a JS runtime yt-dlp cannot solve the player challenge and every client is format-less.

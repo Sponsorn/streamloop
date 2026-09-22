@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  FORMAT, SLATE_SECONDS, playlistArgs, sizeArgs, downloadArgs, slateArgs, parseDownloadProgress,
+  FORMAT, SLATE_SECONDS, PLAYER_CLIENT, playlistArgs, sizeArgs, downloadArgs, slateArgs, parseDownloadProgress,
   bytesOf, decide, walkAfter, nextAtSeam, deletable,
 } from './lib.mjs';
 
@@ -183,6 +183,15 @@ describe('seam choice', () => {
 });
 
 describe('yt-dlp arguments', () => {
+  it('defaults to more than one player client, so a gated one cannot take the run down alone', () => {
+    // Act
+    const args = playlistArgs('https://youtube.com/playlist?list=X');
+
+    // Assert
+    expect(PLAYER_CLIENT.split(',').length).toBeGreaterThan(1);
+    expect(args[args.indexOf('--extractor-args') + 1]).toBe(`youtube:player_client=${PLAYER_CLIENT}`);
+  });
+
   it('resolves the playlist flat, one id and title per line', () => {
     // Act
     const args = playlistArgs('https://youtube.com/playlist?list=X', 'android_vr');
