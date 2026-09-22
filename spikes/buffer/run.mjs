@@ -124,7 +124,8 @@ function ytdlp(args, onLine) {
       rest = lines.pop();
       for (const line of lines) onLine(line);
     });
-    proc.stderr.on('data', (chunk) => { err += chunk; });
+    // Kept whole: a successful download can still hide a rename or merge that limped.
+    proc.stderr.on('data', (chunk) => { err += chunk; appendFileSync('logs/ytdlp.log', chunk); });
     proc.on('close', (code) => resolve({ code, out, err }));
   });
 }
@@ -163,14 +164,18 @@ async function downloader() {
       const dl = await ytdlp(downloadArgs(entry.id, file, { client, limitRate }),
         (line) => { const p = parseDownloadProgress(line); if (p !== null) downloading.percent = p; });
       downloading = null;
-      if (dl.code === 0 && existsSync(file)) {
+      ok = dl.code === 0 && existsSync(file);
+      // yt-dlp leaves a .part behind even on a clean merge, and it would count against the
+      // budget for the rest of the run. Everything but the merged file goes, either way.
+      for (const f of readdirSync(CACHE)) {
+        if (f.startsWith(entry.id) && `${CACHE}/${f}` !== file) unlinkSync(`${CACHE}/${f}`);
+      }
+      if (ok) {
         bytes = statSync(file).size;
         onDisk.push({ id: entry.id, title: entry.title, file, bytes, complete: true, played: false, feederAlive: false });
-        ok = true;
       } else {
         reason = (dl.err.trim().split(/\r?\n/).pop() ?? `yt-dlp exit ${dl.code}`).slice(0, 200);
-        // Leftover fragments would count against the budget forever.
-        for (const f of readdirSync(CACHE)) if (f.startsWith(entry.id)) unlinkSync(`${CACHE}/${f}`);
+        if (existsSync(file)) unlinkSync(file);
       }
     }
     const next = walkAfter(state, ok);
