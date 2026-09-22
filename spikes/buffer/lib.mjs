@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 export const YTDLP = fileURLToPath(new URL('../../yt-dlp/yt-dlp.exe', import.meta.url));
 export const SLATE = fileURLToPath(new URL('./media/slate.mp4', import.meta.url));
 export const SLATE_SECONDS = 10;
-// The spec asks for tv,web_safari. Today tv answers "the page needs to be reloaded" and
-// web_safari is SABR-only, so both yield no downloadable formats; web_embedded does. See the report.
+// tv answers "the page needs to be reloaded" and web_safari is SABR-only, so neither yields a
+// downloadable format here; web_embedded does.
 export const PLAYER_CLIENT = 'web_embedded';
 // avc1 first: the feeder decodes on CPU beside the encoder, and av1 1080p costs several cores.
 export const FORMAT = 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]';

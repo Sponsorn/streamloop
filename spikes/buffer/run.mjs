@@ -99,9 +99,8 @@ let playing = 'none';
 function runFeeder(file, offset) {
   return new Promise((resolve) => {
     const args = feederArgs(file, offset);
-    // Real sources often carry more audio than video (Glass Half: +262 ms). offsetAfter counts
-    // video frames, so that tail overlaps the next clip and costs a dts jump plus a lag spike at
-    // the seam. -shortest cuts the audio where the video ends. Opt-in: spike 1's feeder is shared.
+    // A source's audio can outrun its video (Glass Half by 262 ms) and offsetAfter counts video
+    // frames, so the tail overlaps the next clip. Opt-in because feederArgs is spike 1's.
     if (shortest) args.splice(args.lastIndexOf('-f'), 0, '-shortest');
     const feeder = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     currentFeeder = feeder;
@@ -211,8 +210,7 @@ downloader();
 let offset = BASE_OFFSET;
 while (encoderAlive && Date.now() < deadline) {
   // Hold the seam until the encoder is close behind, so slate/video is chosen on live state.
-  // Until ffmpeg's first progress row encoderMedia reads 0, which would wave several clips
-  // through at once; on a cold start that is the difference between 20 s and 40 s of slate.
+  // encoderMedia reads 0 until ffmpeg's first progress row, which would wave several clips through.
   while (encoderAlive && ((run.seams > 0 && !encoderStarted) || offset - BASE_OFFSET - encoderMedia > readAheadSeconds)) await sleep(250);
   if (!encoderAlive) break;
   const video = nextAtSeam(onDisk);
@@ -240,10 +238,8 @@ while (encoderAlive && Date.now() < deadline) {
 }
 
 finishing = true;
-// The downloader only re-reads `finishing` between videos, and a throttled 170 MB fetch runs
-// for half an hour. Without this kill the run hangs long after the last seam.
-// ponytail: taskkill /T because yt-dlp.exe is a PyInstaller stub and the real worker is its
-// child; killing only the stub leaves an orphan holding a file in cache/.
+// The downloader only re-reads `finishing` between videos, so a throttled fetch would hang the run.
+// ponytail: taskkill /T, because killing the PyInstaller stub alone orphans the real worker.
 if (currentYtdlp?.pid) spawnSync('taskkill', ['/PID', String(currentYtdlp.pid), '/T', '/F'], { stdio: 'ignore' });
 clearInterval(bufferLogger);
 clearInterval(bytesPoller);
