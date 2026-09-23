@@ -980,7 +980,9 @@ impl Ctl {
         let view = self.view().0;
         let t = rules::control_target(cmd, index, view, self.n())?;
         self.cut_live();
-        let flushed = self.shared.q.lock().unwrap().flush_from(0);
+        // The kept second is on air whatever it is; a later cut_filler only drops a new slate.
+        self.filler_since = None;
+        let flushed = self.shared.q.lock().unwrap().flush_keeping(rules::HZ);
         let cut = self.queue_end();
         self.control_seq += 1;
         self.count("controls");

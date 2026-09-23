@@ -185,6 +185,19 @@ impl Queue {
         dropped
     }
 
+    /// A control's flush: keep `margin` of media past the last PTS the writer handed over, so the
+    /// new feeder (a URL one needs its first bytes) has time before the encoder starves, and
+    /// drop everything from the first chunk (a video PES start) at or past that point.
+    pub fn flush_keeping(&mut self, margin: i64) -> usize {
+        let Some(limit) = self.written_pts.or(self.chunks.front().map(|c| c.pts)).map(|w| w + margin) else { return 0 };
+        let mut dropped = 0;
+        while self.chunks.back().is_some_and(|c| c.pts >= limit) {
+            dropped += self.chunks.pop_back().unwrap().data.len();
+        }
+        self.bytes -= dropped;
+        dropped
+    }
+
     pub fn push(&mut self, feeder: u64, data: Vec<u8>, pts: i64) -> bool {
         let Some(live) = self.live.as_mut().filter(|l| l.seq == feeder) else { return false };
         live.last_pts = Some(pts);
@@ -371,6 +384,37 @@ mod tests {
         assert_eq!(q.flush_from(0), 3 * PKT);
         assert_eq!(q.bytes, 0);
         assert_eq!(q.end(), Some(BASE + 2 * FRAME));
+    }
+
+    #[test]
+    fn control_flush_keeps_a_second_past_the_writer_and_cuts_at_the_next_pes() {
+        let mut q = Queue::new(1 << 30);
+        q.live = live(1);
+        for f in 0..90 {
+            q.push(1, vec![0; PKT], BASE + f * FRAME);
+        }
+        // the writer took ten chunks: last written PTS is frame 9
+        for _ in 0..10 {
+            let c = q.chunks.pop_front().unwrap();
+            q.bytes -= c.data.len();
+            q.written_pts = Some(c.pts);
+        }
+        // frames 10..=38 are under 1 s past frame 9; frame 39 is the first at 1.0 s
+        assert_eq!(q.flush_keeping(HZ), (90 - 39) as usize * PKT);
+        assert_eq!(q.chunks.back().unwrap().pts, BASE + 38 * FRAME);
+        assert_eq!(q.end(), Some(BASE + 39 * FRAME));
+    }
+
+    #[test]
+    fn control_flush_with_less_than_the_margin_queued_drops_nothing() {
+        let mut q = Queue::new(1 << 30);
+        q.live = live(1);
+        for f in 0..5 {
+            q.push(1, vec![0; PKT], BASE + f * FRAME);
+        }
+        q.written_pts = Some(BASE);
+        assert_eq!(q.flush_keeping(HZ), 0);
+        assert_eq!(q.end(), Some(BASE + 5 * FRAME));
     }
 
     #[test]
