@@ -1,6 +1,7 @@
 // One whole supervisor run: MediaMTX + token-server check, the supervisor binary, spike 1's
 // watcher, a raw packet reader, a recorder, an optional drive.mjs, then analyze + verdict.
-//   node session.mjs <name> [--drive controls|faults|resume] [supervisor flags...]
+//   node session.mjs <name> [--drive controls|faults|resume] [--gap-s 60] [supervisor flags...]
+// --gap-s only shortens the controls plan's spacing (for a shakedown); everything else goes to the supervisor.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, renameSync, writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -19,9 +20,11 @@ if (!name || name.startsWith('--')) {
   process.exit(2);
 }
 let drivePlan = null;
+let gapS = '60';
 const supArgs = [];
 for (let i = 0; i < rest.length; i += 1) {
   if (rest[i] === '--drive') { drivePlan = rest[i += 1]; continue; }
+  if (rest[i] === '--gap-s') { gapS = rest[i += 1]; continue; }
   supArgs.push(rest[i]);
 }
 
@@ -95,12 +98,13 @@ function runWatch() {
 await sleep(8000); // the reader can only attach once the stream is published
 runWatch();
 
-// recorder: ffmpeg -c copy, restarts after a drop, file name carries wall-clock start
+// recorder: ffmpeg -c copy -copyts (file timestamps = reader dts, so analyze cuts clips by dts),
+// restarts after a drop, file name carries wall-clock start
 let recStop = false;
 function runRecorder() {
   if (recStop) return;
   const outFile = `${SUP_DIR}/logs/rec/${Date.now()}.mkv`;
-  const rec = spawn('ffmpeg', ['-v', 'error', '-i', 'rtmp://127.0.0.1:1935/live/spike', '-c', 'copy', outFile], { stdio: 'ignore' });
+  const rec = spawn('ffmpeg', ['-v', 'error', '-i', 'rtmp://127.0.0.1:1935/live/spike', '-c', 'copy', '-copyts', outFile], { stdio: 'ignore' });
   rec.on('error', (err) => console.error(`recorder ffmpeg error: ${err.message}`));
   rec.on('close', () => { if (!recStop) sleep(1000).then(runRecorder); });
 }
@@ -116,14 +120,12 @@ const startedAt = Date.now();
 if (drivePlan === 'resume') {
   supervisor = launchSupervisor(supArgs);
   await sleep(3 * 60_000);
+  spawnSync('taskkill', ['/F', '/PID', String(supervisor.pid)]);
+  // read after the kill: the dead supervisor can no longer move it, and the relaunch reads this one
   const before = JSON.parse(readFileSync(`${SUP_DIR}/state.json`, 'utf8'));
   writeFileSync(`${SUP_DIR}/logs/resume-before.json`, JSON.stringify(before, null, 2));
-  spawnSync('taskkill', ['/F', '/PID', String(supervisor.pid)]);
   await sleep(3000);
-  const ps = spawnSync('powershell', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'ffmpeg.exe|yt-dlp.exe|node.exe' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"],
-    { encoding: 'utf8' });
-  writeFileSync(`${SUP_DIR}/logs/resume-leftover-processes.json`, ps.stdout || '[]');
+  snapshotProcesses('resume-leftover-processes.json');
   supervisor = launchSupervisor([...supArgs, '--resume']);
   await sleep(5000);
   const after = await fetch(`${API}/status`).then((r) => r.json()).catch(() => null);
@@ -135,14 +137,18 @@ if (drivePlan === 'resume') {
   supervisor = launchSupervisor(supArgs);
   if (drivePlan === 'controls' || drivePlan === 'faults') {
     await sleep(5000);
-    drive = spawn(node, [DRIVE, drivePlan], { cwd: SUP_DIR, stdio: 'inherit' });
+    drive = spawn(node, [DRIVE, drivePlan, '--gap-s', gapS], { cwd: SUP_DIR, stdio: 'inherit' });
     if (drivePlan === 'controls') {
-      // Prove that killing the client leaves the stream alone: kill drive midway, relaunch with --resume-from.
-      await sleep(4 * 60_000);
+      // Prove that killing the client leaves the stream alone: kill drive halfway between its 4th
+      // and 5th command, relaunch with --resume-from.
+      const sentRows = () => (existsSync(`${SUP_DIR}/logs/drive.csv`) ? readFileSync(`${SUP_DIR}/logs/drive.csv`, 'utf8').trim().split(/\r?\n/).filter(Boolean).length : 0);
+      while (sentRows() < 4) await sleep(1000);
+      await sleep(Number(gapS) * 500);
       drive.kill();
+      log('drive-restarts.csv', [Date.now(), 'kill']);
       await sleep(2000);
-      const sent = existsSync(`${SUP_DIR}/logs/drive.csv`) ? readFileSync(`${SUP_DIR}/logs/drive.csv`, 'utf8').trim().split(/\r?\n/).filter(Boolean).length : 0;
-      drive = spawn(node, [DRIVE, 'controls', '--resume-from', String(sent)], { cwd: SUP_DIR, stdio: 'inherit' });
+      drive = spawn(node, [DRIVE, 'controls', '--gap-s', gapS, '--resume-from', String(sentRows())], { cwd: SUP_DIR, stdio: 'inherit' });
+      log('drive-restarts.csv', [Date.now(), 'relaunch']);
     }
     if (drivePlan === 'faults') watchMediaMtxSignal();
   }
@@ -170,8 +176,16 @@ function watchMediaMtxSignal() {
   }, 500);
 }
 
+function snapshotProcesses(file) {
+  const ps = spawnSync('powershell', ['-NoProfile', '-Command',
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'ffmpeg.exe|yt-dlp.exe|node.exe' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"],
+    { encoding: 'utf8' });
+  writeFileSync(`${SUP_DIR}/logs/${file}`, ps.stdout || '[]');
+}
+
 readerStop = true; watchStop = true; recStop = true;
 await sleep(10_000); // let the reader/watcher see the stream end and flush their last rows
+snapshotProcesses('leftover-processes.json');
 writeFileSync(`${SUP_DIR}/logs/run-session.json`, JSON.stringify({ name, drivePlan, supArgs, startedAt, endedAt }, null, 2));
 
 const dest = `${SUP_DIR}/results/${name}`;

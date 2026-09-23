@@ -81,18 +81,19 @@ impl Ytdlp {
             Err(e) => return Output { ok: false, stdout: String::new(), stderr: format!("spawn failed: {e}"), cancelled: false },
         };
         pid(child.id());
-        let mut err_pipe = child.stderr.take().unwrap();
+        let err_pipe = child.stderr.take().unwrap();
         let err_logs = logs.clone();
+        // Line by line and timestamped, so a log line can be placed against events.jsonl.
         let err_thread = std::thread::spawn(move || {
             let mut all = String::new();
-            let mut buf = [0u8; 8192];
-            while let Ok(n) = err_pipe.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                let s = String::from_utf8_lossy(&buf[..n]);
-                err_logs.append("ytdlp.log", &s);
-                all.push_str(&s);
+            let mut r = BufReader::new(err_pipe);
+            let mut buf = vec![];
+            while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+                let line = String::from_utf8_lossy(&buf).trim_end().to_string();
+                buf.clear();
+                err_logs.append("ytdlp.log", &format!("{} {line}\n", crate::iso_now()));
+                all.push_str(&line);
+                all.push('\n');
             }
             all
         });
@@ -117,7 +118,7 @@ impl Ytdlp {
         let status = loop {
             while let Ok(line) = rx.try_recv() {
                 if line.contains("[pot") {
-                    logs.append("ytdlp.log", &format!("{line}\n"));
+                    logs.append("ytdlp.log", &format!("{} {line}\n", crate::iso_now()));
                 }
                 on_line(&line);
                 stdout.push_str(&line);
@@ -138,7 +139,7 @@ impl Ytdlp {
         std::thread::sleep(Duration::from_millis(50));
         while let Ok(line) = rx.try_recv() {
             if line.contains("[pot") {
-                logs.append("ytdlp.log", &format!("{line}\n"));
+                logs.append("ytdlp.log", &format!("{} {line}\n", crate::iso_now()));
             }
             on_line(&line);
             stdout.push_str(&line);
