@@ -101,7 +101,11 @@ if (plan === 'controls') {
   await sleep(90_000);
 
   await sendFault('kill-token-server');
-  await sleep(90_000);
+  await sleep(45_000);
+  // the throttled download in flight predates the kill; a new target starts a new download, whose
+  // [pot:bgutil:http] line shows yt-dlp using the token server the supervisor now owns
+  await sendControl('next');
+  await sleep(60_000);
 
   // MediaMTX down: the session owns MediaMTX, so hand it a signal file instead of touching it here.
   const before = await status();

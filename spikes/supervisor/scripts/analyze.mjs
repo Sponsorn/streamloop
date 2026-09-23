@@ -261,6 +261,10 @@ const faultResults = driveRows.filter((d) => FAULTS.includes(d.cmd)).map((d) => 
     r.nearby = dts != null ? watchNear(e, dts - 15, dts + 5) : null;
   } else if (d.cmd === 'break-url' && d.payload.count === 'always') {
     const skip = firstEventAfter(events, at, ['skip']);
+    // a broken URL only bites at the next resolve (a refresh or a retry), not at the fault itself
+    // (before the fault events carried a 'fault' field, their payload overwrote 'kind')
+    const applied = events.find((x) => x.wallMs >= at && (x.kind === 'fault-applied' || (x.kind === 'break-url' && 'index' in x)));
+    r.firstBrokenResolveMs = applied ? applied.wallMs - at : null;
     r.retriesBeforeSkip = events.filter((x) => x.kind === 'retry' && x.wallMs >= at && (!skip || x.wallMs <= skip.wallMs)).map((x) => ({ why: x.why, ms: x.wallMs - at }));
     r.skip = skip ? { ms: skip.wallMs - at, index: skip.index, why: skip.why } : null;
     const nextVideo = skip ? tables[ep(skip.wallMs)].find((s) => s.wallMs > skip.wallMs && s.source !== 'slate') : null;

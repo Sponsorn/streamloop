@@ -327,7 +327,7 @@ impl Ctl {
         }
         let offset = self.queue_end();
         let spawned = procs::command("ffmpeg")
-            .args(media::feeder_args(&input, pos, offset))
+            .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
@@ -890,7 +890,7 @@ impl Ctl {
         if let Some((i, count)) = self.break_url.as_mut().filter(|(i, _)| *i == index) {
             r.video = rules::mangle_sig(&r.video);
             r.audio = rules::mangle_sig(&r.audio);
-            self.logs.event("info", "fault-applied", json!({"kind": "break-url", "index": *i}));
+            self.logs.event("info", "fault-applied", json!({"fault": "break-url", "index": *i}));
             if let Some(c) = count {
                 *c -= 1;
                 if *c == 0 {
@@ -995,7 +995,7 @@ impl Ctl {
     }
 
     fn fault(&mut self, kind: &str, count: Option<u32>) -> Result<Value, String> {
-        self.logs.event("info", "fault", json!({"kind": kind, "count": count}));
+        self.logs.event("info", "fault", json!({"fault": kind, "count": count}));
         match kind {
             "kill-feeder" | "stall-feeder" => {
                 let f = self.live.as_ref().ok_or("no live feeder")?;

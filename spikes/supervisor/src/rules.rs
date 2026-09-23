@@ -115,6 +115,13 @@ pub fn view_at(seams: &[Seam], t: i64) -> Option<(&Seam, f64)> {
     Some((s, pos))
 }
 
+/// Where a feeder seeks its input. The slate always plays from its start: its seam keeps the
+/// video position it covers for (so P_view stands still), but seeking the slate file there
+/// makes ffmpeg exit with nothing.
+pub fn seek_for(source: &Source, pos: f64) -> f64 {
+    if *source == Source::Slate { 0.0 } else { pos }
+}
+
 /// Where a feeder has fed to: its start position plus what it delivered.
 pub fn fed_pos(start_pos: f64, offset: i64, end: i64) -> f64 {
     start_pos + secs(end - offset)
@@ -317,6 +324,13 @@ mod tests {
         push_seam(&mut s, seam(30, 1, Source::File, 0.0));
         push_seam(&mut s, seam(20, 5, Source::File, 0.0));
         assert_eq!(s.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 5]);
+    }
+
+    #[test]
+    fn slate_covering_a_mid_video_retry_plays_from_its_start() {
+        assert_eq!(seek_for(&Source::Slate, 171.8), 0.0);
+        assert_eq!(seek_for(&Source::Url, 171.8), 171.8);
+        assert_eq!(seek_for(&Source::File, 12.5), 12.5);
     }
 
     #[test]
