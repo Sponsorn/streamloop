@@ -95,8 +95,9 @@ function framesAround(e, dts, span = 1.2) {
   const ss = Math.max(0, dts - span - rec.start);
   const r = spawnSync('ffmpeg', ['-hide_banner', '-v', 'info', '-copyts', '-ss', ss.toFixed(3), '-t', (2 * span).toFixed(3), '-i', rec.file, '-an', '-vf', 'showinfo', '-f', 'null', '-'],
     { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
-  // the slate's plane checksums drift from frame to frame after encoding; its mean and stdev do not
-  return [...(r.stderr ?? '').matchAll(/pts_time:([0-9.]+).*?(mean:\[[^\]]*\] stdev:\[[^\]]*\])/g)].map((m) => ({ t: Number(m[1]), y: m[2] }));
+  // the slate's checksums drift from frame to frame after encoding, and its chroma settles over a
+  // few frames after a cut; its luma mean and stdev hold from the first frame
+  return [...(r.stderr ?? '').matchAll(/pts_time:([0-9.]+).*?mean:\[(\d+).*?stdev:\[([0-9.]+)/g)].map((m) => ({ t: Number(m[1]), y: `${m[2]}/${m[3]}` }));
 }
 
 const corr = Array(epochCount).fill(0);
@@ -115,10 +116,10 @@ for (let e = 0; e < epochCount; e += 1) {
     if (toSlate) { j = k; while (j < table.length - 1 && table[j + 1].source === 'slate') j += 1; if (table[j + 1] && table[j + 1].offset - cur.offset < 0.6) continue; }
     const predicted = cur.offset - BASE;
     const actual = slateEdge(framesAround(e, predicted), predicted, toSlate);
-    if (actual != null) errors.push(r3(actual - predicted));
+    if (actual != null) errors.push({ offset: cur.offset, toSlate, errorSec: r3(actual - predicted) });
   }
-  if (errors.length) corr[e] = median(errors);
-  calibration.push({ epoch: e, edges: errors.length, errorsSec: errors, appliedSec: r3(corr[e]) });
+  if (errors.length) corr[e] = median(errors.map((x) => x.errorSec));
+  calibration.push({ epoch: e, edges: errors, appliedSec: r3(corr[e]) });
 }
 print('calibration', calibration);
 
@@ -183,10 +184,13 @@ const controlResults = controls.map((c, k) => {
   const nextControl = controls[k + 1]?.wallMs ?? Infinity;
   const target = tables[e]?.find((s) => s.offset >= c.cutOffset - 0.001 && s.source !== 'slate' && s.index === c.targetIndex && s.wallMs >= c.wallMs - 50 && s.wallMs < nextControl);
   const onAir = target ? reach(e, target.offset) : null;
+  // what the command had to wait for: a URL feeder started for the target (it may have been
+  // handed over to the just-finished file at the same offset before a frame of it aired)
+  const viaUrl = target && seams.some((s) => s.epoch === e && s.index === c.targetIndex && s.source === 'url' && s.wallMs >= c.wallMs - 50 && s.wallMs <= target.wallMs);
   const near = watchNear(e, cutDts - 1, (target ? dtsOf(e, target.offset) : cutDts) + 5);
   const label = `control-${k + 1}-${c.cmd}-${c.targetIndex}`;
   return {
-    n: k + 1, cmd: c.cmd, at: iso(c.wallMs), targetIndex: c.targetIndex, targetId: c.targetId, targetSource: target?.source ?? null,
+    n: k + 1, cmd: c.cmd, at: iso(c.wallMs), targetIndex: c.targetIndex, targetId: c.targetId, targetSource: target ? (viaUrl ? 'url' : target.source) : null, airedFrom: target?.source ?? null,
     visibleMs: visible ? visible.wallMs - replyMs : null,
     onAirMs: onAir ? onAir.wallMs - replyMs : null,
     statusNamedTargetMs: drove?.payload?.statusMatchMs ?? null,
