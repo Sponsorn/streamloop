@@ -200,6 +200,92 @@ pub fn ended_early(code_ok: bool, fed: f64, duration: Option<f64>) -> bool {
     !code_ok || matches!(duration, Some(d) if d > 0.0 && fed < d - 5.0)
 }
 
+/// Global YouTube circuit breaker. A bot check, or this many resolve failures in a row across
+/// videos, opens it; while open nothing talks to YouTube except one probe resolve per step.
+pub const BREAKER_FAILURES: u32 = 3;
+/// Minimum spacing of resolves (and size probes) for the whole supervisor.
+pub const RESOLVE_SPACING_S: f64 = 5.0;
+
+pub fn breaker_backoff_s(level: u32) -> f64 {
+    [60.0, 120.0, 300.0, 600.0, 1800.0][(level as usize).min(4)]
+}
+
+pub fn is_bot_check(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    r.contains("sign in to confirm") || r.contains("not a bot") || r.contains("bot check")
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Allow {
+    Yes,
+    Probe,
+    No,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BreakerChange {
+    None,
+    Opened,
+    ProbeFailed,
+    Closed,
+}
+
+/// Times are seconds on any monotonic clock.
+#[derive(Debug, Default)]
+pub struct Breaker {
+    pub open: bool,
+    pub level: u32,
+    pub retry_at: f64,
+    pub probing: bool,
+    pub failures: u32,
+}
+
+impl Breaker {
+    /// May a resolve run now? `Probe` hands out the one probe of this step.
+    pub fn allow(&mut self, now: f64) -> Allow {
+        if !self.open {
+            Allow::Yes
+        } else if !self.probing && now >= self.retry_at {
+            self.probing = true;
+            Allow::Probe
+        } else {
+            Allow::No
+        }
+    }
+
+    /// The result of a resolve, size probe or download. Only resolves (`counts`) add to the run
+    /// of failures; a bot check from anything opens. While open, only the probe's result moves
+    /// the breaker (a late result of a call started before it opened does not, unless it succeeded).
+    pub fn result(&mut self, ok: bool, bot: bool, counts: bool, probe: bool, now: f64) -> BreakerChange {
+        if ok {
+            self.failures = 0;
+            let was = self.open;
+            *self = Breaker::default();
+            return if was { BreakerChange::Closed } else { BreakerChange::None };
+        }
+        if self.open {
+            if !probe {
+                return BreakerChange::None;
+            }
+            self.probing = false;
+            self.level += 1;
+            self.retry_at = now + breaker_backoff_s(self.level);
+            return BreakerChange::ProbeFailed;
+        }
+        if counts {
+            self.failures += 1;
+        }
+        if bot || self.failures >= BREAKER_FAILURES {
+            self.open = true;
+            self.level = 0;
+            self.probing = false;
+            self.retry_at = now + breaker_backoff_s(0);
+            return BreakerChange::Opened;
+        }
+        BreakerChange::None
+    }
+}
+
 pub fn encoder_backoff_s(failures: u32) -> u64 {
     [2, 5, 10, 30, 60][(failures as usize).min(4)]
 }
@@ -324,6 +410,58 @@ mod tests {
         push_seam(&mut s, seam(30, 1, Source::File, 0.0));
         push_seam(&mut s, seam(20, 5, Source::File, 0.0));
         assert_eq!(s.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 5]);
+    }
+
+    #[test]
+    fn breaker_opens_on_a_bot_check_and_probes_once_per_step() {
+        let mut b = Breaker::default();
+        assert_eq!(b.allow(0.0), Allow::Yes);
+        assert_eq!(b.result(false, true, true, false, 10.0), BreakerChange::Opened);
+        assert_eq!(b.allow(10.0), Allow::No);
+        assert_eq!(b.allow(69.9), Allow::No);
+        assert_eq!(b.allow(70.0), Allow::Probe);
+        assert_eq!(b.allow(70.0), Allow::No, "one probe per step");
+        // the probe fails: 2 min, then 5, 10, 30, and 30 forever
+        let mut now = 75.0;
+        for wait in [120.0, 300.0, 600.0, 1800.0, 1800.0, 1800.0] {
+            assert_eq!(b.result(false, true, true, true, now), BreakerChange::ProbeFailed);
+            assert_eq!(b.allow(now + wait - 0.1), Allow::No);
+            assert_eq!(b.allow(now + wait), Allow::Probe);
+            now += wait + 5.0;
+        }
+        assert_eq!(b.result(true, false, true, true, now), BreakerChange::Closed);
+        assert!(!b.open);
+        assert_eq!(b.allow(now), Allow::Yes);
+        assert_eq!(b.level, 0);
+    }
+
+    #[test]
+    fn breaker_opens_on_three_resolve_failures_in_a_row_not_on_download_failures() {
+        let mut b = Breaker::default();
+        assert_eq!(b.result(false, false, true, false, 0.0), BreakerChange::None);
+        assert_eq!(b.result(false, false, false, false, 1.0), BreakerChange::None, "a plain download failure does not count");
+        assert_eq!(b.result(false, false, true, false, 2.0), BreakerChange::None);
+        assert_eq!(b.result(true, false, true, false, 3.0), BreakerChange::None, "a success resets the run");
+        assert_eq!(b.result(false, false, true, false, 4.0), BreakerChange::None);
+        assert_eq!(b.result(false, false, true, false, 5.0), BreakerChange::None);
+        assert_eq!(b.result(false, false, true, false, 6.0), BreakerChange::Opened);
+        assert_eq!(b.retry_at, 66.0);
+    }
+
+    #[test]
+    fn breaker_ignores_late_failures_while_open_but_closes_on_any_success() {
+        let mut b = Breaker::default();
+        b.result(false, true, false, false, 0.0);
+        assert_eq!(b.result(false, true, true, false, 1.0), BreakerChange::None);
+        assert_eq!(b.retry_at, 60.0, "a late failure does not push the probe back");
+        assert_eq!(b.result(true, false, true, false, 2.0), BreakerChange::Closed);
+    }
+
+    #[test]
+    fn bot_check_reasons_are_recognised() {
+        assert!(is_bot_check("YouTube bot check: sign in to confirm you're not a bot"));
+        assert!(is_bot_check("ERROR: [youtube] x: Sign in to confirm you\u{2019}re not a bot."));
+        assert!(!is_bot_check("HTTP Error 403: Forbidden"));
     }
 
     #[test]

@@ -131,6 +131,8 @@ pub enum Purpose {
     Play,
     Refresh,
     Size,
+    /// A breaker probe (or the bot-check fault): only its outcome matters.
+    Probe,
 }
 
 pub enum Msg {
@@ -251,6 +253,11 @@ struct Ctl {
     last_state: Instant,
     last_buffer: Instant,
     last_scan: Instant,
+    breaker: rules::Breaker,
+    t0: Instant,
+    last_resolve: Option<Instant>,
+    probe_key: Option<(usize, bool)>,
+    fake_bot: bool,
 }
 
 const STALL: Duration = Duration::from_secs(10);
@@ -449,16 +456,73 @@ impl Ctl {
         }
     }
 
-    fn request_resolve(&mut self, index: usize, purpose: Purpose) {
+    fn now_s(&self) -> f64 {
+        self.t0.elapsed().as_secs_f64()
+    }
+
+    /// One slot for a call to YouTube: the global resolve spacing, then the breaker.
+    /// Some(true) = this call is the breaker's probe.
+    fn youtube_slot(&mut self) -> Option<bool> {
+        if self.last_resolve.is_some_and(|t| t.elapsed().as_secs_f64() < rules::RESOLVE_SPACING_S) {
+            return None;
+        }
+        let now = self.now_s();
+        match self.breaker.allow(now) {
+            rules::Allow::Yes => Some(false),
+            rules::Allow::Probe => Some(true),
+            rules::Allow::No => None,
+        }
+    }
+
+    /// Returns whether a resolve was started (or is already running).
+    fn request_resolve(&mut self, index: usize, purpose: Purpose) -> bool {
         let key = (index, purpose == Purpose::Size);
-        if !self.resolving.insert(key) {
-            return;
+        if self.resolving.contains(&key) {
+            return true;
+        }
+        let Some(probe) = self.youtube_slot() else { return false };
+        self.resolving.insert(key);
+        self.last_resolve = Some(Instant::now());
+        if probe {
+            self.probe_key = Some(key);
+            self.logs.event("info", "youtube-probe", json!({"index": index, "id": self.id(index), "level": self.breaker.level}));
         }
         let (yt, logs, tx, id) = (self.yt.clone(), self.logs.clone(), self.tx.clone(), self.id(index));
+        if std::mem::take(&mut self.fake_bot) {
+            // debug fault: answer as YouTube's bot check does, without asking YouTube
+            let _ = tx.send(Msg::Resolved { index, purpose, result: Err("YouTube bot check: sign in to confirm you're not a bot (injected)".into()) });
+            return true;
+        }
         std::thread::spawn(move || {
             let result = yt.resolve(&id, &logs);
             let _ = tx.send(Msg::Resolved { index, purpose, result });
         });
+        true
+    }
+
+    /// Feed a YouTube call's outcome to the breaker and act on a change.
+    fn breaker_result(&mut self, ok: bool, bot: bool, counts: bool, probe: bool, reason: &str) {
+        let now = self.now_s();
+        let change = self.breaker.result(ok, bot, counts, probe, now);
+        let retry_at = self.breaker_retry_iso();
+        match change {
+            rules::BreakerChange::Opened => {
+                self.logs.event("critical", "youtube-breaker-open", json!({"reason": reason, "bot": bot, "retryAt": retry_at}));
+                if let Some((i, _, cancel)) = &self.downloading {
+                    self.logs.event("info", "download-cancel", json!({"index": i, "id": self.id(*i), "why": "breaker"}));
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            rules::BreakerChange::ProbeFailed => {
+                self.logs.event("warn", "youtube-probe-failed", json!({"reason": reason, "level": self.breaker.level, "retryAt": retry_at}));
+            }
+            rules::BreakerChange::Closed => self.logs.event("info", "youtube-breaker-closed", json!({})),
+            rules::BreakerChange::None => {}
+        }
+    }
+
+    fn breaker_retry_iso(&self) -> Option<String> {
+        self.breaker.open.then(|| iso(unix_ms() + ((self.breaker.retry_at - self.now_s()).max(0.0) * 1000.0) as u128))
     }
 
     fn fresh_url(&self, i: usize) -> bool {
@@ -626,9 +690,10 @@ impl Ctl {
             } else if source == Source::Url && !filler && self.refresh_pending.is_none() && started.elapsed() > Duration::from_secs(30) && now >= self.refresh_after {
                 let unix = unix_ms() as u64 / 1000;
                 if expire.is_some_and(|e| rules::refresh_due(unix, e, self.args.refresh_margin)) && !self.resolving.contains(&(index, false)) {
-                    self.logs.event("info", "url-refresh", json!({"index": index, "id": self.id(index), "expire": expire, "now": unix}));
-                    self.refresh_after = now + Duration::from_secs(30);
-                    self.request_resolve(index, Purpose::Refresh);
+                    if self.request_resolve(index, Purpose::Refresh) {
+                        self.logs.event("info", "url-refresh", json!({"index": index, "id": self.id(index), "expire": expire, "now": unix}));
+                        self.refresh_after = now + Duration::from_secs(30);
+                    }
                 }
             }
             if let Some(f) = &self.live {
@@ -640,8 +705,17 @@ impl Ctl {
         }
 
         // The target: what should be fed next.
-        if let Some(t) = self.target.clone() {
+        if let Some(mut t) = self.target.clone() {
             if self.live.as_ref().is_none_or(|f| f.filler) && !self.videos.is_empty() {
+                // YouTube is off limits: play a cached file instead of waiting on the slate.
+                if self.breaker.open && !self.videos[t.index].on_disk {
+                    let n = self.n();
+                    if let Some(j) = (1..n).map(|d| (t.index + d) % n).find(|&j| self.videos[j].on_disk && !self.videos[j].skipped) {
+                        self.logs.event("warn", "breaker-retarget", json!({"from": t.index, "to": j, "id": self.id(j)}));
+                        t = Target { index: j, pos: 0.0, ..t };
+                        self.target = Some(t.clone());
+                    }
+                }
                 let on_disk = self.videos[t.index].on_disk;
                 if !on_disk && !self.fresh_url(t.index) {
                     self.request_resolve(t.index, Purpose::Play);
@@ -669,6 +743,11 @@ impl Ctl {
         // Recovered once the viewer has watched 10 s of video past the point of the fault.
         if self.step != "none" && on_video && self.view_timeline() > self.step_offset + 10 * rules::HZ {
             self.step = "none";
+        }
+        // An open breaker probes once per step even when nothing needs a resolve.
+        if self.breaker.open && !self.breaker.probing && self.now_s() >= self.breaker.retry_at && !self.videos.is_empty() {
+            let i = self.target.as_ref().map_or(self.view().0, |t| t.index);
+            self.request_resolve(i, Purpose::Probe);
         }
         self.cache_work();
         self.periodic();
@@ -731,7 +810,7 @@ impl Ctl {
         }
 
         // Dispatch one job when the downloader is idle.
-        if self.downloading.is_some() || self.sizing || Instant::now() < self.dl_after {
+        if self.downloading.is_some() || self.sizing || Instant::now() < self.dl_after || self.breaker.open {
             return;
         }
         let on_disk: Vec<bool> = self.videos.iter().map(|v| v.on_disk).collect();
@@ -739,6 +818,10 @@ impl Ctl {
         let pick = first.filter(|&u| !failed[u]).or_else(|| rules::next_download(&win, &on_disk, &failed));
         let Some(i) = pick else { return };
         if self.videos[i].bytes.is_none() && i != view && Some(i) != first {
+            if self.youtube_slot().is_none() {
+                return;
+            }
+            self.last_resolve = Some(Instant::now());
             self.sizing = true;
             let _ = self.jobs.send(Job::Size(i, self.id(i)));
         } else {
@@ -837,6 +920,9 @@ impl Ctl {
             }
             Msg::Downloaded { index, ok, cancelled, bytes, ms, reason } => {
                 self.downloading = None;
+                if !cancelled {
+                    self.breaker_result(ok, rules::is_bot_check(&reason), false, false, &reason);
+                }
                 let v = &mut self.videos[index];
                 let result = if cancelled {
                     "cancel"
@@ -864,10 +950,17 @@ impl Ctl {
     }
 
     fn on_resolved(&mut self, index: usize, purpose: Purpose, result: Result<Resolved, String>) {
-        self.resolving.remove(&(index, purpose == Purpose::Size));
+        let key = (index, purpose == Purpose::Size);
+        self.resolving.remove(&key);
         if purpose == Purpose::Size {
             self.sizing = false;
         }
+        let probe = self.probe_key == Some(key);
+        if probe {
+            self.probe_key = None;
+        }
+        let reason = result.as_ref().err().cloned().unwrap_or_default();
+        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), true, probe, &reason);
         let mut r = match result {
             Ok(r) => r,
             Err(reason) => {
@@ -877,12 +970,15 @@ impl Ctl {
                         self.videos[index].dl_failed = true;
                         self.logs.csv("downloads.csv", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason]);
                     }
+                    // Not the video's fault while YouTube is off limits: no retry, no skip, the
+                    // target waits (slate or a cached file) until the breaker closes.
+                    Purpose::Play if self.breaker.open => {}
                     Purpose::Play => {
                         if let Some(t) = self.target.clone().filter(|t| t.index == index) {
                             self.fail(index, t.pos, "resolve", json!({"reason": reason}));
                         }
                     }
-                    Purpose::Refresh => {}
+                    Purpose::Refresh | Purpose::Probe => {}
                 }
                 return;
             }
@@ -970,6 +1066,7 @@ impl Ctl {
             "tokenServer": token,
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
             "playlistCount": self.n(),
+            "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures},
         })
     }
 
@@ -1017,6 +1114,11 @@ impl Ctl {
                 procs::kill_tree(self.enc.child.as_ref().ok_or("no encoder")?.id());
             }
             "kill-token-server" => self.token.lock().unwrap().kill = true,
+            "bot-check" => {
+                self.fake_bot = true;
+                let i = self.view().0;
+                self.request_resolve(i, Purpose::Probe);
+            }
             _ => return Err(format!("unknown fault {kind:?}")),
         }
         Ok(json!({"accepted": true, "kind": kind}))
@@ -1289,6 +1391,11 @@ fn main() {
         last_state: now,
         last_buffer: now,
         last_scan: now,
+        breaker: rules::Breaker::default(),
+        t0: now,
+        last_resolve: None,
+        probe_key: None,
+        fake_bot: false,
     };
     ctl.logs.event("info", "start", json!({"target": ctl.args.target, "codec": ctl.args.codec, "resume": ctl.args.resume, "deno": ctl.yt.deno}));
     ctl.save_run();

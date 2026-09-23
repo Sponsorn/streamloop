@@ -81,6 +81,8 @@ impl Ytdlp {
             Err(e) => return Output { ok: false, stdout: String::new(), stderr: format!("spawn failed: {e}"), cancelled: false },
         };
         pid(child.id());
+        // one line per call to YouTube, so a quiet breaker can be checked from the log
+        logs.append("ytdlp.log", &format!("{} [spawn] {}\n", crate::iso_now(), args.last().map_or("", |a| a.as_str())));
         let err_pipe = child.stderr.take().unwrap();
         let err_logs = logs.clone();
         // Line by line and timestamped, so a log line can be placed against events.jsonl.
