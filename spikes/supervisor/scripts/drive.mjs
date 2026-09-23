@@ -77,9 +77,8 @@ if (plan === 'controls') {
     if (i < sequence.length - 1) await sleep(Math.max(0, sent + gapMs - Date.now()));
   }
 } else if (plan === 'faults') {
-  // Run with --url-ttl-s 150 --url-refresh-margin-s 30 and throttled downloads, so the first video
-  // stays on its URL and refreshes itself about every 2 min. A video gets 2 in-place retries; the
-  // 'restart' controls give it a fresh budget so every fault is judged on its own.
+  // Needs --url-ttl-s 150 --url-refresh-margin-s 30 and throttled downloads so the first video
+  // stays on its URL and self-refreshes; 'restart' gives each fault a fresh retry budget.
   await waitForRealVideo();
   await sleep(270_000); // one proactive refresh happens on its own in here (ttl 300 s, margin 60 s)
 

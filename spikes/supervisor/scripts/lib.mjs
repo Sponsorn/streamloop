@@ -4,9 +4,8 @@
 
 export const API = 'http://127.0.0.1:4417';
 export const TOKEN_SERVER_PING = 'http://127.0.0.1:4416/ping';
-/** The supervisor's timeline starts every encoder generation at BASE (rules.rs); the encoder
- *  shifts its input start to 0, so reader dts = timeline offset - BASE (+ a per-run error that
- *  analyze measures on the recording). */
+/** Every encoder generation starts its timeline at BASE (rules.rs) but its input at 0, so
+ *  reader dts = timeline offset - BASE (+ a per-run error analyze measures on the recording). */
 export const BASE = 10;
 
 export function median(values) {
@@ -28,9 +27,8 @@ export function parseCsv(text, columns) {
   return text.trim().length ? text.trim().split(/\r?\n/).map((line) => splitCsv(line, columns)) : [];
 }
 
-/** Epoch = one encoder generation of one supervisor process. Generation numbers restart at 0
- *  when the supervisor is relaunched (run C), so epochs are counted from encoder-start times.
- *  Returns the index of the last start at or before wallMs (-1 before the first). */
+/** Epoch = one encoder generation of one supervisor process; generation numbers restart at 0 on
+ *  relaunch (run C), so epochs are counted from encoder-start times instead. -1 before the first. */
 export function epochAt(startsMs, wallMs) {
   let e = -1;
   for (let i = 0; i < startsMs.length && startsMs[i] <= wallMs; i += 1) e = i;
@@ -86,10 +84,8 @@ export function lagSpikes(points, seamTimes, thresholdMs = 200) {
   return spikes;
 }
 
-/** Where a slate edge really is in the recording. frames: [{t, y}] (y = a frame signature, e.g.
- *  showinfo's mean and stdev) around the predicted dts. The slate is a still, so its frames repeat
- *  a small set of signatures; learn them on the slate side (>= 0.3 s away from the prediction) and return the first frame of
- *  the other side. toSlate: true when the stream cuts from video to the slate. */
+/** Where a slate edge really is in the recording. frames: [{t, y}] (y = a frame signature) around
+ *  the predicted dts; the slate is a still, so its side's signatures are learned then the first frame off that set is returned. */
 export function slateEdge(frames, predicted, toSlate) {
   const slateSide = toSlate ? frames.filter((f) => f.t >= predicted + 0.3) : frames.filter((f) => f.t <= predicted - 0.3);
   if (slateSide.length < 3) return null;
@@ -116,9 +112,8 @@ export function firstEventAfter(events, wallMs, kinds) {
   return events.find((e) => e.wallMs >= wallMs && kinds.includes(e.kind)) ?? null;
 }
 
-/** Processes the supervisor must not leave behind: any ffmpeg on a pipe (feeders use pipe:1,
- *  the encoder pipe:0; the session's recorder and ffprobe readers do not), any yt-dlp, and a token
- *  server the supervisor spawned (it passes -p 4416; the external one is started without it). */
+/** Processes the supervisor must not leave behind: any ffmpeg on a pipe (feeders/encoder; the
+ *  session's recorder and readers aren't), any yt-dlp, and a token server it owns (-p 4416). */
 export function leaks(processes) {
   return processes.filter((p) => {
     const name = (p.Name ?? '').toLowerCase();

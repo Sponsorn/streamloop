@@ -1,11 +1,7 @@
-// Computes every number criteria 2-9 ask for from one results directory. Reads only; nothing
-// here talks to the supervisor.
+// Computes every number criteria 2-9 ask for from one results directory (read-only).
 //   node analyze.mjs <resultsDir>
-//
-// "When did X reach the viewer" always means: X's timeline offset -> reader dts (offset - BASE,
-// corrected per epoch by the error measured on the recording's slate edges) -> the first reader
-// packet of that epoch whose dts reaches it. Never "the first packet after X's feeder started":
-// the feeder runs up to 20 s ahead of the viewer.
+// "Reached the viewer" = offset -> reader dts (corrected by the slate-edge error) -> the first
+// reader packet whose dts reaches it, never the first packet after the feeder started (it runs up to 20 s ahead).
 import { readFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import {
@@ -31,7 +27,7 @@ const stats = (values) => {
 const out = {};
 const print = (label, value) => { out[label] = value; console.log(label, JSON.stringify(value)); };
 
-// --- inputs -----------------------------------------------------------------------------------
+// inputs
 const events = lines('events.jsonl').map((l) => JSON.parse(l)).map((e) => ({ ...e, wallMs: Date.parse(e.ts) }));
 const epochStarts = events.filter((e) => e.kind === 'encoder-start').map((e) => e.wallMs);
 const processStarts = events.filter((e) => e.kind === 'start').map((e) => e.wallMs);
@@ -81,7 +77,7 @@ const firstPacketMs = readerAll[0]?.wallMs ?? Infinity;
 const watchNear = (e, fromDts, toDts) => watch.filter((w) => (w.type === 'backwards' || w.type === 'jump') && ep(w.wallMs) === e && w.at >= fromDts && w.at <= toDts)
   .map((w) => ({ type: w.type, stream: w.stream, at: w.at, value: w.value }));
 
-// --- recording and dts calibration ------------------------------------------------------------
+// recording and dts calibration
 const recDir = path('rec');
 const recFiles = existsSync(recDir) ? readdirSync(recDir).filter((f) => f.endsWith('.mkv')).map((f) => {
   const file = `${recDir}/${f}`;
@@ -150,7 +146,7 @@ function clip(e, dts, label) {
   return file;
 }
 
-// --- criterion 2: cold start and the URL-to-file handover -------------------------------------
+// criterion 2: cold start and the URL-to-file handover
 const firstStart = processStarts[0];
 const firstVideo = tables[0]?.find((s) => s.source !== 'slate');
 if (firstVideo && firstStart) {
@@ -176,7 +172,7 @@ for (let e = 0; e < epochCount; e += 1) {
 }
 print('handovers', handovers);
 
-// --- criterion 3: controls --------------------------------------------------------------------
+// criterion 3: controls
 const controlResults = controls.map((c, k) => {
   const e = ep(c.wallMs);
   const drove = driveRows.filter((d) => d.cmd === c.cmd && Math.abs((d.payload.replyMs ?? d.wallMs) - c.wallMs) < 5000).at(-1);
@@ -217,7 +213,7 @@ if (controlResults.length) {
   });
 }
 
-// --- criteria 5-7: faults ---------------------------------------------------------------------
+// criteria 5-7: faults
 const FAULTS = ['break-url', 'kill-feeder', 'stall-feeder', 'kill-encoder', 'kill-token-server'];
 const firstReaderAfter = (wallMs) => readerAll.find((r) => r.wallMs >= wallMs && segmentEpoch.get(r.segment) > ep(wallMs - 1)) ?? null;
 
@@ -315,7 +311,7 @@ if (mediamtxEvents.length) {
     pass: back ? back.wallMs - up.wallMs < 15_000 : false, resume: e >= 0 ? encoderResume(e, up.wallMs) : null });
 }
 
-// --- criterion 4: soak ------------------------------------------------------------------------
+// criterion 4: soak
 const disconnects = watch.filter((w) => w.type === 'disconnect' && w.wallMs > firstPacketMs && w.wallMs < endedAt - 5000).map((w) => iso(w.wallMs));
 const tsEvents = watch.filter((w) => w.type === 'backwards' || w.type === 'jump').map((w) => ({ at: iso(w.wallMs), epoch: ep(w.wallMs), type: w.type, stream: w.stream, dts: w.at, value: w.value }));
 const seamRises = [];
@@ -372,7 +368,7 @@ if (breakerEvents.length) {
 }
 print('ytdlpSpawns', spawns.length);
 
-// --- criterion 8: crash and resume (run C) ---------------------------------------------------
+// criterion 8: crash and resume (run C)
 const resumeInfo = readJson('resume-after.json');
 if (resumeInfo) {
   const before = resumeInfo.before;
@@ -393,7 +389,7 @@ if (resumeInfo) {
   });
 }
 
-// --- criterion 9 and leaks --------------------------------------------------------------------
+// criterion 9 and leaks
 for (const r of driveRestarts) {
   const e = ep(r.wallMs);
   const near = watch.filter((w) => Math.abs(w.wallMs - r.wallMs) < 15_000);

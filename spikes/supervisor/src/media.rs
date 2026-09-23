@@ -185,10 +185,8 @@ impl Queue {
         dropped
     }
 
-    /// Flush with a margin: keep `margin` of media past the last PTS the writer handed over, so
-    /// the new feeder (a URL one needs its first bytes) has time before the encoder starves, and
-    /// drop the chunks of feeder `from` and later ones from the first chunk (a video PES start)
-    /// at or past that point. A control flushes from 0; a ready target drops only the covering slate.
+    /// Keep `margin` of media past the writer's last PTS (a URL feeder needs a head start before
+    /// the encoder starves), then drop feeder `from`'s chunks from the next video PES onward.
     pub fn flush_keeping(&mut self, from: u64, margin: i64) -> usize {
         let Some(limit) = self.written_pts.or(self.chunks.front().map(|c| c.pts)).map(|w| w + margin) else { return 0 };
         let mut dropped = 0;

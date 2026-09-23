@@ -115,9 +115,8 @@ pub fn view_at(seams: &[Seam], t: i64) -> Option<(&Seam, f64)> {
     Some((s, pos))
 }
 
-/// Where a feeder seeks its input. The slate always plays from its start: its seam keeps the
-/// video position it covers for (so P_view stands still), but seeking the slate file there
-/// makes ffmpeg exit with nothing.
+/// Where a feeder seeks its input. The slate always plays from 0 (seeking the slate file makes
+/// ffmpeg exit with nothing); its seam keeps the video position it covers for instead.
 pub fn seek_for(source: &Source, pos: f64) -> f64 {
     if *source == Source::Slate { 0.0 } else { pos }
 }
@@ -253,9 +252,8 @@ impl Breaker {
         }
     }
 
-    /// The result of a resolve, size probe or download. Only resolves (`counts`) add to the run
-    /// of failures; a bot check from anything opens. While open, only the probe's result moves
-    /// the breaker (a late result of a call started before it opened does not, unless it succeeded).
+    /// Only resolves (`counts`) add to the failure run; a bot check from anything opens it.
+    /// While open, only the probe's result moves it (a late failure from before it opened doesn't).
     pub fn result(&mut self, ok: bool, bot: bool, counts: bool, probe: bool, now: f64) -> BreakerChange {
         if ok {
             self.failures = 0;
