@@ -52,8 +52,12 @@ if (plan === 'controls') {
   const resumeFrom = Number(opt('resume-from', '0'));
   const gapMs = Number(opt('gap-s', '60')) * 1000;
   const sequence = Array.from({ length: 3 }, () => ['next', 'prev', 'restart', 'jump']).flat();
-  if (resumeFrom === 0) await waitForRealVideo();
-  else {
+  if (resumeFrom === 0) {
+    // one gap on the first video before the first command, so its URL-to-file handover (criterion 2)
+    // happens instead of being cut away by a 'next' a second after the cold start
+    await waitForRealVideo();
+    await sleep(gapMs);
+  } else {
     // a relaunched client keeps the spacing from the last command the killed one sent
     const last = readFileSync('logs/drive.csv', 'utf8').trim().split(/\r?\n/).at(-1);
     await sleep(Math.max(0, Number(last.split(',')[0]) + gapMs - Date.now()));
