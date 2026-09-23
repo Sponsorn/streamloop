@@ -163,11 +163,14 @@ pub struct Queue {
     pub stdin: Option<(u64, ChildStdin)>,
     pub generation: u64,
     pub shutdown: bool,
+    /// Timeline the viewer is at, and how far past it a feeder may run (the read-ahead cap).
+    pub view: i64,
+    pub ahead: i64,
 }
 
 impl Queue {
     pub fn new(cap: usize) -> Self {
-        Queue { chunks: VecDeque::new(), bytes: 0, cap, written_pts: None, live: None, stdin: None, generation: 0, shutdown: false }
+        Queue { chunks: VecDeque::new(), bytes: 0, cap, written_pts: None, live: None, stdin: None, generation: 0, shutdown: false, view: rules::BASE, ahead: i64::MAX }
     }
 
     /// Timeline offset where the next feeder continues: last video PTS in the pipe + one frame.
@@ -213,7 +216,8 @@ pub fn pump(shared: &Shared, seq: u64, offset: i64, mut out: impl Read, clean_ex
             if q.live.as_ref().is_none_or(|l| l.seq != seq) || q.shutdown {
                 return false;
             }
-            if q.bytes < q.cap {
+            // Back-pressure: the byte cap, and the read-ahead in media seconds, as spike 4's gate.
+            if q.bytes < q.cap && pts - q.view <= q.ahead {
                 break;
             }
             q.live.as_mut().unwrap().blocked = true;
