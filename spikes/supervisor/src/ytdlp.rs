@@ -229,8 +229,6 @@ pub fn parse_resolved(json: &str) -> Result<Resolved, String> {
     })
 }
 
-// ---------- PO-token server ----------
-
 pub fn ping(port: u16) -> bool {
     let Ok(mut s) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(2)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_secs(3)));

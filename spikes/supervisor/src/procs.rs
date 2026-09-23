@@ -14,9 +14,8 @@ pub fn command(program: &str) -> Command {
     c
 }
 
-/// Put the supervisor itself in a kill-on-close job. Job membership is inherited, so every
-/// child and grandchild (yt-dlp's PyInstaller worker, node) is in it from its first
-/// instruction, and a supervisor crash closes the handle and takes them all down.
+/// Put the supervisor itself in a kill-on-close job: children and grandchildren inherit it
+/// from their first instruction, and a supervisor crash takes them all down.
 #[cfg(windows)]
 pub fn enter_job() -> Result<(), String> {
     use windows_sys::Win32::System::JobObjects::*;
@@ -47,6 +46,38 @@ pub fn enter_job() -> Result<(), String> {
     Ok(())
 }
 
+/// A process and its descendants: `ffmpeg` on PATH can be a shim (Chocolatey's) whose child
+/// is the real ffmpeg holding the pipe.
+#[cfg(windows)]
+fn tree(root: u32) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+    let mut pairs = vec![];
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return vec![root];
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut ok = Process32FirstW(snap, &mut e);
+        while ok != 0 {
+            pairs.push((e.th32ProcessID, e.th32ParentProcessID));
+            ok = Process32NextW(snap, &mut e);
+        }
+        CloseHandle(snap);
+    }
+    // ponytail: parent PIDs can be reused; fine for short-lived children of our own process.
+    let mut out = vec![root];
+    let mut i = 0;
+    while i < out.len() {
+        let p = out[i];
+        out.extend(pairs.iter().filter(|(c, pp)| *pp == p && *c != p && !out.contains(c)).map(|(c, _)| *c).collect::<Vec<_>>());
+        i += 1;
+    }
+    out
+}
+
 #[cfg(windows)]
 #[link(name = "ntdll")]
 extern "system" {
@@ -54,9 +85,27 @@ extern "system" {
 }
 
 #[cfg(windows)]
+fn each(pid: u32, access: u32, f: impl Fn(windows_sys::Win32::Foundation::HANDLE) -> bool) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::OpenProcess;
+    let mut any = false;
+    for p in tree(pid) {
+        unsafe {
+            let h = OpenProcess(access, 0, p);
+            if !h.is_null() {
+                any |= f(h);
+                CloseHandle(h);
+            }
+        }
+    }
+    any
+}
+
+/// Freeze a process tree (fault injection: a feeder that stops delivering).
+#[cfg(windows)]
 pub fn suspend(child: &Child) -> bool {
-    use std::os::windows::io::AsRawHandle;
-    unsafe { NtSuspendProcess(child.as_raw_handle() as _) == 0 }
+    use windows_sys::Win32::System::Threading::PROCESS_SUSPEND_RESUME;
+    each(child.id(), PROCESS_SUSPEND_RESUME, |h| unsafe { NtSuspendProcess(h) == 0 })
 }
 
 #[cfg(not(windows))]
@@ -64,9 +113,16 @@ pub fn suspend(_child: &Child) -> bool {
     false // ponytail: fault injection is Windows-only; SIGSTOP when this runs elsewhere
 }
 
-/// Kill a process and its descendants (yt-dlp's stub alone would orphan its worker).
+/// Kill a process and its descendants.
+#[cfg(windows)]
 pub fn kill_tree(pid: u32) {
-    let _ = command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    use windows_sys::Win32::System::Threading::{TerminateProcess, PROCESS_TERMINATE};
+    each(pid, PROCESS_TERMINATE, |h| unsafe { TerminateProcess(h, 1) != 0 });
+}
+
+#[cfg(not(windows))]
+pub fn kill_tree(pid: u32) {
+    let _ = command("kill").args(["-9", &pid.to_string()]).status();
 }
 
 /// PID listening on a local TCP port, for killing an adopted token server.

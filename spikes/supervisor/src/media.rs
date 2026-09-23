@@ -1,6 +1,5 @@
-//! Media plumbing: ffmpeg command lines (spike 1), the PES chunker, the read-ahead queue,
-//! pump threads (feeder stdout -> queue) and the writer thread (queue -> encoder stdin).
-//! The control loop only ever takes the queue lock briefly; it never moves media bytes.
+//! ffmpeg arguments (spike 1), PES chunker, read-ahead queue, pumps and the encoder writer.
+//! The control loop only takes the queue lock briefly; it never moves media bytes.
 
 use crate::rules::{self, is_video_stream, parse_packet, unwrap_pts, FRAME, PKT};
 use std::collections::VecDeque;
@@ -9,7 +8,6 @@ use std::process::ChildStdin;
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
-// ---------- ffmpeg arguments (spike 1's feederArgs / encoderArgs) ----------
 
 pub enum Input<'a> {
     File(&'a str),
@@ -78,7 +76,6 @@ pub fn encoder_args(target: &str, codec: &str) -> Vec<String> {
     a.into_iter().map(String::from).collect()
 }
 
-// ---------- chunker: TS bytes -> whole video PES units ----------
 
 /// One queue entry: a video PES and the packets interleaved with it, up to the next video PES.
 pub struct Chunk {
@@ -142,7 +139,6 @@ impl Chunker {
     }
 }
 
-// ---------- the read-ahead queue ----------
 
 pub struct Live {
     pub seq: u64,

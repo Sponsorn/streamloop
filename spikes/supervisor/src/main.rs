@@ -1,6 +1,5 @@
-//! Spike 5: one supervisor for the whole pipeline. See the Notion spec "Spike 5: supervisor (Rust)".
-//! The control loop owns all state and is the only thread that decides anything; the API,
-//! downloader, resolves, pumps and the encoder's progress reader talk to it over one channel.
+//! Spike 5 supervisor (Notion: "Spike 5: supervisor (Rust)"). The control loop owns all state;
+//! the API, downloader, resolves, pumps and encoder progress reach it over one channel.
 
 mod api;
 mod media;
@@ -21,7 +20,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ytdlp::{Entry, Resolved, Ytdlp};
 
-// ---------- logs ----------
 
 #[derive(Clone)]
 pub struct Logs {
@@ -73,7 +71,6 @@ fn iso(ms: u128) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms:03}Z", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
-// ---------- arguments ----------
 
 pub struct Args {
     playlist: String,
@@ -128,7 +125,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-// ---------- messages into the control loop ----------
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Purpose {
@@ -155,7 +151,6 @@ enum Job {
     Download(usize, String, Arc<AtomicBool>),
 }
 
-// ---------- control state ----------
 
 struct Video {
     entry: Entry,
@@ -234,6 +229,7 @@ struct Ctl {
     resolving: HashSet<(usize, bool)>,
     refresh_after: Instant,
     refresh_pending: Option<usize>,
+    filler_since: Option<u64>,
     step_offset: i64,
     break_url: Option<(usize, Option<u32>)>,
     jobs: Sender<Job>,
@@ -301,7 +297,6 @@ impl Ctl {
         self.cache.join(format!("{}.mp4", self.id(i)))
     }
 
-    // ----- feeders -----
 
     fn start_feeder(&mut self, index: usize, source: Source, pos: f64, reason: &'static str, filler: bool) {
         let file = self.file_of(index);
@@ -325,6 +320,11 @@ impl Ctl {
         self.feeder_seq += 1;
         self.refresh_pending = None;
         let seq = self.feeder_seq;
+        if !filler {
+            self.filler_since = None;
+        } else if self.filler_since.is_none() {
+            self.filler_since = Some(seq);
+        }
         let offset = self.queue_end();
         let spawned = procs::command("ffmpeg")
             .args(media::feeder_args(&input, pos, offset))
@@ -386,15 +386,17 @@ impl Ctl {
             self.shared.cv.notify_all();
             l.and_then(|l| l.last_pts)
         };
-        let _ = f.child.lock().unwrap().kill();
+        procs::kill_tree(f.child.lock().unwrap().id());
         let fed = last.map_or(f.start_pos, |p| rules::fed_pos(f.start_pos, f.offset, p + FRAME));
         Some((f.index, fed, f.source))
     }
 
+    /// Drop the slate that is only covering a wait: every filler since the last real feeder.
     fn cut_filler(&mut self) {
         if self.live.as_ref().is_some_and(|f| f.filler) {
-            let seq = self.live.as_ref().unwrap().seq;
             self.cut_live();
+        }
+        if let Some(seq) = self.filler_since.take() {
             self.shared.q.lock().unwrap().flush_from(seq);
         }
     }
@@ -470,7 +472,6 @@ impl Ctl {
         self.fresh_url(i) && self.resolved.get(&i).is_some_and(|(r, _)| r.available_at.is_none_or(|t| now > t))
     }
 
-    // ----- encoder -----
 
     fn start_encoder(&mut self) {
         let mut child = match procs::command("ffmpeg")
@@ -528,7 +529,7 @@ impl Ctl {
     fn encoder_down(&mut self, why: &str) {
         let (index, pos, _) = self.view();
         let mut child = self.enc.child.take().unwrap();
-        let _ = child.kill();
+        procs::kill_tree(child.id());
         let code = child.wait().ok().and_then(|s| s.code());
         self.cut_live();
         {
@@ -562,7 +563,6 @@ impl Ctl {
         addr.is_some_and(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
     }
 
-    // ----- the tick -----
 
     fn tick(&mut self) {
         let now = Instant::now();
@@ -674,7 +674,6 @@ impl Ctl {
         self.periodic();
     }
 
-    // ----- cache: downloads and deletion -----
 
     fn window(&self) -> Vec<usize> {
         let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
@@ -777,7 +776,6 @@ impl Ctl {
         }
     }
 
-    // ----- messages -----
 
     fn handle(&mut self, msg: Msg) {
         match msg {
@@ -945,7 +943,6 @@ impl Ctl {
         }
     }
 
-    // ----- API -----
 
     fn status(&self) -> Value {
         let (index, pos, source) = self.view();
@@ -1015,7 +1012,7 @@ impl Ctl {
                 self.resolved.remove(&index);
             }
             "kill-encoder" => {
-                let _ = self.enc.child.as_mut().ok_or("no encoder")?.kill();
+                procs::kill_tree(self.enc.child.as_ref().ok_or("no encoder")?.id());
             }
             "kill-token-server" => self.token.lock().unwrap().kill = true,
             _ => return Err(format!("unknown fault {kind:?}")),
@@ -1047,7 +1044,13 @@ impl Ctl {
     fn shutdown_code(&mut self, code: i32) {
         self.stopping = true;
         self.logs.event("info", "shutdown", json!({"code": code}));
+        // The process exits before the pumps report, so the live feeder's seams row is written here.
+        let frames = self.shared.q.lock().unwrap().live.as_ref().map_or(0, |l| l.frames);
+        let live = self.live.as_ref().map(|f| f.seq);
         self.cut_live();
+        if let Some(seq) = live {
+            self.on_feeder_exit(seq, None, frames);
+        }
         if let Some((_, _, c)) = &self.downloading {
             c.store(true, Ordering::Relaxed);
         }
@@ -1063,7 +1066,7 @@ impl Ctl {
             while Instant::now() < until && matches!(c.try_wait(), Ok(None)) {
                 std::thread::sleep(Duration::from_millis(100));
             }
-            let _ = c.kill();
+            procs::kill_tree(c.id());
         }
         std::thread::sleep(Duration::from_millis(500)); // downloader and token watchdog see their flags
         self.save_run();
@@ -1071,7 +1074,6 @@ impl Ctl {
     }
 }
 
-// ---------- side threads ----------
 
 fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, cache: PathBuf) {
     for job in jobs {
@@ -1139,15 +1141,15 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, script: String, logs: Logs) {
             (std::mem::take(&mut s.kill), s.stop)
         };
         if stop {
-            if let Some(mut c) = owned.take() {
-                let _ = c.kill();
+            if let Some(c) = owned.take() {
+                procs::kill_tree(c.id());
             }
             return;
         }
         if kill {
             match owned.as_mut() {
                 Some(c) => {
-                    let _ = c.kill();
+                    procs::kill_tree(c.id());
                 }
                 None => {
                     if let Some(pid) = procs::pid_on_port(TOKEN_PORT) {
@@ -1173,7 +1175,7 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, script: String, logs: Logs) {
             logs.event("warn", "token-server-down", json!({"exited": exited, "failedPings": failed_pings, "restartInS": wait}));
             state.lock().unwrap().state = "down";
             if let Some(mut c) = owned.take() {
-                let _ = c.kill();
+                procs::kill_tree(c.id());
                 let _ = c.wait();
             }
             restart_at = Some(Instant::now() + Duration::from_secs(wait));
@@ -1264,6 +1266,7 @@ fn main() {
         resolving: HashSet::new(),
         refresh_after: now,
         refresh_pending: None,
+        filler_since: None,
         step_offset: BASE,
         break_url: None,
         jobs: jobs_tx,

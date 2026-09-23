@@ -14,7 +14,6 @@ pub fn ticks(secs: f64) -> i64 {
     (secs * HZ as f64).round() as i64
 }
 
-// ---------- MPEG-TS ----------
 
 pub const PKT: usize = 188;
 
@@ -72,7 +71,6 @@ pub fn unwrap_pts(raw: i64, reference: i64) -> i64 {
         .unwrap()
 }
 
-// ---------- seam table and P_view ----------
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
@@ -122,7 +120,6 @@ pub fn fed_pos(start_pos: f64, offset: i64, end: i64) -> f64 {
     start_pos + secs(end - offset)
 }
 
-// ---------- controls ----------
 
 pub fn control_target(cmd: &str, index: Option<i64>, view: usize, n: usize) -> Result<usize, String> {
     if n == 0 {
@@ -149,7 +146,6 @@ pub fn resolve_start(index: usize, pos: f64, duration: Option<f64>, n: usize) ->
     }
 }
 
-// ---------- URLs ----------
 
 /// `expire=` from a googlevideo URL, query or path style.
 pub fn parse_expire(url: &str) -> Option<u64> {
@@ -179,7 +175,6 @@ pub fn refresh_due(now_s: u64, expire_s: u64, margin_s: u64) -> bool {
     now_s + margin_s >= expire_s
 }
 
-// ---------- recovery ladder ----------
 
 pub const MAX_RETRIES: u32 = 2;
 
@@ -206,12 +201,9 @@ pub fn token_backoff_s(restarts: u32) -> u64 {
     [2, 10, 30, 60][(restarts as usize).min(3)]
 }
 
-// ---------- cache: look-ahead window, deletion, download choice ----------
 
-/// Videos worth having on disk, walking forward from the viewer within the budget.
-/// The viewer's own video always counts (soft cap). The video just behind the viewer
-/// never does, so a passed file goes even when the whole playlist would fit.
-/// An unknown size ends the walk: nothing past it can be budgeted.
+/// Videos worth having on disk, walking forward from the viewer within the budget. The viewer's
+/// own video always counts; the one just behind never does; an unknown size ends the walk.
 pub fn window(view: usize, sizes: &[Option<u64>], skipped: &[bool], budget: u64) -> Vec<usize> {
     let n = sizes.len();
     let mut out = vec![];
