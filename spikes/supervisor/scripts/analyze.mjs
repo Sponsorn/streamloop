@@ -351,6 +351,25 @@ print('soak', {
 if (tsEvents.length) print('timestampEvents', tsEvents.slice(0, 50));
 print('lagSpikesOffSeam', spikes);
 
+// the 7077df3 bug: a slate feeder restarted at the same offset, every ~200 ms
+const slateLoops = seams.filter((x, k) => x.source === 'slate' && k > 0 && seams[k - 1].source === 'slate' && seams[k - 1].offset === x.offset && seams[k - 1].epoch === x.epoch);
+print('slateRestartLoops', slateLoops.map((x) => ({ at: x.startedIso, offset: x.offset, frames: x.frames })));
+
+// YouTube breaker: open, quiet, probe, close
+const spawns = lines('ytdlp.log').filter((l) => l.includes('[spawn]')).map((l) => Date.parse(l.slice(0, 24)));
+const breakerEvents = events.filter((x) => x.kind.startsWith('youtube-') || x.kind === 'breaker-retarget');
+if (breakerEvents.length) {
+  const opened = breakerEvents.filter((x) => x.kind === 'youtube-breaker-open');
+  print('breaker', opened.map((o) => {
+    const close = events.find((x) => x.kind === 'youtube-breaker-closed' && x.wallMs > o.wallMs);
+    const end = close?.wallMs ?? endedAt;
+    const probes = events.filter((x) => x.kind === 'youtube-probe' && x.wallMs > o.wallMs && x.wallMs <= end);
+    return { openedAt: o.ts, reason: o.reason, retryAt: o.retryAt, closedAfterMs: close ? close.wallMs - o.wallMs : null, probes: probes.map((p) => ({ at: p.ts, level: p.level })),
+      ytdlpSpawnsWhileOpen: spawns.filter((t) => t > o.wallMs && t <= end).length, probeFailures: events.filter((x) => x.kind === 'youtube-probe-failed' && x.wallMs > o.wallMs && x.wallMs <= end).length };
+  }));
+}
+print('ytdlpSpawns', spawns.length);
+
 // --- criterion 8: crash and resume (run C) ---------------------------------------------------
 const resumeInfo = readJson('resume-after.json');
 if (resumeInfo) {

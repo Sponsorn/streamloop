@@ -81,7 +81,7 @@ if (plan === 'controls') {
   // stays on its URL and refreshes itself about every 2 min. A video gets 2 in-place retries; the
   // 'restart' controls give it a fresh budget so every fault is judged on its own.
   await waitForRealVideo();
-  await sleep(150_000); // one proactive refresh happens on its own in here
+  await sleep(270_000); // one proactive refresh happens on its own in here (ttl 300 s, margin 60 s)
 
   await sendFault('break-url', 1); // the retry's re-resolve comes back broken...
   await sendFault('kill-feeder'); // ...after the feeder dies: exit retry, then a 403 retry
@@ -114,6 +114,15 @@ if (plan === 'controls') {
   while (existsSync('logs/mediamtx-control.json')) await sleep(500); // session consumes and deletes it
   await sleep(60_000 + 30_000);
   logRow('mediamtx-back', { after: (await status())?.playing });
+
+  // YouTube breaker without asking YouTube: the next resolve reports a bot check. The breaker
+  // opens, nothing calls yt-dlp for a minute, then one probe resolve closes it.
+  await sendFault('bot-check');
+  for (let i = 0; i < 18; i += 1) {
+    await sleep(10_000);
+    const s = await status();
+    logRow('breaker-status', { youtube: s?.youtube, playing: s?.playing });
+  }
 } else {
   console.error('usage: node drive.mjs controls [--resume-from k] [--gap-s 60] | faults');
   process.exit(2);
