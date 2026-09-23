@@ -37,8 +37,10 @@ const epochStarts = events.filter((e) => e.kind === 'encoder-start').map((e) => 
 const processStarts = events.filter((e) => e.kind === 'start').map((e) => e.wallMs);
 const ep = (wallMs) => epochAt(epochStarts, wallMs);
 
-const seams = readCsv('seams.csv', ['seq', 'name', 'startedIso', 'offset', 'frames', 'code', 'exitIso', 'index', 'source', 'startPos', 'reason'])
-  .map((r) => ({ ...r, seq: Number(r.seq), offset: Number(r.offset), frames: Number(r.frames), index: Number(r.index), startPos: Number(r.startPos), wallMs: Date.parse(r.startedIso) }))
+// Seams from the feeder-start events, not seams.csv: seams.csv gets its row when a feeder exits,
+// so a supervisor killed with taskkill /F (run C) never writes the rows of its live feeders.
+const seams = events.filter((e) => e.kind === 'feeder-start')
+  .map((e) => ({ seq: e.seq, name: e.name, startedIso: e.ts, offset: e.offset, index: e.index, source: e.source, startPos: e.pos, reason: e.reason, wallMs: e.wallMs }))
   .map((r) => ({ ...r, epoch: ep(r.wallMs) }))
   .sort((a, b) => a.wallMs - b.wallMs || a.seq - b.seq);
 const epochCount = epochStarts.length;
@@ -353,7 +355,7 @@ print('lagSpikesOffSeam', spikes);
 
 // the 7077df3 bug: a slate feeder restarted at the same offset, every ~200 ms
 const slateLoops = seams.filter((x, k) => x.source === 'slate' && k > 0 && seams[k - 1].source === 'slate' && seams[k - 1].offset === x.offset && seams[k - 1].epoch === x.epoch);
-print('slateRestartLoops', slateLoops.map((x) => ({ at: x.startedIso, offset: x.offset, frames: x.frames })));
+print('slateRestartLoops', slateLoops.map((x) => ({ at: x.startedIso, offset: x.offset })));
 
 // YouTube breaker: open, quiet, probe, close
 const spawns = lines('ytdlp.log').filter((l) => l.includes('[spawn]')).map((l) => Date.parse(l.slice(0, 24)));
@@ -383,6 +385,7 @@ if (resumeInfo) {
   print('resume', {
     saved: before, resumedSeam: seam ? { index: seam.index, name: seam.name, source: seam.source, startPos: seam.startPos, reason: seam.reason } : null,
     sameVideo: seam ? seam.name === before.id : null, errorSec: seam ? r3(resumeErrorSec(before.position, seam.startPos)) : null,
+    viewerLastSeen: e >= 0 ? lastSeen(e) : null,
     fromUrl: seam ? seam.source === 'url' : null,
     onAirAfterRelaunchMs: seam && relaunch ? reachMs(epochAfter, seam.offset, relaunch) : null,
     leaksAfter3s: leaks(list).map((p) => ({ pid: p.ProcessId, name: p.Name, cmd: (p.CommandLine ?? '').slice(0, 160) })),
