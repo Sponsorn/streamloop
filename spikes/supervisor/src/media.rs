@@ -185,13 +185,14 @@ impl Queue {
         dropped
     }
 
-    /// A control's flush: keep `margin` of media past the last PTS the writer handed over, so the
-    /// new feeder (a URL one needs its first bytes) has time before the encoder starves, and
-    /// drop everything from the first chunk (a video PES start) at or past that point.
-    pub fn flush_keeping(&mut self, margin: i64) -> usize {
+    /// Flush with a margin: keep `margin` of media past the last PTS the writer handed over, so
+    /// the new feeder (a URL one needs its first bytes) has time before the encoder starves, and
+    /// drop the chunks of feeder `from` and later ones from the first chunk (a video PES start)
+    /// at or past that point. A control flushes from 0; a ready target drops only the covering slate.
+    pub fn flush_keeping(&mut self, from: u64, margin: i64) -> usize {
         let Some(limit) = self.written_pts.or(self.chunks.front().map(|c| c.pts)).map(|w| w + margin) else { return 0 };
         let mut dropped = 0;
-        while self.chunks.back().is_some_and(|c| c.pts >= limit) {
+        while self.chunks.back().is_some_and(|c| c.feeder >= from && c.pts >= limit) {
             dropped += self.chunks.pop_back().unwrap().data.len();
         }
         self.bytes -= dropped;
@@ -400,7 +401,7 @@ mod tests {
             q.written_pts = Some(c.pts);
         }
         // frames 10..=38 are under 1 s past frame 9; frame 39 is the first at 1.0 s
-        assert_eq!(q.flush_keeping(HZ), (90 - 39) as usize * PKT);
+        assert_eq!(q.flush_keeping(0, HZ), (90 - 39) as usize * PKT);
         assert_eq!(q.chunks.back().unwrap().pts, BASE + 38 * FRAME);
         assert_eq!(q.end(), Some(BASE + 39 * FRAME));
     }
@@ -413,8 +414,34 @@ mod tests {
             q.push(1, vec![0; PKT], BASE + f * FRAME);
         }
         q.written_pts = Some(BASE);
-        assert_eq!(q.flush_keeping(HZ), 0);
+        assert_eq!(q.flush_keeping(0, HZ), 0);
         assert_eq!(q.end(), Some(BASE + 5 * FRAME));
+    }
+
+    #[test]
+    fn slate_cut_keeps_a_second_and_never_drops_the_video_before_the_slate() {
+        let mut q = Queue::new(1 << 30);
+        // a failed feeder left 1.5 s of video, then the slate (feeder 2) covered the retry's wait
+        q.live = live(1);
+        for f in 0..45 {
+            q.push(1, vec![0; PKT], BASE + f * FRAME);
+        }
+        q.live = live(2);
+        for f in 45..120 {
+            q.push(2, vec![0; PKT], BASE + f * FRAME);
+        }
+        q.written_pts = Some(BASE);
+        // 1 s past the writer lies inside the old video: all of it stays, the slate goes
+        assert_eq!(q.flush_keeping(2, HZ), 75 * PKT);
+        assert_eq!(q.end(), Some(BASE + 45 * FRAME));
+        // later, with the writer 2 s in, only slate past the second is dropped
+        q.live = live(3);
+        for f in 45..120 {
+            q.push(3, vec![0; PKT], BASE + f * FRAME);
+        }
+        q.written_pts = Some(BASE + 60 * FRAME);
+        assert_eq!(q.flush_keeping(3, HZ), (120 - 90) as usize * PKT);
+        assert_eq!(q.end(), Some(BASE + 90 * FRAME));
     }
 
     #[test]

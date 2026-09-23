@@ -398,13 +398,14 @@ impl Ctl {
         Some((f.index, fed, f.source))
     }
 
-    /// Drop the slate that is only covering a wait: every filler since the last real feeder.
+    /// Drop the slate that is only covering a wait (every filler since the last real feeder),
+    /// all but its first second past the writer.
     fn cut_filler(&mut self) {
         if self.live.as_ref().is_some_and(|f| f.filler) {
             self.cut_live();
         }
         if let Some(seq) = self.filler_since.take() {
-            self.shared.q.lock().unwrap().flush_from(seq);
+            self.shared.q.lock().unwrap().flush_keeping(seq, rules::HZ);
         }
     }
 
@@ -1079,7 +1080,7 @@ impl Ctl {
         self.cut_live();
         // The kept second is on air whatever it is; a later cut_filler only drops a new slate.
         self.filler_since = None;
-        let flushed = self.shared.q.lock().unwrap().flush_keeping(rules::HZ);
+        let flushed = self.shared.q.lock().unwrap().flush_keeping(0, rules::HZ);
         let cut = self.queue_end();
         self.control_seq += 1;
         self.count("controls");
