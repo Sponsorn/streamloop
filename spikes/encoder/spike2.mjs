@@ -111,7 +111,7 @@ for (const codec of HARDWARE) {
     if (!ok) error = `decoded ${frames} frames (want 60): ${dec.stderr.trim()}`;
   }
   detection.push({ codec, ok, exitCode: enc.code, seconds: enc.ms / 1000, error });
-  say(`  ${codec}: ${ok ? 'works' : `fails (${error.split('\n').filter(Boolean).slice(-1)[0] ?? `exit ${enc.code}`})`}`);
+  say(`  ${codec}: ${ok ? 'works' : `fails (${error.split('\n').find((l) => /error/i.test(l))?.trim() ?? `exit ${enc.code}`})`}`);
 }
 const chosen = chooseEncoder(detection, force);
 save('detection.json', { detection, chosen, forced: Boolean(force) });
@@ -196,7 +196,8 @@ async function pipeline(name, codec, runMinutes, { record = false, twitch = fals
     ...rows.map((r) => [new Date(r.t).toISOString(), r.cpuTotal.toFixed(2), r.feederCpu.toFixed(2), r.encoderCpu.toFixed(2),
       r.encoderWsMb?.toFixed(1) ?? '', r.encodeEngine.toFixed(2), Object.entries(r.encoderEngines).map(([k, v]) => `${k}=${v.toFixed(1)}`).join(' ')].join(',')),
   ].join('\n'));
-  if (samplerErr.trim()) writeFileSync(join(dir, 'sampler-errors.txt'), samplerErr);
+  // PowerShell reports Add-Type's progress on stderr as CLIXML; only real errors are kept.
+  if (/error|not added/i.test(samplerErr)) writeFileSync(join(dir, 'sampler-errors.txt'), samplerErr);
 
   const progress = readCsv(join(logs, 'encoder.csv')).map(([wallMs, mediaUs]) => ({ wallMs: Number(wallMs), mediaUs: Number(mediaUs) }));
   const m = progress.length > 1

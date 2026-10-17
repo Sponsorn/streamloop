@@ -82,7 +82,8 @@ writeFileSync(join(KIT, 'run.cmd'), [
   '@echo off',
   'cd /d "%~dp0"',
   'title Spike 2',
-  'node.exe spike2.mjs %*',
+  // Explicit path: cmd skips the current folder when NoDefaultCurrentDirectoryInExePath is set.
+  '"%~dp0node.exe" "%~dp0spike2.mjs" %*',
   'echo.',
   'echo Finished. The results are in the results-* folder inside %~dp0',
   'pause',

@@ -7,13 +7,13 @@ describe('counter samples', () => {
   const line = JSON.stringify({ s: [
     { k: 'tot', i: '_Total', v: 25 },
     { k: 'pid', i: 'ffmpeg', v: 100 },
-    { k: 'pid', i: 'ffmpeg#1', v: 200 },
-    { k: 'pid', i: 'ffmpeg#2', v: 300 },
+    { k: 'pid', i: 'ffmpeg', v: 200 },
+    { k: 'pid', i: 'ffmpeg', v: 300 },
     { k: 'cpu', i: 'ffmpeg', v: 160 },
-    { k: 'cpu', i: 'ffmpeg#1', v: 32 },
-    { k: 'cpu', i: 'ffmpeg#2', v: 16 },
+    { k: 'cpu', i: 'ffmpeg', v: 32 },
+    { k: 'cpu', i: 'ffmpeg', v: 16 },
     { k: 'ws', i: 'ffmpeg', v: 300 * 2 ** 20 },
-    { k: 'ws', i: 'ffmpeg#1', v: 999 * 2 ** 20 },
+    { k: 'ws', i: 'ffmpeg', v: 999 * 2 ** 20 },
     { k: 'gpu', i: 'pid_200_luid_0x0_0x1_phys_0_eng_6_engtype_VideoEncode', v: 3 },
     { k: 'gpu', i: 'pid_200_luid_0x0_0x1_phys_0_eng_7_engtype_VideoEncode', v: 4 },
     { k: 'gpu', i: 'pid_200_luid_0x0_0x1_phys_0_eng_0_engtype_3D', v: 9 },
@@ -21,7 +21,8 @@ describe('counter samples', () => {
   ] });
 
   it('splits ffmpeg CPU into encoder and feeders by pid, as a share of the whole machine', () => {
-    // Arrange: pid 200 is the encoder, 300 the recorder, 100 a feeder; 16 cores.
+    // Arrange: PDH names every instance "ffmpeg"; by position pid 200 is the encoder, 300 the
+    // recorder, 100 a feeder. 16 cores.
 
     // Act
     const row = parseSample(line, { encoderPid: 200, recorderPid: 300, cores: 16 });
@@ -102,6 +103,15 @@ describe('stream check', () => {
     expect(r.keyframeIntervals).toEqual([2, 2, 2, 2, 2]);
     expect(r.avgKbps).toBeCloseTo(4500, 0);
     expect(r.pass).toBe(true);
+  });
+
+  it('takes the frame rate from the packets, not from the 1000/33 Matroska reports', () => {
+    const ms = packets.map((p) => ({ ...p, pts_time: (Math.round(Number(p.pts_time) * 1000) / 1000).toFixed(3) }));
+
+    const r = streamCheck({ ...stream, avg_frame_rate: '1000/33' }, ms);
+
+    expect(r.fps).toBeCloseTo(30, 2);
+    expect(r.checks.fps).toBe(true);
   });
 
   it('fails on one scene-cut keyframe and on Main profile', () => {

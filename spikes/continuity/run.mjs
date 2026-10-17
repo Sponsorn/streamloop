@@ -102,6 +102,8 @@ function runFeeder(file, offset, filterScript) {
 
 console.log(`Streaming to ${label} with ${codec} for ${hours} h. Ctrl+C ends the run as a fail.`);
 const deadline = run.startedAt + hours * 3600_000;
+// A real clip can run 12 minutes past the deadline; end the run on time instead.
+if (argv.includes('--media')) setTimeout(() => currentFeeder?.kill(), deadline - Date.now()).unref();
 let offset = baseOffset;
 while (encoderAlive && Date.now() < deadline) {
   const idx = run.seams % clips.length;

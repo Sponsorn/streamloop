@@ -53,8 +53,8 @@ public static class Sampler {
           IntPtr item = buf + i * stride;
           if (Marshal.ReadInt32(item, IntPtr.Size) > 1) continue;
           double value = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(item, IntPtr.Size + 8));
-          // Most of the hundreds of GPU engine instances are idle.
-          if (value == 0) continue;
+          // Most of the hundreds of GPU engine instances are idle. Process rows stay: they pair up by position.
+          if (value == 0 && kv.Key == "gpu") continue;
           string name = Marshal.PtrToStringUni(Marshal.ReadIntPtr(item)).Replace("\\", "\\\\").Replace("\"", "\\\"");
           sb.Append(first ? "" : ",").Append("{\"k\":\"").Append(kv.Key).Append("\",\"i\":\"").Append(name)
             .Append("\",\"v\":").Append(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append("}");
@@ -80,7 +80,13 @@ while ($true) { Start-Sleep -Seconds 5; [Console]::Out.WriteLine([Sampler]::Coll
 /** One sampler line to one samples.csv row. Process CPU is per core in PDH; divided by the
  *  core count it is a share of the whole machine, like the total. */
 export function parseSample(line, { encoderPid, recorderPid, cores }) {
-  const { s } = JSON.parse(line);
+  const seen = {};
+  // PDH names every ffmpeg instance plain "ffmpeg" (no #1), so the n-th "ffmpeg" of each process
+  // counter is the same process: one collection lists the instances in one order.
+  const s = JSON.parse(line).s.map((x) => {
+    const n = (seen[`${x.k}|${x.i}`] = (seen[`${x.k}|${x.i}`] ?? -1) + 1);
+    return { ...x, i: x.k === 'gpu' || x.k === 'tot' ? x.i : `${x.i}|${n}` };
+  });
   const pidOf = Object.fromEntries(s.filter((x) => x.k === 'pid').map((x) => [x.i, x.v]));
   const row = { cpuTotal: 0, feederCpu: 0, encoderCpu: 0, encoderWsMb: null, encodeEngine: 0, encoderEngines: {} };
   for (const { k, i, v } of s) {
@@ -160,10 +166,12 @@ export function streamCheck(stream, packets) {
   const times = packets.map((p) => Number(p.pts_time)).filter(Number.isFinite);
   const keys = packets.filter((p) => p.flags?.includes('K')).map((p) => Number(p.pts_time));
   const intervals = keys.slice(1).map((t, i) => Math.round((t - keys[i]) * 1000) / 1000);
-  const [num, den] = String(stream.avg_frame_rate).split('/').map(Number);
-  const fps = den ? num / den : num;
+  const first = times.reduce((a, b) => (b < a ? b : a), Infinity);
+  const last = times.reduce((a, b) => (b > a ? b : a), -Infinity);
+  // From the packets: Matroska's millisecond timestamps make ffprobe report 1000/33 fps.
+  const fps = (times.length - 1) / (last - first);
   // The last packet lasts one frame too.
-  const span = times.reduce((a, b) => (b > a ? b : a), -Infinity) - times.reduce((a, b) => (b < a ? b : a), Infinity) + (fps ? 1 / fps : 0);
+  const span = last - first + 1 / fps;
   const result = {
     profile: stream.profile,
     size: `${stream.width}x${stream.height}`,
@@ -205,7 +213,7 @@ export function judge({ gpus, detection, chosen, headroom, pipeline, stream, twi
   const matched = chosen && HARDWARE.includes(chosen) && vendorMatches(chosen, gpus);
   c[1] = working.length > 0 && matched ? 'PASS' : 'FAIL';
   lines.push(`1 Detection: ${c[1]}. Working: ${working.join(', ') || 'none'}. Chosen: ${chosen ?? 'none'}${chosen ? (matched ? ' (matches a GPU in the inventory)' : ' (no matching GPU in the inventory)') : ''}.`);
-  for (const d of detection.filter((x) => !x.ok)) lines.push(`  ${d.codec} failed: ${d.error.split('\n').slice(-3).join(' | ')}`);
+  for (const d of detection.filter((x) => !x.ok)) lines.push(`  ${d.codec} failed: ${d.error.split('\n').filter((l) => /error/i.test(l)).slice(0, 2).join(' | ') || d.error.split('\n').pop()}`);
 
   const fps = headroom.find((h) => h.codec === chosen)?.fps;
   c[2] = fps >= 90 ? 'PASS' : 'FAIL';
