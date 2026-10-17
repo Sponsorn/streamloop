@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
-import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, writeFileSync, readdirSync } from 'node:fs';
 import {
   CLIPS, SHORT_CLIPS, BASE_OFFSET, LOCAL_URL, feederArgs, encoderArgs, offsetAfter, parseProgress, normalizeVideoFilter,
 } from './lib.mjs';
@@ -17,7 +17,11 @@ const short = argv.includes('--short');
 const bufferMb = Number(opt('buffer-mb', '192'));
 // Test only: wait this long before starting each feeder, to imitate a machine hiccup at a seam.
 const seamDelayMs = Number(opt('seam-delay-ms', '0'));
-const clips = short ? SHORT_CLIPS : CLIPS;
+// Spike 2: loop every .mp4 in this folder (real clips) instead of the generated test clips.
+const mediaDir = opt('media', 'media');
+const clips = argv.includes('--media')
+  ? readdirSync(mediaDir).filter((f) => f.endsWith('.mp4')).sort().map((f) => ({ name: f.slice(0, -4), seconds: 0 }))
+  : short ? SHORT_CLIPS : CLIPS;
 // Spike 3: draw a title/progress/next-up overlay per clip, with fake per-seam metadata.
 const overlayOn = argv.includes('--overlay');
 const overlayConfig = defaultOverlayConfig();
@@ -47,6 +51,8 @@ const notProgress = (text) => String(text).split(/\r?\n/).filter((l) => l.trim()
 
 // A target in tee syntax starts with an option block, e.g. [f=flv]rtmp://...
 const encoder = spawn('ffmpeg', encoderArgs(target, { codec, tee: target.startsWith('[') }), { stdio: ['pipe', 'ignore', 'pipe'] });
+run.encoderPid = encoder.pid;
+saveRun();
 // Without this the encoder starves the instant a feeder stalls or the next one is slow to start:
 // it reads in real time and an OS pipe holds only a few milliseconds of video.
 const readAhead = new PassThrough({ highWaterMark: Math.max(1, bufferMb) * 1024 * 1024 });
@@ -113,7 +119,7 @@ while (encoderAlive && Date.now() < deadline) {
     filterScript = `${seamDir}/filters.txt`;
     writeFileSync(filterScript, `${normalizeVideoFilter()},${overlayFilters(overlayConfig, video, paths)}`, 'utf8');
   }
-  const { frames, code, errors } = await runFeeder(`media/${clip.name}.mp4`, offset, filterScript);
+  const { frames, code, errors } = await runFeeder(`${mediaDir}/${clip.name}.mp4`, offset, filterScript);
   log('seams.csv', [run.seams, clip.name, startedIso, offset.toFixed(6), frames, code]);
   if (code !== 0) console.error(`feeder failed on ${clip.name} (code ${code}): ${errors.trim()}`);
   offset = offsetAfter(offset, frames);
