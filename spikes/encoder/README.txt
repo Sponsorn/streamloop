@@ -6,8 +6,9 @@ Before you start
 
 Run it
 1. Copy the whole spike2-kit folder to the streaming PC. Any folder works.
-2. Double-click run.cmd. If Windows warns about it, choose More info, then Run anyway. It runs on its own for about 45 minutes, or about an hour with the
-   Twitch step. Leave the PC idle until it finishes.
+2. Double-click run.cmd. If Windows warns about it, choose More info, then Run anyway.
+   It runs on its own for about 50 minutes, or about 70 with the Twitch step. Leave the PC
+   idle until it finishes: a game or video running beside it skews the numbers.
 3. When the window says Finished, zip the results-<PC name>-<date> folder inside spike2-kit
    and send it back.
 
