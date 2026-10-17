@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  FPS, BASE_OFFSET, CLIPS, SHORT_CLIPS, PTS_WRAP_SECONDS, feederArgs, encoderArgs, offsetAfter,
+  FPS, BASE_OFFSET, CLIPS, SHORT_CLIPS, PTS_WRAP_SECONDS, feederArgs, encoderArgs, videoArgs, offsetAfter,
   parseProgress, createAnalyzer, pairOffsets, lagStats, seamLag, verdict,
 } from './lib.mjs';
 
@@ -70,6 +70,56 @@ describe('encoder arguments', () => {
 
   it('switches the video encoder to NVENC on request', () => {
     expect(encoderArgs('x', { codec: 'h264_nvenc' })).toContain('h264_nvenc');
+  });
+});
+
+describe('video argument sets per vendor', () => {
+  const value = (args, flag) => args[args.indexOf(flag) + 1];
+
+  it('keeps the x264 set spike 1 measured', () => {
+    expect(videoArgs('libx264')).toEqual([
+      '-c:v', 'libx264', '-preset', 'veryfast', '-sc_threshold', '0', '-keyint_min', '60',
+      '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k', '-g', '60', '-pix_fmt', 'yuv420p',
+    ]);
+  });
+
+  it('builds the AMF set from the spec', () => {
+    expect(videoArgs('h264_amf').slice(0, 12)).toEqual([
+      '-c:v', 'h264_amf', '-usage', 'transcoding', '-quality', 'balanced', '-rc', 'cbr', '-bf', '0', '-profile:v', 'high',
+    ]);
+  });
+
+  it('gets CBR on Quick Sync from equal -b:v and -maxrate, without look-ahead', () => {
+    const args = videoArgs('h264_qsv');
+
+    expect(value(args, '-c:v')).toBe('h264_qsv');
+    expect(value(args, '-look_ahead')).toBe('0');
+    expect(value(args, '-b:v')).toBe(value(args, '-maxrate'));
+  });
+
+  it.each(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264'])('%s: CBR 4500k, 60-frame GOP, no B-frames, yuv420p', (codec) => {
+    const args = videoArgs(codec);
+
+    expect(value(args, '-b:v')).toBe('4500k');
+    expect(value(args, '-maxrate')).toBe('4500k');
+    expect(value(args, '-bufsize')).toBe('9000k');
+    expect(value(args, '-g')).toBe('60');
+    expect(value(args, '-pix_fmt')).toBe('yuv420p');
+    if (codec !== 'libx264') {
+      expect(value(args, '-bf')).toBe('0');
+      // The hardware encoders default to Main.
+      expect(value(args, '-profile:v')).toBe('high');
+    }
+  });
+
+  it('puts the vendor set into the realtime encoder command line', () => {
+    const args = encoderArgs('x', { codec: 'h264_amf' });
+
+    expect(args.slice(args.indexOf('-c:v'), args.indexOf('-c:v') + videoArgs('h264_amf').length)).toEqual(videoArgs('h264_amf'));
+  });
+
+  it('rejects an unknown codec instead of silently using x264', () => {
+    expect(() => videoArgs('h264_vaapi')).toThrow(/unknown codec/);
   });
 });
 
