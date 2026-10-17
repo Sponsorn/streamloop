@@ -3,12 +3,10 @@ import { lagStats, seamLag } from '../continuity/lib.mjs';
 export const HARDWARE = ['h264_nvenc', 'h264_amf', 'h264_qsv'];
 const VENDOR = { h264_nvenc: /nvidia/i, h264_amf: /amd|radeon/i, h264_qsv: /intel/i };
 
-/** Spec name of the video-encode engine is engtype_VideoEncode, but AMD's VCN shows up as
- *  "Video Codec 0": it does decode too, which is fine while the feeders decode on the CPU. */
+/** AMD's VCN reports as "Video Codec 0", not VideoEncode; it also decodes, but the feeders decode on the CPU. */
 export const ENCODE_ENGINE = /engtype_video ?(encode|codec)/i;
 
-/** PDH through Add-Type: PdhAddEnglishCounter takes the English counter names on any Windows
- *  language (Get-Counter and typeperf only take localised ones). No admin, nothing installed. */
+/** PdhAddEnglishCounter takes English counter names on any Windows language; Get-Counter and typeperf only take localised ones. */
 export const SAMPLER_PS = String.raw`
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -204,6 +202,13 @@ export function chooseEncoder(detection, force) {
 
 const fmt = (n, digits = 1) => (Number.isFinite(n) ? n.toFixed(digits) : 'n/a');
 
+/** ffmpeg's distinct error lines without their [codec @ address] prefixes. */
+export function errorSummary(text) {
+  const lines = String(text).split(/\r?\n/);
+  const errors = [...new Set(lines.filter((l) => /error/i.test(l)).map((l) => l.replace(/^(\[[^\]]*\]\s*)+/, '')))];
+  return errors.slice(0, 2).join(' | ') || lines.filter(Boolean).pop() || '';
+}
+
 /** verdict.txt: one line per pass criterion, then the overall rule from the spec. */
 export function judge({ gpus, detection, chosen, headroom, pipeline, stream, twitch }) {
   const working = detection.filter((d) => d.ok).map((d) => d.codec);
@@ -213,7 +218,7 @@ export function judge({ gpus, detection, chosen, headroom, pipeline, stream, twi
   const matched = chosen && HARDWARE.includes(chosen) && vendorMatches(chosen, gpus);
   c[1] = working.length > 0 && matched ? 'PASS' : 'FAIL';
   lines.push(`1 Detection: ${c[1]}. Working: ${working.join(', ') || 'none'}. Chosen: ${chosen ?? 'none'}${chosen ? (matched ? ' (matches a GPU in the inventory)' : ' (no matching GPU in the inventory)') : ''}.`);
-  for (const d of detection.filter((x) => !x.ok)) lines.push(`  ${d.codec} failed: ${d.error.split('\n').filter((l) => /error/i.test(l)).slice(0, 2).join(' | ') || d.error.split('\n').pop()}`);
+  for (const d of detection.filter((x) => !x.ok)) lines.push(`  ${d.codec} failed: ${errorSummary(d.error)}`);
 
   const fps = headroom.find((h) => h.codec === chosen)?.fps;
   c[2] = fps >= 90 ? 'PASS' : 'FAIL';
@@ -228,7 +233,7 @@ export function judge({ gpus, detection, chosen, headroom, pipeline, stream, twi
     lines.push(`3 Realtime pipeline (${fmt(m.minutes, 0)} min, ${chosen}): ${c[3]}.`);
     const failedHard = Object.entries(checks.hard).filter(([, ok]) => !ok).map(([k]) => k);
     lines.push(`  spike 1 checks: ${failedHard.length ? `failed ${failedHard.join(', ')}` : 'all pass'}; seam lag max ${fmt(m.maxSeamRiseMs, 0)} ms, speed ${fmt(m.overallSpeed, 4)}, backwards ${m.backwards}, reader disconnects ${m.readerDisconnects}, encoder exited early ${m.encoderExitedEarly}.`);
-    lines.push(`  CPU avg ${fmt(usage.cpu.avg)}% (bar 40), p95 ${fmt(usage.cpu.p95)}% (bar 60); encode engine avg ${fmt(usage.engine.avg)}% (bar 50); encoder working set +${fmt(usage.wsGrowthMb)} MB (bar 50).`);
+    lines.push(`  CPU avg ${fmt(usage.cpu.avg)}% (bar 40), p95 ${fmt(usage.cpu.p95)}% (bar 60); encode engine avg ${fmt(usage.engine.avg)}% (bar 50); encoder working set ${usage.wsGrowthMb >= 0 ? '+' : ''}${fmt(usage.wsGrowthMb)} MB (bar 50).`);
     if (c[3] === 'BARS MISSED') lines.push('  The stream is clean and a resource bar is missed: numbers for Anton, not a hard fail.');
   }
 
@@ -251,7 +256,7 @@ export function judge({ gpus, detection, chosen, headroom, pipeline, stream, twi
   else if ([2, 3, 4].some((n) => c[n] === 'FAIL' || c[n] === 'NOT RUN')) {
     const other = working.filter((w) => w !== chosen);
     overall = `FAIL on ${chosen}.${other.length && [3, 4].some((n) => c[n] === 'FAIL') ? ` ${other.join(', ')} also works: a fix round on the arguments.` : ''}`;
-  } else if (c[5] !== 'NOT RUN') overall = 'PASS on 1 to 4; criterion 5 needs Twitch Inspector checked by hand.';
+  } else if (!c[5].startsWith('NOT RUN')) overall = 'PASS on 1 to 4; criterion 5 needs Twitch Inspector checked by hand.';
   else overall = c[3] === 'BARS MISSED' ? 'PASS with resource bars missed (see 3).' : 'PASS';
   return { criteria: c, text: `${lines.join('\n')}\n\nVerdict: ${overall}\n` };
 }

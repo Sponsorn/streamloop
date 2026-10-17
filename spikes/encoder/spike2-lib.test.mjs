@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  chooseEncoder, judge, parseSample, pipelineChecks, stats, streamCheck, vendorMatches, wsGrowthMb,
+  chooseEncoder, errorSummary, judge, parseSample, pipelineChecks, stats, streamCheck, vendorMatches, wsGrowthMb,
 } from './spike2-lib.mjs';
 
 describe('counter samples', () => {
@@ -185,9 +185,23 @@ describe('verdict', () => {
     expect(v.text).toContain('PASS with resource bars missed');
   });
 
+  it('passes outright when the Twitch leg was skipped', () => {
+    const v = judge({ gpus, detection, chosen: 'h264_amf', headroom, pipeline, stream, twitch: 'NOT RUN (--skip-twitch)' });
+
+    expect(v.text).toMatch(/Verdict: PASS\n/);
+  });
+
   it('leaves criterion 5 to Twitch Inspector when the Twitch leg ran', () => {
     const v = judge({ gpus, detection, chosen: 'h264_amf', headroom, pipeline, stream, twitch: 'RAN: check Twitch Inspector' });
 
     expect(v.text).toContain('criterion 5 needs Twitch Inspector');
+  });
+});
+
+describe('error summary', () => {
+  it('keeps ffmpeg\'s distinct error lines without the [codec @ address] prefix', () => {
+    const text = "Incompatible pixel format 'yuv420p'\r\n[h264_qsv @ 0000A] Error creating a MFX session: -9.\r\n[h264_qsv @ 0000A] Error creating a MFX session: -9.\r\n[vost#0:0/h264_qsv @ 0000B] [enc:h264_qsv @ 0000C] Error while opening encoder";
+
+    expect(errorSummary(text)).toBe('Error creating a MFX session: -9. | Error while opening encoder');
   });
 });

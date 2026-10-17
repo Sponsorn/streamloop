@@ -50,8 +50,7 @@ export function feederArgs(file, offsetSeconds, { filterScript } = {}) {
   ];
 }
 
-// Every set is CBR 4500k with a fixed 60-frame GOP, no B-frames, High profile. The hardware
-// encoders default to Main, hence the explicit -profile:v; x264 is High by default.
+// Every set: CBR 4500k, fixed 60-frame GOP, no B-frames, High profile (NVENC and AMF default to Main).
 const VIDEO_SETS = {
   h264_nvenc: ['-preset', 'p4', '-rc', 'cbr', '-bf', '0', '-profile:v', 'high'],
   h264_amf: ['-usage', 'transcoding', '-quality', 'balanced', '-rc', 'cbr', '-bf', '0', '-profile:v', 'high'],

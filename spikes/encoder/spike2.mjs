@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOCAL_URL, normalizeVideoFilter, videoArgs } from '../continuity/lib.mjs';
 import {
-  HARDWARE, SAMPLER_PS, chooseEncoder, judge, parseSample, pipelineChecks, pipelineMeasures, stats, streamCheck, wsGrowthMb,
+  HARDWARE, SAMPLER_PS, chooseEncoder, errorSummary, judge, parseSample, pipelineChecks, pipelineMeasures, stats, streamCheck, wsGrowthMb,
 } from './spike2-lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,7 +42,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const say = (text) => { console.log(text); appendFileSync(join(OUT, 'spike2.log'), `${new Date().toISOString()}  ${text}\n`); };
 const save = (name, data) => writeFileSync(join(OUT, name), typeof data === 'string' ? data : JSON.stringify(data, null, 2));
 
-/** Runs to completion, killed after timeoutMs. */
 function exec(cmd, args, { timeoutMs = 120_000, cwd = here } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
@@ -64,7 +63,7 @@ const rtmpUp = () => new Promise((resolve) => {
   socket.on('error', () => resolve(false));
 });
 
-// ---- 1. Inventory
+// Step 1
 say(`Spike 2 kit. Results go to ${OUT}`);
 say('Step 1: inventory');
 const inventoryPs = `
@@ -95,7 +94,7 @@ save('inventory.json', inventory);
 const gpuNames = (inventory.gpus ?? []).map((g) => g.name);
 say(`  CPU ${inventory.cpu?.map((c) => c.name).join(', ')}; GPUs ${gpuNames.join(', ')}; RAM ${inventory.ramGb} GB`);
 
-// ---- 2. Detection: only an encode that exits 0 and decodes back to 60 frames counts.
+// Step 2: only an encode that exits 0 and decodes back to 60 frames counts.
 say('Step 2: detection');
 mkdirSync(join(OUT, 'detection'), { recursive: true });
 const detection = [];
@@ -111,13 +110,13 @@ for (const codec of HARDWARE) {
     if (!ok) error = `decoded ${frames} frames (want 60): ${dec.stderr.trim()}`;
   }
   detection.push({ codec, ok, exitCode: enc.code, seconds: enc.ms / 1000, error });
-  say(`  ${codec}: ${ok ? 'works' : `fails (${error.split('\n').find((l) => /error/i.test(l))?.trim() ?? `exit ${enc.code}`})`}`);
+  say(`  ${codec}: ${ok ? 'works' : `fails (${errorSummary(error) || `exit ${enc.code}`})`}`);
 }
 const chosen = chooseEncoder(detection, force);
 save('detection.json', { detection, chosen, forced: Boolean(force) });
 say(`  chosen: ${chosen ?? 'none'}${force ? ' (forced)' : ''}`);
 
-// ---- 3. Headroom: 60 s of a real clip, unthrottled.
+// Step 3: 60 s of a real clip, unthrottled.
 say('Step 3: headroom');
 const headroom = [];
 const measured = [...new Set([...detection.filter((d) => d.ok).map((d) => d.codec), ...(force && HARDWARE.includes(force) ? [force] : [])])];
@@ -131,7 +130,7 @@ for (const codec of measured) {
 }
 save('headroom.json', headroom);
 
-// ---- MediaMTX on loopback only, RTMP only: nothing listens on the network, so no firewall prompt.
+// MediaMTX on loopback, RTMP only: nothing listens on the network, so no firewall prompt.
 let mediamtx = null;
 if (!(await rtmpUp())) {
   mediamtx = spawn(join(here, 'mediamtx.exe'), [], {
@@ -214,7 +213,7 @@ async function pipeline(name, codec, runMinutes, { record = false, twitch = fals
   const checks = pipelineChecks(m, usage);
   const summary = { name, codec, minutes: runMinutes, exitCode: code, m, usage, checks };
   writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
-  say(`    speed ${m.overallSpeed?.toFixed(4)}, seam lag max ${m.maxSeamRiseMs?.toFixed(0)} ms, CPU avg ${usage.cpu.avg.toFixed(1)}% p95 ${usage.cpu.p95.toFixed(1)}%, engine avg ${usage.engine.avg.toFixed(1)}%, WS +${usage.wsGrowthMb.toFixed(1)} MB, spike 1 checks ${checks.hardPass ? 'pass' : 'FAIL'}`);
+  say(`    speed ${m.overallSpeed?.toFixed(4)}, seam lag max ${m.maxSeamRiseMs?.toFixed(0)} ms, CPU avg ${usage.cpu.avg.toFixed(1)}% p95 ${usage.cpu.p95.toFixed(1)}%, engine avg ${usage.engine.avg.toFixed(1)}%, WS ${usage.wsGrowthMb >= 0 ? '+' : ''}${usage.wsGrowthMb.toFixed(1)} MB, spike 1 checks ${checks.hardPass ? 'pass' : 'FAIL'}`);
   return summary;
 }
 

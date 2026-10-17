@@ -107,7 +107,6 @@ describe('video argument sets per vendor', () => {
     expect(value(args, '-pix_fmt')).toBe('yuv420p');
     if (codec !== 'libx264') {
       expect(value(args, '-bf')).toBe('0');
-      // The hardware encoders default to Main.
       expect(value(args, '-profile:v')).toBe('high');
     }
   });
