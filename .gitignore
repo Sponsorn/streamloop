@@ -27,3 +27,7 @@ spikes/supervisor/target/
 spikes/supervisor/results/
 spikes/supervisor/logs/
 spikes/supervisor/cache/
+spikes/encoder/kit/
+spikes/encoder/dist/
+spikes/encoder/media/
+spikes/encoder/results/

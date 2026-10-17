@@ -50,16 +50,31 @@ export function feederArgs(file, offsetSeconds, { filterScript } = {}) {
   ];
 }
 
+// Every set: CBR 4500k, fixed 60-frame GOP, no B-frames, High profile (NVENC and AMF default to Main).
+const VIDEO_SETS = {
+  h264_nvenc: ['-preset', 'p4', '-rc', 'cbr', '-bf', '0', '-profile:v', 'high'],
+  h264_amf: ['-usage', 'transcoding', '-quality', 'balanced', '-rc', 'cbr', '-bf', '0', '-profile:v', 'high'],
+  // QSV has no -rc: -b:v equal to -maxrate selects CBR.
+  h264_qsv: ['-preset', 'medium', '-look_ahead', '0', '-bf', '0', '-profile:v', 'high'],
+  libx264: ['-preset', 'veryfast', '-sc_threshold', '0', '-keyint_min', '60'],
+};
+export const CODECS = Object.keys(VIDEO_SETS);
+
+/** The video half of the encoder command line, shared by the pipeline and spike 2's test encodes. */
+export function videoArgs(codec = 'libx264') {
+  if (!VIDEO_SETS[codec]) throw new Error(`unknown codec ${codec}`);
+  return [
+    '-c:v', codec, ...VIDEO_SETS[codec],
+    '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k', '-g', '60', '-pix_fmt', 'yuv420p',
+  ];
+}
+
 export function encoderArgs(target, { codec = 'libx264', tee = false } = {}) {
-  const video = codec === 'h264_nvenc'
-    ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'cbr', '-bf', '0']
-    : ['-c:v', 'libx264', '-preset', 'veryfast', '-sc_threshold', '0', '-keyint_min', '60'];
   return [
     '-v', 'warning', '-nostats', '-stats_period', '0.1', '-progress', 'pipe:2',
     // Pacing lives here: the encoder reads in real time and feeders block on the pipe.
     '-re', '-f', 'mpegts', '-i', 'pipe:0',
-    ...video,
-    '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k', '-g', '60', '-pix_fmt', 'yuv420p',
+    ...videoArgs(codec),
     // Each seam overlaps audio by up to one 24 ms frame. The default min_hard_comp of 0.1 lets
     // that build to 100 ms before correcting; 0.01 trims it at the seam, where a cut is inaudible.
     '-af', 'aresample=async=1:min_hard_comp=0.01', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000',

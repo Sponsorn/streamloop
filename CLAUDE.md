@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+@ARCHITECTURE.md
+
+## Keeping ARCHITECTURE.md current
+
+- A change to process boundaries, the Node↔supervisor interface, the ffmpeg pipeline shape, the update/launch mechanism or an external integration updates `ARCHITECTURE.md` in the same commit.
+- When a 3.0 part moves from `spikes/` to `src/`, update its proven/design marking there.
+- Decisions and their reasoning go on the Notion pages, not in the repo; `ARCHITECTURE.md` links to them.
+
 ## Project Overview
 
 StreamLoop is a Node.js/TypeScript application that plays YouTube playlists via mpv (controlled over Windows named pipe IPC) and automatically recovers from playback freezes, errors, and failures. OBS captures the mpv window via Window Capture. The server connects to OBS via obs-websocket-js and optionally sends alerts to Discord webhooks.
