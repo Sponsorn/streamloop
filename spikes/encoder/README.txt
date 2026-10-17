@@ -2,7 +2,7 @@ Spike 2 kit: which hardware encoder this PC has, and whether it holds a 1080p30 
 
 Before you start
 - StreamLoop 2.x and OBS must not be streaming. Their encoder would skew every number.
-- The folder needs about 1 GB of free space for the results.
+- The results need about 200 MB of free space next to the kit.
 
 Run it
 1. Copy the whole spike2-kit folder to the streaming PC. Any folder works.
