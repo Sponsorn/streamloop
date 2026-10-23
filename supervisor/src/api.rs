@@ -1,10 +1,15 @@
-//! HTTP API on 127.0.0.1. Every request becomes a message to the control loop.
+//! HTTP API on 127.0.0.1. Requests become messages to the control loop, except GET /status,
+//! which reads a snapshot the loop refreshes so 2.x's 1 s check never waits on a busy loop.
 
 use crate::Msg;
 use serde_json::{json, Value};
 use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tiny_http::{Header, Method, Request, Response, Server};
+
+/// Latest status JSON, replaced by the control loop after every tick and handled message.
+pub type Snapshot = Arc<Mutex<Value>>;
 
 fn respond(req: Request, code: u16, body: Value) {
     let header = Header::from_bytes("Content-Type", "application/json").unwrap();
@@ -17,7 +22,7 @@ fn ask<T>(tx: &Sender<Msg>, make: impl FnOnce(Sender<T>) -> Msg) -> Option<T> {
     rx.recv_timeout(Duration::from_secs(10)).ok()
 }
 
-pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>) -> Result<(), String> {
+pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot) -> Result<(), String> {
     let server = Server::http(("127.0.0.1", port)).map_err(|e| format!("bind 127.0.0.1:{port}: {e}"))?;
     std::thread::spawn(move || {
         for mut req in server.incoming_requests() {
@@ -26,7 +31,7 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>) -> Result<(), Strin
             let parsed = serde_json::from_str::<Value>(if body.trim().is_empty() { "{}" } else { &body });
             let (method, url) = (req.method().clone(), req.url().to_string());
             let result: Option<Result<Value, String>> = match (method, url.as_str()) {
-                (Method::Get, "/status") => ask(&tx, Msg::Status).map(Ok),
+                (Method::Get, "/status") => Some(Ok(snapshot.lock().unwrap().clone())),
                 (Method::Post, "/control") => match parsed {
                     Err(e) => Some(Err(format!("bad JSON: {e}"))),
                     Ok(v) => {
@@ -67,4 +72,36 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>) -> Result<(), Strin
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::time::Instant;
+
+    #[test]
+    fn status_answers_within_a_second_while_the_control_loop_is_blocked() {
+        // Arrange: nobody reads the control channel
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (tx, _rx) = channel::<Msg>();
+        let snapshot: Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
+        serve(port, false, tx, snapshot).unwrap();
+
+        // Act
+        let started = Instant::now();
+        let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        conn.write_all(b"GET /status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+        let mut reply = String::new();
+        let mut buf = [0u8; 1024];
+        while !reply.ends_with('}') {
+            let n = conn.read(&mut buf).unwrap();
+            reply.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+
+        // Assert
+        assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert!(reply.contains("\"alive\":false") && reply.contains("\"state\":\"starting\""), "{reply}");
+    }
 }

@@ -271,7 +271,6 @@ pub enum Purpose {
 }
 
 pub enum Msg {
-    Status(Sender<Value>),
     Control { cmd: String, index: Option<i64>, reply: Sender<Result<Value, String>> },
     Fault { kind: String, count: Option<u32>, reply: Sender<Result<Value, String>> },
     Shutdown,
@@ -352,6 +351,7 @@ pub struct TokenState {
 }
 
 struct Ctl {
+    snapshot: api::Snapshot,
     args: Args,
     /// What runs: a reload changes the live fields; ingest, key and encoder wait for a restart.
     settings: Settings,
@@ -1030,9 +1030,6 @@ impl Ctl {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Status(reply) => {
-                let _ = reply.send(self.status());
-            }
             Msg::Control { cmd, index, reply } => {
                 let _ = reply.send(self.control(&cmd, index));
             }
@@ -1314,6 +1311,12 @@ impl Ctl {
         }
     }
 
+
+    /// Build outside the lock, then swap, so the API thread never waits on status building.
+    fn publish_status(&self) {
+        let v = self.status();
+        *self.snapshot.lock().unwrap() = v;
+    }
 
     fn status(&self) -> Value {
         let (index, pos, source) = self.view();
@@ -1629,13 +1632,15 @@ fn main() {
         let (yt, l, tx, c) = (yt.clone(), logs.clone(), tx.clone(), cache.clone());
         std::thread::spawn(move || downloader(jobs_rx, yt, l, tx, c));
     }
-    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone()) {
+    let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
+    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone(), snapshot.clone()) {
         logs.event("critical", "api-failed", json!({"error": e}));
         std::process::exit(2);
     }
 
     let now = Instant::now();
     let mut ctl = Ctl {
+        snapshot,
         deadline: args.dev.hours.map(|h| now + Duration::from_secs_f64(h * 3600.0)),
         args,
         playlist: String::new(),
@@ -1699,13 +1704,17 @@ fn main() {
     let mut last_tick = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(msg) => ctl.handle(msg),
+            Ok(msg) => {
+                ctl.handle(msg);
+                ctl.publish_status();
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => unreachable!("the control loop holds a sender"),
         }
         if last_tick.elapsed() >= Duration::from_millis(100) {
             last_tick = Instant::now();
             ctl.tick();
+            ctl.publish_status();
         }
     }
 }
