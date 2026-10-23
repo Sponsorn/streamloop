@@ -40,7 +40,7 @@ pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> R
         Some(Err(e)) => (String::new(), Some(format!("config.json: supervisor.streamKeyProtected cannot be read: {e}"))),
         None => (String::new(), None),
     };
-    Ok(Settings {
+    let out = Settings {
         playlist_id: playlist_id.into(),
         ingest_url: field(s, "ingestUrl", "rtmp://live.twitch.tv/app".into(), text)?,
         stream_key,
@@ -52,7 +52,20 @@ pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> R
         freeze_seconds: field(s, "freezeSeconds", 20.0, Value::as_f64)?,
         silence_seconds: field(s, "silenceSeconds", 30.0, Value::as_f64)?,
         key_error,
-    })
+    };
+    // Values that load but would stall the stream: a starved encoder, a freeze or silence
+    // verdict on every cut, no look-ahead.
+    for (key, value, min) in [
+        ("readAheadSeconds", out.read_ahead_seconds, 2.0),
+        ("freezeSeconds", out.freeze_seconds, 5.0),
+        ("silenceSeconds", out.silence_seconds, 5.0),
+        ("cacheBudgetMb", out.cache_budget_mb as f64, 50.0),
+    ] {
+        if !(value.is_finite() && value >= min) {
+            return Err(format!("config.json: supervisor.{key} must be at least {min} (got {value})"));
+        }
+    }
+    Ok(out)
 }
 
 pub fn target_url(s: &Settings) -> String {
@@ -160,6 +173,18 @@ mod tests {
         assert!(e.contains("config.json") && e.contains("JSON"), "{e}");
         let e = load(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{"cacheBudgetMb":"big"}}"#, &no_key).unwrap_err();
         assert!(e.contains("supervisor.cacheBudgetMb"), "{e}");
+    }
+
+    #[test]
+    fn load_rejects_numbers_that_would_stall_the_stream_naming_the_field() {
+        let with = |k: &str, v: &str| load(&format!(r#"{{"playlists":[{{"id":"P"}}],"supervisor":{{"{k}":{v}}}}}"#), &no_key);
+        for (k, bad, good) in [("readAheadSeconds", "1.9", "2"), ("freezeSeconds", "4", "5"), ("silenceSeconds", "0", "5"), ("cacheBudgetMb", "49", "50")] {
+            let e = with(k, bad).unwrap_err();
+            assert!(e.contains(&format!("supervisor.{k}")) && e.contains("at least"), "{k}: {e}");
+            assert!(with(k, good).is_ok(), "{k} = {good} rejected");
+        }
+        assert!(with("freezeSeconds", "-30").is_err());
+        assert!(with("readAheadSeconds", "1e999").is_err(), "a number too big to be finite");
     }
 
     #[test]
