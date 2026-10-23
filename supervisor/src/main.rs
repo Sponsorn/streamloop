@@ -277,6 +277,8 @@ pub enum Purpose {
     Size,
     /// A breaker probe (or the bot-check fault): only its outcome matters.
     Probe,
+    /// A second URL for the video on air, kept for a fast retry.
+    Spare,
 }
 
 pub enum Msg {
@@ -309,6 +311,26 @@ struct Video {
     dl_failed: bool,
     skipped: bool,
     retries: u32,
+}
+
+/// A second resolved URL for the video on air, so a retry skips yt-dlp and the site's wait.
+struct Spare {
+    index: usize,
+    id: String,
+    r: Resolved,
+    at: Instant,
+}
+
+/// When a URL expires: the dev `--url-ttl-s` counted from the resolve, else the URL's own.
+fn expire_of(r: &Resolved, at: Instant, ttl: Option<u64>, now_s: u64) -> Option<u64> {
+    ttl.map(|t| now_s - at.elapsed().as_secs() + t).or(r.expire)
+}
+
+/// Takes the spare out; returns it only for this exact video and outside the refresh margin.
+fn take_spare(spare: &mut Option<Spare>, index: usize, id: &str, now_s: u64, margin_s: u64, ttl: Option<u64>) -> Option<Resolved> {
+    let s = spare.take()?;
+    let expire = expire_of(&s.r, s.at, ttl, now_s)?;
+    (s.id == id && rules::spare_usable(s.index, index, expire, now_s, margin_s)).then_some(s.r)
 }
 
 struct Feeder {
@@ -416,6 +438,9 @@ struct Ctl {
     resolving: HashSet<(usize, bool)>,
     refresh_after: Instant,
     refresh_pending: Option<usize>,
+    spare: Option<Spare>,
+    /// (index, when) a spare is due for the video on air from its URL.
+    spare_due: Option<(usize, Instant)>,
     filler_since: Option<u64>,
     step_offset: i64,
     break_url: Option<(usize, Option<u32>)>,
@@ -495,8 +520,7 @@ impl Ctl {
         let (resolved, expire) = match source {
             Source::Url => {
                 let (r, at) = self.resolved.get(&index).cloned().expect("url feeder without a resolve");
-                let ttl_expire = self.args.dev.url_ttl.map(|t| unix_ms() as u64 / 1000 - at.elapsed().as_secs() + t);
-                let e = ttl_expire.or(r.expire);
+                let e = expire_of(&r, at, self.args.dev.url_ttl, unix_ms() as u64 / 1000);
                 (Some(r), e)
             }
             _ => (None, None),
@@ -511,6 +535,12 @@ impl Ctl {
         };
         self.feeder_seq += 1;
         self.refresh_pending = None;
+        if self.spare.as_ref().is_some_and(|s| s.index != index) {
+            self.spare = None;
+        }
+        if !filler && self.spare_due.is_none_or(|(i, _)| i != index) {
+            self.spare_due = (source == Source::Url).then(|| (index, Instant::now() + Duration::from_secs_f64(rules::SPARE_AFTER_S)));
+        }
         let seq = self.feeder_seq;
         if !filler {
             self.filler_since = None;
@@ -584,13 +614,13 @@ impl Ctl {
     }
 
     /// Drop the slate that is only covering a wait (every filler since the last real feeder),
-    /// all but its first second past the writer.
-    fn cut_filler(&mut self) {
+    /// all but `keep` past the writer.
+    fn cut_filler(&mut self, keep: i64) {
         if self.live.as_ref().is_some_and(|f| f.filler) {
             self.cut_live();
         }
         if let Some(seq) = self.filler_since.take() {
-            self.shared.q.lock().unwrap().flush_keeping(seq, rules::HZ);
+            self.shared.q.lock().unwrap().flush_keeping(seq, keep);
         }
     }
 
@@ -621,7 +651,16 @@ impl Ctl {
         match rules::after_failure(retries) {
             Ladder::Retry => {
                 self.videos[index].retries += 1;
-                self.resolved.remove(&index);
+                let (now_s, id, margin) = (unix_ms() as u64 / 1000, self.id(index), self.margin_s());
+                match take_spare(&mut self.spare, index, &id, now_s, margin, self.args.dev.url_ttl) {
+                    Some(r) => {
+                        self.logs.event("info", "spare-used", json!({"index": index, "id": self.id(index)}));
+                        self.resolved.insert(index, (r, Instant::now()));
+                    }
+                    None => {
+                        self.resolved.remove(&index);
+                    }
+                }
                 self.step = "retry";
                 self.step_offset = self.queue_end();
                 self.count("retries");
@@ -640,6 +679,10 @@ impl Ctl {
                 self.set_target(next, 0.0, "skip", false);
             }
         }
+    }
+
+    fn margin_s(&self) -> u64 {
+        self.args.dev.refresh_margin.unwrap_or(1800)
     }
 
     fn now_s(&self) -> f64 {
@@ -932,7 +975,7 @@ impl Ctl {
                 self.start_feeder(i, Source::Url, fed, "refresh", false);
             } else if source == Source::Url && !filler && self.refresh_pending.is_none() && started.elapsed() > Duration::from_secs(30) && now >= self.refresh_after {
                 let unix = unix_ms() as u64 / 1000;
-                if expire.is_some_and(|e| rules::refresh_due(unix, e, self.args.dev.refresh_margin.unwrap_or(1800))) && !self.resolving.contains(&(index, false)) {
+                if expire.is_some_and(|e| rules::refresh_due(unix, e, self.margin_s())) && !self.resolving.contains(&(index, false)) {
                     if self.request_resolve(index, Purpose::Refresh) {
                         self.logs.event("info", "url-refresh", json!({"index": index, "id": self.id(index), "expire": expire, "now": unix}));
                         self.refresh_after = now + Duration::from_secs(30);
@@ -945,6 +988,7 @@ impl Ctl {
                     self.videos[i].retries = 0;
                 }
             }
+            self.spare_work(now);
         }
 
         // The target: what should be fed next.
@@ -965,9 +1009,9 @@ impl Ctl {
                 }
                 let gate_open = !t.gated || self.read_ahead() < self.settings.read_ahead_seconds;
                 if gate_open && (on_disk || self.url_ready(t.index)) {
-                    self.cut_filler();
-                    self.target = None;
                     let source = if on_disk { Source::File } else { Source::Url };
+                    self.cut_filler(rules::cut_margin(&source, t.pos));
+                    self.target = None;
                     self.start_feeder(t.index, source, t.pos, t.reason, false);
                 }
             }
@@ -996,6 +1040,23 @@ impl Ctl {
         self.periodic();
     }
 
+
+    /// Keep a spare URL for the video on air from its URL, through the same gate as every resolve.
+    fn spare_work(&mut self, now: Instant) {
+        let Some(index) = self.live.as_ref().filter(|f| f.source == Source::Url && !f.filler).map(|f| f.index) else { return };
+        if self.spare_due.is_none_or(|(i, at)| i != index || now < at) || self.resolving.contains(&(index, false)) {
+            return;
+        }
+        let now_s = unix_ms() as u64 / 1000;
+        let (id, ttl, margin) = (self.id(index), self.args.dev.url_ttl, self.margin_s());
+        // A spare with no known expiry is kept unused rather than resolved again every 5 s.
+        let wanted = self.spare.as_ref().is_none_or(|s| {
+            s.index != index || s.id != id || expire_of(&s.r, s.at, ttl, now_s).is_some_and(|e| rules::refresh_due(now_s, e, margin))
+        });
+        if wanted && self.request_resolve(index, Purpose::Spare) {
+            self.logs.event("info", "spare-resolve", json!({"index": index, "id": id}));
+        }
+    }
 
     fn window(&self) -> Vec<usize> {
         let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
@@ -1233,6 +1294,7 @@ impl Ctl {
                 cancel.store(true, Ordering::Relaxed);
             }
             self.resolved.clear();
+            (self.spare, self.spare_due) = (None, None);
             (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
             if let Err(e) = self.control("jump", Some(0)) {
                 self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
@@ -1327,6 +1389,12 @@ impl Ctl {
                             self.fail(index, t.pos, "resolve", json!({"reason": reason}));
                         }
                     }
+                    // Try again in a minute, not at the next free slot.
+                    Purpose::Spare => {
+                        if let Some((_, at)) = self.spare_due.as_mut().filter(|(i, _)| *i == index) {
+                            *at = Instant::now() + Duration::from_secs_f64(rules::SPARE_AFTER_S);
+                        }
+                    }
                     Purpose::Refresh | Purpose::Probe => {}
                 }
                 return;
@@ -1346,6 +1414,15 @@ impl Ctl {
         if let Some(v) = self.videos.get_mut(index) {
             v.bytes = v.bytes.or(r.bytes);
             v.entry.duration = r.duration.or(v.entry.duration);
+        }
+        if purpose == Purpose::Spare {
+            if self.target.as_ref().is_some_and(|t| t.index == index) && !self.fresh_url(index) {
+                // A retry is already waiting on this video: the spare is its resolve.
+                self.resolved.insert(index, (r, Instant::now()));
+            } else if self.live.as_ref().is_some_and(|f| f.index == index && !f.filler) {
+                self.spare = Some(Spare { index, id: id.to_string(), r, at: Instant::now() });
+            }
+            return;
         }
         self.resolved.insert(index, (r, Instant::now()));
         if purpose == Purpose::Refresh {
@@ -1410,7 +1487,7 @@ impl Ctl {
         let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
         let generation = self.shared.q.lock().unwrap().generation;
         let mut body = json!({
-            "playing": {"index": index, "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration)},
+            "playing": {"index": index, "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration), "spareReady": self.spare.as_ref().is_some_and(|s| s.index == index)},
             "timeline": secs(self.view_timeline()),
             "readAheadSeconds": (self.read_ahead() * 100.0).round() / 100.0,
             "cacheBytes": self.cache_bytes,
@@ -1437,7 +1514,8 @@ impl Ctl {
         self.cut_live();
         // The kept second is on air whatever it is; a later cut_filler only drops a new slate.
         self.filler_since = None;
-        let flushed = self.shared.q.lock().unwrap().flush_keeping(0, rules::HZ);
+        let source = if self.videos[t].on_disk { Source::File } else { Source::Url };
+        let flushed = self.shared.q.lock().unwrap().flush_keeping(0, rules::cut_margin(&source, 0.0));
         let cut = self.queue_end();
         self.control_seq += 1;
         self.count("controls");
@@ -1467,6 +1545,7 @@ impl Ctl {
                 let index = self.live.as_ref().filter(|f| !f.filler).map(|f| f.index).or(self.target.as_ref().map(|t| t.index)).ok_or("nothing playing")?;
                 self.break_url = Some((index, count));
                 self.resolved.remove(&index);
+                self.spare = None;
             }
             "kill-encoder" => {
                 procs::kill_tree(self.enc.child.as_ref().ok_or("no encoder")?.id());
@@ -1745,6 +1824,8 @@ fn main() {
         resolving: HashSet::new(),
         refresh_after: now,
         refresh_pending: None,
+        spare: None,
+        spare_due: None,
         filler_since: None,
         step_offset: BASE,
         break_url: None,
@@ -1801,6 +1882,45 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {
+        let r = Resolved { video: "v".into(), audio: "a".into(), headers: String::new(), duration: None, bytes: None, expire, available_at: None };
+        Some(Spare { index, id: id.into(), r, at: Instant::now() })
+    }
+
+    #[test]
+    fn a_retry_uses_the_spare_for_its_own_video() {
+        let mut s = spare(4, "abc", Some(10_000));
+
+        let taken = take_spare(&mut s, 4, "abc", 1000, 1800, None);
+
+        assert!(taken.is_some());
+        assert!(s.is_none(), "a used spare is gone");
+    }
+
+    #[test]
+    fn a_retry_never_uses_another_videos_spare() {
+        // Another index, and the same index after a playlist switch (another id).
+        let mut other_index = spare(3, "abc", Some(10_000));
+        let mut other_id = spare(4, "old", Some(10_000));
+
+        assert!(take_spare(&mut other_index, 4, "abc", 1000, 1800, None).is_none());
+        assert!(take_spare(&mut other_id, 4, "abc", 1000, 1800, None).is_none());
+        assert!(other_index.is_none() && other_id.is_none(), "an unusable spare is dropped");
+    }
+
+    #[test]
+    fn a_retry_never_uses_an_expired_or_expiring_spare() {
+        let mut expired = spare(4, "abc", Some(900));
+        let mut in_margin = spare(4, "abc", Some(2800));
+        let mut unknown = spare(4, "abc", None);
+        let mut ttl_expired = spare(4, "abc", Some(10_000));
+
+        assert!(take_spare(&mut expired, 4, "abc", 1000, 1800, None).is_none());
+        assert!(take_spare(&mut in_margin, 4, "abc", 1000, 1800, None).is_none());
+        assert!(take_spare(&mut unknown, 4, "abc", 1000, 1800, None).is_none());
+        assert!(take_spare(&mut ttl_expired, 4, "abc", 1000, 1800, Some(60)).is_none(), "the dev TTL wins over the URL's expiry");
+    }
 
     #[test]
     fn encoder_log_keeps_the_stream_key_out() {

@@ -197,6 +197,19 @@ pub fn refresh_due(now_s: u64, expire_s: u64, margin_s: u64) -> bool {
     now_s + margin_s >= expire_s
 }
 
+/// A video on air from its URL gets a spare resolve this long after its URL feeder starts.
+pub const SPARE_AFTER_S: f64 = 60.0;
+
+pub fn spare_usable(spare_index: usize, index: usize, expire_s: u64, now_s: u64, margin_s: u64) -> bool {
+    spare_index == index && !refresh_due(now_s, expire_s, margin_s)
+}
+
+/// Queued media kept past the writer at a cut. A URL feeder reopening mid-video takes longer
+/// to deliver its first bytes, and 1 s ran dry (about 0.75 s stutter in the spike).
+pub fn cut_margin(source: &Source, pos: f64) -> i64 {
+    if *source == Source::Url && pos > 0.0 { 3 * HZ } else { HZ }
+}
+
 
 pub const MAX_RETRIES: u32 = 2;
 
@@ -534,6 +547,23 @@ mod tests {
         assert_eq!(parse_expire("https://example.com/a.mp4"), None);
         assert!(refresh_due(1000, 2800, 1800));
         assert!(!refresh_due(999, 2800, 1800));
+    }
+
+    #[test]
+    fn a_spare_is_usable_only_for_its_own_video_and_outside_the_refresh_margin() {
+        assert!(spare_usable(4, 4, 10_000, 1000, 1800));
+        assert!(!spare_usable(3, 4, 10_000, 1000, 1800), "another video's spare");
+        assert!(!spare_usable(4, 4, 900, 1000, 1800), "expired");
+        assert!(!spare_usable(4, 4, 2800, 1000, 1800), "inside the refresh margin");
+        assert!(spare_usable(4, 4, 2801, 1000, 1800));
+    }
+
+    #[test]
+    fn the_cut_keeps_three_seconds_only_for_a_mid_video_url_start() {
+        assert_eq!(cut_margin(&Source::Url, 42.5), 3 * HZ);
+        assert_eq!(cut_margin(&Source::Url, 0.0), HZ);
+        assert_eq!(cut_margin(&Source::File, 42.5), HZ);
+        assert_eq!(cut_margin(&Source::Slate, 42.5), HZ);
     }
 
     #[test]
