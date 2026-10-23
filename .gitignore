@@ -32,3 +32,5 @@ spikes/encoder/kit/
 spikes/encoder/dist/
 spikes/encoder/media/
 spikes/encoder/results/
+supervisor/results/
+supervisor/logs/

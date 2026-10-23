@@ -4,7 +4,7 @@ How the parts fit. Direction, decisions and spike results live in the Notion pag
 
 ## What it is
 
-Streamloop restreams a YouTube playlist to Twitch around the clock from one Windows box. Two generations sit in this repo. **2.x** (`src/`) is live: a Node/TypeScript backend plays the playlist in mpv and drives OBS, which captures the mpv window and streams. **3.0** (`spikes/`) is in progress: a headless ffmpeg pipeline under a Rust supervisor, with no mpv, OBS or desktop session. The 2.x Node backend is meant to stay and drive the supervisor over local HTTP.
+Streamloop restreams a YouTube playlist to Twitch around the clock from one Windows box. Two generations sit in this repo. **2.x** (`src/`) is live: a Node/TypeScript backend plays the playlist in mpv and drives OBS, which captures the mpv window and streams. **3.0** is in progress: a headless ffmpeg pipeline under a Rust supervisor, with no mpv, OBS or desktop session. The supervisor is product code in `supervisor/` (hardened from spike 5); `spikes/` keeps the spikes that proved it. The 2.x Node backend is meant to stay and drive the supervisor over local HTTP.
 
 ## 2.x today
 
@@ -55,12 +55,14 @@ flowchart LR
 ```mermaid
 flowchart LR
     NODE["Node backend (2.x src/, kept)<br/>dashboard, Discord, Twitch, updater, config"]
-    NODE <-->|"local HTTP 127.0.0.1<br/>GET /status, POST /control, POST /shutdown"| SUP
+    NODE <-->|"local HTTP 127.0.0.1:4417<br/>GET /status, POST /control, POST /reload, POST /shutdown"| SUP
+    NODE -->|"writes; key via protect (DPAPI)"| CFG[("app\config.json<br/>playlists[0].id + supervisor section")]
+    CFG -->|"read at start and on POST /reload"| SUP
     subgraph JOB["Windows Job Object, kill-on-close"]
-        SUP["streamloop-supervisor.exe (Rust)"]
+        SUP["streamloop-supervisor.exe (Rust, supervisor/)"]
         SUP --> FEED["feeder ffmpeg, one at a time<br/>normalise 1080p30 / 48 kHz, -shortest"]
         FEED -->|MPEG-TS| PIPE["read-ahead queue<br/>20 s / 192 MB"]
-        PIPE -->|stdin| ENC["encoder ffmpeg, long-lived<br/>hardware H.264"]
+        PIPE -->|stdin| ENC["encoder ffmpeg, long-lived<br/>hardware H.264, freeze/silence detect"]
         SUP --> DL["yt-dlp downloader<br/>byte-budgeted cache"]
         SUP --> POT["PO-token server<br/>node, 127.0.0.1:4416"]
         DL --> CACHE[(cached files)]
@@ -75,35 +77,46 @@ flowchart LR
     classDef proven fill:#d4edda,stroke:#2e7d32,color:#000
     classDef partial fill:#fff3cd,stroke:#b8860b,color:#000
     classDef design fill:#f8d7da,stroke:#b03a2e,color:#000
-    class SUP,FEED,PIPE,DL,POT,CACHE,SLATE,YTURL,JOB proven
+    class SUP,FEED,PIPE,DL,POT,CACHE,SLATE,YTURL,JOB,CFG proven
     class ENC,OVL partial
     class NODE design
 ```
 
-Green is proven by a spike, amber is proven only in part, red is design.
+Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber is proven only in part, red is design.
 
 | Part | Status | Evidence |
 |------|--------|----------|
 | Feeder → read-ahead → encoder → RTMP, no drop at seams | Proven | Spike 1 (`spikes/continuity/`): 2 h soak, 1,663-seam stress, 1 h Twitch |
-| drawtext now-playing overlay in the feeder | Proven; wired into the supervisor's video feeders (`supervisor/src/overlay.rs`, off with `overlay: false`, none on the slate) | Spike 3 (`spikes/overlay/`), render check at `-ss 600` |
+| drawtext now-playing overlay in the feeder | Proven; wired into the supervisor's video feeders (`supervisor/src/overlay.rs`, off with `overlay: false`, none on the slate) | Spike 3 (`spikes/overlay/`), render check at `-ss 600`; on in every stage 2 run |
 | Byte-budgeted download cache, standby slate | Proven | Spike 4 (`spikes/buffer/`) |
-| Supervisor: process model, Job Object, controls, URL cold start, recovery ladder, token server, YouTube breaker | Proven | Spike 5 (`spikes/supervisor/`) |
+| Supervisor: process model, Job Object, controls, URL cold start, recovery ladder, token server, YouTube breaker | Proven as product code in `supervisor/` | Spike 5 (`spikes/supervisor/`); stage 2 runs A (1 h, 12 controls), B (every fault) and C (crash and resume) against local MediaMTX with `supervisor/scripts/`, tools only from the install layout |
+| Freeze and silence watchdog in the encoder (`freezedetect` -50 dB, `silencedetect`) | Proven against injected faults | Stage 2 run B: freeze acted on 25.1 s after the frozen picture went out and healed, silence at 35.2 s and retried once; no verdict on normal content over runs A and B |
 | Hardware encoder on the real box | Open, deferred to the product trial | Spike 2 (`spikes/encoder/`): kit built and dry-run on NVENC and AMF; the box run was skipped (the box has an RTX 2070, NVENC). A first-run setup check in the product detects the encoder by test encode. The supervisor still accepts `libx264` |
-| Node as HTTP client of the supervisor | Design | Spike 5 drove the API from `drive.mjs`; nothing in `src/` talks to the supervisor yet |
-| Supervisor config from `config.json`, `POST /reload`, launch by Node, own folder next to `node\`, binary updates | Design | Spike 5 spec; the spike uses CLI flags, API on port 4417 |
+| Node as HTTP client of the supervisor | Design | Spike 5 and the stage 2 runs drove the API from `drive.mjs`; nothing in `src/` talks to the supervisor yet |
+| Supervisor config from `config.json`, `POST /reload` with a live playlist switch, DPAPI key via `protect`, install layout | Proven | Stage 2: run A streamed on a protected key, the key never reached `data\` (grep, runs A to C); a reload switched to another playlist's video 0 and back |
+| Launch by Node, own folder next to `node\`, binary updates | Design | Spike 5 spec |
+
+## Supervisor interface (3.0)
+
+- **Install layout** under the root (`--root`, default the parent of the exe's folder; `supervisor/src/paths.rs`): `ffmpeg\ffmpeg.exe`, `yt-dlp\yt-dlp.exe`, `yt-dlp\deno.exe`, `yt-dlp\plugins\`, `pot\build\main.js` (token server), `node\node.exe`, `supervisor\streamloop-supervisor.exe`, `supervisor\slate.mp4`, `app\config.json`, `data\`. Every tool is called by full path, never through PATH; yt-dlp gets `--ffmpeg-location` for its merge.
+- **CLI:** `streamloop-supervisor.exe [--root DIR] [--config FILE] [--data DIR]`. Dev only: `--target URL` (replaces ingest and key, for local MediaMTX) and `--debug-faults`, which also unlocks the test knobs (`--url-ttl-s`, `--url-refresh-margin-s`, `--limit-rate`, `--start`, `--max-videos`, `--hours`). `streamloop-supervisor.exe protect` reads a stream key on stdin and prints a DPAPI blob (current user) for `supervisor.streamKeyProtected`.
+- **Config** (`app\config.json`, owned by Node): `playlists[0].id` plus a `supervisor` object: `ingestUrl`, `streamKeyProtected`, `encoder`, `cacheBudgetMb`, `readAheadSeconds`, `playerClient`, `overlay`, `freezeSeconds`, `silenceSeconds`. Read at start and on `POST /reload`, which applies what it can live, reports `restartRequired` for ingest, key and encoder, and switches to a new playlist's video 0 when `playlists[0].id` changes.
+- **HTTP** on 127.0.0.1:4417: `GET /status` (`state`: `starting`, `playing`, `recovering`, `needs-stream-key`, `waiting-for-playlist`, `stopping`; `reason`; `streamKeyProblem`; now playing; encoder alive, speed, CPU; watchdog; YouTube breaker; token server), `POST /control`, `POST /reload`, `POST /shutdown`, and `POST /debug/fault` only with `--debug-faults`. With no usable key it stays up in `needs-stream-key` and a reload with a working key starts the encoder.
+- **Data** (`data\`): `state.json` (resume point), `cache\` (wiped at start, so a resume plays from its URL), `logs\` with daily files (`events-DATE.jsonl`, `seams-`/`controls-`/`encoder-`/`downloads-`/`deletes-`/`buffer-DATE.csv`, `ytdlp-`/`tokenserver-DATE.log`), one log per ffmpeg process, `run.json` and `playlist.json`; a week is kept and the key is redacted from all of it.
+- **Measuring harness:** `supervisor/scripts/` (`dev-root.mjs` builds a dev root in this layout, `session.mjs` runs one session against local MediaMTX, `drive.mjs` drives it over HTTP only, `analyze.mjs` computes the verdict).
 
 ## Main flows (3.0)
 
 - **Seam.** A new feeder starts when the timeline is less than 20 s ahead of the encoder. It begins at timeline offset = last video PTS written + one frame, so timestamps stay continuous. The encoder never sees a seam as anything but more MPEG-TS.
 - **Control (next, prev, restart, jump).** All four are `switch(index, 0)` computed from `P_view` (what the viewer sees, not what the feeder has reached): kill the feeder, flush the queue from the first video PES at least 1 s past the writer, start the target feeder on the continuing offset from the cached file or, if not on disk, its URL (slate covers the resolve). Last command wins.
 - **Cold start.** Slate on air at once; the first video's URL is resolved (`yt-dlp -j`, waits for `available_at`) and switched in; the downloader fetches that video first; when the file is complete the URL feeder is killed and a file feeder continues at `P_fed` with no flush.
-- **Recovery.** (1) Feeder fails, stalls (no video PES for 10 s) or ends early: restart in place at `P_fed`, 2 tries per video. (2) Then skip; 3 skips in a row is critical. (3) Encoder exits or its progress stops for 10 s: restart with backoff, probing the ingest port; current video resumes at `P_view`. (4) Supervisor crash: Job Object kills every child, Node relaunches it, it resumes from `state.json`.
+- **Recovery.** (1) Feeder fails, stalls (no video PES for 10 s) or ends early: restart in place at `P_fed`, 2 tries per video. A picture the encoder's `freezedetect` finds frozen for `freezeSeconds` (counted from 5 s into a seam, never on the slate) takes the same ladder; audio silent for `silenceSeconds` is retried once per video, then only reported. (2) Then skip; 3 skips in a row is critical. (3) Encoder exits or its progress stops for 10 s: restart with backoff, probing the ingest port; current video resumes at `P_view`. (4) Supervisor crash: Job Object kills every child, Node relaunches it, it resumes from `state.json`.
 
 ## Invariants
 
 - The RTMP connection survives every seam, control and feeder failure; only an encoder restart drops it. (Spike 1, spike 5)
 - Nothing in `src/` imports from `spikes/`. Spike code is throwaway; what carries forward is command lines and measurements. (Notion rules; true today)
-- Secrets are never committed, printed or logged. 2.x keeps them in gitignored `config.json` and masks them in `GET /api/config`; spike scripts read `TWITCH_STREAM_KEY` from the environment. The spike supervisor logs its full `--target` URL, so it must not be given a keyed URL as is.
+- Secrets are never committed, printed or logged. 2.x keeps them in gitignored `config.json` and masks them in `GET /api/config`; spike scripts read `TWITCH_STREAM_KEY` from the environment. 3.0 keeps the key DPAPI-protected in `config.json` and redacts it from every log, event and `run.json` it writes.
 - Every child dies with its parent: 3.0 children live in the supervisor's kill-on-close Job Object; 2.x spawns every child with `cwd: SPAWN_CWD` so none holds `app\` during an update.
 - YouTube traffic from the supervisor goes through one gate: resolves at least 5 s apart, and a circuit breaker that stops all yt-dlp on a bot check or 3 failed resolves (backoff 1, 2, 5, 10, 30 min).
 - `START.bat` never overwrites itself in place, and its parenthesised blocks use `rem`, never `::` (`launcher.test.ts`).
