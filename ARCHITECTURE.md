@@ -85,7 +85,7 @@ Green is proven by a spike, amber is proven only in part, red is design.
 | Part | Status | Evidence |
 |------|--------|----------|
 | Feeder → read-ahead → encoder → RTMP, no drop at seams | Proven | Spike 1 (`spikes/continuity/`): 2 h soak, 1,663-seam stress, 1 h Twitch |
-| drawtext now-playing overlay in the feeder | Proven standalone, **not wired into the supervisor** | Spike 3 (`spikes/overlay/`) |
+| drawtext now-playing overlay in the feeder | Proven; wired into the supervisor's video feeders (`supervisor/src/overlay.rs`, off with `overlay: false`, none on the slate) | Spike 3 (`spikes/overlay/`), render check at `-ss 600` |
 | Byte-budgeted download cache, standby slate | Proven | Spike 4 (`spikes/buffer/`) |
 | Supervisor: process model, Job Object, controls, URL cold start, recovery ladder, token server, YouTube breaker | Proven | Spike 5 (`spikes/supervisor/`) |
 | Hardware encoder on the real box | Open, deferred to the product trial | Spike 2 (`spikes/encoder/`): kit built and dry-run on NVENC and AMF; the box run was skipped (the box has an RTX 2070, NVENC). A first-run setup check in the product detects the encoder by test encode. The supervisor still accepts `libx264` |

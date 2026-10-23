@@ -26,7 +26,11 @@ pub enum FeederFault {
     Mute,
 }
 
-pub fn feeder_args(input: &Input, pos: f64, offset: i64, fault: Option<FeederFault>) -> Vec<String> {
+/// `overlay` is the filter script from `overlay::prepare` (`[norm]` in, `[outv]` out); an
+/// unreadable script means no overlay. With it the video chain becomes one `-filter_complex`
+/// graph: fault (if any), the normalisation, then the script, so the overlay is drawn in output
+/// coordinates and a freeze fault still freezes the picture under it.
+pub fn feeder_args(input: &Input, pos: f64, offset: i64, fault: Option<FeederFault>, overlay: Option<&std::path::Path>) -> Vec<String> {
     let mut a: Vec<String> = ["-v", "error", "-nostats", "-progress", "pipe:2"].map(String::from).to_vec();
     let seek = |a: &mut Vec<String>| {
         if pos > 0.0 {
@@ -51,8 +55,17 @@ pub fn feeder_args(input: &Input, pos: f64, offset: i64, fault: Option<FeederFau
                 seek(&mut a);
                 a.extend(["-i".into(), url.to_string()]);
             }
-            a.extend(["-map", "0:v:0", "-map", "1:a:0"].map(String::from));
         }
+    }
+    let script = overlay.and_then(|p| std::fs::read_to_string(p).ok());
+    let (vmap, amap) = match (&script, input) {
+        (Some(_), Input::File(_)) => ("[outv]", "0:a:0"),
+        (Some(_), Input::Url { .. }) => ("[outv]", "1:a:0"),
+        (None, Input::File(_)) => ("", ""),
+        (None, Input::Url { .. }) => ("0:v:0", "1:a:0"),
+    };
+    if !vmap.is_empty() {
+        a.extend(["-map", vmap, "-map", amap].map(String::from));
     }
     // Overlaid on the input's frames to keep its pace: `loop` alone runs minutes ahead of the audio
     // and the ingest drops the encoder (and `loop=-1` without size=1 loops nothing).
@@ -61,7 +74,11 @@ pub fn feeder_args(input: &Input, pos: f64, offset: i64, fault: Option<FeederFau
         Some(FeederFault::Mute) => (VF.to_string(), format!("volume=0,{AF}")),
         None => (VF.to_string(), AF.to_string()),
     };
-    a.extend(["-vf".into(), vf, "-af".into(), af]);
+    match script {
+        // vf here is the fault prefix + normalisation, which becomes the first stage of the graph.
+        Some(body) => a.extend(["-filter_complex".into(), format!("[0:v]{vf}[norm];{body}"), "-af".into(), af]),
+        None => a.extend(["-vf".into(), vf, "-af".into(), af]),
+    }
     a.extend(
         [
             "-c:v", "mpeg2video", "-q:v", "2", "-g", "15", "-bf", "0", "-c:a", "mp2", "-b:a", "384k",
@@ -383,7 +400,7 @@ mod tests {
     fn feeder_faults_change_only_their_own_chain_before_the_normalisation() {
         let input = super::Input::File("v.mp4");
         let chain = |fault, flag: &str| {
-            let a = super::feeder_args(&input, 0.0, crate::rules::BASE, fault);
+            let a = super::feeder_args(&input, 0.0, crate::rules::BASE, fault, None);
             a[a.iter().position(|x| x == flag).unwrap() + 1].clone()
         };
         let (vf, af) = (chain(None, "-vf"), chain(None, "-af"));
@@ -391,6 +408,46 @@ mod tests {
         assert_eq!(chain(Some(super::FeederFault::Freeze), "-af"), af);
         assert_eq!(chain(Some(super::FeederFault::Mute), "-af"), format!("volume=0,{af}"));
         assert_eq!(chain(Some(super::FeederFault::Mute), "-vf"), vf);
+    }
+
+    #[test]
+    fn overlay_script_goes_after_the_normalisation_and_after_a_fault() {
+        let dir = std::env::temp_dir().join(format!("sl-media-ov-{}", std::process::id()));
+        let script = crate::overlay::prepare("Title", Some(1200.0), 600.0, &dir).unwrap();
+        let body = std::fs::read_to_string(&script).unwrap();
+        let args = |input: &super::Input, fault| super::feeder_args(input, 600.0, crate::rules::BASE, fault, Some(&script));
+        let after = |a: &[String], flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
+        let file = args(&super::Input::File("v.mp4"), None);
+        // Assert: no -vf, one graph = normalisation, then the script; video and audio mapped
+        assert!(!file.contains(&"-vf".to_string()));
+        assert_eq!(after(&file, "-filter_complex"), format!("[0:v]{}[norm];{body}", super::VF));
+        assert_eq!(file.iter().filter(|x| *x == "-map").count(), 2);
+        assert_eq!(after(&file, "-af"), super::AF);
+        let url = args(&super::Input::Url { video: "v", audio: "a", headers: "" }, None);
+        assert_eq!(url.iter().filter(|x| *x == "-map").count(), 2, "url maps are not doubled");
+        assert!(url.windows(2).any(|w| w == ["-map", "[outv]"]) && url.windows(2).any(|w| w == ["-map", "1:a:0"]));
+        // Assert: the freeze goes in front of the normalisation, the mute stays on the audio chain
+        let freeze = args(&super::Input::File("v.mp4"), Some(super::FeederFault::Freeze));
+        assert_eq!(after(&freeze, "-filter_complex"), format!("[0:v]split[m][s];[s]trim=end_frame=1,loop=loop=-1:size=1[st];[m][st]overlay=shortest=1,{}[norm];{body}", super::VF));
+        let mute = args(&super::Input::File("v.mp4"), Some(super::FeederFault::Mute));
+        assert_eq!(after(&mute, "-filter_complex"), after(&file, "-filter_complex"));
+        assert_eq!(after(&mute, "-af"), format!("volume=0,{}", super::AF));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Manual render check: SL_RENDER_CLIP=<a 1080p clip over 620 s> SL_RENDER_OUT=<out.ts> runs a
+    /// 20 s feeder at -ss 600 with the overlay; skipped otherwise.
+    #[test]
+    fn renders_the_overlay_on_a_feeder_started_mid_video() {
+        let (Ok(clip), Ok(out)) = (std::env::var("SL_RENDER_CLIP"), std::env::var("SL_RENDER_OUT")) else { return };
+        let dir = std::env::temp_dir().join(format!("sl-render-{}", std::process::id()));
+        let script = crate::overlay::prepare("Render check: 日本語 title \u{1F680} with: colons & 'quotes'", Some(1200.0), 600.0, &dir).unwrap();
+        let mut args = feeder_args(&Input::File(&clip), 600.0, crate::rules::BASE, None, Some(&script));
+        args.retain(|a| a != "-progress" && a != "pipe:2");
+        args.splice(0..0, ["-t".to_string(), "20".to_string()]);
+        let o = std::process::Command::new(r"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe").args(&args).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        std::fs::write(out, o.stdout).unwrap();
     }
 
     #[test]
@@ -571,7 +628,7 @@ mod tests {
             return;
         }
         let offset = BASE + 3 * HZ + 1234; // an offset that is not a whole frame
-        let mut args = feeder_args(&Input::File(slate.to_str().unwrap()), 0.0, offset, None);
+        let mut args = feeder_args(&Input::File(slate.to_str().unwrap()), 0.0, offset, None, None);
         args.retain(|a| a != "-progress" && a != "pipe:2");
         let Ok(out) = std::process::Command::new("ffmpeg").args(&args).output() else {
             eprintln!("skipped: no ffmpeg");

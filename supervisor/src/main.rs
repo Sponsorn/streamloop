@@ -4,6 +4,7 @@
 mod api;
 mod config;
 mod media;
+mod overlay;
 mod paths;
 mod procs;
 mod rules;
@@ -595,6 +596,22 @@ impl Ctl {
     }
 
 
+    /// The now-playing filter script for a video feeder; none on the slate or a filler, or when the
+    /// setting is off. A failed write is logged and the video airs without the overlay.
+    fn overlay_for(&self, index: usize, source: &Source, pos: f64, filler: bool) -> Option<PathBuf> {
+        if !self.settings.overlay || filler || *source == Source::Slate {
+            return None;
+        }
+        let e = &self.videos.get(index)?.entry;
+        match overlay::prepare(&e.title, e.duration, pos, &self.args.paths.data.join("overlay")) {
+            Ok(p) => Some(p),
+            Err(err) => {
+                self.logs.event("warn", "overlay-failed", json!({"error": err.to_string()}));
+                None
+            }
+        }
+    }
+
     fn start_feeder(&mut self, index: usize, source: Source, pos: f64, reason: &'static str, filler: bool) {
         let file = self.file_of(index);
         let (resolved, expire) = match source {
@@ -632,8 +649,9 @@ impl Ctl {
             self.watch.cut_at = self.watch.cut_at.max(secs(offset - BASE));
         }
         let fault = self.watch.fault.filter(|(i, _)| *i == index && !filler && source != Source::Slate).map(|(_, f)| f);
+        let overlay = self.overlay_for(index, &source, pos, filler);
         let spawned = procs::command(&self.args.paths.ffmpeg)
-            .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset, fault))
+            .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset, fault, overlay.as_deref()))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
