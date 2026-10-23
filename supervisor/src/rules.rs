@@ -238,10 +238,8 @@ pub fn breaker_backoff_s(level: u32) -> f64 {
     [60.0, 120.0, 300.0, 600.0, 1800.0][(level as usize).min(4)]
 }
 
-/// yt-dlp's wording for a video that will not play however often it is asked: removed, private,
-/// blocked here, age-gated, members-only. Such a failure is the video's, not YouTube's: it does
-/// not count toward the breaker and the ladder skips the video. YouTube's own rate limit also says
-/// "Video unavailable ... try again later", and that one is about us.
+/// yt-dlp's wording for a video that will never play (removed, private, blocked, age-gated, members-only).
+/// YouTube's rate limit also says "Video unavailable ... try again later"; that one is not the video's.
 pub fn is_video_unavailable(reason: &str) -> bool {
     let r = reason.to_lowercase();
     !r.contains("try again later")
