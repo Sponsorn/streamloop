@@ -592,7 +592,8 @@ impl Ctl {
     /// What the viewer sees: (index, P_view, source).
     fn view(&self) -> (usize, f64, Source) {
         match rules::view_at(&self.seams, self.view_timeline()) {
-            Some((s, pos)) => (s.index, pos, s.source.clone()),
+            // A seam from before a switch to a shorter list can name an index the list no longer has.
+            Some((s, pos)) => (s.index % self.n().max(1), pos, s.source.clone()),
             None => (self.target.as_ref().map_or(0, |t| t.index), self.target.as_ref().map_or(0.0, |t| t.pos), Source::Slate),
         }
     }
@@ -763,7 +764,13 @@ impl Ctl {
     }
 
     fn set_target(&mut self, index: usize, pos: f64, reason: &'static str, gated: bool) {
-        let (index, pos) = rules::resolve_start(index, pos, self.duration(index), self.n().max(1));
+        let n = self.n();
+        if n == 0 {
+            return;
+        }
+        // Just after a switch to a shorter list the view can still name an old, larger index.
+        let index = index % n;
+        let (index, pos) = rules::resolve_start(index, pos, self.duration(index), n);
         // A fresh video gets a fresh retry budget; retries, refreshes and restarts keep theirs.
         if matches!(reason, "normal" | "skip" | "control" | "coldstart") {
             if let Some(v) = self.videos.get_mut(index) {
@@ -972,7 +979,8 @@ impl Ctl {
         self.count("encoderExits");
         let level = if self.enc.failures >= 3 { "critical" } else { "warn" };
         self.logs.event(level, "encoder-exit", json!({"why": why, "code": code, "failures": self.enc.failures, "restartInS": wait, "resumeIndex": index, "resumePos": pos}));
-        if !self.videos.is_empty() && !self.stopping {
+        // A control (or playlist switch) waiting to be fed is what the viewer asked for next.
+        if !self.stopping && self.target.as_ref().is_none_or(|t| t.reason != "control") {
             self.set_target(index, pos, "encoder-restart", false);
         }
     }
@@ -1191,7 +1199,7 @@ impl Ctl {
                 }
                 Verdict::Freeze { index, pos } | Verdict::Silence { index, pos } => (index, pos),
             };
-            let v = &self.videos[index];
+            let Some(v) = self.videos.get(index) else { continue }; // a seam from before a playlist switch
             let heal = watchdog::heal(&verdict, v.retries, v.silence_retried).unwrap();
             self.watch.fault = None;
             self.count(if freeze { "watchdogFreezes" } else { "watchdogSilences" });
@@ -2135,6 +2143,35 @@ mod tests {
         assert!(ctl.status()["hold"]["reason"].is_string(), "{}", ctl.status());
         ctl.control("next", None).unwrap();
         assert!(!ctl.hold.holding(now), "a control did not lift the hold");
+    }
+
+    fn exited_child() -> Child {
+        std::process::Command::new("cmd").args(["/c", "exit 1"]).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap()
+    }
+
+    #[test]
+    fn an_encoder_restart_right_after_a_switch_to_a_shorter_list_targets_a_video_that_exists() {
+        let mut ctl = test_ctl("short-list", &["a", "b"]);
+        // the viewer is still on video 5 of the old, longer list
+        ctl.seams.push(Seam { offset: BASE, index: 5, source: Source::File, start_pos: 12.0 });
+        ctl.enc.child = Some(exited_child());
+
+        ctl.encoder_down("test");
+
+        let t = ctl.target.clone().expect("no target after the encoder went down");
+        assert!(t.index < ctl.n(), "target {} on a list of {}", t.index, ctl.n());
+    }
+
+    #[test]
+    fn an_encoder_restart_keeps_a_pending_control_target() {
+        let mut ctl = test_ctl("keep-control", &["a", "b", "c"]);
+        ctl.seams.push(Seam { offset: BASE, index: 0, source: Source::File, start_pos: 12.0 });
+        ctl.set_target(2, 0.0, "control", false);
+        ctl.enc.child = Some(exited_child());
+
+        ctl.encoder_down("test");
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((2, "control")));
     }
 
     fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {
