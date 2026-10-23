@@ -94,7 +94,7 @@ impl Ytdlp {
         };
         pid(child.id());
         // one line per call to YouTube, so a quiet breaker can be checked from the log
-        logs.append("ytdlp.log", &format!("{} [spawn] {}\n", crate::iso_now(), args.last().map_or("", |a| a.as_str())));
+        logs.daily("ytdlp", "log", &format!("{} [spawn] {}\n", crate::iso_now(), args.last().map_or("", |a| a.as_str())));
         let err_pipe = child.stderr.take().unwrap();
         let err_logs = logs.clone();
         // Line by line and timestamped, so a log line can be placed against events.jsonl.
@@ -105,7 +105,7 @@ impl Ytdlp {
             while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
                 let line = String::from_utf8_lossy(&buf).trim_end().to_string();
                 buf.clear();
-                err_logs.append("ytdlp.log", &format!("{} {line}\n", crate::iso_now()));
+                err_logs.daily("ytdlp", "log", &format!("{} {line}\n", crate::iso_now()));
                 all.push_str(&line);
                 all.push('\n');
             }
@@ -132,7 +132,7 @@ impl Ytdlp {
         let status = loop {
             while let Ok(line) = rx.try_recv() {
                 if line.contains("[pot") {
-                    logs.append("ytdlp.log", &format!("{} {line}\n", crate::iso_now()));
+                    logs.daily("ytdlp", "log", &format!("{} {line}\n", crate::iso_now()));
                 }
                 on_line(&line);
                 stdout.push_str(&line);
@@ -153,7 +153,7 @@ impl Ytdlp {
         std::thread::sleep(Duration::from_millis(50));
         while let Ok(line) = rx.try_recv() {
             if line.contains("[pot") {
-                logs.append("ytdlp.log", &format!("{} {line}\n", crate::iso_now()));
+                logs.daily("ytdlp", "log", &format!("{} {line}\n", crate::iso_now()));
             }
             on_line(&line);
             stdout.push_str(&line);
@@ -260,7 +260,7 @@ pub fn spawn_token_server(node: &Path, script: &Path, port: u16, logs: &Logs) ->
         let logs = logs.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-                logs.append("tokenserver.log", &format!("{line}\n"));
+                logs.daily("tokenserver", "log", &format!("{line}\n"));
             }
         });
     }

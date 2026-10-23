@@ -3,6 +3,7 @@
 
 mod api;
 mod config;
+mod logs;
 mod media;
 mod overlay;
 mod paths;
@@ -13,12 +14,13 @@ mod watchdog;
 mod ytdlp;
 
 use config::Settings;
+use logs::Logs;
 use media::{Input, Live, Queue, Shared};
 use paths::Paths;
 use rules::{secs, ticks, Ladder, Seam, Source, BASE, FRAME};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,52 +30,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use watchdog::{Detect, Heal, Verdict};
 use ytdlp::{Entry, Resolved, Ytdlp};
 
-
-/// Every write, stderr included, passes through `config::redact`: the stream key never lands in a log.
-#[derive(Clone)]
-pub struct Logs {
-    dir: PathBuf,
-    /// Every key this process has seen: a line about the old key can still arrive after a reload.
-    keys: Arc<Mutex<Vec<String>>>,
-}
-
-impl Logs {
-    fn new(dir: PathBuf, key: &str) -> Logs {
-        let logs = Logs { dir, keys: Arc::default() };
-        logs.add_key(key);
-        logs
-    }
-    fn add_key(&self, key: &str) {
-        let mut keys = self.keys.lock().unwrap();
-        if !key.is_empty() && !keys.iter().any(|k| k == key) {
-            keys.push(key.to_string());
-        }
-    }
-    fn redact(&self, text: &str) -> String {
-        config::redact(text, &self.keys.lock().unwrap())
-    }
-    pub fn append(&self, file: &str, text: &str) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join(file)) {
-            let _ = f.write_all(self.redact(text).as_bytes());
-        }
-    }
-    /// A whole-file write (run.json).
-    pub fn write(&self, file: &str, text: &str) {
-        let _ = std::fs::write(self.dir.join(file), self.redact(text));
-    }
-    pub fn csv(&self, file: &str, row: &[String]) {
-        let clean: Vec<String> = row.iter().map(|c| c.replace([',', '\r', '\n'], " ")).collect();
-        self.append(file, &format!("{}\n", clean.join(",")));
-    }
-    pub fn event(&self, level: &str, kind: &str, extra: Value) {
-        let mut v = json!({"ts": iso_now(), "level": level, "kind": kind});
-        if let (Some(m), Value::Object(e)) = (v.as_object_mut(), extra) {
-            m.extend(e);
-        }
-        eprintln!("{level:8} {kind} {}", self.redact(&v.to_string()));
-        self.append("events.jsonl", &format!("{v}\n"));
-    }
-}
 
 fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
@@ -269,7 +225,7 @@ fn playlist_failure(first: bool, streak: bool) -> PlaylistFailure {
 }
 
 fn encoder_log_line(logs: &Logs, generation: u64, line: &str) {
-    logs.append("encoder.log", &format!("{} [gen {generation}] {line}\n", iso_now()));
+    logs.process("encoder", generation, &format!("{} [gen {generation}] {line}\n", iso_now()));
 }
 
 /// `-progress` keys become EncProgress; every other line goes to encoder.log redacted (at `-v info`
@@ -282,7 +238,7 @@ fn encoder_stderr_line(logs: &Logs, tx: &Sender<Msg>, generation: u64, line: &st
         Some(("progress", _)) => {
             if let Some(us) = out_us.as_ref().and_then(|u| u.parse::<i64>().ok()) {
                 // The 10 s CPU row (Ctl::sample_cpu) fills the last four columns; these leave them empty.
-                logs.csv("encoder.csv", &[unix_ms().to_string(), us.to_string(), speed.clone(), generation.to_string(), String::new(), String::new(), String::new(), String::new()]);
+                logs.csv("encoder", &[unix_ms().to_string(), us.to_string(), speed.clone(), generation.to_string(), String::new(), String::new(), String::new(), String::new()]);
                 let _ = tx.send(Msg::EncProgress { generation, media: us as f64 / 1e6, speed: speed.trim_end_matches('x').trim().parse().ok() });
             }
         }
@@ -675,7 +631,7 @@ impl Ctl {
                 let t = line.trim();
                 let progress = t.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
                 if !t.is_empty() && !progress {
-                    logs.append("feeders.log", &format!("{} {tag} {t}\n", iso_now()));
+                    logs.process("feeder", seq, &format!("{} {tag} {t}\n", iso_now()));
                 }
             }
         });
@@ -983,7 +939,7 @@ impl Ctl {
             // The machine's load does not depend on the encoder being up.
             self.cpu.system = 100.0 - rules::cpu_percent(idle.saturating_sub(p.idle), dt);
             let (media, gen) = (self.enc.media, self.shared.q.lock().unwrap().generation);
-            self.logs.csv("encoder.csv", &[
+            self.logs.csv("encoder", &[
                 unix_ms().to_string(), ((media * 1e6) as i64).to_string(), self.enc.speed.map_or(String::new(), |s| format!("{s}x")), gen.to_string(),
                 self.enc.speed.map_or(String::new(), |s| s.to_string()),
                 format!("{:.2}", self.cpu.encoder), format!("{:.2}", self.cpu.feeder), format!("{:.2}", self.cpu.system),
@@ -1269,7 +1225,7 @@ impl Ctl {
                 self.videos[i].disk_bytes = 0;
                 // Where this video's last airing ended on the timeline, if it aired this encoder generation.
                 let end = self.seams.iter().rposition(|s| s.index == i && s.source != Source::Slate).and_then(|k| self.seams.get(k + 1)).map(|s| format!("{:.6}", secs(s.offset))).unwrap_or_default();
-                self.logs.csv("deletes.csv", &[iso_now(), self.id(i), bytes.to_string(), format!("{:.6}", secs(self.view_timeline())), end]);
+                self.logs.csv("deletes", &[iso_now(), self.id(i), bytes.to_string(), format!("{:.6}", secs(self.view_timeline())), end]);
             }
         }
 
@@ -1324,7 +1280,7 @@ impl Ctl {
             let playing = if source == Source::Slate { "slate".into() } else { self.id(index) };
             let (dl_id, pct) = self.downloading.as_ref().map_or((String::new(), String::new()), |d| (self.id(d.0), format!("{:.1}", d.1)));
             self.logs.csv(
-                "buffer.csv",
+                "buffer",
                 &[iso_now(), self.cache_bytes.to_string(), self.videos.iter().filter(|v| v.on_disk).count().to_string(), dl_id, pct, playing, format!("{:.1}", self.enc.media), format!("{:.2}", self.read_ahead())],
             );
             self.save_run();
@@ -1412,7 +1368,7 @@ impl Ctl {
                     }
                 };
                 let attempt = self.videos[index].dl_attempts;
-                self.logs.csv("downloads.csv", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason]);
+                self.logs.csv("downloads", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason]);
             }
         }
     }
@@ -1454,7 +1410,7 @@ impl Ctl {
         if self.playlist_problem.take().is_some() {
             self.logs.event("info", "playlist-recovered", json!({"playlistId": id}));
         }
-        self.logs.append("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
+        self.logs.write("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
         let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0, silence_retried: false }).collect();
         let old = std::mem::replace(&mut self.videos, new);
         self.playlist = id.clone();
@@ -1558,7 +1514,7 @@ impl Ctl {
                 match purpose {
                     Purpose::Size => {
                         self.videos[index].dl_failed = true;
-                        self.logs.csv("downloads.csv", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason]);
+                        self.logs.csv("downloads", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason]);
                     }
                     // Not the video's fault while YouTube is off limits: no retry, no skip, the
                     // target waits (slate or a cached file) until the breaker closes.
@@ -1609,7 +1565,7 @@ impl Ctl {
         if let Some(m) = self.metas.remove(&seq) {
             self.seam_rows += 1;
             self.logs.csv(
-                "seams.csv",
+                "seams",
                 &[
                     seq.to_string(), m.name, m.started_iso, format!("{:.6}", secs(m.offset)), frames.to_string(),
                     code.map_or("killed".into(), |c| c.to_string()), iso_now(), m.index.to_string(), m.source.name().into(),
@@ -1699,7 +1655,7 @@ impl Ctl {
         self.videos[t].retries = 0;
         self.step = "none";
         self.set_target(t, 0.0, "control", false);
-        self.logs.csv("controls.csv", &[unix_ms().to_string(), cmd.into(), index.map_or(String::new(), |i| i.to_string()), t.to_string(), self.id(t), format!("{:.6}", secs(cut)), flushed.to_string()]);
+        self.logs.csv("controls", &[unix_ms().to_string(), cmd.into(), index.map_or(String::new(), |i| i.to_string()), t.to_string(), self.id(t), format!("{:.6}", secs(cut)), flushed.to_string()]);
         self.logs.event("info", "control", json!({"cmd": cmd, "seq": self.control_seq, "from": view, "target": t, "id": self.id(t), "cutOffset": secs(cut), "flushedBytes": flushed}));
         self.tick();
         Ok(json!({"accepted": true, "seq": self.control_seq, "targetIndex": t, "targetId": self.id(t), "cutOffset": secs(cut)}))
@@ -1948,6 +1904,7 @@ fn main() {
     }
     let logs = Logs::new(args.paths.data.join("logs"), &settings.stream_key);
     let _ = std::fs::create_dir_all(&logs.dir);
+    logs.prune();
     // ponytail: files from an earlier run are not adopted, so the cache starts empty; adopt them if restarts re-download too much.
     let cache = args.paths.data.join("cache");
     let _ = std::fs::remove_dir_all(&cache);
@@ -2047,6 +2004,7 @@ fn main() {
     }
     ctl.save_run();
     let mut last_tick = Instant::now();
+    let mut log_day = logs::local_date();
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(msg) => {
@@ -2060,6 +2018,11 @@ fn main() {
             last_tick = Instant::now();
             ctl.tick();
             ctl.publish_status();
+        }
+        let today = logs::local_date();
+        if today != log_day {
+            log_day = today;
+            ctl.logs.prune();
         }
     }
 }
@@ -2135,6 +2098,12 @@ mod tests {
         assert!(take_spare(&mut ttl_expired, 4, "abc", 1000, 1800, Some(60)).is_none(), "the dev TTL wins over the URL's expiry");
     }
 
+    fn only_log(dir: &std::path::Path, prefix: &str) -> String {
+        let hits: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(prefix) && n.ends_with(".log")).collect();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        hits[0].clone()
+    }
+
     #[test]
     fn encoder_log_keeps_the_stream_key_out() {
         let dir = std::env::temp_dir().join(format!("sl-redact-{}", std::process::id()));
@@ -2145,7 +2114,7 @@ mod tests {
 
         encoder_log_line(&logs, 3, &line);
 
-        let written = std::fs::read_to_string(dir.join("encoder.log")).unwrap();
+        let written = std::fs::read_to_string(dir.join(only_log(&dir, "encoder-"))).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(written.contains("rtmp://live.twitch.tv/app/***: I/O error"), "{written}");
         assert!(!written.contains("SeCrEt"), "{written}");
@@ -2170,7 +2139,7 @@ mod tests {
             encoder_stderr_line(&logs, &tx, 4, l, &mut out_us, &mut speed);
         }
 
-        let written = std::fs::read_to_string(dir.join("encoder.log")).unwrap();
+        let written = std::fs::read_to_string(dir.join(only_log(&dir, "encoder-"))).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(written.contains("Output #0, flv, to 'rtmp://live.twitch.tv/app/***':"), "{written}");
         assert!(!written.contains("SeCrEt"), "{written}");
@@ -2179,26 +2148,6 @@ mod tests {
         let msgs: Vec<Msg> = rx.try_iter().collect();
         assert!(matches!(msgs[0], Msg::Detect { generation: 4, d: Detect::FreezeStart(t) } if t == 12.5));
         assert!(matches!(msgs[1], Msg::EncProgress { generation: 4, media, .. } if media == 2.0));
-    }
-
-    #[test]
-    fn logs_redact_a_key_added_later_and_every_earlier_one() {
-        let dir = std::env::temp_dir().join(format!("sl-redact-keys-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let logs = Logs::new(dir.clone(), "");
-
-        logs.append("a.log", "before live_OLD_1
-");
-        logs.add_key("live_OLD_1");
-        logs.add_key("live_NEW_2");
-        logs.append("a.log", "old live_OLD_1 new live_NEW_2
-");
-
-        let written = std::fs::read_to_string(dir.join("a.log")).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(written, "before live_OLD_1
-old *** new ***
-");
     }
 
     #[test]
