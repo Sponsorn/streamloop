@@ -18,6 +18,14 @@ pub fn cpu_percent(proc_delta: u64, total_delta: u64) -> f64 {
     (proc_delta as f64 / total_delta as f64 * 100.0).min(100.0)
 }
 
+/// CPU share of one process over a window, 0 when the sample pair is not the same process.
+pub fn window_cpu(prev_pid: Option<u32>, pid: Option<u32>, prev_time: u64, time: u64, total_delta: u64) -> f64 {
+    match (prev_pid, pid) {
+        (Some(a), Some(b)) if a == b => cpu_percent(time.saturating_sub(prev_time), total_delta),
+        _ => 0.0,
+    }
+}
+
 pub fn ticks(secs: f64) -> i64 {
     (secs * HZ as f64).round() as i64
 }
@@ -337,6 +345,16 @@ pub fn next_download(win: &[usize], on_disk: &[bool], failed: &[bool]) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn window_cpu_is_zero_when_the_process_changed_between_samples() {
+        assert_eq!(window_cpu(Some(7), Some(7), 100, 150, 100), 50.0);
+        // A restarted encoder is a different process: its time is not comparable.
+        assert_eq!(window_cpu(Some(7), Some(9), 900, 150, 100), 0.0);
+        assert_eq!(window_cpu(Some(7), Some(9), 100, 900, 100), 0.0);
+        assert_eq!(window_cpu(None, Some(9), 0, 150, 100), 0.0);
+        assert_eq!(window_cpu(Some(7), None, 100, 0, 100), 0.0);
+    }
+
     #[test]
     fn cpu_percent_scales_to_all_cores_and_survives_a_zero_total() {
         assert_eq!(cpu_percent(50, 100), 50.0);

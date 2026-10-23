@@ -324,15 +324,22 @@ pub fn writer(shared: &Shared) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn encoder_args_carry_each_vendors_set() {
-        for codec in ["h264_nvenc", "h264_amf", "h264_qsv", "libx264"] {
+    fn encoder_args_carry_each_vendors_exact_set() {
+        let sets: [(&str, &[&str]); 4] = [
+            ("h264_nvenc", &["-preset", "p4", "-rc", "cbr", "-bf", "0", "-profile:v", "high"]),
+            ("h264_amf", &["-usage", "transcoding", "-quality", "balanced", "-rc", "cbr", "-bf", "0", "-profile:v", "high"]),
+            ("h264_qsv", &["-preset", "medium", "-look_ahead", "0", "-bf", "0", "-profile:v", "high"]),
+            ("libx264", &["-preset", "veryfast", "-sc_threshold", "0", "-keyint_min", "60"]),
+        ];
+        for (codec, set) in sets {
             // Act
             let a = super::encoder_args("rtmp://x/y", codec, &super::WatchdogCfg::default()).unwrap();
-            let has = |w: &[&str]| a.windows(w.len()).any(|x| x.iter().zip(w).all(|(p, q)| p == q));
-            // Assert
-            assert!(has(&["-c:v", codec]), "{codec}");
-            assert!(has(&["-g", "60"]) && has(&["-b:v", "4500k"]), "{codec}");
-            assert_eq!(has(&["-profile:v", "high"]), codec != "libx264", "{codec}");
+            // Assert: the whole video half, in order
+            let mut want: Vec<&str> = vec!["-c:v", codec];
+            want.extend(set);
+            want.extend(["-b:v", "4500k", "-maxrate", "4500k", "-bufsize", "9000k", "-g", "60", "-pix_fmt", "yuv420p"]);
+            let i = a.iter().position(|x| x == "-c:v").unwrap();
+            assert_eq!(a[i..i + want.len()], want[..], "{codec}");
             assert_eq!(a.last().unwrap(), "rtmp://x/y");
         }
     }

@@ -354,6 +354,17 @@ struct Encoder {
     speed: Option<f64>,
 }
 
+/// Counters at the last CPU sample, with the pids they belong to.
+#[derive(Clone, Copy)]
+struct CpuMark {
+    enc_pid: Option<u32>,
+    feeder_pid: Option<u32>,
+    enc: u64,
+    feeder: u64,
+    idle: u64,
+    total: u64,
+}
+
 /// CPU as a share of the whole machine (100 = every core busy), sampled every 10 s on the
 /// control loop so `status()` only reads these.
 #[derive(Default)]
@@ -361,8 +372,7 @@ struct Cpu {
     encoder: f64,
     feeder: f64,
     system: f64,
-    /// (feeder pid, encoder time, feeder time, idle, total) at the last sample.
-    prev: Option<(Option<u32>, u64, u64, u64, u64)>,
+    prev: Option<CpuMark>,
     last: Option<Instant>,
 }
 
@@ -822,17 +832,20 @@ impl Ctl {
         }
         self.cpu.last = Some(Instant::now());
         let feeder_pid = self.live.as_ref().map(|f| f.child.lock().unwrap().id());
-        let (Some((idle, total)), Some(enc)) = (procs::system_times(), self.enc.child.as_ref().and_then(|c| procs::cpu_times(c.id()))) else {
-            (self.cpu.encoder, self.cpu.feeder, self.cpu.system, self.cpu.prev) = (0.0, 0.0, 0.0, None);
+        let enc_pid = self.enc.child.as_ref().map(|c| c.id());
+        let Some((idle, total)) = procs::system_times() else {
+            self.cpu.prev = None;
             return;
         };
+        let enc = enc_pid.and_then(procs::cpu_times).unwrap_or(0);
         let feed = feeder_pid.and_then(procs::cpu_times).unwrap_or(0);
-        if let Some((prev_pid, pe, pf, pi, pt)) = self.cpu.prev {
-            let dt = total.saturating_sub(pt);
-            self.cpu.encoder = rules::cpu_percent(enc.saturating_sub(pe), dt);
-            // A feeder that replaced the previous one has no baseline: report 0 for this window.
-            self.cpu.feeder = if feeder_pid == prev_pid { rules::cpu_percent(feed.saturating_sub(pf), dt) } else { 0.0 };
-            self.cpu.system = 100.0 - rules::cpu_percent(idle.saturating_sub(pi), dt);
+        if let Some(p) = self.cpu.prev {
+            let dt = total.saturating_sub(p.total);
+            // A process that replaced the previous one has no baseline: 0 for this window.
+            self.cpu.encoder = rules::window_cpu(p.enc_pid, enc_pid, p.enc, enc, dt);
+            self.cpu.feeder = rules::window_cpu(p.feeder_pid, feeder_pid, p.feeder, feed, dt);
+            // The machine's load does not depend on the encoder being up.
+            self.cpu.system = 100.0 - rules::cpu_percent(idle.saturating_sub(p.idle), dt);
             let (media, gen) = (self.enc.media, self.shared.q.lock().unwrap().generation);
             self.logs.csv("encoder.csv", &[
                 unix_ms().to_string(), ((media * 1e6) as i64).to_string(), self.enc.speed.map_or(String::new(), |s| format!("{s}x")), gen.to_string(),
@@ -840,7 +853,7 @@ impl Ctl {
                 format!("{:.2}", self.cpu.encoder), format!("{:.2}", self.cpu.feeder), format!("{:.2}", self.cpu.system),
             ]);
         }
-        self.cpu.prev = Some((feeder_pid, enc, feed, idle, total));
+        self.cpu.prev = Some(CpuMark { enc_pid, feeder_pid, enc, feeder: feed, idle, total });
     }
 
     fn tick(&mut self) {
