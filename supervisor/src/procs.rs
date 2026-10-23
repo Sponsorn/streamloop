@@ -134,3 +134,48 @@ pub fn pid_on_port(port: u16) -> Option<u32> {
         (f.len() >= 5 && f[1] == needle && f[3] == "LISTENING").then(|| f[4].parse().ok()).flatten()
     })
 }
+
+#[cfg(windows)]
+fn ft(f: &windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64
+}
+
+/// Kernel + user time of one process, in 100 ns units.
+#[cfg(windows)]
+pub fn cpu_times(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (z, z, z, z);
+        let ok = GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u);
+        CloseHandle(h);
+        (ok != 0).then(|| ft(&k) + ft(&u))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn cpu_times(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// (idle, total) system time in 100 ns units, summed over all cores. Kernel time includes idle.
+#[cfg(windows)]
+pub fn system_times() -> Option<(u64, u64)> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+    unsafe {
+        let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut i, mut k, mut u) = (z, z, z);
+        (GetSystemTimes(&mut i, &mut k, &mut u) != 0).then(|| (ft(&i), ft(&k) + ft(&u)))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn system_times() -> Option<(u64, u64)> {
+    None
+}

@@ -10,6 +10,14 @@ pub fn secs(ticks: i64) -> f64 {
     ticks as f64 / HZ as f64
 }
 
+/// Share of the whole machine a process used over a window; 100 = every core busy.
+pub fn cpu_percent(proc_delta: u64, total_delta: u64) -> f64 {
+    if total_delta == 0 {
+        return 0.0;
+    }
+    (proc_delta as f64 / total_delta as f64 * 100.0).min(100.0)
+}
+
 pub fn ticks(secs: f64) -> i64 {
     (secs * HZ as f64).round() as i64
 }
@@ -329,6 +337,13 @@ pub fn next_download(win: &[usize], on_disk: &[bool], failed: &[bool]) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cpu_percent_scales_to_all_cores_and_survives_a_zero_total() {
+        assert_eq!(cpu_percent(50, 100), 50.0);
+        assert_eq!(cpu_percent(5, 0), 0.0);
+        assert_eq!(cpu_percent(300, 100), 100.0);
+    }
+
     use super::*;
 
     fn pes_packet(pid: u16, stream_id: u8, pts: i64, adaptation: bool) -> Vec<u8> {

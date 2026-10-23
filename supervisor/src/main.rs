@@ -72,6 +72,14 @@ impl Logs {
     }
 }
 
+fn round2(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
+}
+
+fn watchdog_cfg(s: &Settings) -> media::WatchdogCfg {
+    media::WatchdogCfg { freeze_s: s.freeze_seconds, silence_s: s.silence_seconds }
+}
+
 fn unix_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
 }
@@ -168,6 +176,7 @@ fn read_settings(args: &Args) -> Result<Settings, String> {
         let (ingest, key) = t.rsplit_once('/').filter(|(_, k)| !k.is_empty()).ok_or("--target must end in /<key>")?;
         (s.ingest_url, s.stream_key) = (ingest.into(), key.into());
     }
+    media::encoder_args("rtmp://x/y", &s.encoder, &watchdog_cfg(&s))?;
     Ok(s)
 }
 
@@ -280,7 +289,7 @@ pub enum Msg {
     /// `id` guards against a playlist switch while the call ran: indexes then mean other videos.
     Resolved { index: usize, id: String, purpose: Purpose, result: Result<Resolved, String> },
     FeederExit { seq: u64, code: Option<i32>, frames: u64 },
-    EncProgress { generation: u64, media: f64 },
+    EncProgress { generation: u64, media: f64, speed: Option<f64> },
     DlProgress { index: usize, percent: f64 },
     Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String },
 }
@@ -341,6 +350,20 @@ struct Encoder {
     failures: u32,
     restart_at: Option<Instant>,
     ingest_was_down: bool,
+    /// ffmpeg's own `speed=` (latest), None until it reports one.
+    speed: Option<f64>,
+}
+
+/// CPU as a share of the whole machine (100 = every core busy), sampled every 10 s on the
+/// control loop so `status()` only reads these.
+#[derive(Default)]
+struct Cpu {
+    encoder: f64,
+    feeder: f64,
+    system: f64,
+    /// (feeder pid, encoder time, feeder time, idle, total) at the last sample.
+    prev: Option<(Option<u32>, u64, u64, u64, u64)>,
+    last: Option<Instant>,
 }
 
 pub struct TokenState {
@@ -374,6 +397,7 @@ struct Ctl {
     videos: Vec<Video>,
     seams: Vec<Seam>,
     enc: Encoder,
+    cpu: Cpu,
     live: Option<Feeder>,
     metas: HashMap<u64, FeederMeta>,
     feeder_seq: u64,
@@ -691,7 +715,14 @@ impl Ctl {
 
     fn start_encoder(&mut self) {
         let mut child = match procs::command(&self.args.paths.ffmpeg)
-            .args(media::encoder_args(&config::target_url(&self.settings), &self.settings.encoder))
+            .args(match media::encoder_args(&config::target_url(&self.settings), &self.settings.encoder, &watchdog_cfg(&self.settings)) {
+                Ok(a) => a,
+                Err(e) => {
+                    self.logs.event("critical", "encoder-spawn-failed", json!({"error": e}));
+                    self.enc.restart_at = Some(Instant::now() + Duration::from_secs(5));
+                    return;
+                }
+            })
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -720,8 +751,9 @@ impl Ctl {
                     Some(("speed", v)) => speed = v.trim().to_string(),
                     Some(("progress", _)) => {
                         if let Some(us) = out_us.as_ref().and_then(|u| u.parse::<i64>().ok()) {
-                            logs.csv("encoder.csv", &[unix_ms().to_string(), us.to_string(), speed.clone(), generation.to_string()]);
-                            let _ = tx.send(Msg::EncProgress { generation, media: us as f64 / 1e6 });
+                            // The 10 s CPU row (Ctl::sample_cpu) fills the last four columns; these leave them empty.
+                            logs.csv("encoder.csv", &[unix_ms().to_string(), us.to_string(), speed.clone(), generation.to_string(), String::new(), String::new(), String::new(), String::new()]);
+                            let _ = tx.send(Msg::EncProgress { generation, media: us as f64 / 1e6, speed: speed.trim_end_matches('x').trim().parse().ok() });
                         }
                     }
                     Some((k, _)) if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {}
@@ -736,6 +768,7 @@ impl Ctl {
         self.count("encoderStarts");
         self.enc.child = Some(child);
         self.enc.media = 0.0;
+        self.enc.speed = None;
         self.enc.started = Instant::now();
         self.enc.last_progress = Instant::now();
         self.enc.restart_at = None;
@@ -757,6 +790,7 @@ impl Ctl {
             self.shared.cv.notify_all();
         }
         self.seams.clear();
+        self.enc.speed = None;
         self.enc.failures += 1;
         let wait = rules::encoder_backoff_s(self.enc.failures - 1);
         self.enc.restart_at = Some(Instant::now() + Duration::from_secs(wait));
@@ -781,8 +815,37 @@ impl Ctl {
     }
 
 
+    /// Every 10 s: CPU of the encoder, the live feeder and the whole machine, as one encoder.csv row.
+    fn sample_cpu(&mut self) {
+        if self.cpu.last.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+            return;
+        }
+        self.cpu.last = Some(Instant::now());
+        let feeder_pid = self.live.as_ref().map(|f| f.child.lock().unwrap().id());
+        let (Some((idle, total)), Some(enc)) = (procs::system_times(), self.enc.child.as_ref().and_then(|c| procs::cpu_times(c.id()))) else {
+            (self.cpu.encoder, self.cpu.feeder, self.cpu.system, self.cpu.prev) = (0.0, 0.0, 0.0, None);
+            return;
+        };
+        let feed = feeder_pid.and_then(procs::cpu_times).unwrap_or(0);
+        if let Some((prev_pid, pe, pf, pi, pt)) = self.cpu.prev {
+            let dt = total.saturating_sub(pt);
+            self.cpu.encoder = rules::cpu_percent(enc.saturating_sub(pe), dt);
+            // A feeder that replaced the previous one has no baseline: report 0 for this window.
+            self.cpu.feeder = if feeder_pid == prev_pid { rules::cpu_percent(feed.saturating_sub(pf), dt) } else { 0.0 };
+            self.cpu.system = 100.0 - rules::cpu_percent(idle.saturating_sub(pi), dt);
+            let (media, gen) = (self.enc.media, self.shared.q.lock().unwrap().generation);
+            self.logs.csv("encoder.csv", &[
+                unix_ms().to_string(), ((media * 1e6) as i64).to_string(), self.enc.speed.map_or(String::new(), |s| format!("{s}x")), gen.to_string(),
+                self.enc.speed.map_or(String::new(), |s| s.to_string()),
+                format!("{:.2}", self.cpu.encoder), format!("{:.2}", self.cpu.feeder), format!("{:.2}", self.cpu.system),
+            ]);
+        }
+        self.cpu.prev = Some((feeder_pid, enc, feed, idle, total));
+    }
+
     fn tick(&mut self) {
         let now = Instant::now();
+        self.sample_cpu();
         if self.deadline.is_some_and(|d| now >= d) && !self.stopping {
             self.logs.event("info", "deadline", json!({"hours": self.args.dev.hours}));
             self.shutdown();
@@ -1043,13 +1106,14 @@ impl Ctl {
             Msg::Playlist(id, result) => self.on_playlist(id, result),
             Msg::Resolved { index, id, purpose, result } => self.on_resolved(index, &id, purpose, result),
             Msg::FeederExit { seq, code, frames } => self.on_feeder_exit(seq, code, frames),
-            Msg::EncProgress { generation, media } => {
+            Msg::EncProgress { generation, media, speed } => {
                 let mut q = self.shared.q.lock().unwrap();
                 if generation == q.generation && self.enc.child.is_some() {
                     if media > self.enc.media {
                         self.enc.last_progress = Instant::now();
                     }
                     self.enc.media = media;
+                    self.enc.speed = speed.or(self.enc.speed);
                     q.view = BASE + ticks(media);
                     self.shared.cv.notify_all();
                 }
@@ -1338,7 +1402,8 @@ impl Ctl {
             "readAheadSeconds": (self.read_ahead() * 100.0).round() / 100.0,
             "cacheBytes": self.cache_bytes,
             "downloading": self.downloading.as_ref().map(|d| json!({"index": d.0, "percent": d.1})),
-            "encoder": {"alive": self.enc.child.is_some(), "restarts": self.enc.restarts, "generation": generation, "mediaTime": self.enc.media},
+            "encoder": {"alive": self.enc.child.is_some(), "restarts": self.enc.restarts, "generation": generation, "mediaTime": self.enc.media, "speed": self.enc.speed, "cpuPercent": round2(self.cpu.encoder)},
+            "cpu": {"encoder": round2(self.cpu.encoder), "feeder": round2(self.cpu.feeder), "system": round2(self.cpu.system)},
             "tokenServer": token,
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
             "playlistCount": self.n(),
@@ -1657,7 +1722,8 @@ fn main() {
         cache,
         videos: vec![],
         seams: vec![],
-        enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false },
+        enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false, speed: None },
+        cpu: Cpu::default(),
         live: None,
         metas: HashMap::new(),
         feeder_seq: 0,

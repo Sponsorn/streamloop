@@ -60,20 +60,41 @@ pub fn feeder_args(input: &Input, pos: f64, offset: i64) -> Vec<String> {
     a
 }
 
-pub fn encoder_args(target: &str, codec: &str) -> Vec<String> {
-    let video: &[&str] = if codec == "h264_nvenc" {
-        &["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "cbr", "-bf", "0"]
-    } else {
-        &["-c:v", "libx264", "-preset", "veryfast", "-sc_threshold", "0", "-keyint_min", "60"]
-    };
-    let mut a: Vec<&str> = vec!["-v", "warning", "-nostats", "-stats_period", "0.1", "-progress", "pipe:2", "-re", "-f", "mpegts", "-i", "pipe:0"];
-    a.extend(video);
+/// What the encoder's watchdog filters need; task 7 adds the filters themselves.
+#[allow(dead_code)] // read by the watchdog filters in task 7
+pub struct WatchdogCfg {
+    pub freeze_s: f64,
+    pub silence_s: f64,
+}
+
+impl Default for WatchdogCfg {
+    fn default() -> Self {
+        WatchdogCfg { freeze_s: 20.0, silence_s: 30.0 }
+    }
+}
+
+/// Spike 2's per-vendor video sets: CBR 4500k, fixed 60-frame GOP, no B-frames, High profile.
+fn video_set(codec: &str) -> Option<&'static [&'static str]> {
+    Some(match codec {
+        "h264_nvenc" => &["-preset", "p4", "-rc", "cbr", "-bf", "0", "-profile:v", "high"],
+        "h264_amf" => &["-usage", "transcoding", "-quality", "balanced", "-rc", "cbr", "-bf", "0", "-profile:v", "high"],
+        // QSV has no -rc: -b:v equal to -maxrate selects CBR.
+        "h264_qsv" => &["-preset", "medium", "-look_ahead", "0", "-bf", "0", "-profile:v", "high"],
+        "libx264" => &["-preset", "veryfast", "-sc_threshold", "0", "-keyint_min", "60"],
+        _ => return None,
+    })
+}
+
+pub fn encoder_args(target: &str, codec: &str, _watchdog: &WatchdogCfg) -> Result<Vec<String>, String> {
+    let set = video_set(codec).ok_or_else(|| format!("unknown encoder \"{codec}\" (h264_nvenc, h264_amf, h264_qsv, libx264)"))?;
+    let mut a: Vec<&str> = vec!["-v", "warning", "-nostats", "-stats_period", "0.1", "-progress", "pipe:2", "-re", "-f", "mpegts", "-i", "pipe:0", "-c:v", codec];
+    a.extend(set);
     a.extend([
         "-b:v", "4500k", "-maxrate", "4500k", "-bufsize", "9000k", "-g", "60", "-pix_fmt", "yuv420p",
         "-af", "aresample=async=1:min_hard_comp=0.01", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-f", "flv", target,
     ]);
-    a.into_iter().map(String::from).collect()
+    Ok(a.into_iter().map(String::from).collect())
 }
 
 
@@ -302,6 +323,25 @@ pub fn writer(shared: &Shared) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encoder_args_carry_each_vendors_set() {
+        for codec in ["h264_nvenc", "h264_amf", "h264_qsv", "libx264"] {
+            // Act
+            let a = super::encoder_args("rtmp://x/y", codec, &super::WatchdogCfg::default()).unwrap();
+            let has = |w: &[&str]| a.windows(w.len()).any(|x| x.iter().zip(w).all(|(p, q)| p == q));
+            // Assert
+            assert!(has(&["-c:v", codec]), "{codec}");
+            assert!(has(&["-g", "60"]) && has(&["-b:v", "4500k"]), "{codec}");
+            assert_eq!(has(&["-profile:v", "high"]), codec != "libx264", "{codec}");
+            assert_eq!(a.last().unwrap(), "rtmp://x/y");
+        }
+    }
+
+    #[test]
+    fn encoder_args_reject_an_unknown_codec() {
+        assert!(super::encoder_args("rtmp://x/y", "h265_nope", &super::WatchdogCfg::default()).is_err());
+    }
+
     use super::*;
     use crate::rules::{BASE, HZ};
 
