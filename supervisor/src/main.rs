@@ -2,17 +2,21 @@
 //! the API, downloader, resolves, pumps and encoder progress reach it over one channel.
 
 mod api;
+mod config;
 mod media;
+mod paths;
 mod procs;
 mod rules;
 mod ytdlp;
 
+use config::Settings;
 use media::{Input, Live, Queue, Shared};
+use paths::Paths;
 use rules::{secs, ticks, Ladder, Seam, Source, BASE, FRAME};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -21,16 +25,22 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ytdlp::{Entry, Resolved, Ytdlp};
 
 
+/// Every write, stderr included, passes through `config::redact`: the stream key never lands in a log.
 #[derive(Clone)]
 pub struct Logs {
     dir: PathBuf,
+    secret: Arc<Settings>,
 }
 
 impl Logs {
     pub fn append(&self, file: &str, text: &str) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join(file)) {
-            let _ = f.write_all(text.as_bytes());
+            let _ = f.write_all(config::redact(text, &self.secret).as_bytes());
         }
+    }
+    /// A whole-file write (run.json).
+    pub fn write(&self, file: &str, text: &str) {
+        let _ = std::fs::write(self.dir.join(file), config::redact(text, &self.secret));
     }
     pub fn csv(&self, file: &str, row: &[String]) {
         let clean: Vec<String> = row.iter().map(|c| c.replace([',', '\r', '\n'], " ")).collect();
@@ -41,7 +51,7 @@ impl Logs {
         if let (Some(m), Value::Object(e)) = (v.as_object_mut(), extra) {
             m.extend(e);
         }
-        eprintln!("{level:8} {kind} {}", v);
+        eprintln!("{level:8} {kind} {}", config::redact(&v.to_string(), &self.secret));
         self.append("events.jsonl", &format!("{v}\n"));
     }
 }
@@ -72,57 +82,94 @@ fn iso(ms: u128) -> String {
 }
 
 
-pub struct Args {
-    playlist: String,
+pub const PORT: u16 = 4417;
+
+/// Test knobs, honoured only with --debug-faults.
+#[derive(Default)]
+pub struct Dev {
+    url_ttl: Option<u64>,
+    refresh_margin: Option<u64>,
+    limit_rate: Option<String>,
     start: usize,
     max_videos: usize,
-    budget: u64,
-    limit_rate: Option<String>,
-    hours: f64,
-    target: String,
-    codec: String,
-    read_ahead: f64,
-    buffer_mb: usize,
-    port: u16,
-    debug_faults: bool,
-    url_ttl: Option<u64>,
-    refresh_margin: u64,
-    state_file: PathBuf,
-    resume: bool,
-    token_server: String,
-    slate: String,
-    ytdlp: String,
+    hours: Option<f64>,
 }
 
-fn parse_args() -> Result<Args, String> {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-    let flag = |name: &str| argv.iter().any(|a| a == &format!("--{name}"));
+pub struct Args {
+    paths: Paths,
+    config: PathBuf,
+    /// Dev override for local MediaMTX: replaces ingest and key.
+    target: Option<String>,
+    debug_faults: bool,
+    dev: Dev,
+}
+
+const DEV_FLAGS: [&str; 6] = ["url-ttl-s", "url-refresh-margin-s", "limit-rate", "start", "max-videos", "hours"];
+const FLAGS: [&str; 5] = ["root", "config", "data", "target", "debug-faults"];
+
+fn parse_args(argv: &[String]) -> Result<Args, String> {
     let opt = |name: &str| argv.iter().position(|a| a == &format!("--{name}")).and_then(|i| argv.get(i + 1)).cloned();
-    let num = |name: &str, d: f64| -> Result<f64, String> {
-        opt(name).map(|v| v.parse::<f64>().map_err(|_| format!("--{name} {v}: not a number"))).unwrap_or(Ok(d))
+    let num = |name: &str| -> Result<Option<f64>, String> { opt(name).map(|v| v.parse::<f64>().map_err(|_| format!("--{name} {v}: not a number"))).transpose() };
+    if let Some(a) = argv.iter().filter_map(|a| a.strip_prefix("--")).find(|a| !FLAGS.contains(a) && !DEV_FLAGS.contains(a)) {
+        return Err(format!("unknown flag --{a}"));
+    }
+    let debug_faults = argv.iter().any(|a| a == "--debug-faults");
+    if let Some(d) = DEV_FLAGS.iter().find(|d| opt(d).is_some()).filter(|_| !debug_faults) {
+        return Err(format!("--{d} is a test flag and needs --debug-faults"));
+    }
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let root = match opt("root") {
+        Some(r) => cwd.join(r),
+        // the exe sits in ROOT\supervisor\
+        None => std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.to_path_buf())).ok_or("cannot find the install root; pass --root")?,
     };
-    let abs = |p: String| std::env::current_dir().unwrap().join(p).to_string_lossy().into_owned();
+    let mut paths = paths::layout(&root);
+    if let Some(d) = opt("data") {
+        paths.data = cwd.join(d);
+    }
     Ok(Args {
-        playlist: opt("playlist").unwrap_or("https://www.youtube.com/playlist?list=PL6B3937A5D230E335".into()),
-        start: num("start", 0.0)? as usize,
-        max_videos: num("max-videos", 0.0)? as usize,
-        budget: (num("budget-mb", 300.0)? * 1048576.0) as u64,
-        limit_rate: opt("limit-rate"),
-        hours: num("hours", 1.0)?,
-        target: opt("target").unwrap_or("rtmp://127.0.0.1:1935/live/spike".into()),
-        codec: opt("codec").unwrap_or("h264_nvenc".into()),
-        read_ahead: num("read-ahead-seconds", 20.0)?,
-        buffer_mb: num("buffer-mb", 192.0)? as usize,
-        port: num("port", 4417.0)? as u16,
-        debug_faults: flag("debug-faults"),
-        url_ttl: opt("url-ttl-s").map(|v| v.parse().map_err(|_| "--url-ttl-s: not a number".to_string())).transpose()?,
-        refresh_margin: num("url-refresh-margin-s", 1800.0)? as u64,
-        state_file: PathBuf::from(abs(opt("state-file").unwrap_or("state.json".into()))),
-        resume: flag("resume"),
-        token_server: opt("token-server").unwrap_or("C:/Users/anton/bgutil-ytdlp-pot-provider/server/build/main.js".into()),
-        slate: abs(opt("slate").unwrap_or("../buffer/media/slate.mp4".into())),
-        ytdlp: abs(opt("ytdlp").unwrap_or("../../yt-dlp/yt-dlp.exe".into())),
+        config: opt("config").map_or(paths.config.clone(), |c| cwd.join(c)),
+        paths,
+        target: opt("target"),
+        debug_faults,
+        dev: Dev {
+            url_ttl: num("url-ttl-s")?.map(|v| v as u64),
+            refresh_margin: num("url-refresh-margin-s")?.map(|v| v as u64),
+            limit_rate: opt("limit-rate"),
+            start: num("start")?.unwrap_or(0.0) as usize,
+            max_videos: num("max-videos")?.unwrap_or(0.0) as usize,
+            hours: num("hours")?,
+        },
     })
+}
+
+/// Placeholder until task 3 brings DPAPI.
+fn unprotect(_blob: &str) -> Result<String, String> {
+    Err("stream key protection is added in task 3".into())
+}
+
+/// Startup and POST /reload read the config the same way.
+fn read_settings(args: &Args) -> Result<Settings, String> {
+    let json = std::fs::read_to_string(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
+    // --target brings its own key; the protected one is not needed.
+    let mut s = config::load(&json, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { unprotect(b) })?;
+    if let Some(t) = &args.target {
+        let (ingest, key) = t.rsplit_once('/').filter(|(_, k)| !k.is_empty()).ok_or("--target must end in /<key>")?;
+        (s.ingest_url, s.stream_key) = (ingest.into(), key.into());
+    }
+    Ok(s)
+}
+
+/// Whether these settings can go on air. Task 3 turns the failures into a needs-stream-key state.
+fn stream_ready(s: &Settings) -> Result<(), String> {
+    if s.stream_key.is_empty() {
+        return Err("stream key missing: config.json has no supervisor.streamKeyProtected".into());
+    }
+    Ok(())
+}
+
+fn encoder_log_line(logs: &Logs, generation: u64, line: &str) {
+    logs.append("encoder.log", &format!("{} [gen {generation}] {line}\n", iso_now()));
 }
 
 
@@ -140,12 +187,15 @@ pub enum Msg {
     Control { cmd: String, index: Option<i64>, reply: Sender<Result<Value, String>> },
     Fault { kind: String, count: Option<u32>, reply: Sender<Result<Value, String>> },
     Shutdown,
-    Playlist(Result<Vec<Entry>, String>),
-    Resolved { index: usize, purpose: Purpose, result: Result<Resolved, String> },
+    Reload(Sender<Result<Value, String>>),
+    /// The playlist id it was fetched for, so a superseded fetch is dropped.
+    Playlist(String, Result<Vec<Entry>, String>),
+    /// `id` guards against a playlist switch while the call ran: indexes then mean other videos.
+    Resolved { index: usize, id: String, purpose: Purpose, result: Result<Resolved, String> },
     FeederExit { seq: u64, code: Option<i32>, frames: u64 },
     EncProgress { generation: u64, media: f64 },
     DlProgress { index: usize, percent: f64 },
-    Downloaded { index: usize, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String },
+    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String },
 }
 
 enum Job {
@@ -215,6 +265,11 @@ pub struct TokenState {
 
 struct Ctl {
     args: Args,
+    /// What runs: a reload changes the live fields; ingest, key and encoder wait for a restart.
+    settings: Settings,
+    /// The playlist id `videos` came from.
+    playlist: String,
+    playlist_wanted: bool,
     logs: Logs,
     tx: Sender<Msg>,
     shared: Arc<Shared>,
@@ -245,7 +300,7 @@ struct Ctl {
     ever_played: bool,
     stopping: bool,
     started_at: u128,
-    deadline: Instant,
+    deadline: Option<Instant>,
     cache_bytes: u64,
     max_cache: u64,
     seam_rows: u64,
@@ -310,14 +365,14 @@ impl Ctl {
         let (resolved, expire) = match source {
             Source::Url => {
                 let (r, at) = self.resolved.get(&index).cloned().expect("url feeder without a resolve");
-                let ttl_expire = self.args.url_ttl.map(|t| unix_ms() as u64 / 1000 - at.elapsed().as_secs() + t);
+                let ttl_expire = self.args.dev.url_ttl.map(|t| unix_ms() as u64 / 1000 - at.elapsed().as_secs() + t);
                 let e = ttl_expire.or(r.expire);
                 (Some(r), e)
             }
             _ => (None, None),
         };
         let path = match source {
-            Source::Slate => self.args.slate.clone(),
+            Source::Slate => self.args.paths.slate.to_string_lossy().into_owned(),
             _ => file.to_string_lossy().into_owned(),
         };
         let input = match &resolved {
@@ -333,7 +388,7 @@ impl Ctl {
             self.filler_since = Some(seq);
         }
         let offset = self.queue_end();
-        let spawned = procs::command("ffmpeg")
+        let spawned = procs::command(&self.args.paths.ffmpeg)
             .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -491,12 +546,12 @@ impl Ctl {
         let (yt, logs, tx, id) = (self.yt.clone(), self.logs.clone(), self.tx.clone(), self.id(index));
         if std::mem::take(&mut self.fake_bot) {
             // debug fault: answer as YouTube's bot check does, without asking YouTube
-            let _ = tx.send(Msg::Resolved { index, purpose, result: Err("YouTube bot check: sign in to confirm you're not a bot (injected)".into()) });
+            let _ = tx.send(Msg::Resolved { index, id, purpose, result: Err("YouTube bot check: sign in to confirm you're not a bot (injected)".into()) });
             return true;
         }
         std::thread::spawn(move || {
             let result = yt.resolve(&id, &logs);
-            let _ = tx.send(Msg::Resolved { index, purpose, result });
+            let _ = tx.send(Msg::Resolved { index, id, purpose, result });
         });
         true
     }
@@ -539,8 +594,8 @@ impl Ctl {
 
 
     fn start_encoder(&mut self) {
-        let mut child = match procs::command("ffmpeg")
-            .args(media::encoder_args(&self.args.target, &self.args.codec))
+        let mut child = match procs::command(&self.args.paths.ffmpeg)
+            .args(media::encoder_args(&config::target_url(&self.settings), &self.settings.encoder))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -574,7 +629,7 @@ impl Ctl {
                         }
                     }
                     Some((k, _)) if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {}
-                    _ if !t.is_empty() => logs.append("encoder.log", &format!("{} [gen {generation}] {t}\n", iso_now())),
+                    _ if !t.is_empty() => encoder_log_line(&logs, generation, t),
                     _ => {}
                 }
             }
@@ -622,7 +677,8 @@ impl Ctl {
 
     /// Is the RTMP ingest accepting connections? Only probed while the encoder is down.
     fn ingest_up(&self) -> bool {
-        let hostport = self.args.target.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or("");
+        let target = config::target_url(&self.settings);
+        let hostport = target.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or("");
         use std::net::ToSocketAddrs;
         let addr = hostport.to_socket_addrs().ok().and_then(|mut a| a.next());
         addr.is_some_and(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
@@ -631,9 +687,19 @@ impl Ctl {
 
     fn tick(&mut self) {
         let now = Instant::now();
-        if now >= self.deadline && !self.stopping {
-            self.logs.event("info", "deadline", json!({"hours": self.args.hours}));
+        if self.deadline.is_some_and(|d| now >= d) && !self.stopping {
+            self.logs.event("info", "deadline", json!({"hours": self.args.dev.hours}));
             self.shutdown();
+        }
+        // The playlist fetch is a YouTube call too: same spacing, never past an open breaker.
+        if self.playlist_wanted && !self.breaker.open && self.youtube_slot().is_some() {
+            self.playlist_wanted = false;
+            self.last_resolve = Some(Instant::now());
+            let (yt, l, tx, id) = (self.yt.clone(), self.logs.clone(), self.tx.clone(), self.settings.playlist_id.clone());
+            std::thread::spawn(move || {
+                let result = yt.playlist(&format!("https://www.youtube.com/playlist?list={id}"), &l);
+                let _ = tx.send(Msg::Playlist(id, result));
+            });
         }
 
         // Ladder level 3: the encoder.
@@ -690,7 +756,7 @@ impl Ctl {
                 self.start_feeder(i, Source::Url, fed, "refresh", false);
             } else if source == Source::Url && !filler && self.refresh_pending.is_none() && started.elapsed() > Duration::from_secs(30) && now >= self.refresh_after {
                 let unix = unix_ms() as u64 / 1000;
-                if expire.is_some_and(|e| rules::refresh_due(unix, e, self.args.refresh_margin)) && !self.resolving.contains(&(index, false)) {
+                if expire.is_some_and(|e| rules::refresh_due(unix, e, self.args.dev.refresh_margin.unwrap_or(1800))) && !self.resolving.contains(&(index, false)) {
                     if self.request_resolve(index, Purpose::Refresh) {
                         self.logs.event("info", "url-refresh", json!({"index": index, "id": self.id(index), "expire": expire, "now": unix}));
                         self.refresh_after = now + Duration::from_secs(30);
@@ -721,7 +787,7 @@ impl Ctl {
                 if !on_disk && !self.fresh_url(t.index) {
                     self.request_resolve(t.index, Purpose::Play);
                 }
-                let gate_open = !t.gated || self.read_ahead() < self.args.read_ahead;
+                let gate_open = !t.gated || self.read_ahead() < self.settings.read_ahead_seconds;
                 if gate_open && (on_disk || self.url_ready(t.index)) {
                     self.cut_filler();
                     self.target = None;
@@ -758,7 +824,7 @@ impl Ctl {
     fn window(&self) -> Vec<usize> {
         let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
         let skipped: Vec<bool> = self.videos.iter().map(|v| v.skipped || v.dl_failed).collect();
-        rules::window(self.view().0, &sizes, &skipped, self.args.budget)
+        rules::window(self.view().0, &sizes, &skipped, self.settings.cache_budget_mb * 1_048_576)
     }
 
     fn cache_work(&mut self) {
@@ -843,9 +909,10 @@ impl Ctl {
         if self.last_state.elapsed() >= Duration::from_secs(2) && !switching && !self.videos.is_empty() && !self.stopping {
             self.last_state = Instant::now();
             let v = json!({"index": index, "id": self.id(index), "position": (pos * 1000.0).round() / 1000.0, "savedAt": iso_now()});
-            let tmp = self.args.state_file.with_extension("tmp");
+            let file = self.state_file();
+            let tmp = file.with_extension("tmp");
             if std::fs::write(&tmp, v.to_string()).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.args.state_file);
+                let _ = std::fs::rename(&tmp, &file);
             }
         }
         if self.last_buffer.elapsed() >= Duration::from_secs(10) {
@@ -873,35 +940,11 @@ impl Ctl {
                 let _ = reply.send(self.fault(&kind, count));
             }
             Msg::Shutdown => self.shutdown(),
-            Msg::Playlist(Err(e)) => {
-                self.logs.event("critical", "playlist-failed", json!({"reason": e}));
-                self.shutdown_code(2);
+            Msg::Reload(reply) => {
+                let _ = reply.send(self.reload());
             }
-            Msg::Playlist(Ok(mut entries)) => {
-                entries.drain(..self.args.start.min(entries.len()));
-                if self.args.max_videos > 0 {
-                    entries.truncate(self.args.max_videos);
-                }
-                if entries.is_empty() {
-                    self.logs.event("critical", "playlist-failed", json!({"reason": "no entries after --start/--max-videos"}));
-                    return self.shutdown_code(2);
-                }
-                self.logs.append("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
-                self.videos = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
-                self.logs.event("info", "playlist", json!({"count": self.n()}));
-                let resume = self.args.resume.then(|| std::fs::read_to_string(&self.args.state_file).ok()).flatten().and_then(|s| serde_json::from_str::<Value>(&s).ok());
-                match resume {
-                    Some(s) => {
-                        let id = s["id"].as_str().unwrap_or("");
-                        let index = self.videos.iter().position(|v| v.entry.id == id).or(s["index"].as_u64().map(|i| i as usize).filter(|&i| i < self.n())).unwrap_or(0);
-                        let pos = s["position"].as_f64().unwrap_or(0.0);
-                        self.logs.event("info", "resume", json!({"index": index, "id": self.id(index), "pos": pos}));
-                        self.set_target(index, pos, "resume", false);
-                    }
-                    None => self.set_target(0, 0.0, "coldstart", false),
-                }
-            }
-            Msg::Resolved { index, purpose, result } => self.on_resolved(index, purpose, result),
+            Msg::Playlist(id, result) => self.on_playlist(id, result),
+            Msg::Resolved { index, id, purpose, result } => self.on_resolved(index, &id, purpose, result),
             Msg::FeederExit { seq, code, frames } => self.on_feeder_exit(seq, code, frames),
             Msg::EncProgress { generation, media } => {
                 let mut q = self.shared.q.lock().unwrap();
@@ -919,10 +962,20 @@ impl Ctl {
                     d.1 = percent;
                 }
             }
-            Msg::Downloaded { index, ok, cancelled, bytes, ms, reason } => {
+            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason } => {
                 self.downloading = None;
                 if !cancelled {
                     self.breaker_result(ok, rules::is_bot_check(&reason), false, false, &reason);
+                }
+                if self.id(index) != id {
+                    // finished across a playlist switch
+                    match self.videos.iter().position(|v| v.entry.id == id) {
+                        Some(j) => index = j,
+                        None => {
+                            let _ = std::fs::remove_file(self.cache.join(format!("{id}.mp4")));
+                            return;
+                        }
+                    }
                 }
                 let v = &mut self.videos[index];
                 let result = if cancelled {
@@ -950,7 +1003,90 @@ impl Ctl {
         }
     }
 
-    fn on_resolved(&mut self, index: usize, purpose: Purpose, result: Result<Resolved, String>) {
+    fn on_playlist(&mut self, id: String, result: Result<Vec<Entry>, String>) {
+        if id != self.settings.playlist_id {
+            return; // a later reload asked for another playlist
+        }
+        let first = self.videos.is_empty();
+        let reason = result.as_ref().err().cloned().unwrap_or_default();
+        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), false, false, &reason);
+        let mut entries = result.unwrap_or_default();
+        entries.drain(..self.args.dev.start.min(entries.len()));
+        if self.args.dev.max_videos > 0 {
+            entries.truncate(self.args.dev.max_videos);
+        }
+        if entries.is_empty() {
+            let reason = if reason.is_empty() { "no entries after --start/--max-videos".into() } else { reason };
+            if first {
+                self.logs.event("critical", "playlist-failed", json!({"playlistId": id, "reason": reason}));
+                return self.shutdown_code(2);
+            }
+            // keep playing the old list
+            self.logs.event("warn", "playlist-failed", json!({"playlistId": id, "reason": reason, "playing": self.playlist}));
+            return;
+        }
+        self.logs.append("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
+        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
+        let old = std::mem::replace(&mut self.videos, new);
+        self.playlist = id.clone();
+        self.logs.event("info", "playlist", json!({"playlistId": id, "count": self.n()}));
+        if !first {
+            // A switch: indexes now mean other videos. Keep files the new list has, drop the rest.
+            for v in old.iter().filter(|v| v.on_disk) {
+                match self.videos.iter_mut().find(|n| n.entry.id == v.entry.id) {
+                    Some(n) => (n.on_disk, n.disk_bytes, n.bytes) = (true, v.disk_bytes, Some(v.disk_bytes)),
+                    None => {
+                        let _ = std::fs::remove_file(self.cache.join(format!("{}.mp4", v.entry.id)));
+                    }
+                }
+            }
+            if let Some((_, _, cancel)) = &self.downloading {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            self.resolved.clear();
+            (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
+            if let Err(e) = self.control("jump", Some(0)) {
+                self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
+            }
+            return;
+        }
+        let resume = std::fs::read_to_string(self.state_file()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        match resume {
+            Some(s) => {
+                let id = s["id"].as_str().unwrap_or("");
+                let index = self.videos.iter().position(|v| v.entry.id == id).or(s["index"].as_u64().map(|i| i as usize).filter(|&i| i < self.n())).unwrap_or(0);
+                let pos = s["position"].as_f64().unwrap_or(0.0);
+                self.logs.event("info", "resume", json!({"index": index, "id": self.id(index), "pos": pos}));
+                self.set_target(index, pos, "resume", false);
+            }
+            None => self.set_target(0, 0.0, "coldstart", false),
+        }
+    }
+
+    fn state_file(&self) -> PathBuf {
+        self.args.paths.data.join("state.json")
+    }
+
+    /// POST /reload. Live fields apply now; ingest, key and encoder wait for an encoder restart.
+    fn reload(&mut self) -> Result<Value, String> {
+        let new = read_settings(&self.args)?;
+        let plan = config::reload_plan(&self.settings, &new);
+        let old = &self.settings;
+        let running = Settings { ingest_url: old.ingest_url.clone(), stream_key: old.stream_key.clone(), encoder: old.encoder.clone(), ..new };
+        if running.read_ahead_seconds != old.read_ahead_seconds {
+            self.shared.q.lock().unwrap().ahead = ticks(running.read_ahead_seconds);
+            self.shared.cv.notify_all();
+        }
+        *self.yt.player_client.lock().unwrap() = running.player_client.clone();
+        let switch = running.playlist_id != self.playlist;
+        self.playlist_wanted |= switch;
+        self.settings = running;
+        let restart = plan == config::Reload::Restart;
+        self.logs.event("info", "reload", json!({"plan": format!("{plan:?}"), "restartRequired": restart, "playlistSwitch": switch}));
+        Ok(json!({"applied": true, "restartRequired": restart}))
+    }
+
+    fn on_resolved(&mut self, index: usize, id: &str, purpose: Purpose, result: Result<Resolved, String>) {
         let key = (index, purpose == Purpose::Size);
         self.resolving.remove(&key);
         if purpose == Purpose::Size {
@@ -962,6 +1098,9 @@ impl Ctl {
         }
         let reason = result.as_ref().err().cloned().unwrap_or_default();
         self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), true, probe, &reason);
+        if self.id(index) != id {
+            return; // resolved across a playlist switch
+        }
         let mut r = match result {
             Ok(r) => r,
             Err(reason) => {
@@ -1126,20 +1265,21 @@ impl Ctl {
     }
 
     fn save_run(&self) {
-        let a = &self.args;
+        let (a, d, st) = (&self.args, &self.args.dev, &self.settings);
         let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
         let v = json!({
             "startedAt": self.started_at, "endedAt": if self.stopping { Some(unix_ms()) } else { None },
-            "target": a.target, "codec": a.codec, "hours": a.hours, "baseOffset": secs(BASE), "bufferMb": a.buffer_mb,
-            "readAheadSeconds": a.read_ahead, "playlist": a.playlist, "budgetBytes": a.budget, "limitRate": a.limit_rate,
-            "start": a.start, "maxVideos": a.max_videos, "urlTtlS": a.url_ttl, "urlRefreshMarginS": a.refresh_margin,
-            "resume": a.resume, "debugFaults": a.debug_faults, "entries": self.n(),
+            "root": a.paths.root, "data": a.paths.data, "config": a.config,
+            "target": config::target_url(st), "encoder": st.encoder, "baseOffset": secs(BASE),
+            "readAheadSeconds": st.read_ahead_seconds, "playlistId": st.playlist_id, "budgetBytes": st.cache_budget_mb * 1_048_576,
+            "playerClient": st.player_client, "hours": d.hours, "limitRate": d.limit_rate, "start": d.start, "maxVideos": d.max_videos,
+            "urlTtlS": d.url_ttl, "urlRefreshMarginS": d.refresh_margin, "debugFaults": a.debug_faults, "entries": self.n(),
             "seams": self.seam_rows, "encoderExitedEarly": self.counts.contains_key("encoderExits"),
             "maxCacheBytes": self.max_cache, "counts": self.counts,
             "skipped": self.videos.iter().filter(|v| v.skipped).map(|v| v.entry.id.clone()).collect::<Vec<_>>(),
             "tokenServer": token,
         });
-        let _ = std::fs::write(self.logs.dir.join("run.json"), serde_json::to_string_pretty(&v).unwrap());
+        self.logs.write("run.json", &serde_json::to_string_pretty(&v).unwrap());
     }
 
     fn shutdown(&mut self) {
@@ -1185,7 +1325,7 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
         match job {
             Job::Size(index, id) => {
                 let result = yt.resolve(&id, &logs);
-                let _ = tx.send(Msg::Resolved { index, purpose: Purpose::Size, result });
+                let _ = tx.send(Msg::Resolved { index, id, purpose: Purpose::Size, result });
             }
             Job::Download(index, id, cancel) => {
                 let started = Instant::now();
@@ -1207,7 +1347,7 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 }
                 let bytes = if ok { std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) } else { 0 };
                 let reason = if ok || out.cancelled { String::new() } else { ytdlp::describe_error(&out.stderr, None) };
-                let _ = tx.send(Msg::Downloaded { index, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason });
+                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason });
             }
         }
     }
@@ -1216,9 +1356,9 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
 const TOKEN_PORT: u16 = 4416;
 
 /// Adopt a running PO-token server, or own one; replace it when it dies or hangs.
-fn token_watchdog(state: Arc<Mutex<TokenState>>, script: String, logs: Logs) {
+fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
     let mut owned: Option<Child> = None;
-    let spawn = |logs: &Logs| match ytdlp::spawn_token_server(&script, TOKEN_PORT, logs) {
+    let spawn = |logs: &Logs| match ytdlp::spawn_token_server(&paths.node, &paths.token_server, TOKEN_PORT, logs) {
         Ok(c) => {
             logs.event("info", "token-server-spawn", json!({"pid": c.id()}));
             Some(c)
@@ -1300,30 +1440,33 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, script: String, logs: Logs) {
 }
 
 fn main() {
-    let args = match parse_args() {
-        Ok(a) => a,
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let started = parse_args(&argv).and_then(|a| {
+        let s = read_settings(&a)?;
+        stream_ready(&s)?;
+        Ok((a, s))
+    });
+    let (args, settings) = match started {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("streamloop-supervisor: {e}");
             std::process::exit(2);
         }
     };
     if let Err(e) = procs::enter_job() {
         eprintln!("warning: {e}; children will not die with the supervisor");
     }
-    let cwd = std::env::current_dir().unwrap();
-    let logs = Logs { dir: cwd.join("logs") };
+    let logs = Logs { dir: args.paths.data.join("logs"), secret: Arc::new(settings.clone()) };
     let _ = std::fs::create_dir_all(&logs.dir);
-    let cache = cwd.join("cache");
-    if !args.resume {
-        let _ = std::fs::remove_dir_all(&cache);
-    }
+    // ponytail: files from an earlier run are not adopted, so the cache starts empty; adopt them if restarts re-download too much.
+    let cache = args.paths.data.join("cache");
+    let _ = std::fs::remove_dir_all(&cache);
     let _ = std::fs::create_dir_all(&cache);
 
-    let deno = Path::new(&args.ytdlp).with_file_name("deno.exe");
-    let yt = Arc::new(Ytdlp { exe: args.ytdlp.clone(), deno: deno.exists().then(|| deno.to_string_lossy().into_owned()), limit_rate: args.limit_rate.clone() });
+    let yt = Arc::new(Ytdlp::new(&args.paths, &settings.player_client, args.dev.limit_rate.clone()));
     let (tx, rx) = channel::<Msg>();
-    let mut queue = Queue::new(args.buffer_mb.max(1) * 1024 * 1024);
-    queue.ahead = ticks(args.read_ahead);
+    let mut queue = Queue::new(192 * 1024 * 1024);
+    queue.ahead = ticks(settings.read_ahead_seconds);
     let shared = Arc::new(Shared { q: Mutex::new(queue), cv: Condvar::new() });
     let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false }));
     let (jobs_tx, jobs_rx) = channel::<Job>();
@@ -1333,28 +1476,25 @@ fn main() {
         std::thread::spawn(move || media::writer(&s));
     }
     {
-        let (t, script, l) = (token.clone(), args.token_server.clone(), logs.clone());
-        std::thread::spawn(move || token_watchdog(t, script, l));
+        let (t, p, l) = (token.clone(), args.paths.clone(), logs.clone());
+        std::thread::spawn(move || token_watchdog(t, p, l));
     }
     {
         let (yt, l, tx, c) = (yt.clone(), logs.clone(), tx.clone(), cache.clone());
         std::thread::spawn(move || downloader(jobs_rx, yt, l, tx, c));
     }
-    {
-        let (yt, l, tx, url) = (yt.clone(), logs.clone(), tx.clone(), args.playlist.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::Playlist(yt.playlist(&url, &l)));
-        });
-    }
-    if let Err(e) = api::serve(args.port, args.debug_faults, tx.clone()) {
+    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone()) {
         logs.event("critical", "api-failed", json!({"error": e}));
         std::process::exit(2);
     }
 
     let now = Instant::now();
     let mut ctl = Ctl {
-        deadline: now + Duration::from_secs_f64(args.hours * 3600.0),
+        deadline: args.dev.hours.map(|h| now + Duration::from_secs_f64(h * 3600.0)),
         args,
+        playlist: String::new(),
+        playlist_wanted: true,
+        settings,
         logs,
         tx,
         shared,
@@ -1398,7 +1538,8 @@ fn main() {
         probe_key: None,
         fake_bot: false,
     };
-    ctl.logs.event("info", "start", json!({"target": ctl.args.target, "codec": ctl.args.codec, "resume": ctl.args.resume, "deno": ctl.yt.deno}));
+    let p = &ctl.args.paths;
+    ctl.logs.event("info", "start", json!({"target": config::target_url(&ctl.settings), "encoder": ctl.settings.encoder, "root": p.root, "data": p.data, "ffmpeg": p.ffmpeg, "deno": p.deno}));
     ctl.save_run();
     ctl.start_encoder();
     let mut last_tick = Instant::now();
@@ -1412,5 +1553,36 @@ fn main() {
             last_tick = Instant::now();
             ctl.tick();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoder_log_keeps_the_stream_key_out() {
+        let dir = std::env::temp_dir().join(format!("sl-redact-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = Settings { ingest_url: "rtmp://live.twitch.tv/app".into(), stream_key: "live_987654_SeCrEt".into(), ..Settings::default() };
+        let logs = Logs { dir: dir.clone(), secret: Arc::new(settings.clone()) };
+        let line = format!("[flv @ 000001] {}: I/O error", config::target_url(&settings));
+
+        encoder_log_line(&logs, 3, &line);
+
+        let written = std::fs::read_to_string(dir.join("encoder.log")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(written.contains("rtmp://live.twitch.tv/app/***: I/O error"), "{written}");
+        assert!(!written.contains("SeCrEt"), "{written}");
+    }
+
+    #[test]
+    fn test_flags_need_debug_faults_and_old_flags_are_gone() {
+        let args = |a: &[&str]| parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(args(&["--root", "x", "--hours", "1"]).err().unwrap().contains("--debug-faults"));
+        assert!(args(&["--root", "x", "--port", "1"]).err().unwrap().contains("--port"));
+        let a = args(&["--root", "x", "--debug-faults", "--hours", "0.5", "--data", "d"]).unwrap();
+        assert_eq!(a.dev.hours, Some(0.5));
+        assert!(a.paths.data.ends_with("d") && a.config.ends_with("app/config.json"));
     }
 }

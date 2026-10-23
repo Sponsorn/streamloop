@@ -3,7 +3,7 @@
 use std::process::{Child, Command, Stdio};
 
 /// Children start outside the install folder (2.x spawn-cwd rule).
-pub fn command(program: &str) -> Command {
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut c = Command::new(program);
     c.current_dir(std::env::temp_dir()).stdin(Stdio::null());
     #[cfg(windows)]

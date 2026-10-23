@@ -39,6 +39,7 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>) -> Result<(), Strin
                         }
                     }
                 },
+                (Method::Post, "/reload") => ask(&tx, Msg::Reload),
                 (Method::Post, "/debug/fault") if debug_faults => match parsed {
                     Err(e) => Some(Err(format!("bad JSON: {e}"))),
                     Ok(v) => {

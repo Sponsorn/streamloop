@@ -4,19 +4,22 @@ use crate::procs::{command, kill_tree};
 use crate::Logs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::Path;
+use crate::paths::Paths;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const PLAYER_CLIENT: &str = "mweb,web_embedded";
 pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]";
 
 pub struct Ytdlp {
-    pub exe: String,
-    /// deno next to yt-dlp.exe (where the release puts it); otherwise yt-dlp looks on PATH.
-    pub deno: Option<String>,
-    pub limit_rate: Option<String>,
+    exe: PathBuf,
+    deno: PathBuf,
+    plugins: PathBuf,
+    /// Changed live by POST /reload.
+    pub player_client: Mutex<String>,
+    limit_rate: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,13 +67,22 @@ pub struct Output {
 }
 
 impl Ytdlp {
+    pub fn new(paths: &Paths, player_client: &str, limit_rate: Option<String>) -> Ytdlp {
+        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), player_client: Mutex::new(player_client.into()), limit_rate }
+    }
+
+    /// deno must be named by absolute path: yt-dlp runs in the temp folder, and a relative one fails.
     fn base(&self) -> Vec<String> {
-        let mut a = vec!["--no-warnings".to_string(), "--no-update".into()];
-        if let Some(d) = &self.deno {
-            a.extend(["--js-runtimes".into(), format!("deno:{d}")]);
-        }
-        a.extend(["--extractor-args".into(), format!("youtube:player_client={PLAYER_CLIENT}")]);
-        a
+        vec![
+            "--no-warnings".into(),
+            "--no-update".into(),
+            "--plugin-dirs".into(),
+            self.plugins.to_string_lossy().into_owned(),
+            "--js-runtimes".into(),
+            format!("deno:{}", self.deno.to_string_lossy()),
+            "--extractor-args".into(),
+            format!("youtube:player_client={}", self.player_client.lock().unwrap()),
+        ]
     }
 
     /// Run yt-dlp; stdout lines go to `on_line`, `[pot` lines and all stderr to ytdlp.log.
@@ -242,8 +254,8 @@ pub fn ping(port: u16) -> bool {
     s.read_exact(&mut buf).is_ok() && buf.starts_with(b"HTTP/1.") && &buf[9..12] == b"200"
 }
 
-pub fn spawn_token_server(script: &str, port: u16, logs: &Logs) -> std::io::Result<Child> {
-    let mut child = command("node").args([script, "-H", "127.0.0.1", "-p", &port.to_string()]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+pub fn spawn_token_server(node: &Path, script: &Path, port: u16, logs: &Logs) -> std::io::Result<Child> {
+    let mut child = command(node).arg(script).args(["-H", "127.0.0.1", "-p", &port.to_string()]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)].into_iter().flatten() {
         let logs = logs.clone();
         std::thread::spawn(move || {
@@ -270,6 +282,19 @@ mod tests {
         assert_eq!(r.headers, "User-Agent: UA\r\n");
         assert_eq!((r.bytes, r.expire, r.duration, r.available_at), (Some(120), Some(1790000000), Some(596.5), Some(1790000006)));
         assert!(parse_resolved(r#"{"title":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn every_call_gets_the_plugin_dir_and_an_absolute_deno() {
+        let root = std::env::temp_dir().join("sl-root");
+        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None);
+        let a = yt.base();
+        let after = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone()).unwrap_or_default();
+        assert_eq!(after("--plugin-dirs"), root.join("yt-dlp").join("plugins").to_string_lossy());
+        let deno = after("--js-runtimes");
+        let path = deno.strip_prefix("deno:").expect("deno: prefix");
+        assert!(Path::new(path).is_absolute() && path.ends_with("deno.exe"), "{deno}");
+        assert_eq!(after("--extractor-args"), "youtube:player_client=mweb");
     }
 
     #[test]
