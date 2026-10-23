@@ -1,3 +1,10 @@
+## v2.3.7
+
+- **Updates now stay on 2.x.** StreamLoop 3.0 is coming and installs in its own folder next to 2.x, so you can switch back. The updater used to take whatever GitHub listed as the newest release, which would have pulled 3.0 into a 2.x folder. It now looks through the releases and only installs the newest 2.x one.
+- **2.x will not start its stream while 3.0 is streaming on the same PC.** Two programs streaming to one stream key knock each other off Twitch. Before OBS starts or restarts the stream, 2.x asks 3.0 (on `127.0.0.1:4417`) whether it is streaming. If it is, 2.x holds off, posts one Discord alert and adds a line to the dashboard timeline. It tries again on its normal 30-second check, so stopping 3.0 is enough to let 2.x stream again. If nothing answers on that port, or something unrelated does, 2.x streams as before.
+
+---
+
 ## v2.3.6
 
 - **Fixed the launcher dying on every server exit, so crashes were not restarted and updates closed the window.** `START.bat` had `::` comment lines inside the parenthesized update block. cmd parses that whole block each time the server exits, whatever the exit code, and a `::` line inside a block can abort the script with `. was unexpected at this time.`, which closes the window. Reproduced locally: with the 2.3.1-2.3.5 launcher a server that simply crashed took the launcher down with it (no restart after 10 s), and an update closed the terminal without relaunching. The comments inside blocks are now `rem` lines without parentheses. Verified in a fake install across all four paths: crash restart, clean update swap, update with `app\` locked (aborts, restarts the old version) and an update that replaces the launcher (trampoline relaunch).

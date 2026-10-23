@@ -45,6 +45,7 @@ Before pushing and building a release:
 3. After pushing, run `npm run build:release` to create the distributable ZIP in `dist/`. Both build modes also emit a matching `.sha256` (format: `<hash>  <filename>`), so the manual `certutil` step is optional.
 4. **Build both bundles.** Run `npm run build:release` (full: `streamloop-vX.Y.Z.zip`) **and** `npm run build:release:slim` (`streamloop-vX.Y.Z-update.zip`, app + yt-dlp only). Always ship the full ZIP — first-time installs and reinstalls need `node/` + `mpv/`, which the updater never delivers, so a release whose only download can't be installed fresh is a footgun. The slim ZIP is an **update-only supplement, not a standalone release**: the updater prefers it so existing installs get a much smaller download. (Slim-only is acceptable solely for a throwaway hotfix where every target already has a working full install at a compatible base and the release touches neither Node nor mpv.)
 5. Create the GitHub release with `gh release create` and upload **both ZIPs plus their matching `.sha256`**. The updater matches each checksum to its ZIP by name and verifies integrity against the chosen `.sha256` asset.
+6. **3.x releases are never marked latest.** Create them with `gh release create ... --latest=false`, and also `--prerelease` while 3.0 is on trial. 2.x installs older than 2.3.7 still read GitHub's "latest release" and would otherwise swap 3.0 into a 2.x folder; 2.3.7 and later only take releases with their own major version.
 
 ## Architecture
 
