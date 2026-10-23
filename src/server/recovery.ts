@@ -283,7 +283,7 @@ export class RecoveryEngine {
 
   // --- Private: event log ---
 
-  private addEvent(message: string) {
+  addEvent(message: string): void {
     const entry = { timestamp: new Date().toISOString(), message };
     this.eventLog.push(entry);
     if (this.eventLog.length > MAX_EVENT_LOG) {

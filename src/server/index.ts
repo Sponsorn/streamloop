@@ -20,6 +20,7 @@ import { TwitchLivenessChecker } from './twitch.js';
 import { EventStore } from './event-store.js';
 import { updateYtdlp } from './ytdlp-updater.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
+import { streamloop3IsStreaming } from './stream-guard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -79,6 +80,18 @@ async function main() {
 
   // OBS client
   let obs = new OBSClient(config);
+  // Reads discord and recovery at call time, so it follows a config reload's new instances.
+  function wireStartGuard(client: OBSClient): void {
+    client.setStartGuard(() => streamloop3IsStreaming());
+    client.onStartBlocked((blocked) => {
+      if (!blocked) {
+        logger.info('3.0 is no longer streaming; the 2.x stream may start again');
+        return;
+      }
+      discord.notifyCritical('StreamLoop 3.0 is streaming on this PC, so 2.x will not start its stream. Stop 3.0 first.');
+      recovery.addEvent('Not starting the stream: StreamLoop 3.0 is streaming on this PC');
+    });
+  }
 
   const adminUrl = `http://localhost:${config.port}/admin`;
 
@@ -147,6 +160,7 @@ async function main() {
     obs.onStreamRestartFailed(() => {
       discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
     });
+    wireStartGuard(obs);
     await obs.connect();
     // Restart recovery with new config
     recovery.stop();
@@ -216,6 +230,8 @@ async function main() {
   obs.onStreamRestartFailed(() => {
     discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
   });
+
+  wireStartGuard(obs);
 
   // Stream health monitor — restarts stream if it drops while player is healthy
   const startStreamMonitor = () => {
