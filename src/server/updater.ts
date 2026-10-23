@@ -10,7 +10,7 @@ import { logger } from './logger.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const GITHUB_REPO = 'Sponsorn/streamloop';
-const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=50`;
 const ALLOWED_DOWNLOAD_HOSTS = new Set(['github.com', 'objects.githubusercontent.com']);
 
 function isAllowedDownloadUrl(url: string): boolean {
@@ -69,6 +69,28 @@ export function compareVersions(a: string, b: string): number {
     if (na < nb) return -1;
   }
   return 0;
+}
+
+export interface GithubRelease {
+  tag_name: string;
+  draft: boolean;
+  prerelease: boolean;
+  assets: Array<{ name: string; browser_download_url: string }>;
+}
+
+const VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)$/;
+
+/** Newest stable release with the running major version. 3.x installs beside 2.x
+ *  in its own folder, so a 2.x install must never take a 3.x release as an update. */
+export function pickRelease(releases: GithubRelease[], currentVersion: string): GithubRelease | null {
+  const major = currentVersion.replace(/^v/, '').split('.')[0];
+  let best: GithubRelease | null = null;
+  for (const r of releases) {
+    const m = VERSION_TAG.exec(r.tag_name);
+    if (r.draft || r.prerelease || !m || m[1] !== major) continue;
+    if (!best || compareVersions(r.tag_name, best.tag_name) > 0) best = r;
+  }
+  return best;
 }
 
 export class Updater {
@@ -138,7 +160,14 @@ export class Updater {
         throw new Error(`GitHub API returned ${res.status}: ${res.statusText}`);
       }
 
-      const release = await res.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string }> };
+      const release = pickRelease(await res.json() as GithubRelease[], this.currentVersion);
+      if (!release) {
+        this.latestVersion = this.currentVersion;
+        this.updateAvailable = false;
+        this.status = 'idle';
+        this.lastCheckTime = now;
+        return this.getStatus();
+      }
       this.latestVersion = release.tag_name.replace(/^v/, '');
       this.updateAvailable = compareVersions(this.latestVersion, this.currentVersion) > 0;
 
