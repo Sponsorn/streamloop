@@ -333,6 +333,30 @@ fn take_spare(spare: &mut Option<Spare>, index: usize, id: &str, now_s: u64, mar
     (s.id == id && rules::spare_usable(s.index, index, expire, now_s, margin_s)).then_some(s.r)
 }
 
+/// Push the next spare resolve for `index` a full `SPARE_AFTER_S` away.
+fn delay_spare(due: &mut Option<(usize, Instant)>, index: usize, now: Instant) {
+    if let Some((_, at)) = due.as_mut().filter(|(i, _)| *i == index) {
+        *at = now + Duration::from_secs_f64(rules::SPARE_AFTER_S);
+    }
+}
+
+/// Keep an arrived spare. The next one waits a full interval even when this one is already
+/// inside the refresh margin, or it would be resolved again at every free slot.
+fn store_spare(slot: &mut Option<Spare>, due: &mut Option<(usize, Instant)>, spare: Spare, now: Instant) {
+    delay_spare(due, spare.index, now);
+    *slot = Some(spare);
+}
+
+/// Whether the video `index` on air from its URL needs a spare resolve now.
+#[allow(clippy::too_many_arguments)]
+fn spare_wanted(due: Option<(usize, Instant)>, index: usize, now: Instant, spare: Option<&Spare>, id: &str, now_s: u64, ttl: Option<u64>, margin_s: u64) -> bool {
+    if due.is_none_or(|(i, at)| i != index || now < at) {
+        return false;
+    }
+    // A spare with no known expiry is kept unused rather than resolved again every 5 s.
+    spare.is_none_or(|s| s.index != index || s.id != id || expire_of(&s.r, s.at, ttl, now_s).is_some_and(|e| rules::refresh_due(now_s, e, margin_s)))
+}
+
 struct Feeder {
     seq: u64,
     child: Arc<Mutex<Child>>,
@@ -1044,15 +1068,11 @@ impl Ctl {
     /// Keep a spare URL for the video on air from its URL, through the same gate as every resolve.
     fn spare_work(&mut self, now: Instant) {
         let Some(index) = self.live.as_ref().filter(|f| f.source == Source::Url && !f.filler).map(|f| f.index) else { return };
-        if self.spare_due.is_none_or(|(i, at)| i != index || now < at) || self.resolving.contains(&(index, false)) {
+        if self.resolving.contains(&(index, false)) {
             return;
         }
-        let now_s = unix_ms() as u64 / 1000;
-        let (id, ttl, margin) = (self.id(index), self.args.dev.url_ttl, self.margin_s());
-        // A spare with no known expiry is kept unused rather than resolved again every 5 s.
-        let wanted = self.spare.as_ref().is_none_or(|s| {
-            s.index != index || s.id != id || expire_of(&s.r, s.at, ttl, now_s).is_some_and(|e| rules::refresh_due(now_s, e, margin))
-        });
+        let id = self.id(index);
+        let wanted = spare_wanted(self.spare_due, index, now, self.spare.as_ref(), &id, unix_ms() as u64 / 1000, self.args.dev.url_ttl, self.margin_s());
         if wanted && self.request_resolve(index, Purpose::Spare) {
             self.logs.event("info", "spare-resolve", json!({"index": index, "id": id}));
         }
@@ -1390,11 +1410,7 @@ impl Ctl {
                         }
                     }
                     // Try again in a minute, not at the next free slot.
-                    Purpose::Spare => {
-                        if let Some((_, at)) = self.spare_due.as_mut().filter(|(i, _)| *i == index) {
-                            *at = Instant::now() + Duration::from_secs_f64(rules::SPARE_AFTER_S);
-                        }
-                    }
+                    Purpose::Spare => delay_spare(&mut self.spare_due, index, Instant::now()),
                     Purpose::Refresh | Purpose::Probe => {}
                 }
                 return;
@@ -1420,7 +1436,7 @@ impl Ctl {
                 // A retry is already waiting on this video: the spare is its resolve.
                 self.resolved.insert(index, (r, Instant::now()));
             } else if self.live.as_ref().is_some_and(|f| f.index == index && !f.filler) {
-                self.spare = Some(Spare { index, id: id.to_string(), r, at: Instant::now() });
+                store_spare(&mut self.spare, &mut self.spare_due, Spare { index, id: id.to_string(), r, at: Instant::now() }, Instant::now());
             }
             return;
         }
@@ -1886,6 +1902,20 @@ mod tests {
     fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {
         let r = Resolved { video: "v".into(), audio: "a".into(), headers: String::new(), duration: None, bytes: None, expire, available_at: None };
         Some(Spare { index, id: id.into(), r, at: Instant::now() })
+    }
+
+    #[test]
+    fn a_spare_arriving_inside_the_refresh_margin_is_not_resolved_again_before_the_interval() {
+        let t0 = Instant::now();
+        let mut due = Some((4, t0));
+        let mut slot = None;
+
+        store_spare(&mut slot, &mut due, spare(4, "abc", Some(2800)).unwrap(), t0);
+
+        let ask = |after: f64| spare_wanted(due, 4, t0 + Duration::from_secs_f64(after), slot.as_ref(), "abc", 1000, None, 1800);
+        assert!(!ask(5.0), "asked again at the next free slot");
+        assert!(!ask(rules::SPARE_AFTER_S - 1.0));
+        assert!(ask(rules::SPARE_AFTER_S + 1.0), "an expiring spare is replaced after the interval");
     }
 
     #[test]
