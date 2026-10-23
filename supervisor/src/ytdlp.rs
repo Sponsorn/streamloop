@@ -17,6 +17,7 @@ pub struct Ytdlp {
     exe: PathBuf,
     deno: PathBuf,
     plugins: PathBuf,
+    ffmpeg: PathBuf,
     /// Changed live by POST /reload.
     pub player_client: Mutex<String>,
     limit_rate: Option<String>,
@@ -68,7 +69,7 @@ pub struct Output {
 
 impl Ytdlp {
     pub fn new(paths: &Paths, player_client: &str, limit_rate: Option<String>) -> Ytdlp {
-        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), player_client: Mutex::new(player_client.into()), limit_rate }
+        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), ffmpeg: paths.ffmpeg.clone(), player_client: Mutex::new(player_client.into()), limit_rate }
     }
 
     /// deno must be named by absolute path: yt-dlp runs in the temp folder, and a relative one fails.
@@ -80,6 +81,9 @@ impl Ytdlp {
             self.plugins.to_string_lossy().into_owned(),
             "--js-runtimes".into(),
             format!("deno:{}", self.deno.to_string_lossy()),
+            // the merge of video and audio needs ffmpeg; without this yt-dlp looks on PATH
+            "--ffmpeg-location".into(),
+            self.ffmpeg.to_string_lossy().into_owned(),
             "--extractor-args".into(),
             format!("youtube:player_client={}", self.player_client.lock().unwrap()),
         ]
@@ -295,6 +299,15 @@ mod tests {
         let path = deno.strip_prefix("deno:").expect("deno: prefix");
         assert!(Path::new(path).is_absolute() && path.ends_with("deno.exe"), "{deno}");
         assert_eq!(after("--extractor-args"), "youtube:player_client=mweb");
+    }
+
+    #[test]
+    fn every_call_names_the_bundled_ffmpeg_for_the_merge() {
+        let root = std::env::temp_dir().join("sl-root");
+        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None);
+        let a = yt.base();
+        let at = a.iter().position(|x| x == "--ffmpeg-location").expect("--ffmpeg-location");
+        assert_eq!(a[at + 1], root.join("ffmpeg").join("ffmpeg.exe").to_string_lossy());
     }
 
     #[test]
