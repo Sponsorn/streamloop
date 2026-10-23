@@ -333,6 +333,15 @@ fn take_spare(spare: &mut Option<Spare>, index: usize, id: &str, now_s: u64, mar
     (s.id == id && rules::spare_usable(s.index, index, expire, now_s, margin_s)).then_some(s.r)
 }
 
+/// A retry's spare, if usable. Using it makes the next spare due at once, so a second
+/// failure is fast too (a video gets at most two retries, which bounds this).
+#[allow(clippy::too_many_arguments)]
+fn retry_spare(slot: &mut Option<Spare>, due: &mut Option<(usize, Instant)>, index: usize, id: &str, now_s: u64, margin_s: u64, ttl: Option<u64>, now: Instant) -> Option<Resolved> {
+    let r = take_spare(slot, index, id, now_s, margin_s, ttl)?;
+    *due = Some((index, now));
+    Some(r)
+}
+
 /// Push the next spare resolve for `index` a full `SPARE_AFTER_S` away.
 fn delay_spare(due: &mut Option<(usize, Instant)>, index: usize, now: Instant) {
     if let Some((_, at)) = due.as_mut().filter(|(i, _)| *i == index) {
@@ -676,7 +685,7 @@ impl Ctl {
             Ladder::Retry => {
                 self.videos[index].retries += 1;
                 let (now_s, id, margin) = (unix_ms() as u64 / 1000, self.id(index), self.margin_s());
-                match take_spare(&mut self.spare, index, &id, now_s, margin, self.args.dev.url_ttl) {
+                match retry_spare(&mut self.spare, &mut self.spare_due, index, &id, now_s, margin, self.args.dev.url_ttl, Instant::now()) {
                     Some(r) => {
                         self.logs.event("info", "spare-used", json!({"index": index, "id": self.id(index)}));
                         self.resolved.insert(index, (r, Instant::now()));
@@ -1916,6 +1925,20 @@ mod tests {
         assert!(!ask(5.0), "asked again at the next free slot");
         assert!(!ask(rules::SPARE_AFTER_S - 1.0));
         assert!(ask(rules::SPARE_AFTER_S + 1.0), "an expiring spare is replaced after the interval");
+    }
+
+    #[test]
+    fn a_retry_that_used_the_spare_asks_for_the_next_one_at_once() {
+        let t0 = Instant::now();
+        let mut due = Some((4, t0));
+        let mut slot = None;
+        store_spare(&mut slot, &mut due, spare(4, "abc", Some(10_000)).unwrap(), t0);
+        let t1 = t0 + Duration::from_secs(10);
+
+        let used = retry_spare(&mut slot, &mut due, 4, "abc", 1000, 1800, None, t1);
+
+        assert!(used.is_some());
+        assert!(spare_wanted(due, 4, t1, slot.as_ref(), "abc", 1000, None, 1800), "no spare asked for after the retry used it");
     }
 
     #[test]
