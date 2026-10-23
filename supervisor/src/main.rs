@@ -7,6 +7,7 @@ mod media;
 mod paths;
 mod procs;
 mod rules;
+mod secret;
 mod ytdlp;
 
 use config::Settings;
@@ -29,18 +30,33 @@ use ytdlp::{Entry, Resolved, Ytdlp};
 #[derive(Clone)]
 pub struct Logs {
     dir: PathBuf,
-    secret: Arc<Settings>,
+    /// Every key this process has seen: a line about the old key can still arrive after a reload.
+    keys: Arc<Mutex<Vec<String>>>,
 }
 
 impl Logs {
+    fn new(dir: PathBuf, key: &str) -> Logs {
+        let logs = Logs { dir, keys: Arc::default() };
+        logs.add_key(key);
+        logs
+    }
+    fn add_key(&self, key: &str) {
+        let mut keys = self.keys.lock().unwrap();
+        if !key.is_empty() && !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+        }
+    }
+    fn redact(&self, text: &str) -> String {
+        config::redact(text, &self.keys.lock().unwrap())
+    }
     pub fn append(&self, file: &str, text: &str) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join(file)) {
-            let _ = f.write_all(config::redact(text, &self.secret).as_bytes());
+            let _ = f.write_all(self.redact(text).as_bytes());
         }
     }
     /// A whole-file write (run.json).
     pub fn write(&self, file: &str, text: &str) {
-        let _ = std::fs::write(self.dir.join(file), config::redact(text, &self.secret));
+        let _ = std::fs::write(self.dir.join(file), self.redact(text));
     }
     pub fn csv(&self, file: &str, row: &[String]) {
         let clean: Vec<String> = row.iter().map(|c| c.replace([',', '\r', '\n'], " ")).collect();
@@ -51,7 +67,7 @@ impl Logs {
         if let (Some(m), Value::Object(e)) = (v.as_object_mut(), extra) {
             m.extend(e);
         }
-        eprintln!("{level:8} {kind} {}", config::redact(&v.to_string(), &self.secret));
+        eprintln!("{level:8} {kind} {}", self.redact(&v.to_string()));
         self.append("events.jsonl", &format!("{v}\n"));
     }
 }
@@ -143,16 +159,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     })
 }
 
-/// Placeholder until task 3 brings DPAPI.
-fn unprotect(_blob: &str) -> Result<String, String> {
-    Err("stream key protection is added in task 3".into())
-}
-
 /// Startup and POST /reload read the config the same way.
 fn read_settings(args: &Args) -> Result<Settings, String> {
     let json = std::fs::read_to_string(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
     // --target brings its own key; the protected one is not needed.
-    let mut s = config::load(&json, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { unprotect(b) })?;
+    let mut s = config::load(&json, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { secret::unprotect(b) })?;
     if let Some(t) = &args.target {
         let (ingest, key) = t.rsplit_once('/').filter(|(_, k)| !k.is_empty()).ok_or("--target must end in /<key>")?;
         (s.ingest_url, s.stream_key) = (ingest.into(), key.into());
@@ -160,12 +171,15 @@ fn read_settings(args: &Args) -> Result<Settings, String> {
     Ok(s)
 }
 
-/// Whether these settings can go on air. Task 3 turns the failures into a needs-stream-key state.
-fn stream_ready(s: &Settings) -> Result<(), String> {
-    if s.stream_key.is_empty() {
-        return Err("stream key missing: config.json has no supervisor.streamKeyProtected".into());
+/// `streamloop-supervisor.exe protect`: plain key on stdin, DPAPI blob on stdout.
+fn protect_stdin() -> Result<String, String> {
+    let mut key = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut key).map_err(|e| format!("cannot read stdin: {e}"))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("no stream key on stdin".into());
     }
-    Ok(())
+    secret::protect(key)
 }
 
 #[derive(Debug, PartialEq)]
@@ -290,6 +304,8 @@ struct Ctl {
     args: Args,
     /// What runs: a reload changes the live fields; ingest, key and encoder wait for a restart.
     settings: Settings,
+    /// Why the stream key cannot be used: no encoder runs until a reload brings a working one.
+    needs_key: Option<String>,
     /// The playlist id `videos` came from.
     playlist: String,
     playlist_wanted: bool,
@@ -1090,12 +1106,20 @@ impl Ctl {
         self.args.paths.data.join("state.json")
     }
 
-    /// POST /reload. Live fields apply now; ingest, key and encoder wait for an encoder restart.
+    /// POST /reload. Live fields apply now; ingest, key and encoder wait for a restart, except
+    /// in needs-stream-key, where nothing runs yet and a working key starts the encoder.
     fn reload(&mut self) -> Result<Value, String> {
-        let new = read_settings(&self.args)?;
-        let plan = config::reload_plan(&self.settings, &new);
+        let mut new = read_settings(&self.args)?;
+        self.logs.add_key(&new.stream_key);
+        let ready = config::stream_ready(&new);
         let old = &self.settings;
-        let running = Settings { ingest_url: old.ingest_url.clone(), stream_key: old.stream_key.clone(), encoder: old.encoder.clone(), ..new };
+        if ready.is_err() {
+            // An unusable new key changes nothing about the key that runs.
+            (new.stream_key, new.key_error) = (old.stream_key.clone(), old.key_error.clone());
+        }
+        let plan = config::reload_plan(old, &new);
+        let waiting = self.needs_key.is_some();
+        let running = if waiting { new } else { Settings { ingest_url: old.ingest_url.clone(), stream_key: old.stream_key.clone(), encoder: old.encoder.clone(), ..new } };
         if running.read_ahead_seconds != old.read_ahead_seconds {
             self.shared.q.lock().unwrap().ahead = ticks(running.read_ahead_seconds);
             self.shared.cv.notify_all();
@@ -1107,9 +1131,16 @@ impl Ctl {
             self.playlist_wanted = self.videos.is_empty() || running.playlist_id != self.playlist;
         }
         self.settings = running;
-        let restart = plan == config::Reload::Restart;
-        self.logs.event("info", "reload", json!({"plan": format!("{plan:?}"), "restartRequired": restart, "playlistSwitch": switch}));
-        Ok(json!({"applied": true, "restartRequired": restart}))
+        let restart = !waiting && plan == config::Reload::Restart;
+        let problem = ready.err().map(|(_, reason)| reason);
+        self.logs.event("info", "reload", json!({"plan": format!("{plan:?}"), "restartRequired": restart, "playlistSwitch": switch, "streamKeyProblem": problem}));
+        if waiting {
+            self.needs_key = problem.clone();
+            if self.needs_key.is_none() {
+                self.start_encoder();
+            }
+        }
+        Ok(json!({"applied": true, "restartRequired": restart, "streamKeyProblem": problem}))
     }
 
     fn on_resolved(&mut self, index: usize, id: &str, purpose: Purpose, result: Result<Resolved, String>) {
@@ -1210,6 +1241,8 @@ impl Ctl {
         let (index, pos, source) = self.view();
         let state = if self.stopping {
             "stopping"
+        } else if self.needs_key.is_some() {
+            "needs-stream-key"
         } else if !self.ever_played {
             "starting"
         } else if self.enc.child.is_none() || self.step != "none" {
@@ -1223,6 +1256,7 @@ impl Ctl {
         let generation = self.shared.q.lock().unwrap().generation;
         json!({
             "state": state,
+            "reason": self.needs_key,
             "playing": {"index": index, "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration)},
             "timeline": secs(self.view_timeline()),
             "readAheadSeconds": (self.read_ahead() * 100.0).round() / 100.0,
@@ -1467,9 +1501,18 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|a| a == "protect") {
+        match protect_stdin() {
+            Ok(blob) => println!("{blob}"),
+            Err(e) => {
+                eprintln!("streamloop-supervisor protect: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let started = parse_args(&argv).and_then(|a| {
         let s = read_settings(&a)?;
-        stream_ready(&s)?;
         Ok((a, s))
     });
     let (args, settings) = match started {
@@ -1482,7 +1525,7 @@ fn main() {
     if let Err(e) = procs::enter_job() {
         eprintln!("warning: {e}; children will not die with the supervisor");
     }
-    let logs = Logs { dir: args.paths.data.join("logs"), secret: Arc::new(settings.clone()) };
+    let logs = Logs::new(args.paths.data.join("logs"), &settings.stream_key);
     let _ = std::fs::create_dir_all(&logs.dir);
     // ponytail: files from an earlier run are not adopted, so the cache starts empty; adopt them if restarts re-download too much.
     let cache = args.paths.data.join("cache");
@@ -1520,6 +1563,7 @@ fn main() {
         args,
         playlist: String::new(),
         playlist_wanted: true,
+        needs_key: config::stream_ready(&settings).err().map(|(_, reason)| reason),
         settings,
         logs,
         tx,
@@ -1566,8 +1610,12 @@ fn main() {
     };
     let p = &ctl.args.paths;
     ctl.logs.event("info", "start", json!({"target": config::target_url(&ctl.settings), "encoder": ctl.settings.encoder, "root": p.root, "data": p.data, "ffmpeg": p.ffmpeg, "deno": p.deno}));
+    match config::stream_ready(&ctl.settings) {
+        Ok(()) => ctl.start_encoder(),
+        // The API and token server stay up so Node and the dashboard can show it.
+        Err((kind, reason)) => ctl.logs.event("critical", kind, json!({"reason": reason})),
+    }
     ctl.save_run();
-    ctl.start_encoder();
     let mut last_tick = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -1591,7 +1639,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sl-redact-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let settings = Settings { ingest_url: "rtmp://live.twitch.tv/app".into(), stream_key: "live_987654_SeCrEt".into(), ..Settings::default() };
-        let logs = Logs { dir: dir.clone(), secret: Arc::new(settings.clone()) };
+        let logs = Logs::new(dir.clone(), &settings.stream_key);
         let line = format!("[flv @ 000001] {}: I/O error", config::target_url(&settings));
 
         encoder_log_line(&logs, 3, &line);
@@ -1600,6 +1648,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(written.contains("rtmp://live.twitch.tv/app/***: I/O error"), "{written}");
         assert!(!written.contains("SeCrEt"), "{written}");
+    }
+
+    #[test]
+    fn logs_redact_a_key_added_later_and_every_earlier_one() {
+        let dir = std::env::temp_dir().join(format!("sl-redact-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let logs = Logs::new(dir.clone(), "");
+
+        logs.append("a.log", "before live_OLD_1
+");
+        logs.add_key("live_OLD_1");
+        logs.add_key("live_NEW_2");
+        logs.append("a.log", "old live_OLD_1 new live_NEW_2
+");
+
+        let written = std::fs::read_to_string(dir.join("a.log")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(written, "before live_OLD_1
+old *** new ***
+");
     }
 
     #[test]
