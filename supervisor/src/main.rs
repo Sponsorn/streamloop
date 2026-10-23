@@ -628,6 +628,9 @@ impl Ctl {
             self.filler_since = Some(seq);
         }
         let offset = self.queue_end();
+        if watchdog::moves_cut(reason) {
+            self.watch.cut_at = self.watch.cut_at.max(secs(offset - BASE));
+        }
         let fault = self.watch.fault.filter(|(i, _)| *i == index && !filler && source != Source::Slate).map(|(_, f)| f);
         let spawned = procs::command(&self.args.paths.ffmpeg)
             .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset, fault))
@@ -1164,6 +1167,7 @@ impl Ctl {
                 self.step_offset = self.queue_end();
                 self.set_target(index, at, "watchdog", false);
             }
+            return; // one heal per tick: the other stretch is judged against the new cut
         }
     }
 

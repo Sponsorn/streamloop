@@ -67,6 +67,12 @@ pub fn due(since: f64, seams: &[Seam], now_media: f64, need: f64) -> Option<f64>
     (now_media - start >= need).then_some(start)
 }
 
+/// A feeder started for this reason replaces the picture (control, skip, retry, fault, ...):
+/// a stretch from before its seam must never come due. Playout and URL handovers continue it.
+pub fn moves_cut(reason: &str) -> bool {
+    !matches!(reason, "normal" | "handover" | "refresh")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Heal {
     Retry,
@@ -171,6 +177,28 @@ mod tests {
         }
         // a freeze that began on the slate does not carry into the video
         assert_eq!(due(0.0, &seams(), 34.9, 20.0), None);
+    }
+
+    /// Video 3 has been frozen since 15 s; the operator pressed "next" and video 4's seam is queued
+    /// at 40 s, not yet on air. The stretch must not come due in that window and undo the control.
+    #[test]
+    fn a_freeze_never_comes_due_across_a_pending_cut() {
+        let mut s = vec![seam(10.0, 3, Source::File, 100.0)];
+        let mut cut_at = 0.0;
+        let pending = seam(40.0, 4, Source::File, 0.0);
+        for reason in ["control", "skip", "retry", "fault", "watchdog", "encoder-restart"] {
+            if moves_cut(reason) {
+                cut_at = rules::secs(pending.offset - rules::BASE);
+            }
+            assert!(cut_at == 40.0, "{reason} does not move the cut");
+        }
+        crate::rules::push_seam(&mut s, pending);
+
+        for now in [36.0, 38.0, 39.9] {
+            assert_eq!(due(15.0_f64.max(cut_at), &s, now, 20.0), None, "{now}");
+        }
+        // plain playout and URL handovers continue the picture: they are not cuts
+        assert!(!moves_cut("normal") && !moves_cut("handover") && !moves_cut("refresh"));
     }
 
     #[test]
