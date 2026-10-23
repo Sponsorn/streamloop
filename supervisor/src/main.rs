@@ -168,6 +168,29 @@ fn stream_ready(s: &Settings) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq)]
+enum PlaylistAction {
+    /// The first list: load it and resume from state.json.
+    Load,
+    /// Replace the playing list and jump to its video 0.
+    Switch,
+    /// Superseded by a later reload, or the list already playing.
+    Drop,
+}
+
+/// `loaded` is the id the playing list came from, `wanted` the id the settings ask for.
+fn playlist_action(first: bool, loaded: &str, fetched: &str, wanted: &str) -> PlaylistAction {
+    if fetched != wanted {
+        PlaylistAction::Drop
+    } else if first {
+        PlaylistAction::Load
+    } else if fetched == loaded {
+        PlaylistAction::Drop
+    } else {
+        PlaylistAction::Switch
+    }
+}
+
 fn encoder_log_line(logs: &Logs, generation: u64, line: &str) {
     logs.append("encoder.log", &format!("{} [gen {generation}] {line}\n", iso_now()));
 }
@@ -1004,12 +1027,12 @@ impl Ctl {
     }
 
     fn on_playlist(&mut self, id: String, result: Result<Vec<Entry>, String>) {
-        if id != self.settings.playlist_id {
-            return; // a later reload asked for another playlist
-        }
-        let first = self.videos.is_empty();
         let reason = result.as_ref().err().cloned().unwrap_or_default();
         self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), false, false, &reason);
+        let first = match playlist_action(self.videos.is_empty(), &self.playlist, &id, &self.settings.playlist_id) {
+            PlaylistAction::Drop => return,
+            action => action == PlaylistAction::Load,
+        };
         let mut entries = result.unwrap_or_default();
         entries.drain(..self.args.dev.start.min(entries.len()));
         if self.args.dev.max_videos > 0 {
@@ -1078,8 +1101,11 @@ impl Ctl {
             self.shared.cv.notify_all();
         }
         *self.yt.player_client.lock().unwrap() = running.player_client.clone();
-        let switch = running.playlist_id != self.playlist;
-        self.playlist_wanted |= switch;
+        let switch = running.playlist_id != old.playlist_id;
+        if switch {
+            // Fetch unless the new id is the list already playing (A, B, back to A before B lands).
+            self.playlist_wanted = self.videos.is_empty() || running.playlist_id != self.playlist;
+        }
         self.settings = running;
         let restart = plan == config::Reload::Restart;
         self.logs.event("info", "reload", json!({"plan": format!("{plan:?}"), "restartRequired": restart, "playlistSwitch": switch}));
@@ -1574,6 +1600,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(written.contains("rtmp://live.twitch.tv/app/***: I/O error"), "{written}");
         assert!(!written.contains("SeCrEt"), "{written}");
+    }
+
+    #[test]
+    fn a_duplicate_fetch_of_the_loaded_playlist_does_not_switch() {
+        use PlaylistAction::*;
+        // cold start: the first result loads (and resumes), a second one for the same id is dropped
+        assert_eq!(playlist_action(true, "", "PLa", "PLa"), Load);
+        assert_eq!(playlist_action(false, "PLa", "PLa", "PLa"), Drop);
+        // a real switch, and a fetch a later reload superseded
+        assert_eq!(playlist_action(false, "PLa", "PLb", "PLb"), Switch);
+        assert_eq!(playlist_action(false, "PLa", "PLb", "PLa"), Drop);
+        assert_eq!(playlist_action(true, "", "PLa", "PLb"), Drop);
     }
 
     #[test]
