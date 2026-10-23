@@ -488,6 +488,8 @@ struct Ctl {
     token: Arc<Mutex<TokenState>>,
     step: &'static str,
     consecutive_skips: u32,
+    /// Every video skipped: the target waits on the slate for a while before trying again.
+    hold: rules::SkipHold,
     control_seq: u64,
     ever_played: bool,
     stopping: bool,
@@ -555,6 +557,7 @@ impl Ctl {
             token,
             step: "none",
             consecutive_skips: 0,
+            hold: rules::SkipHold::default(),
             control_seq: 0,
             ever_played: false,
             stopping: false,
@@ -750,7 +753,11 @@ impl Ctl {
         if let Some(i) = (0..n).map(|d| (from + d) % n).find(|&i| !self.videos[i].skipped) {
             return i;
         }
-        self.logs.event("critical", "all-skipped", json!({}));
+        // Every video failing at once is not the videos' fault: wait before going round again,
+        // or a broken feeder or player client burns through the list every few seconds.
+        let now = self.now_s();
+        let wait = self.hold.trip(now);
+        self.logs.event("critical", "all-skipped", json!({"holdS": wait, "level": self.hold.level}));
         self.videos.iter_mut().for_each(|v| v.skipped = false);
         from % n
     }
@@ -1100,13 +1107,14 @@ impl Ctl {
                 if !f.filler && f.started.elapsed() > Duration::from_secs(300) {
                     let i = f.index;
                     self.videos[i].retries = 0;
+                    self.hold.healthy();
                 }
             }
             self.spare_work(now);
         }
 
         // The target: what should be fed next.
-        if let Some(mut t) = self.target.clone() {
+        if let Some(mut t) = self.target.clone().filter(|_| !self.hold.holding(self.now_s())) {
             if self.live.as_ref().is_none_or(|f| f.filler) && !self.videos.is_empty() {
                 // YouTube is off limits: play a cached file instead of waiting on the slate.
                 if self.breaker.open && !self.videos[t.index].on_disk {
@@ -1662,6 +1670,8 @@ impl Ctl {
             self.fail(index, fed, if ok { "early-eof" } else { "exit" }, json!({"code": code, "frames": frames, "fed": fed, "duration": self.duration(index), "source": source.name()}));
         } else {
             self.consecutive_skips = 0;
+            // A video played to its end (short videos never reach the 5 min mark).
+            self.hold.healthy();
             if self.target.is_none() {
                 let next = self.next_playable(index + 1);
                 self.set_target(next, 0.0, "normal", true);
@@ -1702,6 +1712,7 @@ impl Ctl {
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
             "watchdog": {"last": self.watch.last},
             "playlistCount": self.n(),
+            "hold": self.hold.holding(self.now_s()).then(|| json!({"reason": "every video in the playlist failed; the slate airs until the next try", "level": self.hold.level, "until": iso(unix_ms() + ((self.hold.until.unwrap_or(0.0) - self.now_s()).max(0.0) * 1000.0) as u128)})),
             "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures},
         });
         if let (Some(h), Some(b)) = (head.as_object_mut(), body.as_object_mut()) {
@@ -1726,6 +1737,7 @@ impl Ctl {
         self.count("controls");
         self.videos[t].skipped = false;
         self.videos[t].retries = 0;
+        self.hold.until = None;
         self.step = "none";
         self.set_target(t, 0.0, "control", false);
         self.logs.csv("controls", &[unix_ms().to_string(), cmd.into(), index.map_or(String::new(), |i| i.to_string()), t.to_string(), self.id(t), format!("{:.6}", secs(cut)), flushed.to_string()]);
@@ -2060,6 +2072,7 @@ mod tests {
         let (tx, _) = channel();
         let (jobs, _) = channel();
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
+        ctl.playlist_wanted = false;
         ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0, silence_retried: false }).collect();
         ctl
     }
@@ -2101,6 +2114,22 @@ mod tests {
         assert!(ctl.videos[0].skipped);
         assert_eq!(ctl.breaker.failures, 0);
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(1));
+    }
+
+    #[test]
+    fn all_skipped_holds_the_target_off_and_a_control_lifts_the_hold() {
+        let mut ctl = test_ctl("all-skipped", &["a", "b"]);
+        ctl.videos[0].skipped = true;
+        ctl.set_target(1, 0.0, "coldstart", false);
+        ctl.videos[1].retries = rules::MAX_RETRIES;
+
+        ctl.fail(1, 0.0, "exit", json!({}));
+
+        let now = ctl.now_s();
+        assert!(ctl.hold.holding(now), "no hold after every video was skipped");
+        assert!(ctl.status()["hold"]["reason"].is_string(), "{}", ctl.status());
+        ctl.control("next", None).unwrap();
+        assert!(!ctl.hold.holding(now), "a control did not lift the hold");
     }
 
     fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {

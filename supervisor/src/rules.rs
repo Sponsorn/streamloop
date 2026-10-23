@@ -324,6 +324,31 @@ impl Breaker {
     }
 }
 
+/// After every video of the list was skipped: the target is held off (slate on air) for 60 s,
+/// doubling to 30 min per new all-skipped, until a video plays healthily again.
+#[derive(Debug, Default)]
+pub struct SkipHold {
+    pub level: u32,
+    pub until: Option<f64>,
+}
+
+impl SkipHold {
+    /// Every video was skipped at `now`: start a hold; returns its length in seconds.
+    pub fn trip(&mut self, now: f64) -> f64 {
+        let wait = (60.0 * 2f64.powi(self.level.min(5) as i32)).min(1800.0);
+        self.level += 1;
+        self.until = Some(now + wait);
+        wait
+    }
+    pub fn holding(&self, now: f64) -> bool {
+        self.until.is_some_and(|u| now < u)
+    }
+    /// A video played healthily: the next all-skipped starts at 60 s again.
+    pub fn healthy(&mut self) {
+        *self = SkipHold::default();
+    }
+}
+
 pub fn encoder_backoff_s(failures: u32) -> u64 {
     [2, 5, 10, 30, 60][(failures as usize).min(4)]
 }
@@ -533,6 +558,20 @@ mod tests {
         ] {
             assert!(!is_video_unavailable(r), "{r}");
         }
+    }
+
+    #[test]
+    fn all_skipped_holds_the_target_off_with_a_doubling_backoff_reset_by_healthy_play() {
+        let mut h = SkipHold::default();
+        assert!(!h.holding(0.0));
+
+        let waits: Vec<f64> = (0..7).map(|i| h.trip(i as f64 * 10_000.0)).collect();
+
+        assert_eq!(waits, [60.0, 120.0, 240.0, 480.0, 960.0, 1800.0, 1800.0]);
+        assert!(h.holding(60_000.0 + 1799.0) && !h.holding(60_000.0 + 1800.0));
+        h.healthy();
+        assert_eq!(h.trip(0.0), 60.0, "healthy play resets the backoff");
+        assert!(h.holding(59.0) && !h.holding(60.0));
     }
 
     #[test]
