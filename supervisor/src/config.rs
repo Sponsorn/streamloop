@@ -113,9 +113,15 @@ pub enum Reload {
     Restart,
 }
 
-/// Restart outranks Live: a reload with both still applies the live part.
+/// Restart outranks Live: a reload with both still applies the live part. The freeze and silence
+/// durations are encoder arguments, so they too wait for the next encoder start.
 pub fn reload_plan(old: &Settings, new: &Settings) -> Reload {
-    if old.ingest_url != new.ingest_url || old.stream_key != new.stream_key || old.encoder != new.encoder {
+    if old.ingest_url != new.ingest_url
+        || old.stream_key != new.stream_key
+        || old.encoder != new.encoder
+        || old.freeze_seconds != new.freeze_seconds
+        || old.silence_seconds != new.silence_seconds
+    {
         Reload::Restart
     } else if old != new {
         Reload::Live
@@ -228,6 +234,9 @@ mod tests {
         assert_eq!(reload_plan(&old, &Settings { playlist_id: "PLb".into(), ..old.clone() }), Reload::Live);
         assert_eq!(reload_plan(&old, &Settings { read_ahead_seconds: 10.0, ..old.clone() }), Reload::Live);
         assert_eq!(reload_plan(&old, &Settings { encoder: "libx264".into(), ..old.clone() }), Reload::Restart);
+        // the detectors are encoder arguments: they change at the next encoder start
+        assert_eq!(reload_plan(&old, &Settings { freeze_seconds: 30.0, ..old.clone() }), Reload::Restart);
+        assert_eq!(reload_plan(&old, &Settings { silence_seconds: 60.0, ..old.clone() }), Reload::Restart);
         assert_eq!(reload_plan(&old, &Settings { stream_key: "k".into(), playlist_id: "PLb".into(), ..old.clone() }), Reload::Restart);
     }
 }
