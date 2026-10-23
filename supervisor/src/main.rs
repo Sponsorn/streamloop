@@ -8,6 +8,7 @@ mod paths;
 mod procs;
 mod rules;
 mod secret;
+mod watchdog;
 mod ytdlp;
 
 use config::Settings;
@@ -23,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use watchdog::{Detect, Heal, Verdict};
 use ytdlp::{Entry, Resolved, Ytdlp};
 
 
@@ -269,6 +271,31 @@ fn encoder_log_line(logs: &Logs, generation: u64, line: &str) {
     logs.append("encoder.log", &format!("{} [gen {generation}] {line}\n", iso_now()));
 }
 
+/// `-progress` keys become EncProgress; every other line goes to encoder.log redacted (at `-v info`
+/// that includes the output URL), and a detector line also goes on as Msg::Detect.
+fn encoder_stderr_line(logs: &Logs, tx: &Sender<Msg>, generation: u64, line: &str, out_us: &mut Option<String>, speed: &mut String) {
+    let t = line.trim();
+    match t.split_once('=') {
+        Some(("out_time_us", v)) => *out_us = Some(v.to_string()),
+        Some(("speed", v)) => *speed = v.trim().to_string(),
+        Some(("progress", _)) => {
+            if let Some(us) = out_us.as_ref().and_then(|u| u.parse::<i64>().ok()) {
+                // The 10 s CPU row (Ctl::sample_cpu) fills the last four columns; these leave them empty.
+                logs.csv("encoder.csv", &[unix_ms().to_string(), us.to_string(), speed.clone(), generation.to_string(), String::new(), String::new(), String::new(), String::new()]);
+                let _ = tx.send(Msg::EncProgress { generation, media: us as f64 / 1e6, speed: speed.trim_end_matches('x').trim().parse().ok() });
+            }
+        }
+        Some((k, _)) if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {}
+        _ if !t.is_empty() => {
+            encoder_log_line(logs, generation, t);
+            if let Some(d) = watchdog::parse_line(t) {
+                let _ = tx.send(Msg::Detect { generation, d });
+            }
+        }
+        _ => {}
+    }
+}
+
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Purpose {
@@ -292,6 +319,7 @@ pub enum Msg {
     Resolved { index: usize, id: String, purpose: Purpose, result: Result<Resolved, String> },
     FeederExit { seq: u64, code: Option<i32>, frames: u64 },
     EncProgress { generation: u64, media: f64, speed: Option<f64> },
+    Detect { generation: u64, d: Detect },
     DlProgress { index: usize, percent: f64 },
     Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String },
 }
@@ -311,6 +339,8 @@ struct Video {
     dl_failed: bool,
     skipped: bool,
     retries: u32,
+    /// The watchdog's one in-place retry for silence was used.
+    silence_retried: bool,
 }
 
 /// A second resolved URL for the video on air, so a retry skips yt-dlp and the site's wait.
@@ -407,6 +437,22 @@ struct Encoder {
     ingest_was_down: bool,
     /// ffmpeg's own `speed=` (latest), None until it reports one.
     speed: Option<f64>,
+    /// The detector durations this encoder runs with; a reload applies at its next start.
+    watch: media::WatchdogCfg,
+}
+
+/// The output watchdog's state, all in the encoder's media seconds of the current generation.
+#[derive(Default)]
+struct Watch {
+    /// An open freeze / silence: (its start, an `Ignore` for it already reported).
+    freeze: Option<(f64, bool)>,
+    silence: Option<(f64, bool)>,
+    /// Where the last heal cut: nothing before it counts again.
+    cut_at: f64,
+    /// For /status.watchdog: the last verdict, its time and outcome.
+    last: Value,
+    /// Debug fault on this video's feeders until the watchdog acts.
+    fault: Option<(usize, media::FeederFault)>,
 }
 
 /// Counters at the last CPU sample, with the pids they belong to.
@@ -463,6 +509,7 @@ struct Ctl {
     seams: Vec<Seam>,
     enc: Encoder,
     cpu: Cpu,
+    watch: Watch,
     live: Option<Feeder>,
     metas: HashMap<u64, FeederMeta>,
     feeder_seq: u64,
@@ -581,8 +628,9 @@ impl Ctl {
             self.filler_since = Some(seq);
         }
         let offset = self.queue_end();
+        let fault = self.watch.fault.filter(|(i, _)| *i == index && !filler && source != Source::Slate).map(|(_, f)| f);
         let spawned = procs::command(&self.args.paths.ffmpeg)
-            .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset))
+            .args(media::feeder_args(&input, rules::seek_for(&source, pos), offset, fault))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
@@ -627,7 +675,7 @@ impl Ctl {
             let status = status.unwrap_or_else(wait);
             let _ = tx.send(Msg::FeederExit { seq, code: status.code(), frames });
         });
-        self.logs.event("info", "feeder-start", json!({"seq": seq, "name": name, "index": index, "source": source.name(), "pos": pos, "offset": secs(offset), "reason": reason}));
+        self.logs.event("info", "feeder-start", json!({"seq": seq, "name": name, "index": index, "source": source.name(), "pos": pos, "offset": secs(offset), "reason": reason, "fault": fault.map(|f| format!("{f:?}"))}));
         self.live = Some(Feeder { seq, child, index, source, start_pos: pos, offset, started: Instant::now(), filler, expire });
     }
 
@@ -673,7 +721,9 @@ impl Ctl {
         if matches!(reason, "normal" | "skip" | "control" | "coldstart") {
             if let Some(v) = self.videos.get_mut(index) {
                 v.retries = 0;
+                v.silence_retried = false;
             }
+            self.watch.fault = None;
         }
         self.target = Some(Target { index, pos, reason, gated });
     }
@@ -800,8 +850,9 @@ impl Ctl {
 
 
     fn start_encoder(&mut self) {
+        let watch = watchdog_cfg(&self.settings);
         let mut child = match procs::command(&self.args.paths.ffmpeg)
-            .args(match media::encoder_args(&config::target_url(&self.settings), &self.settings.encoder, &watchdog_cfg(&self.settings)) {
+            .args(match media::encoder_args(&config::target_url(&self.settings), &self.settings.encoder, &watch) {
                 Ok(a) => a,
                 Err(e) => {
                     self.logs.event("critical", "encoder-spawn-failed", json!({"error": e}));
@@ -831,21 +882,7 @@ impl Ctl {
         std::thread::spawn(move || {
             let (mut out_us, mut speed) = (None::<String>, String::new());
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let t = line.trim();
-                match t.split_once('=') {
-                    Some(("out_time_us", v)) => out_us = Some(v.to_string()),
-                    Some(("speed", v)) => speed = v.trim().to_string(),
-                    Some(("progress", _)) => {
-                        if let Some(us) = out_us.as_ref().and_then(|u| u.parse::<i64>().ok()) {
-                            // The 10 s CPU row (Ctl::sample_cpu) fills the last four columns; these leave them empty.
-                            logs.csv("encoder.csv", &[unix_ms().to_string(), us.to_string(), speed.clone(), generation.to_string(), String::new(), String::new(), String::new(), String::new()]);
-                            let _ = tx.send(Msg::EncProgress { generation, media: us as f64 / 1e6, speed: speed.trim_end_matches('x').trim().parse().ok() });
-                        }
-                    }
-                    Some((k, _)) if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {}
-                    _ if !t.is_empty() => encoder_log_line(&logs, generation, t),
-                    _ => {}
-                }
+                encoder_stderr_line(&logs, &tx, generation, &line, &mut out_us, &mut speed);
             }
         });
         if self.counts.contains_key("encoderStarts") {
@@ -853,6 +890,7 @@ impl Ctl {
         }
         self.count("encoderStarts");
         self.enc.child = Some(child);
+        self.enc.watch = watch;
         self.enc.media = 0.0;
         self.enc.speed = None;
         self.enc.started = Instant::now();
@@ -876,6 +914,7 @@ impl Ctl {
             self.shared.cv.notify_all();
         }
         self.seams.clear();
+        (self.watch.freeze, self.watch.silence, self.watch.cut_at) = (None, None, 0.0);
         self.enc.speed = None;
         self.enc.failures += 1;
         let wait = rules::encoder_backoff_s(self.enc.failures - 1);
@@ -981,6 +1020,8 @@ impl Ctl {
             return;
         }
 
+        self.watchdog_work();
+
         // The live feeder: stall, handover, refresh.
         if let Some(f) = &self.live {
             let (stalled, frames) = {
@@ -1073,6 +1114,81 @@ impl Ctl {
         self.periodic();
     }
 
+
+    /// The output watchdog: judge each open freeze or silence once it has lasted its duration,
+    /// and heal. A switch or retry in progress is left alone; its new seam is judged on its own.
+    fn watchdog_work(&mut self) {
+        if self.target.as_ref().is_some_and(|t| t.reason != "normal") {
+            return;
+        }
+        let now = self.enc.media;
+        for freeze in [true, false] {
+            let (open, need, kind) = if freeze {
+                (self.watch.freeze, self.enc.watch.freeze_s, "freeze")
+            } else {
+                (self.watch.silence, self.enc.watch.silence_s, "silence")
+            };
+            let Some((since, reported)) = open else { continue };
+            let Some(start) = watchdog::due(since.max(self.watch.cut_at), &self.seams, now, need) else { continue };
+            let verdict = watchdog::judge(&if freeze { Detect::FreezeStart(start) } else { Detect::SilenceStart(start) }, &self.seams, now);
+            let (index, pos) = match verdict {
+                Verdict::Ignore => {
+                    if !reported {
+                        let (index, pos, _) = self.view();
+                        self.watchdog_event(kind, index, pos, start, "ignored");
+                        let open = if freeze { &mut self.watch.freeze } else { &mut self.watch.silence };
+                        *open = Some((since, true));
+                    }
+                    continue;
+                }
+                Verdict::Freeze { index, pos } | Verdict::Silence { index, pos } => (index, pos),
+            };
+            let v = &self.videos[index];
+            let heal = watchdog::heal(&verdict, v.retries, v.silence_retried).unwrap();
+            self.watch.fault = None;
+            self.count(if freeze { "watchdogFreezes" } else { "watchdogSilences" });
+            if heal == Heal::EventOnly {
+                // Silence that stays after its retry belongs to the video: report it once, play on.
+                self.watch.silence = None;
+                self.watchdog_event(kind, index, pos, start, "event-only");
+                continue;
+            }
+            let at = self.cut_for_heal(index, pos);
+            self.watchdog_event(kind, index, pos, start, if heal == Heal::Skip { "skip" } else { "retry" });
+            if freeze {
+                // The stall ladder: its retry budget, its skip.
+                self.fail(index, at, "freeze", json!({"since": start, "pos": pos}));
+            } else {
+                self.videos[index].silence_retried = true;
+                self.step = "retry";
+                self.step_offset = self.queue_end();
+                self.set_target(index, at, "watchdog", false);
+            }
+        }
+    }
+
+    fn watchdog_event(&mut self, kind: &str, index: usize, pos: f64, since: f64, outcome: &str) {
+        let v = json!({"verdict": kind, "index": index, "id": self.id(index), "pos": round2(pos), "since": round2(since), "outcome": outcome, "at": iso_now()});
+        let level = if outcome == "ignored" { "info" } else { "warn" };
+        self.logs.event(level, &format!("watchdog-{kind}"), v.clone());
+        self.watch.last = v;
+    }
+
+    /// A heal replaces what is on air now: cut the live feeder and drop the queue past the cut
+    /// margin. Returns the video position at the cut, where the restart continues.
+    fn cut_for_heal(&mut self, index: usize, pos: f64) -> f64 {
+        self.cut_live();
+        // The kept margin is on air whatever it is; a later cut_filler only drops a new slate.
+        self.filler_since = None;
+        let source = if self.videos[index].on_disk { Source::File } else { Source::Url };
+        self.shared.q.lock().unwrap().flush_keeping(0, rules::cut_margin(&source, pos));
+        let cut = self.queue_end();
+        self.watch.cut_at = secs(cut - BASE);
+        match rules::view_at(&self.seams, cut) {
+            Some((s, p)) if s.index == index && s.source != Source::Slate => p,
+            _ => pos,
+        }
+    }
 
     /// Keep a spare URL for the video on air from its URL, through the same gate as every resolve.
     fn spare_work(&mut self, now: Instant) {
@@ -1221,6 +1337,18 @@ impl Ctl {
                     self.shared.cv.notify_all();
                 }
             }
+            Msg::Detect { generation, d } => {
+                // A line from an earlier encoder belongs to a timeline that is gone.
+                if generation != self.shared.q.lock().unwrap().generation || self.enc.child.is_none() {
+                    return;
+                }
+                match d {
+                    Detect::FreezeStart(t) => self.watch.freeze = Some((t, false)),
+                    Detect::FreezeEnd(_) => self.watch.freeze = None,
+                    Detect::SilenceStart(t) => self.watch.silence = Some((t, false)),
+                    Detect::SilenceEnd(_) => self.watch.silence = None,
+                }
+            }
             Msg::DlProgress { index, percent } => {
                 if let Some(d) = self.downloading.as_mut().filter(|d| d.0 == index) {
                     d.1 = percent;
@@ -1305,7 +1433,7 @@ impl Ctl {
             self.logs.event("info", "playlist-recovered", json!({"playlistId": id}));
         }
         self.logs.append("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
-        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
+        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0, silence_retried: false }).collect();
         let old = std::mem::replace(&mut self.videos, new);
         self.playlist = id.clone();
         self.logs.event("info", "playlist", json!({"playlistId": id, "count": self.n()}));
@@ -1521,6 +1649,7 @@ impl Ctl {
             "cpu": {"encoder": round2(self.cpu.encoder), "feeder": round2(self.cpu.feeder), "system": round2(self.cpu.system)},
             "tokenServer": token,
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
+            "watchdog": {"last": self.watch.last},
             "playlistCount": self.n(),
             "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures},
         });
@@ -1571,6 +1700,14 @@ impl Ctl {
                 self.break_url = Some((index, count));
                 self.resolved.remove(&index);
                 self.spare = None;
+            }
+            "freeze-video" | "mute-audio" => {
+                let index = self.live.as_ref().filter(|f| !f.filler).map(|f| f.index).ok_or("no live video feeder")?;
+                let fault = if kind == "freeze-video" { media::FeederFault::Freeze } else { media::FeederFault::Mute };
+                let (_, fed, _) = self.cut_live().unwrap();
+                // The restart at P_fed picks the fault up in start_feeder and keeps it until the watchdog acts.
+                self.set_target(index, fed, "fault", false);
+                self.watch.fault = Some((index, fault));
             }
             "kill-encoder" => {
                 procs::kill_tree(self.enc.child.as_ref().ok_or("no encoder")?.id());
@@ -1839,8 +1976,9 @@ fn main() {
         cache,
         videos: vec![],
         seams: vec![],
-        enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false, speed: None },
+        enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false, speed: None, watch: media::WatchdogCfg::default() },
         cpu: Cpu::default(),
+        watch: Watch::default(),
         live: None,
         metas: HashMap::new(),
         feeder_seq: 0,
@@ -1989,6 +2127,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(written.contains("rtmp://live.twitch.tv/app/***: I/O error"), "{written}");
         assert!(!written.contains("SeCrEt"), "{written}");
+    }
+
+    #[test]
+    fn info_level_encoder_lines_are_logged_redacted_and_detector_lines_reach_the_loop() {
+        let dir = std::env::temp_dir().join(format!("sl-redact-info-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = Settings { ingest_url: "rtmp://live.twitch.tv/app".into(), stream_key: "live_987654_SeCrEt".into(), ..Settings::default() };
+        let logs = Logs::new(dir.clone(), &settings.stream_key);
+        let (tx, rx) = channel();
+        let (mut out_us, mut speed) = (None, String::new());
+        let lines = [
+            format!("Output #0, flv, to '{}':", config::target_url(&settings)),
+            "[freezedetect @ 0000029387615f40] lavfi.freezedetect.freeze_start: 12.5".to_string(),
+            "out_time_us=2000000".to_string(),
+            "progress=continue".to_string(),
+        ];
+
+        for l in &lines {
+            encoder_stderr_line(&logs, &tx, 4, l, &mut out_us, &mut speed);
+        }
+
+        let written = std::fs::read_to_string(dir.join("encoder.log")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(written.contains("Output #0, flv, to 'rtmp://live.twitch.tv/app/***':"), "{written}");
+        assert!(!written.contains("SeCrEt"), "{written}");
+        assert!(written.contains("freeze_start: 12.5"));
+        assert!(!written.contains("out_time_us"), "progress keys stay out of the log");
+        let msgs: Vec<Msg> = rx.try_iter().collect();
+        assert!(matches!(msgs[0], Msg::Detect { generation: 4, d: Detect::FreezeStart(t) } if t == 12.5));
+        assert!(matches!(msgs[1], Msg::EncProgress { generation: 4, media, .. } if media == 2.0));
     }
 
     #[test]

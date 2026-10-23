@@ -16,7 +16,17 @@ pub enum Input<'a> {
 
 const VF: &str = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p";
 
-pub fn feeder_args(input: &Input, pos: f64, offset: i64) -> Vec<String> {
+const AF: &str = "aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo";
+
+/// Debug faults (`freeze-video`, `mute-audio`): the feeder's own output goes still or silent,
+/// so the encoder's watchdog sees a real fault. Added before the normalisation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FeederFault {
+    Freeze,
+    Mute,
+}
+
+pub fn feeder_args(input: &Input, pos: f64, offset: i64, fault: Option<FeederFault>) -> Vec<String> {
     let mut a: Vec<String> = ["-v", "error", "-nostats", "-progress", "pipe:2"].map(String::from).to_vec();
     let seek = |a: &mut Vec<String>| {
         if pos > 0.0 {
@@ -44,10 +54,16 @@ pub fn feeder_args(input: &Input, pos: f64, offset: i64) -> Vec<String> {
             a.extend(["-map", "0:v:0", "-map", "1:a:0"].map(String::from));
         }
     }
+    // Overlaid on the input's frames to keep its pace: `loop` alone runs minutes ahead of the audio
+    // and the ingest drops the encoder (and `loop=-1` without size=1 loops nothing).
+    let (vf, af) = match fault {
+        Some(FeederFault::Freeze) => (format!("split[m][s];[s]trim=end_frame=1,loop=loop=-1:size=1[st];[m][st]overlay=shortest=1,{VF}"), AF.to_string()),
+        Some(FeederFault::Mute) => (VF.to_string(), format!("volume=0,{AF}")),
+        None => (VF.to_string(), AF.to_string()),
+    };
+    a.extend(["-vf".into(), vf, "-af".into(), af]);
     a.extend(
         [
-            "-vf", VF,
-            "-af", "aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo",
             "-c:v", "mpeg2video", "-q:v", "2", "-g", "15", "-bf", "0", "-c:a", "mp2", "-b:a", "384k",
             "-shortest",
             "-muxdelay", "0", "-muxpreload", "0", "-mpegts_flags", "+initial_discontinuity",
@@ -60,8 +76,8 @@ pub fn feeder_args(input: &Input, pos: f64, offset: i64) -> Vec<String> {
     a
 }
 
-/// What the encoder's watchdog filters need; task 7 adds the filters themselves.
-#[allow(dead_code)] // read by the watchdog filters in task 7
+/// Detector durations for the encoder's freezedetect and silencedetect.
+#[derive(Clone, Copy)]
 pub struct WatchdogCfg {
     pub freeze_s: f64,
     pub silence_s: f64,
@@ -85,13 +101,19 @@ fn video_set(codec: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-pub fn encoder_args(target: &str, codec: &str, _watchdog: &WatchdogCfg) -> Result<Vec<String>, String> {
+/// The watchdog's detectors sit in the encoder's own chains (no second output: a critical output
+/// is never teed); `-v info` lets their lines reach stderr. Every stderr line is logged redacted.
+pub fn encoder_args(target: &str, codec: &str, watchdog: &WatchdogCfg) -> Result<Vec<String>, String> {
     let set = video_set(codec).ok_or_else(|| format!("unknown encoder \"{codec}\" (h264_nvenc, h264_amf, h264_qsv, libx264)"))?;
-    let mut a: Vec<&str> = vec!["-v", "warning", "-nostats", "-stats_period", "0.1", "-progress", "pipe:2", "-re", "-f", "mpegts", "-i", "pipe:0", "-c:v", codec];
+    // -50dB, not -60dB: the feeder's mpeg2 (q 2, GOP 15) puts a still picture of real content
+    // 52-58 dB apart at every I-frame, so -60dB never sees it frozen.
+    let vf = format!("freezedetect=n=-50dB:d={}", watchdog.freeze_s);
+    let af = format!("aresample=async=1:min_hard_comp=0.01,silencedetect=n=-50dB:d={}", watchdog.silence_s);
+    let mut a: Vec<&str> = vec!["-v", "info", "-nostats", "-stats_period", "0.1", "-progress", "pipe:2", "-re", "-f", "mpegts", "-i", "pipe:0", "-c:v", codec];
     a.extend(set);
     a.extend([
         "-b:v", "4500k", "-maxrate", "4500k", "-bufsize", "9000k", "-g", "60", "-pix_fmt", "yuv420p",
-        "-af", "aresample=async=1:min_hard_comp=0.01", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+        "-vf", &vf, "-af", &af, "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-f", "flv", target,
     ]);
     Ok(a.into_iter().map(String::from).collect())
@@ -345,6 +367,33 @@ mod tests {
     }
 
     #[test]
+    fn encoder_runs_the_detectors_inside_its_chains_at_info_level() {
+        let w = super::WatchdogCfg { freeze_s: 20.0, silence_s: 30.5 };
+        // Act
+        let a = super::encoder_args("rtmp://x/y", "h264_nvenc", &w).unwrap();
+        // Assert
+        let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
+        assert_eq!(after("-v"), "info");
+        assert_eq!(after("-vf"), "freezedetect=n=-50dB:d=20");
+        assert_eq!(after("-af"), "aresample=async=1:min_hard_comp=0.01,silencedetect=n=-50dB:d=30.5");
+        assert_eq!(a.iter().filter(|x| x.starts_with("rtmp://")).count(), 1, "one output only");
+    }
+
+    #[test]
+    fn feeder_faults_change_only_their_own_chain_before_the_normalisation() {
+        let input = super::Input::File("v.mp4");
+        let chain = |fault, flag: &str| {
+            let a = super::feeder_args(&input, 0.0, crate::rules::BASE, fault);
+            a[a.iter().position(|x| x == flag).unwrap() + 1].clone()
+        };
+        let (vf, af) = (chain(None, "-vf"), chain(None, "-af"));
+        assert_eq!(chain(Some(super::FeederFault::Freeze), "-vf"), format!("split[m][s];[s]trim=end_frame=1,loop=loop=-1:size=1[st];[m][st]overlay=shortest=1,{vf}"));
+        assert_eq!(chain(Some(super::FeederFault::Freeze), "-af"), af);
+        assert_eq!(chain(Some(super::FeederFault::Mute), "-af"), format!("volume=0,{af}"));
+        assert_eq!(chain(Some(super::FeederFault::Mute), "-vf"), vf);
+    }
+
+    #[test]
     fn encoder_args_reject_an_unknown_codec() {
         assert!(super::encoder_args("rtmp://x/y", "h265_nope", &super::WatchdogCfg::default()).is_err());
     }
@@ -522,7 +571,7 @@ mod tests {
             return;
         }
         let offset = BASE + 3 * HZ + 1234; // an offset that is not a whole frame
-        let mut args = feeder_args(&Input::File(slate.to_str().unwrap()), 0.0, offset);
+        let mut args = feeder_args(&Input::File(slate.to_str().unwrap()), 0.0, offset, None);
         args.retain(|a| a != "-progress" && a != "pipe:2");
         let Ok(out) = std::process::Command::new("ffmpeg").args(&args).output() else {
             eprintln!("skipped: no ffmpeg");
