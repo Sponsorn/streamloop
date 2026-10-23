@@ -24,6 +24,7 @@ spikes/buffer/cache/
 spikes/buffer/media/
 spikes/buffer/results/
 spikes/supervisor/target/
+supervisor/target/
 spikes/supervisor/results/
 spikes/supervisor/logs/
 spikes/supervisor/cache/
