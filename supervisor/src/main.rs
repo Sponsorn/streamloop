@@ -20,7 +20,7 @@ use paths::Paths;
 use rules::{secs, ticks, Ladder, Seam, Source, BASE, FRAME};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1965,9 +1965,14 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().is_some_and(|a| a == "protect") {
         match protect_stdin() {
-            Ok(blob) => println!("{blob}"),
+            Ok(blob) => {
+                // Node reads the blob from stdout: a failed write is a failed protect.
+                if writeln!(std::io::stdout().lock(), "{blob}").is_err() {
+                    std::process::exit(1);
+                }
+            }
             Err(e) => {
-                eprintln!("streamloop-supervisor protect: {e}");
+                logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor protect: {e}"));
                 std::process::exit(1);
             }
         }
@@ -1980,12 +1985,12 @@ fn main() {
     let (args, settings) = match started {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("streamloop-supervisor: {e}");
+            logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
             std::process::exit(2);
         }
     };
     if let Err(e) = procs::enter_job() {
-        eprintln!("warning: {e}; children will not die with the supervisor");
+        logs::echo(&mut std::io::stderr().lock(), &format!("warning: {e}; children will not die with the supervisor"));
     }
     let logs = Logs::new(args.paths.data.join("logs"), &settings.stream_key);
     let _ = std::fs::create_dir_all(&logs.dir);

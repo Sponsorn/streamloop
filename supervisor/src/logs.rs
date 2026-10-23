@@ -128,6 +128,12 @@ pub fn prune(dir: &Path, keep_days: u32, today: &str) -> Vec<String> {
     errors
 }
 
+/// A line to stderr as eprintln! writes it, minus the panic eprintln! raises on a write error
+/// (stderr piped to a parent that has exited): stderr is a courtesy, the log files are the record.
+pub fn echo(w: &mut impl Write, line: &str) {
+    let _ = writeln!(w, "{line}");
+}
+
 /// Every write, stderr included, passes through `config::redact`: the stream key never lands in a log.
 #[derive(Clone)]
 pub struct Logs {
@@ -179,7 +185,7 @@ impl Logs {
         if let (Some(m), Value::Object(e)) = (v.as_object_mut(), extra) {
             m.extend(e);
         }
-        eprintln!("{level:8} {kind} {}", self.redact(&v.to_string()));
+        echo(&mut std::io::stderr().lock(), &format!("{level:8} {kind} {}", self.redact(&v.to_string())));
         self.daily("events", "jsonl", &format!("{v}\n"));
     }
     /// Prune old files; failures become one warn event and never stop the supervisor.
@@ -205,6 +211,21 @@ mod tests {
         let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    struct Broken;
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_closed_stderr_does_not_panic_the_thread_that_logs() {
+        echo(&mut Broken, "critical encoder-exit {}");
     }
 
     #[test]
