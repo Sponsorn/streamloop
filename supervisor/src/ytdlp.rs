@@ -60,6 +60,20 @@ pub fn describe_error(stderr: &str, code: Option<i32>) -> String {
         .unwrap_or_else(|| format!("yt-dlp exit {code:?}"))
 }
 
+/// `--flat-playlist --print id\ttitle\tduration` lines. YouTube keeps private and deleted videos
+/// in a list under these titles; they can never play, so they never enter it.
+pub fn parse_playlist(stdout: &str) -> Vec<Entry> {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let id = f.next()?.trim().to_string();
+            (!id.is_empty()).then(|| Entry { id, title: f.next().unwrap_or("").to_string(), duration: f.next().and_then(|d| d.trim().parse().ok()) })
+        })
+        .filter(|e| e.title != "[Private video]" && e.title != "[Deleted video]")
+        .collect()
+}
+
 pub struct Output {
     pub ok: bool,
     pub stdout: String,
@@ -170,15 +184,7 @@ impl Ytdlp {
     pub fn playlist(&self, url: &str, logs: &Logs) -> Result<Vec<Entry>, String> {
         let args: Vec<String> = ["--flat-playlist", "--print", "%(id)s\t%(title)s\t%(duration)s", url].map(String::from).to_vec();
         let out = self.run(&args, logs, &AtomicBool::new(false), Duration::from_secs(120), |_| {}, |_| {});
-        let entries: Vec<Entry> = out
-            .stdout
-            .lines()
-            .filter_map(|l| {
-                let mut f = l.split('\t');
-                let id = f.next()?.trim().to_string();
-                (!id.is_empty()).then(|| Entry { id, title: f.next().unwrap_or("").to_string(), duration: f.next().and_then(|d| d.trim().parse().ok()) })
-            })
-            .collect();
+        let entries = parse_playlist(&out.stdout);
         if entries.is_empty() {
             return Err(describe_error(&out.stderr, None));
         }
@@ -274,6 +280,15 @@ pub fn spawn_token_server(node: &Path, script: &Path, port: u16, logs: &Logs) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_and_deleted_videos_never_enter_the_playlist() {
+        let out = "a1\tFirst\t60\nb2\t[Private video]\tNA\nc3\t[Deleted video]\tNA\nd4\tLast\t12.5\n";
+
+        let ids: Vec<String> = parse_playlist(out).into_iter().map(|e| e.id).collect();
+
+        assert_eq!(ids, ["a1", "d4"]);
+    }
 
     #[test]
     fn resolve_takes_both_dash_urls_and_headers() {

@@ -238,9 +238,20 @@ pub fn breaker_backoff_s(level: u32) -> f64 {
     [60.0, 120.0, 300.0, 600.0, 1800.0][(level as usize).min(4)]
 }
 
+/// yt-dlp's wording for a video that will not play however often it is asked: removed, private,
+/// blocked here, age-gated, members-only. Such a failure is the video's, not YouTube's: it does
+/// not count toward the breaker and the ladder skips the video. YouTube's own rate limit also says
+/// "Video unavailable ... try again later", and that one is about us.
+pub fn is_video_unavailable(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    !r.contains("try again later")
+        && !is_bot_check(&r)
+        && ["video unavailable", "private video", "has been removed", "has been terminated", "in your country", "confirm your age", "members-only"].iter().any(|w| r.contains(w))
+}
+
 pub fn is_bot_check(reason: &str) -> bool {
     let r = reason.to_lowercase();
-    r.contains("sign in to confirm") || r.contains("not a bot") || r.contains("bot check")
+    r.contains("not a bot") || r.contains("bot check")
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -502,10 +513,34 @@ mod tests {
     }
 
     #[test]
+    fn per_video_reasons_are_told_apart_from_youtube_wide_ones() {
+        for r in [
+            "ERROR: [youtube] x: Video unavailable. This video has been removed by the uploader",
+            "ERROR: [youtube] x: Private video. Sign in if you've been granted access to this video",
+            "ERROR: [youtube] x: Video unavailable. The uploader has not made this video available in your country",
+            "ERROR: [youtube] x: Video unavailable. This video contains content from SME, who has blocked it in your country on copyright grounds",
+            "ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate for some users.",
+            "ERROR: [youtube] x: Join this channel to get access to members-only content like this video, and other exclusive perks.",
+            "ERROR: [youtube] x: Video unavailable. This video is no longer available because the YouTube account associated with this video has been terminated.",
+        ] {
+            assert!(is_video_unavailable(r), "{r}");
+        }
+        for r in [
+            "ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser",
+            "ERROR: [youtube] x: Video unavailable. This content isn't available, try again later.",
+            "HTTP Error 403: Forbidden",
+            "yt-dlp exit None",
+        ] {
+            assert!(!is_video_unavailable(r), "{r}");
+        }
+    }
+
+    #[test]
     fn bot_check_reasons_are_recognised() {
         assert!(is_bot_check("YouTube bot check: sign in to confirm you're not a bot"));
         assert!(is_bot_check("ERROR: [youtube] x: Sign in to confirm you\u{2019}re not a bot."));
         assert!(!is_bot_check("HTTP Error 403: Forbidden"));
+        assert!(!is_bot_check("ERROR: [youtube] x: Sign in to confirm your age."), "an age gate is the video's, not a bot check");
     }
 
     #[test]

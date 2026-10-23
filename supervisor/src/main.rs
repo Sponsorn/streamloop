@@ -511,6 +511,69 @@ const STALL: Duration = Duration::from_secs(10);
 const FILLER_BELOW_S: f64 = 2.0;
 
 impl Ctl {
+    #[allow(clippy::too_many_arguments)]
+    fn new(args: Args, settings: Settings, logs: Logs, tx: Sender<Msg>, shared: Arc<Shared>, yt: Arc<Ytdlp>, cache: PathBuf, jobs_tx: Sender<Job>, token: Arc<Mutex<TokenState>>, snapshot: api::Snapshot) -> Ctl {
+        let now = Instant::now();
+        Ctl {
+            snapshot,
+            deadline: args.dev.hours.map(|h| now + Duration::from_secs_f64(h * 3600.0)),
+            args,
+            playlist: String::new(),
+            playlist_wanted: true,
+            key_problem: config::stream_ready(&settings).err().map(|(_, reason)| reason),
+            waiting_for_key: config::stream_ready(&settings).is_err(),
+            playlist_problem: None,
+            playlist_probe: None,
+            settings,
+            logs,
+            tx,
+            shared,
+            yt,
+            cache,
+            videos: vec![],
+            seams: vec![],
+            enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false, speed: None, watch: media::WatchdogCfg::default() },
+            cpu: Cpu::default(),
+            watch: Watch::default(),
+            live: None,
+            metas: HashMap::new(),
+            feeder_seq: 0,
+            target: None,
+            resolved: HashMap::new(),
+            resolving: HashSet::new(),
+            refresh_after: now,
+            refresh_pending: None,
+            spare: None,
+            spare_due: None,
+            filler_since: None,
+            step_offset: BASE,
+            break_url: None,
+            jobs: jobs_tx,
+            downloading: None,
+            sizing: false,
+            dl_after: now,
+            token,
+            step: "none",
+            consecutive_skips: 0,
+            control_seq: 0,
+            ever_played: false,
+            stopping: false,
+            started_at: unix_ms(),
+            cache_bytes: 0,
+            max_cache: 0,
+            seam_rows: 0,
+            counts: HashMap::new(),
+            last_state: now,
+            last_buffer: now,
+            last_scan: now,
+            breaker: rules::Breaker::default(),
+            t0: now,
+            last_resolve: None,
+            probe_key: None,
+            fake_bot: false,
+        }
+    }
+
     fn count(&mut self, k: &'static str) {
         *self.counts.entry(k).or_default() += 1;
     }
@@ -1503,7 +1566,8 @@ impl Ctl {
             self.probe_key = None;
         }
         let reason = result.as_ref().err().cloned().unwrap_or_default();
-        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), true, probe, &reason);
+        let per_video = rules::is_video_unavailable(&reason);
+        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), !per_video, probe, &reason);
         if self.id(index) != id {
             return; // resolved across a playlist switch
         }
@@ -1516,6 +1580,15 @@ impl Ctl {
                         self.videos[index].dl_failed = true;
                         self.logs.csv("downloads", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason]);
                     }
+                    // The video itself will not play: the ladder skips it, breaker open or not.
+                    Purpose::Play | Purpose::Probe if per_video => match self.target.clone().filter(|t| t.index == index) {
+                        Some(t) => self.fail(index, t.pos, "unavailable", json!({"reason": reason})),
+                        // Not on air or next (the "prev" pre-resolve): skipped, so it is not asked for again.
+                        None => {
+                            self.videos[index].skipped = true;
+                            self.logs.event("warn", "skip", json!({"index": index, "id": self.id(index), "why": "unavailable", "detail": {"reason": reason}}));
+                        }
+                    },
                     // Not the video's fault while YouTube is off limits: no retry, no skip, the
                     // target waits (slate or a cached file) until the breaker closes.
                     Purpose::Play if self.breaker.open => {}
@@ -1936,65 +2009,7 @@ fn main() {
         std::process::exit(2);
     }
 
-    let now = Instant::now();
-    let mut ctl = Ctl {
-        snapshot,
-        deadline: args.dev.hours.map(|h| now + Duration::from_secs_f64(h * 3600.0)),
-        args,
-        playlist: String::new(),
-        playlist_wanted: true,
-        key_problem: config::stream_ready(&settings).err().map(|(_, reason)| reason),
-        waiting_for_key: config::stream_ready(&settings).is_err(),
-        playlist_problem: None,
-        playlist_probe: None,
-        settings,
-        logs,
-        tx,
-        shared,
-        yt,
-        cache,
-        videos: vec![],
-        seams: vec![],
-        enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false, speed: None, watch: media::WatchdogCfg::default() },
-        cpu: Cpu::default(),
-        watch: Watch::default(),
-        live: None,
-        metas: HashMap::new(),
-        feeder_seq: 0,
-        target: None,
-        resolved: HashMap::new(),
-        resolving: HashSet::new(),
-        refresh_after: now,
-        refresh_pending: None,
-        spare: None,
-        spare_due: None,
-        filler_since: None,
-        step_offset: BASE,
-        break_url: None,
-        jobs: jobs_tx,
-        downloading: None,
-        sizing: false,
-        dl_after: now,
-        token,
-        step: "none",
-        consecutive_skips: 0,
-        control_seq: 0,
-        ever_played: false,
-        stopping: false,
-        started_at: unix_ms(),
-        cache_bytes: 0,
-        max_cache: 0,
-        seam_rows: 0,
-        counts: HashMap::new(),
-        last_state: now,
-        last_buffer: now,
-        last_scan: now,
-        breaker: rules::Breaker::default(),
-        t0: now,
-        last_resolve: None,
-        probe_key: None,
-        fake_bot: false,
-    };
+    let mut ctl = Ctl::new(args, settings, logs, tx, shared, yt, cache, jobs_tx, token, snapshot);
     let p = &ctl.args.paths;
     ctl.logs.event("info", "start", json!({"target": config::target_url(&ctl.settings), "encoder": ctl.settings.encoder, "root": p.root, "data": p.data, "ffmpeg": p.ffmpeg, "deno": p.deno}));
     match config::stream_ready(&ctl.settings) {
@@ -2030,6 +2045,63 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A control loop over `ids` with no encoder, feeder or yt-dlp behind it; logs go to a temp folder.
+    fn test_ctl(name: &str, ids: &[&str]) -> Ctl {
+        let dir = std::env::temp_dir().join(format!("sl-ctl-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        let d = dir.to_string_lossy().into_owned();
+        let args = parse_args(&["--root".into(), d.clone(), "--data".into(), d]).unwrap();
+        let logs = Logs::new(dir.join("logs"), "");
+        let yt = Arc::new(Ytdlp::new(&args.paths, "web", None));
+        let shared = Arc::new(Shared { q: Mutex::new(Queue::new(1 << 20)), cv: Condvar::new() });
+        let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false }));
+        let (tx, _) = channel();
+        let (jobs, _) = channel();
+        let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
+        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0, silence_retried: false }).collect();
+        ctl
+    }
+
+    #[test]
+    fn an_unavailable_video_is_skipped_after_its_retries_without_opening_the_breaker() {
+        let mut ctl = test_ctl("unavailable", &["a", "b", "c"]);
+        ctl.set_target(0, 0.0, "coldstart", false);
+        let reason = "ERROR: [youtube] a: Private video. Sign in if you've been granted access to this video";
+
+        for _ in 0..3 {
+            ctl.on_resolved(0, "a", Purpose::Play, Err(reason.into()));
+        }
+
+        assert!(!ctl.breaker.open, "a private video opened the breaker");
+        assert!(ctl.videos[0].skipped);
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((1, "skip")), "the next video is not up");
+    }
+
+    #[test]
+    fn a_bot_check_on_a_play_resolve_still_opens_the_breaker_and_skips_nothing() {
+        let mut ctl = test_ctl("botcheck", &["a", "b"]);
+        ctl.set_target(0, 0.0, "coldstart", false);
+
+        ctl.on_resolved(0, "a", Purpose::Play, Err("ERROR: [youtube] a: Sign in to confirm you're not a bot".into()));
+
+        assert!(ctl.breaker.open);
+        assert!(!ctl.videos[0].skipped);
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(0), "the target waits for the breaker");
+    }
+
+    #[test]
+    fn an_unavailable_video_that_is_not_the_target_is_skipped_so_it_is_not_resolved_again() {
+        let mut ctl = test_ctl("unavailable-prev", &["a", "b", "c"]);
+        ctl.set_target(1, 0.0, "coldstart", false);
+
+        ctl.on_resolved(0, "a", Purpose::Play, Err("ERROR: [youtube] a: Video unavailable. This video has been removed by the uploader".into()));
+
+        assert!(ctl.videos[0].skipped);
+        assert_eq!(ctl.breaker.failures, 0);
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(1));
+    }
 
     fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {
         let r = Resolved { video: "v".into(), audio: "a".into(), headers: String::new(), duration: None, bytes: None, expire, available_at: None };
