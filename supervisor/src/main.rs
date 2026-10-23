@@ -205,6 +205,57 @@ fn playlist_action(first: bool, loaded: &str, fetched: &str, wanted: &str) -> Pl
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct KeyReload {
+    /// Shown in /status as streamKeyProblem until a reload brings a working key.
+    problem: Option<String>,
+    /// (level, kind) to log, once per streak of unusable keys.
+    event: Option<(&'static str, &'static str)>,
+    start_encoder: bool,
+}
+
+/// `waiting`: no encoder runs because of the key; `had_problem`: the last key was unusable too.
+fn key_after_reload(waiting: bool, had_problem: bool, ready: Result<(), (&'static str, String)>) -> KeyReload {
+    match ready {
+        Ok(()) => KeyReload { problem: None, event: None, start_encoder: waiting },
+        Err((kind, reason)) => KeyReload { problem: Some(reason), event: (!waiting && !had_problem).then_some(("warn", kind)), start_encoder: false },
+    }
+}
+
+/// The top of /status: state, why (for the states that wait on something), and the key problem.
+fn status_head(stopping: bool, waiting_for_key: bool, key_problem: Option<&str>, playlist_problem: Option<&str>, ever_played: bool, recovering: bool) -> Value {
+    let (state, reason) = if stopping {
+        ("stopping", None)
+    } else if waiting_for_key {
+        ("needs-stream-key", key_problem)
+    } else if playlist_problem.is_some() {
+        ("waiting-for-playlist", playlist_problem)
+    } else if !ever_played {
+        ("starting", None)
+    } else if recovering {
+        ("recovering", None)
+    } else {
+        ("playing", None)
+    };
+    json!({"state": state, "reason": reason, "streamKeyProblem": key_problem})
+}
+
+#[derive(Debug, PartialEq)]
+struct PlaylistFailure {
+    /// Fetch again through the breaker: only the first list, a switch keeps the old one.
+    refetch: bool,
+    /// Event level, once per failure streak of the first list.
+    event: Option<&'static str>,
+}
+
+fn playlist_failure(first: bool, streak: bool) -> PlaylistFailure {
+    match (first, streak) {
+        (true, false) => PlaylistFailure { refetch: true, event: Some("critical") },
+        (true, true) => PlaylistFailure { refetch: true, event: None },
+        (false, _) => PlaylistFailure { refetch: false, event: Some("warn") },
+    }
+}
+
 fn encoder_log_line(logs: &Logs, generation: u64, line: &str) {
     logs.append("encoder.log", &format!("{} [gen {generation}] {line}\n", iso_now()));
 }
@@ -304,8 +355,14 @@ struct Ctl {
     args: Args,
     /// What runs: a reload changes the live fields; ingest, key and encoder wait for a restart.
     settings: Settings,
-    /// Why the stream key cannot be used: no encoder runs until a reload brings a working one.
-    needs_key: Option<String>,
+    /// Why the configured stream key cannot be used; while streaming, the running key carries on.
+    key_problem: Option<String>,
+    /// No encoder runs until a reload brings a working key.
+    waiting_for_key: bool,
+    /// Why the first playlist fetch failed; it is fetched again through the breaker.
+    playlist_problem: Option<String>,
+    /// The playlist id whose in-flight fetch is the breaker's probe.
+    playlist_probe: Option<String>,
     /// The playlist id `videos` came from.
     playlist: String,
     playlist_wanted: bool,
@@ -731,10 +788,14 @@ impl Ctl {
             self.shutdown();
         }
         // The playlist fetch is a YouTube call too: same spacing, never past an open breaker.
-        if self.playlist_wanted && !self.breaker.open && self.youtube_slot().is_some() {
+        // With no list yet, the fetch is also the open breaker's probe.
+        if let Some(probe) = self.playlist_wanted.then(|| self.youtube_slot()).flatten() {
             self.playlist_wanted = false;
             self.last_resolve = Some(Instant::now());
             let (yt, l, tx, id) = (self.yt.clone(), self.logs.clone(), self.tx.clone(), self.settings.playlist_id.clone());
+            if probe {
+                self.playlist_probe = Some(id.clone());
+            }
             std::thread::spawn(move || {
                 let result = yt.playlist(&format!("https://www.youtube.com/playlist?list={id}"), &l);
                 let _ = tx.send(Msg::Playlist(id, result));
@@ -1043,26 +1104,41 @@ impl Ctl {
     }
 
     fn on_playlist(&mut self, id: String, result: Result<Vec<Entry>, String>) {
-        let reason = result.as_ref().err().cloned().unwrap_or_default();
-        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), false, false, &reason);
-        let first = match playlist_action(self.videos.is_empty(), &self.playlist, &id, &self.settings.playlist_id) {
-            PlaylistAction::Drop => return,
-            action => action == PlaylistAction::Load,
+        let (mut entries, mut reason) = match result {
+            Ok(e) => (e, String::new()),
+            Err(r) => (vec![], r),
         };
-        let mut entries = result.unwrap_or_default();
         entries.drain(..self.args.dev.start.min(entries.len()));
         if self.args.dev.max_videos > 0 {
             entries.truncate(self.args.dev.max_videos);
         }
+        if entries.is_empty() && reason.is_empty() {
+            reason = "the playlist has no entries (after --start/--max-videos)".into();
+        }
+        // An empty list counts as a failure too, or a refetch would run every 5 s.
+        let probe = self.playlist_probe.as_ref() == Some(&id);
+        if probe {
+            self.playlist_probe = None;
+        }
+        self.breaker_result(!entries.is_empty(), rules::is_bot_check(&reason), true, probe, &reason);
+        let first = match playlist_action(self.videos.is_empty(), &self.playlist, &id, &self.settings.playlist_id) {
+            PlaylistAction::Drop => return,
+            action => action == PlaylistAction::Load,
+        };
         if entries.is_empty() {
-            let reason = if reason.is_empty() { "no entries after --start/--max-videos".into() } else { reason };
-            if first {
-                self.logs.event("critical", "playlist-failed", json!({"playlistId": id, "reason": reason}));
-                return self.shutdown_code(2);
+            let f = playlist_failure(first, self.playlist_problem.is_some());
+            if let Some(level) = f.event {
+                // a switch keeps playing the old list
+                self.logs.event(level, "playlist-failed", json!({"playlistId": id, "reason": reason, "playing": self.playlist, "refetch": f.refetch}));
             }
-            // keep playing the old list
-            self.logs.event("warn", "playlist-failed", json!({"playlistId": id, "reason": reason, "playing": self.playlist}));
+            if f.refetch {
+                self.playlist_problem = Some(reason);
+                self.playlist_wanted = true;
+            }
             return;
+        }
+        if self.playlist_problem.take().is_some() {
+            self.logs.event("info", "playlist-recovered", json!({"playlistId": id}));
         }
         self.logs.append("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
         let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
@@ -1118,7 +1194,7 @@ impl Ctl {
             (new.stream_key, new.key_error) = (old.stream_key.clone(), old.key_error.clone());
         }
         let plan = config::reload_plan(old, &new);
-        let waiting = self.needs_key.is_some();
+        let waiting = self.waiting_for_key;
         let running = if waiting { new } else { Settings { ingest_url: old.ingest_url.clone(), stream_key: old.stream_key.clone(), encoder: old.encoder.clone(), ..new } };
         if running.read_ahead_seconds != old.read_ahead_seconds {
             self.shared.q.lock().unwrap().ahead = ticks(running.read_ahead_seconds);
@@ -1132,15 +1208,17 @@ impl Ctl {
         }
         self.settings = running;
         let restart = !waiting && plan == config::Reload::Restart;
-        let problem = ready.err().map(|(_, reason)| reason);
-        self.logs.event("info", "reload", json!({"plan": format!("{plan:?}"), "restartRequired": restart, "playlistSwitch": switch, "streamKeyProblem": problem}));
-        if waiting {
-            self.needs_key = problem.clone();
-            if self.needs_key.is_none() {
-                self.start_encoder();
-            }
+        let key = key_after_reload(waiting, self.key_problem.is_some(), ready);
+        self.logs.event("info", "reload", json!({"plan": format!("{plan:?}"), "restartRequired": restart, "playlistSwitch": switch, "streamKeyProblem": key.problem}));
+        if let (Some((level, kind)), Some(reason)) = (key.event, &key.problem) {
+            self.logs.event(level, kind, json!({"reason": reason, "running": "the running key carries on until the supervisor restarts"}));
         }
-        Ok(json!({"applied": true, "restartRequired": restart, "streamKeyProblem": problem}))
+        self.key_problem = key.problem.clone();
+        if key.start_encoder {
+            self.waiting_for_key = false;
+            self.start_encoder();
+        }
+        Ok(json!({"applied": true, "restartRequired": restart, "streamKeyProblem": key.problem}))
     }
 
     fn on_resolved(&mut self, index: usize, id: &str, purpose: Purpose, result: Result<Resolved, String>) {
@@ -1239,24 +1317,19 @@ impl Ctl {
 
     fn status(&self) -> Value {
         let (index, pos, source) = self.view();
-        let state = if self.stopping {
-            "stopping"
-        } else if self.needs_key.is_some() {
-            "needs-stream-key"
-        } else if !self.ever_played {
-            "starting"
-        } else if self.enc.child.is_none() || self.step != "none" {
-            "recovering"
-        } else {
-            "playing"
-        };
+        let mut head = status_head(
+            self.stopping,
+            self.waiting_for_key,
+            self.key_problem.as_deref(),
+            self.playlist_problem.as_deref().filter(|_| self.videos.is_empty()),
+            self.ever_played,
+            self.enc.child.is_none() || self.step != "none",
+        );
         let v = self.videos.get(index);
         // One lock per statement: json! keeps its temporaries (and their guards) alive to the end.
         let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
         let generation = self.shared.q.lock().unwrap().generation;
-        json!({
-            "state": state,
-            "reason": self.needs_key,
+        let mut body = json!({
             "playing": {"index": index, "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration)},
             "timeline": secs(self.view_timeline()),
             "readAheadSeconds": (self.read_ahead() * 100.0).round() / 100.0,
@@ -1267,7 +1340,11 @@ impl Ctl {
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
             "playlistCount": self.n(),
             "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures},
-        })
+        });
+        if let (Some(h), Some(b)) = (head.as_object_mut(), body.as_object_mut()) {
+            h.append(b);
+        }
+        head
     }
 
     fn control(&mut self, cmd: &str, index: Option<i64>) -> Result<Value, String> {
@@ -1563,7 +1640,10 @@ fn main() {
         args,
         playlist: String::new(),
         playlist_wanted: true,
-        needs_key: config::stream_ready(&settings).err().map(|(_, reason)| reason),
+        key_problem: config::stream_ready(&settings).err().map(|(_, reason)| reason),
+        waiting_for_key: config::stream_ready(&settings).is_err(),
+        playlist_problem: None,
+        playlist_probe: None,
         settings,
         logs,
         tx,
@@ -1668,6 +1748,41 @@ mod tests {
         assert_eq!(written, "before live_OLD_1
 old *** new ***
 ");
+    }
+
+    #[test]
+    fn a_bad_key_on_reload_while_streaming_warns_once_and_stays_visible() {
+        let unreadable = || Err(("stream-key-unreadable", "cannot decrypt".to_string()));
+        assert_eq!(
+            key_after_reload(false, false, unreadable()),
+            KeyReload { problem: Some("cannot decrypt".into()), event: Some(("warn", "stream-key-unreadable")), start_encoder: false }
+        );
+        assert_eq!(key_after_reload(false, true, unreadable()).event, None, "one warning per streak");
+        assert_eq!(key_after_reload(false, true, unreadable()).problem.as_deref(), Some("cannot decrypt"));
+        assert_eq!(key_after_reload(false, true, Ok(())), KeyReload { problem: None, event: None, start_encoder: false });
+        // needs-stream-key: the startup event was the one; a working key starts the encoder
+        assert_eq!(key_after_reload(true, true, Err(("stream-key-missing", "none".into()))).event, None);
+        assert_eq!(key_after_reload(true, true, Ok(())), KeyReload { problem: None, event: None, start_encoder: true });
+    }
+
+    #[test]
+    fn status_shows_the_key_problem_and_what_it_waits_for() {
+        let head = status_head(false, false, Some("cannot decrypt"), None, true, false);
+        assert_eq!(head, json!({"state": "playing", "reason": null, "streamKeyProblem": "cannot decrypt"}));
+        let head = status_head(false, true, Some("missing"), None, false, true);
+        assert_eq!(head, json!({"state": "needs-stream-key", "reason": "missing", "streamKeyProblem": "missing"}));
+        let head = status_head(false, false, None, Some("no such playlist"), false, false);
+        assert_eq!(head, json!({"state": "waiting-for-playlist", "reason": "no such playlist", "streamKeyProblem": null}));
+        assert_eq!(status_head(false, false, None, None, false, false)["state"], "starting");
+        assert_eq!(status_head(false, false, None, None, true, true)["state"], "recovering");
+        assert_eq!(status_head(true, true, Some("x"), None, true, false)["state"], "stopping");
+    }
+
+    #[test]
+    fn a_failed_first_playlist_fetch_is_retried_and_reported_once() {
+        assert_eq!(playlist_failure(true, false), PlaylistFailure { refetch: true, event: Some("critical") });
+        assert_eq!(playlist_failure(true, true), PlaylistFailure { refetch: true, event: None });
+        assert_eq!(playlist_failure(false, false), PlaylistFailure { refetch: false, event: Some("warn") });
     }
 
     #[test]
