@@ -490,6 +490,8 @@ struct Ctl {
     consecutive_skips: u32,
     /// Every video skipped: the target waits on the slate for a while before trying again.
     hold: rules::SkipHold,
+    /// Videos in a row whose download failed for good.
+    dl_fail_streak: u32,
     control_seq: u64,
     ever_played: bool,
     stopping: bool,
@@ -510,6 +512,8 @@ struct Ctl {
 }
 
 const STALL: Duration = Duration::from_secs(10);
+/// Videos in a row whose download failed for good before it is a critical event (once per streak).
+const DOWNLOAD_FAILS_CRITICAL: u32 = 3;
 const FILLER_BELOW_S: f64 = 2.0;
 
 impl Ctl {
@@ -558,6 +562,7 @@ impl Ctl {
             step: "none",
             consecutive_skips: 0,
             hold: rules::SkipHold::default(),
+            dl_fail_streak: 0,
             control_seq: 0,
             ever_played: false,
             stopping: false,
@@ -1434,6 +1439,7 @@ impl Ctl {
                     v.disk_bytes = bytes;
                     v.bytes = Some(bytes);
                     v.dl_attempts = 0;
+                    self.dl_fail_streak = 0;
                     "done"
                 } else {
                     v.dl_attempts += 1;
@@ -1446,6 +1452,15 @@ impl Ctl {
                         "retry"
                     }
                 };
+                if result == "skip" {
+                    // A video that cannot be downloaded plays from its URL; many in a row is systemic
+                    // (the merge, the token server, a player client) and needs a human.
+                    self.dl_fail_streak += 1;
+                    self.logs.event("warn", "download-failed", json!({"index": index, "id": self.id(index), "reason": reason, "inARow": self.dl_fail_streak}));
+                    if self.dl_fail_streak == DOWNLOAD_FAILS_CRITICAL {
+                        self.logs.event("critical", "downloads-failing", json!({"inARow": self.dl_fail_streak, "reason": reason}));
+                    }
+                }
                 let attempt = self.videos[index].dl_attempts;
                 self.logs.csv("downloads", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason]);
             }
@@ -2172,6 +2187,32 @@ mod tests {
         ctl.encoder_down("test");
 
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((2, "control")));
+    }
+
+    /// (level, kind) of every event the test control loop logged.
+    fn events(ctl: &Ctl) -> Vec<(String, String)> {
+        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("events-"));
+        file.map_or(String::new(), |f| std::fs::read_to_string(f.path()).unwrap()).lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).map(|v| (v["level"].as_str().unwrap().to_string(), v["kind"].as_str().unwrap().to_string())).collect()
+    }
+
+    #[test]
+    fn a_failed_download_is_an_event_and_three_in_a_row_are_critical() {
+        let mut ctl = test_ctl("dl-failed", &["a", "b", "c", "d"]);
+        let fail = |ctl: &mut Ctl, index: usize, id: &str| {
+            for _ in 0..2 {
+                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into() });
+            }
+        };
+
+        fail(&mut ctl, 0, "a");
+        fail(&mut ctl, 1, "b");
+        fail(&mut ctl, 2, "c");
+        fail(&mut ctl, 3, "d");
+
+        let ev = events(&ctl);
+        let count = |level: &str, kind: &str| ev.iter().filter(|(l, k)| l == level && k == kind).count();
+        assert_eq!(count("warn", "download-failed"), 4, "{ev:?}");
+        assert_eq!(count("critical", "downloads-failing"), 1, "{ev:?}");
     }
 
     fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {
