@@ -10,6 +10,8 @@ const MARGIN: u32 = 24;
 const TITLE_SIZE: u32 = 28;
 const PROGRESS_SIZE: u32 = 22;
 const BAR_H: u32 = 6;
+const LABEL: &str = "NOT LIVE";
+const LABEL_SIZE: u32 = 22;
 /// Average Malgun Gothic glyph width as a fraction of font size (tuned in spike 3).
 const CHAR_WIDTH_RATIO: f64 = 0.55;
 const LINE_HEIGHT_RATIO: f64 = 1.3;
@@ -72,11 +74,16 @@ fn text_clause(file: &Path, size: u32, y: u32, expand: bool) -> String {
 /// The overlay stage: reads the normalised picture as `[norm]`, writes `[outv]`. The track is a
 /// drawbox; the fill is a `color=` source slid in from the left by an `overlay` x expression
 /// (drawbox's width is fixed at init). Only that stage needs `shortest=1`: `color=` never ends.
-fn script(title_file: &Path, progress_file: Option<&Path>, duration: Option<f64>, start_pos: f64) -> String {
+fn script(title_file: &Path, label_file: &Path, progress_file: Option<&Path>, duration: Option<f64>, start_pos: f64) -> String {
     let h = |size: u32| (size as f64 * LINE_HEIGHT_RATIO).round() as u32;
     let total = h(TITLE_SIZE) + if progress_file.is_some() { STACK_GAP + h(PROGRESS_SIZE) } else { 0 };
     let title_y = FRAME_H - MARGIN - total;
     let mut text = vec![text_clause(title_file, TITLE_SIZE, title_y, false)];
+    // Top-right, white on red@0.8, always shown (2.x's overlay and spike 3 show the same label).
+    text.push(format!(
+        "drawtext=fontfile='{}':textfile='{}':expansion=none:fontsize={LABEL_SIZE}:fontcolor=white:x=main_w-text_w-{MARGIN}:y={MARGIN}:box=1:boxcolor=red@0.8:boxborderw=10",
+        escape_path(Path::new(FONT)), escape_path(label_file)
+    ));
     if let Some(p) = progress_file {
         text.push(text_clause(p, PROGRESS_SIZE, title_y + h(TITLE_SIZE) + STACK_GAP, true));
     }
@@ -94,6 +101,8 @@ pub fn prepare(title: &str, duration: Option<f64>, start_pos: f64, dir: &Path) -
     std::fs::create_dir_all(dir)?;
     let title_file = dir.join("title.txt");
     std::fs::write(&title_file, truncate_text(&strip_emoji(title), TITLE_SIZE, FRAME_W - 2 * MARGIN))?;
+    let label_file = dir.join("label.txt");
+    std::fs::write(&label_file, LABEL)?;
     let duration = duration.filter(|d| *d > 0.0);
     let progress_file = match duration {
         Some(d) => {
@@ -104,7 +113,7 @@ pub fn prepare(title: &str, duration: Option<f64>, start_pos: f64, dir: &Path) -
         None => None,
     };
     let path = dir.join("overlay.fc");
-    std::fs::write(&path, script(&title_file, progress_file.as_deref(), duration, start_pos))?;
+    std::fs::write(&path, script(&title_file, &label_file, progress_file.as_deref(), duration, start_pos))?;
     Ok(path)
 }
 
@@ -176,6 +185,10 @@ mod tests {
         assert!(s.contains("fontfile='C\\:/Windows/Fonts/malgun.ttf'"));
         assert_eq!(s.matches("shortest=1").count(), 1, "only the color= stage");
         assert!(s.contains("expansion=none"));
+        // the NOT LIVE label: top-right, white on red@0.8, from its own text file
+        assert_eq!(std::fs::read_to_string(dir.join("label.txt")).unwrap(), "NOT LIVE");
+        let label = s.split(',').find(|c| c.contains("label.txt")).unwrap();
+        assert!(label.contains("x=main_w-text_w-24:y=24") && label.contains("fontsize=22") && label.contains("boxcolor=red@0.8"), "{label}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -184,8 +197,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sl-overlay-nodur-{}", std::process::id()));
         let path = prepare("t", None, 0.0, &dir).unwrap();
         let s = std::fs::read_to_string(&path).unwrap();
-        assert!(!s.contains("progress.txt") && !s.contains("overlay=") && !s.contains("color=red"));
+        assert!(!s.contains("progress.txt") && !s.contains("overlay=") && !s.contains("c=red:s="));
         assert!(s.starts_with("[norm]drawtext=") && s.ends_with("[outv]"));
+        assert!(s.contains("label.txt"), "the label shows without a duration too");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
