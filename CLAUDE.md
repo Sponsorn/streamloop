@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - A change to process boundaries, the Node↔supervisor interface, the ffmpeg pipeline shape, the update/launch mechanism or an external integration updates `ARCHITECTURE.md` in the same commit.
 - When a 3.0 part moves from `spikes/` to `src/`, update its proven/design marking there.
-- Decisions and their reasoning go on the Notion pages, not in the repo; `ARCHITECTURE.md` links to them.
+- Decisions and their reasoning go on the Notion pages, not in the repo; `ARCHITECTURE.md` names those pages, never links to them.
 
 ## Project Overview
 

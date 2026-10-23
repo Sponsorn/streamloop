@@ -1,6 +1,6 @@
 # Architecture
 
-How the parts fit. Direction, decisions and spike results live in Notion (see the end); this file is structure only.
+How the parts fit. Direction, decisions and spike results live in the Notion pages named at the end; this file is structure only.
 
 ## What it is
 
@@ -115,6 +115,6 @@ Green is proven by a spike, amber is proven only in part, red is design.
 
 ## Where things live
 
-- **Notion** for direction, decisions and spike results: *Streamloop* (product direction, 2.x roadmap) and *Streamloop 3.0: pipeline spikes* (rules, spike verdicts). Fragile assumptions are tracked in the **watch list** at the bottom of the 3.0 page.
+- **Notion** for direction, decisions and spike results: the Notion page *Streamloop* (product direction, 2.x roadmap), *Streamloop 3.0: pipeline spikes* (rules, spike verdicts) and *Streamloop 3.0: product build* (build plan). Fragile assumptions are tracked in the **watch list** at the bottom of the 3.0 spikes page.
 - **GitHub issues** for bugs: [Sponsorn/streamloop/issues](https://github.com/Sponsorn/streamloop/issues).
 - **This file** for structure. Code-level detail stays in `CLAUDE.md` and the code.
