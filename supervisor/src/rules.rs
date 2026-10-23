@@ -349,6 +349,11 @@ impl SkipHold {
     }
 }
 
+/// The `streak`-th feeder spawn failure in a row: (log an event?, seconds before the next try).
+pub fn feeder_spawn_failed(streak: u32) -> (bool, u64) {
+    (streak == 1, [1, 2, 5, 10][(streak.max(1) as usize - 1).min(3)])
+}
+
 pub fn encoder_backoff_s(failures: u32) -> u64 {
     [2, 5, 10, 30, 60][(failures as usize).min(4)]
 }
@@ -572,6 +577,13 @@ mod tests {
         h.healthy();
         assert_eq!(h.trip(0.0), 60.0, "healthy play resets the backoff");
         assert!(h.holding(59.0) && !h.holding(60.0));
+    }
+
+    #[test]
+    fn a_feeder_that_will_not_spawn_is_logged_once_and_retried_with_a_backoff() {
+        let got: Vec<(bool, u64)> = (1..=6).map(feeder_spawn_failed).collect();
+
+        assert_eq!(got, [(true, 1), (false, 2), (false, 5), (false, 10), (false, 10), (false, 10)]);
     }
 
     #[test]

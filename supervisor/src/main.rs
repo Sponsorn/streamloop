@@ -492,6 +492,9 @@ struct Ctl {
     hold: rules::SkipHold,
     /// Videos in a row whose download failed for good.
     dl_fail_streak: u32,
+    /// Feeder spawn failures in a row, and when the next spawn may run.
+    feeder_fails: u32,
+    feeder_after: Instant,
     control_seq: u64,
     ever_played: bool,
     stopping: bool,
@@ -563,6 +566,8 @@ impl Ctl {
             consecutive_skips: 0,
             hold: rules::SkipHold::default(),
             dl_fail_streak: 0,
+            feeder_fails: 0,
+            feeder_after: now,
             control_seq: 0,
             ever_played: false,
             stopping: false,
@@ -686,10 +691,22 @@ impl Ctl {
         let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
-                self.logs.event("critical", "feeder-spawn-failed", json!({"error": e.to_string()}));
+                self.feeder_fails += 1;
+                let (log, wait) = rules::feeder_spawn_failed(self.feeder_fails);
+                if log {
+                    self.logs.event("critical", "feeder-spawn-failed", json!({"error": e.to_string(), "index": index, "source": source.name()}));
+                }
+                self.feeder_after = Instant::now() + Duration::from_secs(wait);
+                // The video waits for the next try instead of being lost; a slate is started when needed anyway.
+                if !filler {
+                    self.target = Some(Target { index, pos, reason, gated: false });
+                }
                 return;
             }
         };
+        if std::mem::take(&mut self.feeder_fails) > 0 {
+            self.logs.event("info", "feeder-spawn-recovered", json!({"index": index, "source": source.name()}));
+        }
         let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
         let child = Arc::new(Mutex::new(child));
         self.shared.q.lock().unwrap().live = Some(Live { seq, last_pts: None, frames: 0, last_push: Instant::now(), blocked: false });
@@ -1143,7 +1160,7 @@ impl Ctl {
                     self.request_resolve(t.index, Purpose::Play);
                 }
                 let gate_open = !t.gated || self.read_ahead() < self.settings.read_ahead_seconds;
-                if gate_open && (on_disk || self.url_ready(t.index)) {
+                if gate_open && now >= self.feeder_after && (on_disk || self.url_ready(t.index)) {
                     let source = if on_disk { Source::File } else { Source::Url };
                     self.cut_filler(rules::cut_margin(&source, t.pos));
                     self.target = None;
@@ -1153,7 +1170,7 @@ impl Ctl {
         }
 
         // Nothing to feed and the pipe running dry: the slate covers it.
-        if self.live.is_none() && self.read_ahead() < FILLER_BELOW_S {
+        if self.live.is_none() && self.read_ahead() < FILLER_BELOW_S && now >= self.feeder_after {
             let (index, pos, reason) = self.target.as_ref().map_or((self.view().0, 0.0, "coldstart"), |t| (t.index, t.pos, t.reason));
             self.start_feeder(index, Source::Slate, pos, reason, true);
         }
@@ -2213,6 +2230,21 @@ mod tests {
         let count = |level: &str, kind: &str| ev.iter().filter(|(l, k)| l == level && k == kind).count();
         assert_eq!(count("warn", "download-failed"), 4, "{ev:?}");
         assert_eq!(count("critical", "downloads-failing"), 1, "{ev:?}");
+    }
+
+    #[test]
+    fn a_feeder_that_will_not_spawn_logs_once_backs_off_and_keeps_its_target() {
+        // test_ctl's root has no ffmpeg
+        let mut ctl = test_ctl("spawn-failed", &["a", "b"]);
+
+        for _ in 0..5 {
+            ctl.start_feeder(1, Source::File, 30.0, "normal", false);
+        }
+
+        let critical = events(&ctl).iter().filter(|(l, k)| l == "critical" && k == "feeder-spawn-failed").count();
+        assert_eq!(critical, 1, "one event per failure streak");
+        assert!(ctl.feeder_after > Instant::now(), "the respawn is not backed off");
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 30.0, "normal")), "the video to feed was lost");
     }
 
     fn spare(index: usize, id: &str, expire: Option<u64>) -> Option<Spare> {
