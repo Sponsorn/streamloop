@@ -101,3 +101,28 @@ describe('OBSClient start guard (3.0 streaming on the same PC)', () => {
     }
   });
 });
+
+describe('OBSClient after a guard-blocked restart', () => {
+  it('does not report the later start as a successful restart', async () => {
+    vi.useFakeTimers();
+    try {
+      // Arrange: a drop while 3.0 streams, so the scheduled restart is refused
+      let blocked = true;
+      const config = { ...makeConfig(), obsAutoStream: true };
+      const { client } = streamingClient(config, () => blocked);
+      (client as any).isPlayerHealthy = () => true;
+      const restarts: number[] = [];
+      client.onStreamRestart((attempts) => restarts.push(attempts));
+      (client as any).handleStreamStateChanged({ outputActive: false, outputState: 'OBS_WEBSOCKET_OUTPUT_STOPPED' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      // Act: 3.0 stops and the health check's start succeeds
+      blocked = false;
+      await client.startStreaming();
+      (client as any).handleStreamStateChanged({ outputActive: true, outputState: 'OBS_WEBSOCKET_OUTPUT_STARTED' });
+      // Assert
+      expect(restarts).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

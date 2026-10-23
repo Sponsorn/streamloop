@@ -273,8 +273,9 @@ export class OBSClient {
           this.streamRestartAttempts = 0;
           return;
         }
-        // The 30 s health check retries once the guard clears, so no reschedule here.
-        if (!(await this.startAllowed())) return;
+        // The 30 s health check retries once the guard clears, so no reschedule here, and the
+        // count resets so that later start is not reported as a successful restart.
+        if (!(await this.startAllowed())) { this.streamRestartAttempts = 0; return; }
         logger.info({ attempt: this.streamRestartAttempts }, 'Attempting to restart stream');
         await this.obs.call('StartStream');
         // StreamStateChanged event will fire and handle success/failure
