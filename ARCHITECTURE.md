@@ -110,6 +110,8 @@ Green is proven by a spike, amber is proven only in part, red is design.
 - State is not written while a recovery or switch is in progress, so a transient position cannot overwrite the resume point.
 - Media bytes never pass through a loop that also does disk writes or control work, and a critical output is never teed synchronously with a non-critical one. (Spike 1 lessons)
 - The supervisor is a sibling of Node, not its child: Node restarts and app updates must not drop the stream.
+- 2.x (from 2.3.7) will not start its OBS stream while `GET 127.0.0.1:4417/status` reports `encoder.alive: true`, so 3.0 must keep that endpoint and field. The check fails open: anything else lets 2.x stream (`src/server/stream-guard.ts`).
+- 2.x (from 2.3.7) only updates to releases with its own major version; 3.x releases are never marked "latest" on GitHub, because older 2.x installs still read it.
 
 ## Where things live
 

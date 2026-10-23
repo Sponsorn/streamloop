@@ -28,6 +28,9 @@ export class OBSClient {
   private onStreamRestartFailedCallback: (() => void) | null = null;
   private streamCheckTimer: ReturnType<typeof setInterval> | null = null;
   private isPlayerHealthy: (() => boolean) | null = null;
+  private startGuard: (() => Promise<boolean>) | null = null;
+  private onStartBlockedCallback: ((blocked: boolean) => void) | null = null;
+  private startBlocked = false;
 
   // Stream restart backoff state
   private streamRestartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -196,6 +199,20 @@ export class OBSClient {
   onStreamRestart(cb: (attempts: number) => void) { this.onStreamRestartCallback = cb; }
   onStreamRestartFailed(cb: () => void) { this.onStreamRestartFailedCallback = cb; }
   isConnected(): boolean { return this.connected; }
+  /** The guard returns true while starting a stream must be refused. */
+  setStartGuard(guard: () => Promise<boolean>): void { this.startGuard = guard; }
+  /** Called when the refusal starts (true) and when it clears (false), not on every check. */
+  onStartBlocked(cb: (blocked: boolean) => void): void { this.onStartBlockedCallback = cb; }
+
+  private async startAllowed(): Promise<boolean> {
+    const blocked = (await this.startGuard?.()) ?? false;
+    if (blocked) logger.warn('3.0 is streaming; not starting the 2.x stream');
+    if (blocked !== this.startBlocked) {
+      this.startBlocked = blocked;
+      this.onStartBlockedCallback?.(blocked);
+    }
+    return !blocked;
+  }
 
   private handleStreamStateChanged(event: { outputActive: boolean; outputState: string }) {
     logger.info({ outputState: event.outputState, outputActive: event.outputActive }, 'OBS stream state changed');
@@ -256,6 +273,8 @@ export class OBSClient {
           this.streamRestartAttempts = 0;
           return;
         }
+        // The 30 s health check retries once the guard clears, so no reschedule here.
+        if (!(await this.startAllowed())) return;
         logger.info({ attempt: this.streamRestartAttempts }, 'Attempting to restart stream');
         await this.obs.call('StartStream');
         // StreamStateChanged event will fire and handle success/failure
@@ -467,6 +486,7 @@ export class OBSClient {
         return false;
       }
 
+      if (!(await this.startAllowed())) return false;
       // All checks passed — start streaming
       await this.obs.call('StartStream');
       logger.info('Auto-started OBS stream');
