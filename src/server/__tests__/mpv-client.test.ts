@@ -135,6 +135,8 @@ describe('MpvClient', () => {
 
       // Start a server on that pipe after 600ms (first retry at 500ms will fail, second at 1000ms should succeed)
       const delayedServer = createMockPipeServer();
+      let delayedSocket: net.Socket | null = null;
+      delayedServer.on('connection', (socket) => { delayedSocket = socket; });
       setTimeout(async () => {
         await listenOnPipe(delayedServer, closedPipe);
       }, 800);
@@ -143,6 +145,10 @@ describe('MpvClient', () => {
       expect(c.isConnected()).toBe(true);
 
       c.disconnect();
+      // The client writes request_log_messages on connect. Nothing reads it on
+      // this side, so the socket never sees the client's EOF and close() would
+      // wait on it forever.
+      delayedSocket?.destroy();
       await new Promise<void>((resolve) => delayedServer.close(() => resolve()));
     });
 
