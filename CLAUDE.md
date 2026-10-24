@@ -103,7 +103,7 @@ Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` dire
 
 ## Platform Notes
 
-Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) bundles portable Node.js v22.12.0 win-x64, mpv, and yt-dlp + deno (deno solves YouTube's n-param JS challenge) into a standalone ZIP. mpv.exe must be placed in `build/mpv/` before running the full build. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
+Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) bundles portable Node.js v22.23.4 win-x64, mpv, and yt-dlp + deno (deno solves YouTube's n-param JS challenge) into a standalone ZIP. mpv.exe must be placed in `build/mpv/` before running the full build. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
 
 ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` in tsconfig).
 
