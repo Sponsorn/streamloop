@@ -470,6 +470,20 @@ describe('API on the supervisor', () => {
     expect(h.deps.triggerRestart).toHaveBeenCalledOnce();
   });
 
+  it('refuses the exit-75 test hook without the API token', async () => {
+    // Arrange
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    await listen({ ...h.deps, testHooks: true });
+
+    // Act
+    const res = await fetch(base + '/test/exit-75', { method: 'POST' });
+
+    // Assert
+    expect(res.status).toBe(403);
+    expect(h.deps.triggerRestart).not.toHaveBeenCalled();
+  });
+
   it.each(['/player/seek', '/player/pause', '/player/stop', '/player/resume', '/player/restart-mpv', '/obs-path/detect'])(
     'no longer serves POST %s', async (path) => {
       expect((await post(path)).status).toBe(404);
