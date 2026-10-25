@@ -89,9 +89,8 @@ if %ERRORLEVEL% equ 75 (
         if not exist "%ROOT%app" (
             move "%ROOT%_update_tmp\app" "%ROOT%app"
             if exist "%ROOT%app\src\server\index.ts" (
-                rem Carry over config and state from old app. The server already flushed them.
+                rem Carry over config and logs from old app. Playback state lives in data, outside app.
                 if exist "%ROOT%_update_old\config.json" copy /y "%ROOT%_update_old\config.json" "%ROOT%app\config.json" >nul
-                if exist "%ROOT%_update_old\state.json" copy /y "%ROOT%_update_old\state.json" "%ROOT%app\state.json" >nul
                 if exist "%ROOT%_update_old\logs" xcopy "%ROOT%_update_old\logs" "%ROOT%app\logs\" /E /I /Y >nul 2>nul
                 rem Stage the new launcher only if it actually differs - never
                 rem overwrite the running script in place. A .bat that replaces
@@ -113,6 +112,7 @@ if %ERRORLEVEL% equ 75 (
             )
         ) else (
             echo [ERROR] Failed to rename old app directory, aborting update.
+            if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
         )
     )
 

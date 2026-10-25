@@ -86,6 +86,15 @@ describe('START.bat', () => {
     expect(text).toContain('xcopy "%ROOT%_update_old\\logs" "%ROOT%app\\logs\\"');
   });
 
+  it('carries no state.json from the old app, since 3.0 keeps state in data', () => {
+    expect(lines.join('\n')).not.toContain('state.json');
+  });
+
+  it('drops the staged app when every rename fails, so a later exit 75 cannot swap it in', () => {
+    const abort = lines.findIndex((l) => l.includes('Failed to rename old app directory'));
+    expect(lines[abort + 1].trim()).toBe('if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul');
+  });
+
   it('never swaps yt-dlp or node, which the supervisor and token server hold', () => {
     const text = lines.join('\n');
     expect(text).not.toMatch(/_update_tmp\\(yt-dlp|node)|_update_old_(ytdlp|node)/);

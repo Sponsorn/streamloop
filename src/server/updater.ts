@@ -77,8 +77,8 @@ export function stageUpdate(extractDir: string, tmpDir: string): void {
     throw new Error('Could not find app/ directory in update archive');
   }
 
-  // config.json and state.json are copied by START.bat after the server exits,
-  // so late config changes and the final flushed state are preserved.
+  // config.json and logs\ are copied by START.bat after the server exits,
+  // so late config changes are preserved.
 
   // START.bat never replaces itself in place; it stages this copy as START.bat.new.
   const newStartBat = join(root, 'START.bat');
