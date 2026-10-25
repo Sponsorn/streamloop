@@ -4,9 +4,11 @@ How the parts fit. Direction, decisions and spike results live in the Notion pag
 
 ## What it is
 
-Streamloop restreams a YouTube playlist to Twitch around the clock from one Windows box. Two generations sit in this repo. **2.x** (`src/`) is live: a Node/TypeScript backend plays the playlist in mpv and drives OBS, which captures the mpv window and streams. **3.0** is in progress: a headless ffmpeg pipeline under a Rust supervisor, with no mpv, OBS or desktop session. The supervisor is product code in `supervisor/` (hardened from spike 5); `spikes/` keeps the spikes that proved it. The 2.x Node backend is meant to stay and drive the supervisor over local HTTP.
+Streamloop restreams a YouTube playlist to Twitch around the clock from one Windows box. This branch holds **3.0**: a headless ffmpeg pipeline under a Rust supervisor (`supervisor/`), with no mpv, OBS or desktop session, driven over local HTTP by the Node/TypeScript backend in `src/`. Node owns the config, the dashboard, Discord alerts, the Twitch checks and the updater, and launches the supervisor. `spikes/` keeps the spikes that proved the pipeline. **2.x**, the live release (mpv and OBS), lives on the `2.x` branch.
 
-## 2.x today
+## 2.x (the `2.x` branch)
+
+This section describes the `2.x` branch. None of these mpv or OBS modules exist in `src/` on this branch.
 
 ```mermaid
 flowchart LR
@@ -54,8 +56,10 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    NODE["Node backend (2.x src/, kept)<br/>dashboard, Discord, Twitch, updater, config"]
+    NODE["Node backend (src/server, 127.0.0.1:7654)<br/>dashboard, Discord, Twitch checks, updater, config"]
     NODE <-->|"local HTTP 127.0.0.1:4417<br/>GET /status, POST /control, POST /reload, POST /shutdown"| SUP
+    NODE -.->|"launches detached, relaunches when /status stops answering"| SUP
+    SUP -.->|"data\logs\events-DATE.jsonl, tailed into timeline and Discord"| NODE
     NODE -->|"writes; key via protect (DPAPI)"| CFG[("app\config.json<br/>playlists[0].id + supervisor section")]
     CFG -->|"read at start and on POST /reload"| SUP
     subgraph JOB["Windows Job Object, kill-on-close"]
@@ -73,16 +77,16 @@ flowchart LR
     end
     ENC -->|RTMP| TW[(Twitch ingest)]
     OVL["drawtext overlay in feeder"] -.-> FEED
+    NODE -.->|"read-back: two frames of the channel's HLS every 5 min"| TW
 
     classDef proven fill:#d4edda,stroke:#2e7d32,color:#000
     classDef partial fill:#fff3cd,stroke:#b8860b,color:#000
     classDef design fill:#f8d7da,stroke:#b03a2e,color:#000
-    class SUP,FEED,PIPE,DL,POT,CACHE,SLATE,YTURL,JOB,CFG proven
+    class SUP,FEED,PIPE,DL,POT,CACHE,SLATE,YTURL,JOB,CFG,NODE proven
     class ENC,OVL partial
-    class NODE design
 ```
 
-Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber is proven only in part, red is design.
+Green is proven by a spike, by the stage 2 runs or by the stage 3 runs against local MediaMTX, amber is proven only in part, red is design.
 
 | Part | Status | Evidence |
 |------|--------|----------|
@@ -92,9 +96,11 @@ Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber 
 | Supervisor: process model, Job Object, controls, URL cold start, recovery ladder, token server, YouTube breaker | Proven as product code in `supervisor/` | Spike 5 (`spikes/supervisor/`); stage 2 runs A (1 h, 12 controls), B (every fault) and C (crash and resume) against local MediaMTX with `supervisor/scripts/`, tools only from the install layout |
 | Freeze and silence watchdog in the encoder (`freezedetect` -50 dB, `silencedetect`) | Proven against injected faults | Stage 2 run B: freeze acted on 25.1 s after the frozen picture went out and healed, silence at 35.2 s and retried once; no verdict on normal content over runs A and B |
 | Hardware encoder on the real box | Open, deferred to the product trial | Spike 2 (`spikes/encoder/`): kit built and dry-run on NVENC and AMF; the box run was skipped (the box has an RTX 2070, NVENC). A first-run setup check in the product detects the encoder by test encode. The supervisor still accepts `libx264` |
-| Node as HTTP client of the supervisor | Built in `src/server/` (client, launcher, event bridge, API); end-to-end proof is task 9 | Unit tests against stubs; spike 5 and the stage 2 runs drove the API from `drive.mjs` |
+| Node as HTTP client of the supervisor | Proven (`src/server/`: client, launcher, event bridge, API) | Stage 3 run A (30 min, NVENC, `supervisor/scripts/node-session.mjs`): first-run wizard calls to live in 22 s, the key stored only DPAPI-protected (dummy key in no config, log or data file), 5 dashboard controls each shown in about 1.3 s, Discord alerts for a freeze (1), a killed feeder (1) and a killed encoder (drop and restart in one batched post), no duplicates |
 | Supervisor config from `config.json`, `POST /reload` with a live playlist switch, DPAPI key via `protect`, install layout | Proven | Stage 2: run A streamed on a protected key, the key never reached `data\` (grep, runs A to C); a reload switched to another playlist's video 0 and back |
-| Launch by Node, own folder next to `node\`, binary updates | Launch by Node built (`src/server/supervisor-launcher.ts`, detached sibling, relaunch with backoff); binary updates: design | Spike 5 spec; unit tests against stubs |
+| Launch by Node, as a sibling that outlives it | Proven (`src/server/supervisor-launcher.ts`, detached, relaunch with backoff) | Stage 3 run B: Node killed, Node exiting 75, and a console control event on the launcher console each left the same supervisor process streaming with no reader gap (largest packet gap 85 ms), and the restarted Node attached in under 1 s with one supervisor; a killed supervisor was relaunched in 4.7 s and resumed at its saved position (91.333 s); after Stop stream nothing relaunched for 48 s, Start relaunched in 0.2 s |
+| Twitch read-back (`src/server/twitch-readback.ts`) | Proven against local HLS | Stage 3 run C, with the read-back pointed at MediaMTX's HLS through a test-only override and Twitch never asked: a stale picture (clock included) gave two bad reads, one `restart-encoder`, and the picture moved again; a second stale picture right after it gave two bad reads and, 10 min after the restart, one critical alert and no restart. A `freeze-video` fault is not its case: the overlay clock keeps moving over a frozen picture (clock-region difference 3.8 to 9.2 against a threshold of 1.0), so the encoder's own watchdog handles it |
+| Own folder next to `node\`, binary updates of `supervisor\`, `ffmpeg\`, `pot\` | Design | Spike 5 spec |
 
 ## Supervisor interface (3.0)
 
@@ -104,7 +110,8 @@ Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber 
 - **HTTP** on 127.0.0.1:4417: `GET /status` (`state`: `starting`, `playing`, `recovering`, `needs-stream-key`, `waiting-for-playlist`, `stopping`; `reason`; `streamKeyProblem`; now playing; encoder alive, speed, CPU; watchdog; YouTube breaker; token server), `POST /control` (`{"cmd"}`: `next`, `prev`, `restart`, `jump` with `index`, or `restart-encoder` with an optional `reason` of up to 200 characters), `POST /reload`, `POST /shutdown`, and `POST /debug/fault` only with `--debug-faults`. With no usable key it stays up in `needs-stream-key` and a reload with a working key starts the encoder.
 - **Data** (`data\`): `state.json` (resume point), `cache\` (wiped at start, so a resume plays from its URL), `logs\` with daily files (`events-DATE.jsonl`, `seams-`/`controls-`/`encoder-`/`downloads-`/`deletes-`/`buffer-DATE.csv`, `ytdlp-`/`tokenserver-DATE.log`), one log per ffmpeg process, `run.json` and `playlist.json`; a week is kept and the key is redacted from all of it.
 - **Twitch read-back** (Node, `twitch-readback.ts`): every 5 min while live, two frames of the channel's own HLS 5 s apart through `ffmpeg\ffmpeg.exe`; if the overlay clock stands still twice in a row while Helix says live, Node restarts the encoder, at most once per 30 min, then only alerts.
-- **Measuring harness:** `supervisor/scripts/` (`dev-root.mjs` builds a dev root in this layout, `session.mjs` runs one session against local MediaMTX, `drive.mjs` drives it over HTTP only, `analyze.mjs` computes the verdict).
+- **Launch by Node** (`supervisor-launcher.ts`): Node polls `GET /status` every 2 s and, after 3 misses, starts `ROOT\supervisor\streamloop-supervisor.exe --root ROOT` detached with no console (backoff 10 s, 30 s, 60 s, 5 min). It never stops the supervisor except for the dashboard's Stop stream, after which it relaunches nothing until Start. ROOT is the parent of `app\` when `node\` sits beside it, else `STREAMLOOP_ROOT` (dev). `STREAMLOOP_DEBUG_FAULTS=1` adds `--debug-faults`, for test runs only.
+- **Measuring harness:** `supervisor/scripts/` (`dev-root.mjs` builds a dev root in this layout, `session.mjs` runs one supervisor session against local MediaMTX, `drive.mjs` drives it over HTTP only, `analyze.mjs` computes the verdict, `node-session.mjs` runs the real Node server against the same root with cwd `ROOT\app`).
 
 ## Main flows (3.0)
 
@@ -117,13 +124,13 @@ Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber 
 
 - The RTMP connection survives every seam, control and feeder failure; only an encoder restart drops it. (Spike 1, spike 5)
 - Nothing in `src/` imports from `spikes/`. Spike code is throwaway; what carries forward is command lines and measurements. (Notion rules; true today)
-- Secrets are never committed, printed or logged. 2.x keeps them in gitignored `config.json` and masks them in `GET /api/config`; spike scripts read `TWITCH_STREAM_KEY` from the environment. 3.0 keeps the key DPAPI-protected in `config.json` and redacts it from every log, event and `run.json` it writes.
-- Every child dies with its parent: 3.0 children live in the supervisor's kill-on-close Job Object; 2.x spawns every child with `cwd: SPAWN_CWD` so none holds `app\` during an update.
+- Secrets are never committed, printed or logged. Node keeps them in gitignored `config.json` and masks them in `GET /api/config`; spike scripts read `TWITCH_STREAM_KEY` from the environment. The stream key is stored only DPAPI-protected in `config.json`, and the supervisor redacts it from every log, event and `run.json` it writes.
+- Every child dies with its parent: 3.0 children live in the supervisor's kill-on-close Job Object. Node spawns every child with `cwd: SPAWN_CWD` so none holds `app\` during an update.
 - YouTube traffic from the supervisor goes through one gate: resolves at least 5 s apart, and a circuit breaker that stops all yt-dlp on a bot check or 3 failed resolves (backoff 1, 2, 5, 10, 30 min).
 - `START.bat` never overwrites itself in place, and its parenthesised blocks use `rem`, never `::` (`launcher.test.ts`).
 - State is not written while a recovery or switch is in progress, so a transient position cannot overwrite the resume point.
 - Media bytes never pass through a loop that also does disk writes or control work, and a critical output is never teed synchronously with a non-critical one. (Spike 1 lessons)
-- The supervisor is a sibling of Node, not its child: Node restarts and app updates must not drop the stream.
+- The supervisor is a sibling of Node, not its child: Node restarts and app updates must not drop the stream. It starts detached, but Windows still records the Node that launched it as its parent, so `taskkill /T` on that Node, or Task Manager's "End process tree", stops the supervisor too.
 - 2.x (from 2.3.7) will not start its OBS stream while `GET 127.0.0.1:4417/status` reports `encoder.alive: true`, so 3.0 must keep that endpoint and field. The check fails open: anything else lets 2.x stream (`src/server/stream-guard.ts` on the `2.x` branch).
 - 2.x (from 2.3.7) only updates to releases with its own major version; 3.x releases are never marked "latest" on GitHub, because older 2.x installs still read it.
 

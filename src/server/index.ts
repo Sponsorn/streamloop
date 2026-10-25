@@ -59,7 +59,10 @@ async function main() {
   const adminUrl = `http://localhost:${config.port}/admin`;
   let discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
   // The Twitch read-back pulls frames with the install's ffmpeg; without a ROOT it stays off.
-  const twitchOpts = { ffmpegPath: root ? join(root, 'ffmpeg', 'ffmpeg.exe') : null, addEvent: (m: string) => eventLog.addEvent(m), restartClock: { lastAttemptAt: null } };
+  // STREAMLOOP_TEST_HLS_URL is for the end-to-end runs against local MediaMTX; config.json cannot set it.
+  const testHlsUrl = process.env.STREAMLOOP_TEST_HLS_URL || null;
+  if (testHlsUrl) logger.warn('STREAMLOOP_TEST_HLS_URL is set: the Twitch read-back reads a local test stream and Twitch is never asked');
+  const twitchOpts = { ffmpegPath: root ? join(root, 'ffmpeg', 'ffmpeg.exe') : null, addEvent: (m: string) => eventLog.addEvent(m), restartClock: { lastAttemptAt: null }, testHlsUrl };
   let twitch = new TwitchLivenessChecker(config, client, discord, twitchOpts);
 
   // One gate for the process lifetime, so supervisor and launcher alerts share its streaks.
@@ -70,9 +73,12 @@ async function main() {
     if (d.discord) void discord.notifyEvent(d.discord);
   };
 
+  const debugFaults = process.env.STREAMLOOP_DEBUG_FAULTS === '1';
+  if (debugFaults) logger.warn('STREAMLOOP_DEBUG_FAULTS=1: the supervisor starts with --debug-faults');
   const launcher = new SupervisorLauncher({
     root,
     client,
+    debugFaults,
     onEvent: (kind, detail) => onEvent(launcherEvent(kind, detail)),
   });
   const supervisorEvents = root ? new SupervisorEvents({ logsDir: join(root, 'data', 'logs'), onEvent }) : null;
@@ -146,6 +152,7 @@ async function main() {
     getTwitch: () => twitch,
     getUptime,
     apiToken,
+    testHooks: process.env.STREAMLOOP_TEST_HOOKS === '1',
   }));
 
   // 2.x binds the same port: while it runs, exit and let START.bat retry until it is stopped.

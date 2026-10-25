@@ -446,6 +446,29 @@ describe('API on the supervisor', () => {
       expect(h.client.control).not.toHaveBeenCalled();
     });
 
+  it('has no exit-75 test hook unless test hooks are on', async () => {
+    // Act
+    const res = await post('/test/exit-75');
+
+    // Assert
+    expect(res.status).toBe(404);
+    expect(h.deps.triggerRestart).not.toHaveBeenCalled();
+  });
+
+  it('runs the update restart from the exit-75 test hook when test hooks are on', async () => {
+    // Arrange
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    await listen({ ...h.deps, testHooks: true });
+
+    // Act
+    const res = await post('/test/exit-75');
+
+    // Assert
+    expect(res.status).toBe(200);
+    expect(h.deps.triggerRestart).toHaveBeenCalledOnce();
+  });
+
   it.each(['/player/seek', '/player/pause', '/player/stop', '/player/resume', '/player/restart-mpv', '/obs-path/detect'])(
     'no longer serves POST %s', async (path) => {
       expect((await post(path)).status).toBe(404);

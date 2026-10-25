@@ -30,6 +30,9 @@ export interface TwitchLivenessOptions {
   addEvent?: (message: string) => void;
   /** Shared by every checker a config reload builds, so a reload cannot lift the 30 min limit. */
   restartClock?: { lastAttemptAt: number | null };
+  /** Test runs only (STREAMLOOP_TEST_HLS_URL): the read-back reads this HLS and the channel counts as
+   *  live, so no request reaches Twitch and no Helix credentials are needed. */
+  testHlsUrl?: string | null;
 }
 
 export class TwitchLivenessChecker {
@@ -53,6 +56,7 @@ export class TwitchLivenessChecker {
   private readonly restartClock: { lastAttemptAt: number | null };
   private readonly addEvent: (message: string) => void;
   private readonly readback: TwitchReadback | null;
+  private readonly testHlsUrl: string | null;
 
   constructor(config: AppConfig, client: SupervisorClient, discord: DiscordNotifier, opts: TwitchLivenessOptions = {}) {
     this.config = config;
@@ -60,6 +64,7 @@ export class TwitchLivenessChecker {
     this.discord = discord;
     this.addEvent = opts.addEvent ?? (() => {});
     this.restartClock = opts.restartClock ?? { lastAttemptAt: null };
+    this.testHlsUrl = opts.testHlsUrl || null;
     this.readback = opts.ffmpegPath && this.enabled
       ? new TwitchReadback({
         channel: config.twitchChannel,
@@ -70,6 +75,7 @@ export class TwitchLivenessChecker {
         onFrozen: () => { void this.handleFrozen(); },
         onUnavailable: (why) => this.handleUnavailable(why),
         onStill: () => this.handleStill(),
+        hlsUrl: this.testHlsUrl,
       })
       : null;
   }
@@ -77,9 +83,8 @@ export class TwitchLivenessChecker {
   get enabled(): boolean {
     return (
       this.config.twitchLivenessEnabled &&
-      this.config.twitchClientId.length > 0 &&
-      this.config.twitchClientSecret.length > 0 &&
-      this.config.twitchChannel.length > 0
+      this.config.twitchChannel.length > 0 &&
+      (this.testHlsUrl !== null || (this.config.twitchClientId.length > 0 && this.config.twitchClientSecret.length > 0))
     );
   }
 
@@ -88,7 +93,7 @@ export class TwitchLivenessChecker {
       logger.info('Twitch liveness checker disabled');
       return;
     }
-    if (!this.config.twitchClientId || !this.config.twitchClientSecret || !this.config.twitchChannel) {
+    if (!this.enabled) {
       logger.warn('Twitch liveness checker enabled but missing credentials (need Client ID, Client Secret, and Channel)');
       return;
     }
@@ -225,6 +230,7 @@ export class TwitchLivenessChecker {
   }
 
   private async isChannelLive(): Promise<boolean | null> {
+    if (this.testHlsUrl) return true;
     try {
       await this.ensureToken();
       if (!this.accessToken) return null;

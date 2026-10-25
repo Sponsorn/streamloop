@@ -72,6 +72,7 @@ function setup(opts: {
   media?: Media;
   live?: boolean | null;
   overlay?: boolean;
+  hlsUrl?: string;
 } = {}) {
   const status = vi.fn(async () => (opts.status === undefined ? LIVE : opts.status));
   const client = { status, control: vi.fn() } as unknown as SupervisorClient;
@@ -96,6 +97,7 @@ function setup(opts: {
     gapMs: 0,
     fetchImpl: twitchFetch(opts.master === undefined ? MASTER : opts.master, opts.media === undefined ? LIVE_MEDIA : opts.media),
     run,
+    hlsUrl: opts.hlsUrl,
   });
   return { rb, run, onFrozen, onUnavailable, onStill, status };
 }
@@ -203,6 +205,21 @@ describe('TwitchReadback', () => {
     expect(onFrozen).toHaveBeenCalledOnce();
     expect(rb.status().state).toBe('frozen');
     expect(rb.status().lastDiff).toBe(0);
+  });
+
+  it('reads a test HLS URL as a 1080p rendition without asking Twitch', async () => {
+    // Arrange: no usher answer, so only the override can supply a rendition
+    const { rb, run, onFrozen } = setup({ frames: [still(), still(), still(), still()], master: null, hlsUrl: 'https://video.example/test.m3u8' });
+
+    // Act
+    await rb.check();
+    await rb.check();
+
+    // Assert
+    expect(onFrozen).toHaveBeenCalledOnce();
+    const args = (run as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    expect(args).toContain('https://video.example/test.m3u8');
+    expect(args).toContain('crop=104:32:16:1019,format=gray');
   });
 
   it('one bad read then a good one does not act', async () => {

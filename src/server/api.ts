@@ -36,6 +36,8 @@ export interface ApiDependencies {
   getTwitch: () => TwitchLivenessChecker;
   getUptime: () => number;
   apiToken: string;
+  /** STREAMLOOP_TEST_HOOKS=1 only: adds POST /test/exit-75, the update restart without an update. */
+  testHooks?: boolean;
 }
 
 export type StreamState = 'live' | 'recovering' | 'off-air' | 'starting' | 'stopped';
@@ -450,6 +452,14 @@ export function createApiRouter(deps: ApiDependencies): Router {
       res.status(500).json({ error: result.error ?? 'Failed to update yt-dlp' });
     }
   });
+
+  if (deps.testHooks) {
+    router.post('/test/exit-75', (_req, res) => {
+      logger.warn('Test hook: exiting with code 75 as after an update');
+      res.json({ ok: true });
+      deps.triggerRestart();
+    });
+  }
 
   // --- Shutdown endpoint ---
 

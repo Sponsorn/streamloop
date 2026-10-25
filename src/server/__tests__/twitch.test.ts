@@ -103,6 +103,37 @@ describe('TwitchLivenessChecker', () => {
       expect(checker.enabled).toBe(false);
     });
 
+    it('needs no Helix credentials with a test HLS URL, and never asks Twitch', async () => {
+      // Arrange
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const client = mockClient(true);
+      const checker = new TwitchLivenessChecker(
+        makeConfig({ twitchClientId: '', twitchClientSecret: '' }),
+        client,
+        mockDiscord(),
+        { testHlsUrl: 'http://127.0.0.1:8899/index.m3u8' },
+      );
+
+      // Act
+      await checker.check();
+
+      // Assert
+      expect(checker.enabled).toBe(true);
+      expect(checker.getStatus().channelLive).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('stays off without credentials when no test HLS URL is set', () => {
+      const checker = new TwitchLivenessChecker(
+        makeConfig({ twitchClientId: '', twitchClientSecret: '' }),
+        mockClient(),
+        mockDiscord(),
+        { testHlsUrl: '' },
+      );
+      expect(checker.enabled).toBe(false);
+    });
+
     it('returns true when all credentials are present and toggle is on', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig(),

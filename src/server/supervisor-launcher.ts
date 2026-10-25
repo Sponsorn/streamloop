@@ -14,6 +14,8 @@ export interface SupervisorLauncherOptions {
   now?: () => number;
   intervalMs?: number;
   onEvent?: (kind: LauncherEvent, detail?: Record<string, unknown>) => void;
+  /** Dev and test runs only (STREAMLOOP_DEBUG_FAULTS=1): adds --debug-faults, which opens POST /debug/fault. */
+  debugFaults?: boolean;
 }
 
 const MISSES_BEFORE_LAUNCH = 3;
@@ -39,6 +41,7 @@ export class SupervisorLauncher {
   private readonly now: () => number;
   private readonly intervalMs: number;
   private readonly onEvent: (kind: LauncherEvent, detail?: Record<string, unknown>) => void;
+  private readonly debugFaults: boolean;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
@@ -64,6 +67,7 @@ export class SupervisorLauncher {
     this.now = opts.now ?? Date.now;
     this.intervalMs = opts.intervalMs ?? 2000;
     this.onEvent = opts.onEvent ?? (() => {});
+    this.debugFaults = opts.debugFaults ?? false;
   }
 
   start(): void {
@@ -187,7 +191,8 @@ export class SupervisorLauncher {
 
     // detached: own process group and no console, so closing the launcher window or a Node
     // exit (crash, exit 75) leaves the supervisor and the stream running.
-    const child = this.spawnImpl(exe, ['--root', this.root], {
+    const args = this.debugFaults ? ['--root', this.root, '--debug-faults'] : ['--root', this.root];
+    const child = this.spawnImpl(exe, args, {
       cwd: SPAWN_CWD,
       detached: true,
       stdio: 'ignore',

@@ -145,6 +145,8 @@ export interface TwitchReadbackOptions {
   threshold?: number;
   fetchImpl?: typeof fetch;
   run?: GrabRun;
+  /** Test runs only (STREAMLOOP_TEST_HLS_URL): read this 1080p HLS instead of asking Twitch for the channel's. */
+  hlsUrl?: string | null;
 }
 
 /** Pulls two frames of the channel's own HLS and checks the overlay clock moved between them.
@@ -198,7 +200,9 @@ export class TwitchReadback {
       this.badReads = 0;
       return;
     }
-    const rendition = await liveRendition(this.opts.channel, this.opts.fetchImpl);
+    const rendition = this.opts.hlsUrl
+      ? { url: this.opts.hlsUrl, width: 1920, height: 1080 }
+      : await liveRendition(this.opts.channel, this.opts.fetchImpl);
     if (!rendition) return this.unavailable("the channel's video playlist could not be fetched");
     const media = await fetchText(rendition.url, this.opts.fetchImpl ?? fetch);
     if (media === null) return this.unavailable("the channel's video playlist could not be fetched");

@@ -12,7 +12,7 @@ class FakeChild extends EventEmitter {
   unref = vi.fn();
 }
 
-function setup(opts: { root?: string | null; answering?: boolean } = {}) {
+function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: boolean } = {}) {
   let answering = opts.answering ?? false;
   const client = {
     status: vi.fn(async (): Promise<SupervisorStatus | null> => (answering ? { state: 'playing' } : null)),
@@ -30,6 +30,7 @@ function setup(opts: { root?: string | null; answering?: boolean } = {}) {
     client: client as unknown as SupervisorClient,
     spawnImpl: spawnImpl as unknown as typeof spawn,
     onEvent: (kind) => events.push(kind),
+    debugFaults: opts.debugFaults,
   });
   return { launcher, client, spawnImpl, children, events, setAnswering: (v: boolean) => { answering = v; } };
 }
@@ -88,6 +89,23 @@ describe('SupervisorLauncher', () => {
     expect(children[0].unref).toHaveBeenCalled();
     expect(launcher.state()).toBe('starting');
     expect(events).toContain('supervisor-launched');
+  });
+
+  it('passes --debug-faults only when asked to', async () => {
+    // Arrange
+    const plain = setup();
+    const debug = setup({ debugFaults: true });
+
+    // Act
+    plain.launcher.start();
+    debug.launcher.start();
+    await vi.advanceTimersByTimeAsync(4_000);
+    plain.launcher.stop();
+    debug.launcher.stop();
+
+    // Assert
+    expect((plain.spawnImpl.mock.calls[0] as unknown[])[1]).toEqual(['--root', root]);
+    expect((debug.spawnImpl.mock.calls[0] as unknown[])[1]).toEqual(['--root', root, '--debug-faults']);
   });
 
   it('does not spawn again while starting and inside the backoff', async () => {
