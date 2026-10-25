@@ -288,3 +288,45 @@ describe('planUpdate', () => {
     expect(plan.stageNode).toBe(true);
   });
 });
+
+describe('planUpdate without a checksum for the full ZIP', () => {
+  const noFullChecksum = [
+    asset('streamloop-v2.3.8.zip'),
+    asset('streamloop-v2.3.8-update.zip'),
+    asset('streamloop-v2.3.8-update.sha256'),
+  ];
+
+  it('holds back a Node-only update and says why', () => {
+    // Arrange
+    const release = { tag_name: 'v2.3.8', draft: false, prerelease: false, assets: noFullChecksum };
+
+    // Act
+    const plan = planUpdate(release, '2.3.8', '22.23.4', { runningNode: '22.12.0' });
+
+    // Assert
+    expect(plan.updateAvailable).toBe(false);
+    expect(plan.nodeOnly).toBeNull();
+    expect(plan.stageNode).toBe(false);
+    expect(plan.nodeBlocked).toEqual({ version: '22.23.4', reason: 'no checksum' });
+  });
+
+  it('keeps a newer release as the usual slim update without node/', () => {
+    const release = {
+      tag_name: 'v2.3.8', draft: false, prerelease: false, assets: noFullChecksum,
+    };
+    const plan = planUpdate(release, '2.3.7', '22.23.4', { runningNode: '22.12.0' });
+    expect(plan.updateAvailable).toBe(true);
+    expect(plan.zipUrl).toContain('-update.zip');
+    expect(plan.checksumUrl).toContain('-update.sha256');
+    expect(plan.stageNode).toBe(false);
+    expect(plan.nodeBlocked).toEqual({ version: '22.23.4', reason: 'no checksum' });
+  });
+
+  it('reports nothing blocked when the full ZIP has its checksum', () => {
+    const release = {
+      tag_name: 'v2.3.8', draft: false, prerelease: false,
+      assets: [...noFullChecksum, asset('streamloop-v2.3.8.sha256')],
+    };
+    expect(planUpdate(release, '2.3.8', '22.23.4', { runningNode: '22.12.0' }).nodeBlocked).toBeNull();
+  });
+});

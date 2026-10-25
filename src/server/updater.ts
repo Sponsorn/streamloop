@@ -34,6 +34,7 @@ export interface UpdateInfo {
   nodeVersion: string;
   /** Target Node version when the available update only replaces Node. */
   nodeUpdate: string | null;
+  nodeUpdateBlocked: NodeUpdateBlocked | null;
 }
 
 export interface SelectedAssets {
@@ -149,6 +150,12 @@ export interface UpdatePlan extends SelectedAssets {
   updateAvailable: boolean;
   /** Target Node version when the update only replaces Node. */
   nodeOnly: string | null;
+  nodeBlocked: NodeUpdateBlocked | null;
+}
+
+export interface NodeUpdateBlocked {
+  version: string;
+  reason: 'no checksum';
 }
 
 export interface PlanOptions {
@@ -159,21 +166,26 @@ export interface PlanOptions {
   manual?: boolean;
 }
 
-/** A newer release is a normal update. The current release is a Node-only update when
- *  its full ZIP bundles another Node, unless that swap already failed and the check is automatic. */
+/** A newer release is a normal update; the current one is a Node-only update when its full ZIP bundles
+ *  another Node and that swap has not failed before (or the check is manual). No checksum, no node/. */
 export function planUpdate(
   release: GithubRelease,
   currentVersion: string,
   releaseNode: string | null,
   { runningNode = process.versions.node, lastNodeAttempt = null, manual = false }: PlanOptions = {},
 ): UpdatePlan {
-  const assets = selectReleaseAssets(release.assets, releaseNode, runningNode);
-  const cmp = compareVersions(release.tag_name, currentVersion);
-  if (cmp > 0) return { ...assets, updateAvailable: true, nodeOnly: null };
-  if (cmp === 0 && assets.stageNode && (manual || lastNodeAttempt !== releaseNode)) {
-    return { ...assets, updateAvailable: true, nodeOnly: releaseNode };
+  let assets = selectReleaseAssets(release.assets, releaseNode, runningNode);
+  let nodeBlocked: NodeUpdateBlocked | null = null;
+  if (assets.stageNode && !(assets.checksumUrl && isAllowedDownloadUrl(assets.checksumUrl))) {
+    nodeBlocked = { version: releaseNode as string, reason: 'no checksum' };
+    assets = selectReleaseAssets(release.assets, null, runningNode);
   }
-  return { ...assets, updateAvailable: false, nodeOnly: null };
+  const cmp = compareVersions(release.tag_name, currentVersion);
+  if (cmp > 0) return { ...assets, updateAvailable: true, nodeOnly: null, nodeBlocked };
+  if (cmp === 0 && assets.stageNode && (manual || lastNodeAttempt !== releaseNode)) {
+    return { ...assets, updateAvailable: true, nodeOnly: releaseNode, nodeBlocked };
+  }
+  return { ...assets, updateAvailable: false, nodeOnly: null, nodeBlocked };
 }
 
 export class Updater {
@@ -190,6 +202,7 @@ export class Updater {
   private releaseChecksumUrl: string | null = null;
   private stageNode = false;
   private nodeUpdate: string | null = null;
+  private nodeUpdateBlocked: NodeUpdateBlocked | null = null;
   private release: GithubRelease | null = null;
   private releaseNode: string | null = null;
   /** Survives the app/ swap, unlike anything inside app/. */
@@ -217,6 +230,7 @@ export class Updater {
       isDevMode: this.isDevMode,
       nodeVersion: process.versions.node,
       nodeUpdate: this.nodeUpdate,
+      nodeUpdateBlocked: this.nodeUpdateBlocked,
     };
   }
 
@@ -245,6 +259,7 @@ export class Updater {
         this.latestVersion = this.currentVersion;
         this.updateAvailable = false;
         this.nodeUpdate = null;
+        this.nodeUpdateBlocked = null;
         this.status = 'idle';
         this.lastCheckTime = now;
         return this.getStatus();
@@ -259,6 +274,7 @@ export class Updater {
         this.latestVersion = this.currentVersion;
         this.updateAvailable = false;
         this.nodeUpdate = null;
+        this.nodeUpdateBlocked = null;
         this.status = 'idle';
         this.lastCheckTime = now;
         return this.getStatus();
@@ -293,6 +309,10 @@ export class Updater {
     }
     this.updateAvailable = plan.updateAvailable;
     this.nodeUpdate = plan.nodeOnly;
+    this.nodeUpdateBlocked = plan.nodeBlocked;
+    if (plan.nodeBlocked) {
+      logger.warn({ node: plan.nodeBlocked.version }, 'Node update unavailable: the release has no checksum for its full ZIP');
+    }
     this.releaseAssetUrl = plan.updateAvailable ? plan.zipUrl : null;
     this.releaseChecksumUrl =
       plan.checksumUrl && isAllowedDownloadUrl(plan.checksumUrl) ? plan.checksumUrl : null;
@@ -380,7 +400,7 @@ export class Updater {
         }
         logger.info('Update checksum verified');
       } else {
-        logger.warn('No checksum file in release â€” skipping integrity verification');
+        logger.warn('No checksum file in release — skipping integrity verification');
       }
 
       // Extract
@@ -392,8 +412,9 @@ export class Updater {
 
       // A Node-only update restages the same app and launcher but keeps the
       // installed yt-dlp, which may be newer after a self-update.
-      stageUpdate(extractDir, tmpDir, this.stageNode, this.nodeUpdate === null);
-      if (this.stageNode && this.releaseNode) {
+      const stageNode = this.stageNode && this.releaseChecksumUrl !== null;
+      stageUpdate(extractDir, tmpDir, stageNode, this.nodeUpdate === null);
+      if (stageNode && this.releaseNode) {
         writeFileSync(this.attemptFile, `${this.releaseNode}\n`);
       }
 

@@ -1546,6 +1546,9 @@ async function handleCheckUpdate() {
       renderUpdateBanner(status);
     } else {
       result.textContent = `Up to date (v${status.currentVersion})`;
+      if (status.nodeUpdateBlocked) {
+        result.textContent += `. Node.js update to ${status.nodeUpdateBlocked.version} unavailable: the release has no checksum`;
+      }
       result.style.color = 'var(--text-muted)';
       if (settingsBtn) settingsBtn.classList.add('hidden');
     }
