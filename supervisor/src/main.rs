@@ -2057,6 +2057,14 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Bind before anything else: a duplicate launch must exit 2 before it prunes logs, wipes the
+    // cache or starts a thread or child, all of which the live instance owns.
+    let (tx, rx) = channel::<Msg>();
+    let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
+    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone(), snapshot.clone()) {
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        std::process::exit(2);
+    }
     if let Err(e) = procs::enter_job() {
         logs::echo(&mut std::io::stderr().lock(), &format!("warning: {e}; children will not die with the supervisor"));
     }
@@ -2069,7 +2077,6 @@ fn main() {
     let _ = std::fs::create_dir_all(&cache);
 
     let yt = Arc::new(Ytdlp::new(&args.paths, &settings.player_client, args.dev.limit_rate.clone()));
-    let (tx, rx) = channel::<Msg>();
     let mut queue = Queue::new(192 * 1024 * 1024);
     queue.ahead = ticks(settings.read_ahead_seconds);
     let shared = Arc::new(Shared { q: Mutex::new(queue), cv: Condvar::new() });
@@ -2087,11 +2094,6 @@ fn main() {
     {
         let (yt, l, tx, c) = (yt.clone(), logs.clone(), tx.clone(), cache.clone());
         std::thread::spawn(move || downloader(jobs_rx, yt, l, tx, c));
-    }
-    let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
-    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone(), snapshot.clone()) {
-        logs.event("critical", "api-failed", json!({"error": e}));
-        std::process::exit(2);
     }
 
     let mut ctl = Ctl::new(args, settings, logs, tx, shared, yt, cache, jobs_tx, token, snapshot);
