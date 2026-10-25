@@ -10,6 +10,9 @@ pub enum Detect {
     FreezeEnd(f64),
     SilenceStart(f64),
     SilenceEnd(f64),
+    /// ffmpeg rebuilt the video (`true`) or audio filter graph, for example on new colour tags.
+    /// The detector in it starts over, so a stretch it had open never gets an end line.
+    Rebuilt { video: bool },
 }
 
 #[derive(Debug, PartialEq)]
@@ -23,6 +26,10 @@ pub enum Verdict {
 pub const SETTLE_S: f64 = 5.0;
 
 pub fn parse_line(line: &str) -> Option<Detect> {
+    if line.contains("] Reconfiguring filter graph") {
+        let video = line.starts_with("[vf#");
+        return (video || line.starts_with("[af#")).then_some(Detect::Rebuilt { video });
+    }
     let keys: [(&str, &str, fn(f64) -> Detect); 4] = [
         ("[freezedetect @", "freeze_start:", Detect::FreezeStart),
         ("[freezedetect @", "freeze_end:", Detect::FreezeEnd),
@@ -117,6 +124,12 @@ mod tests {
             ("[silencedetect @ 0000019c22640880] silence_start: -0.0213", Some(Detect::SilenceStart(-0.0213))),
             ("Output #0, flv, to 'rtmp://127.0.0.1:1935/live/test':", None),
             ("[flv @ 000001] silence_start: 3", None),
+            (
+                "[vf#0:0 @ 00000208bbfbe440] Reconfiguring filter graph because video parameters changed to yuv420p(tv, bt709), 1920x1080",
+                Some(Detect::Rebuilt { video: true }),
+            ),
+            // not seen in a run: built from ffmpeg's audio message
+            ("[af#0:1 @ 00000208bbfbe880] Reconfiguring filter graph because audio parameters changed to 48000 Hz, stereo, fltp", Some(Detect::Rebuilt { video: false })),
         ];
         for (line, want) in lines {
             assert_eq!(parse_line(line), want, "{line}");

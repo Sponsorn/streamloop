@@ -1440,6 +1440,8 @@ impl Ctl {
                     Detect::FreezeEnd(_) => self.watch.freeze = None,
                     Detect::SilenceStart(t) => self.watch.silence = Some((t, false)),
                     Detect::SilenceEnd(_) => self.watch.silence = None,
+                    Detect::Rebuilt { video: true } => self.watch.freeze = None,
+                    Detect::Rebuilt { video: false } => self.watch.silence = None,
                 }
             }
             Msg::DlProgress { index, percent } => {
@@ -2327,6 +2329,46 @@ mod tests {
         assert_eq!(outcomes, ["retry", "retry", "skip"]);
         assert!(ctl.videos[1].skipped);
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((2, "skip")));
+    }
+
+    /// The tree-kill run of 2026-10-25: 21 s of slate came out frozen, then the video's bt709 tags
+    /// rebuilt the filter graph, which resets freezedetect, so no freeze_end ever came.
+    #[test]
+    fn a_slate_freeze_cut_off_by_a_filter_graph_rebuild_does_not_carry_into_the_video() {
+        let mut ctl = test_ctl("wd-rebuild", &["a", "b"]);
+        ctl.seams.push(Seam { offset: BASE, index: 0, source: Source::Slate, start_pos: 0.0 });
+        ctl.seams.push(Seam { offset: BASE + ticks(21.0), index: 0, source: Source::Url, start_pos: 0.0 });
+        ctl.enc.child = Some(exited_child());
+        let generation = ctl.shared.q.lock().unwrap().generation;
+        let feed = |ctl: &mut Ctl, line: &str| {
+            let (tx, rx) = channel();
+            encoder_stderr_line(&ctl.logs, &tx, generation, line, &mut None, &mut String::new());
+            rx.try_iter().for_each(|m| ctl.handle(m));
+        };
+        let play = |ctl: &mut Ctl, from: f64, to: f64| {
+            let mut m = from;
+            while m < to && ctl.target.is_none() {
+                ctl.enc.media = m;
+                ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(m + 2.0));
+                ctl.watchdog_work();
+                m += 0.5;
+            }
+        };
+
+        feed(&mut ctl, "[freezedetect @ 00000208bbfa5440] lavfi.freezedetect.freeze_start: 0.0100222");
+        feed(&mut ctl, "[vf#0:0 @ 00000208bbfbe440] Reconfiguring filter graph because video parameters changed to yuv420p(tv, bt709), 1920x1080");
+        play(&mut ctl, 20.0, 65.0);
+
+        assert!(ctl.target.is_none(), "moving video judged frozen: {}", ctl.watch.last);
+        assert!(!events(&ctl).iter().any(|(_, k)| k == "watchdog-freeze"), "{:?}", events(&ctl));
+
+        // A real freeze after the rebuild is still caught once it has lasted d. The line is from the
+        // offline run: slate, then this video, frozen from 45 s by the freeze-video feeder filter.
+        feed(&mut ctl, "[freezedetect @ 0000018d23ae6c00] lavfi.freezedetect.freeze_start: 45.010022");
+        play(&mut ctl, 65.0, 90.0);
+        assert_eq!(ctl.enc.media, 65.5);
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((0, "retry")), "{}", ctl.watch.last);
+        assert_eq!(ctl.watch.last["verdict"].as_str(), Some("freeze"));
     }
 
     /// (level, kind) of every event the test control loop logged.
