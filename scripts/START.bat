@@ -11,30 +11,7 @@ set "ROOT=%~dp0"
 set "NODE=%ROOT%node\node.exe"
 set "APP=%ROOT%app"
 
-:: Self-heal: a previous update may have left app/ half-swapped (old app renamed
-:: to _update_old but the new app never moved into place). Restore it so a failed
-:: or interrupted update doesn't permanently brick startup.
-if not exist "%APP%\src\server\index.ts" (
-    if exist "%ROOT%_update_old\src\server\index.ts" (
-        echo [RECOVER] app missing - restoring from _update_old ...
-        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
-        rename "%ROOT%_update_old" app
-    ) else if exist "%ROOT%_update_tmp\app\src\server\index.ts" (
-        echo [RECOVER] app missing - promoting staged _update_tmp\app ...
-        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
-        move "%ROOT%_update_tmp\app" "%APP%"
-    )
-)
-
-:: Same for node/: a Node swap cut short after the old runtime was renamed
-:: leaves no node.exe, so put the old one back before preflight.
-if not exist "%ROOT%node\node.exe" (
-    if exist "%ROOT%_update_old_node\node.exe" (
-        echo [RECOVER] node missing - restoring from _update_old_node ...
-        if exist "%ROOT%node" rmdir /s /q "%ROOT%node" 2>nul
-        rename "%ROOT%_update_old_node" node
-    )
-)
+call :heal
 
 :: Pre-flight checks
 if not exist "%NODE%" (
@@ -61,6 +38,9 @@ echo Starting server...
 echo.
 
 :loop
+:: Heal again on every start: a rollback in the update block below can fail too.
+call :heal
+
 :: Start the server (this blocks until the server exits)
 cd /d "%APP%"
 "%NODE%" node_modules\tsx\dist\cli.mjs src\server\index.ts
@@ -160,7 +140,18 @@ if %ERRORLEVEL% equ 75 (
                         if errorlevel 1 (
                             echo [WARNING] New Node does not run, rolling back Node.
                             if exist "%ROOT%node" rmdir /s /q "%ROOT%node" 2>nul
-                            rename "%ROOT%_update_old_node" node
+                            set "BACK_OK=0"
+                            for /L %%m in (1,1,5) do (
+                                if "!BACK_OK!"=="0" (
+                                    rename "%ROOT%_update_old_node" node 2>nul
+                                    if exist "%ROOT%node\node.exe" (
+                                        set "BACK_OK=1"
+                                    ) else (
+                                        echo   Waiting to restore the old Node (attempt %%m/5^)...
+                                        timeout /t 3 /nobreak >nul
+                                    )
+                                )
+                            )
                         ) else (
                             echo Node updated.
                             if exist "%ROOT%_update_old_node" rmdir /s /q "%ROOT%_update_old_node" 2>nul
@@ -218,3 +209,34 @@ echo.
 echo Server crashed (exit code %ERRORLEVEL%). Restarting in 10 seconds...
 timeout /t 10 /nobreak >nul
 goto loop
+
+:: Self-heal: an interrupted swap or a failed rollback can leave app\ or node\
+:: missing, which would fail every start. Restore the old copy, or promote the staged one.
+:heal
+if not exist "%APP%\src\server\index.ts" (
+    if exist "%ROOT%_update_old\src\server\index.ts" (
+        echo [RECOVER] app missing - restoring from _update_old ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        rename "%ROOT%_update_old" app
+    ) else if exist "%ROOT%_update_tmp\app\src\server\index.ts" (
+        echo [RECOVER] app missing - promoting staged _update_tmp\app ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        move "%ROOT%_update_tmp\app" "%APP%"
+    )
+)
+if exist "%ROOT%node\node.exe" goto :eof
+if exist "%ROOT%_update_old_node\node.exe" (
+    echo [RECOVER] node missing - restoring from _update_old_node ...
+    if exist "%ROOT%node" rmdir /s /q "%ROOT%node" 2>nul
+    rename "%ROOT%_update_old_node" node
+    goto :eof
+)
+if exist "%ROOT%_update_tmp\node\node.exe" (
+    "%ROOT%_update_tmp\node\node.exe" --version >nul 2>&1
+    if not errorlevel 1 (
+        echo [RECOVER] node missing - promoting staged _update_tmp\node ...
+        if exist "%ROOT%node" rmdir /s /q "%ROOT%node" 2>nul
+        move "%ROOT%_update_tmp\node" "%ROOT%node"
+    )
+)
+goto :eof

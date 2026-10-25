@@ -46,15 +46,41 @@ describe('START.bat', () => {
     expect(text).toContain('rename "%ROOT%_update_old_node" node');
   });
 
-  it('restores a half-swapped node/ before the preflight check', () => {
+  it('retries putting the old node/ back when the rollback rename fails', () => {
+    const text = lines.join('\n');
+    expect(text).toMatch(/for \/L %%m in \(1,1,5\) do \(\s+if "!BACK_OK!"=="0" \(\s+rename "%ROOT%_update_old_node" node/);
+  });
+
+  it('heals before preflight and again on every start under :loop', () => {
     // Arrange
-    const selfHeal = lines.findIndex((l) => l.includes('if exist "%ROOT%_update_old_node\\node.exe" ('));
-    const preflight = lines.findIndex((l) => l.startsWith('if not exist "%NODE%" ('));
+    const calls = lines.map((l, i) => (l === 'call :heal' ? i : -1)).filter((i) => i >= 0);
+    const preflight = lines.indexOf('if not exist "%NODE%" (');
+    const loop = lines.indexOf(':loop');
+    const start = lines.findIndex((l) => l.startsWith('"%NODE%" node_modules'));
 
     // Assert
-    expect(lines.some((l) => l.startsWith('if not exist "%ROOT%node\\node.exe" ('))).toBe(true);
-    expect(selfHeal).toBeGreaterThan(-1);
-    expect(selfHeal).toBeLessThan(preflight);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toBeLessThan(preflight);
+    expect(calls[1]).toBeGreaterThan(loop);
+    expect(calls[1]).toBeLessThan(start);
+  });
+
+  it('restores node/ from _update_old_node in the heal routine', () => {
+    const heal = lines.slice(lines.indexOf(':heal')).join('\n');
+    expect(heal).toContain('if exist "%ROOT%node\\node.exe" goto :eof');
+    expect(heal).toContain('if exist "%ROOT%_update_old_node\\node.exe" (');
+    expect(heal).toContain('rename "%ROOT%_update_old_node" node');
+  });
+
+  it('promotes a lone staged node/ only after its node.exe runs', () => {
+    const heal = lines.slice(lines.indexOf(':heal')).join('\n');
+    expect(heal).toMatch(
+      /"%ROOT%_update_tmp\\node\\node\.exe" --version[^\n]*\n\s+if not errorlevel 1 \([\s\S]*move "%ROOT%_update_tmp\\node" "%ROOT%node"/,
+    );
+  });
+
+  it('keeps the heal routine after the last goto loop, so it only runs via call', () => {
+    expect(lines.indexOf(':heal')).toBeGreaterThan(lines.lastIndexOf('goto loop'));
   });
 
   it('uses CRLF line endings, which cmd needs for labels and goto', () => {
