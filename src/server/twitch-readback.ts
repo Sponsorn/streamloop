@@ -105,6 +105,21 @@ export async function grabGrayRegion(ffmpegPath: string, hlsUrl: string, region:
   }
 }
 
+/** A stitched ad (preroll or break) shows a still placeholder; streamlink's twitch plugin tests the same two marks. */
+export function isAdPlaylist(media: string): boolean {
+  if (/^#EXT-X-DATERANGE:.*CLASS="twitch-stitched-ad"/m.test(media)) return true;
+  return [...media.matchAll(/^#EXTINF:[^,]*,(.*)$/gm)].some((m) => m[1].trim() !== 'live');
+}
+
+async function fetchText(url: string, fetchImpl: typeof fetch): Promise<string | null> {
+  try {
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    return res.ok ? await res.text() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Frames of different sizes count as different. */
 export function meanAbsDiff(a: Uint8Array, b: Uint8Array): number {
   if (a.length !== b.length || a.length === 0) return Infinity;
@@ -119,6 +134,8 @@ export interface TwitchReadbackOptions {
   client: SupervisorClient;
   onFrozen: () => void;
   onUnavailable: (why: string) => void;
+  /** Two still whole-frame reads: reported once per episode, never acted on (a still upload looks the same). */
+  onStill: () => void;
   /** Helix: only a channel Twitch calls live can be frozen. */
   isChannelLive: () => Promise<boolean | null>;
   /** `supervisor.overlay`: without it there is no clock, so the whole frame is compared. */
@@ -138,6 +155,8 @@ export class TwitchReadback {
   private busy = false;
   private badReads = 0;
   private inOutage = false;
+  private stillNoted = false;
+  private stopped = false;
   private current: ReadbackStatus = { lastCheckAt: null, lastDiff: null, state: 'ok' };
 
   constructor(opts: TwitchReadbackOptions) {
@@ -146,11 +165,14 @@ export class TwitchReadback {
 
   start(): void {
     this.stop();
+    this.stopped = false;
     this.timer = setInterval(() => { void this.check(); }, this.opts.intervalMs ?? DEFAULT_INTERVAL_MS);
   }
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    // A check in flight finishes without acting.
+    this.stopped = true;
   }
 
   status(): ReadbackStatus {
@@ -178,6 +200,13 @@ export class TwitchReadback {
     }
     const rendition = await liveRendition(this.opts.channel, this.opts.fetchImpl);
     if (!rendition) return this.unavailable("the channel's video playlist could not be fetched");
+    const media = await fetchText(rendition.url, this.opts.fetchImpl ?? fetch);
+    if (media === null) return this.unavailable("the channel's video playlist could not be fetched");
+    if (isAdPlaylist(media)) {
+      logger.debug('Twitch read-back skipped: an ad is playing');
+      this.badReads = 0;
+      return;
+    }
 
     // Without a duration the overlay shows the title alone, which never moves.
     const clock = this.opts.overlay && (sup?.playing?.duration ?? 0) > 0;
@@ -185,6 +214,7 @@ export class TwitchReadback {
     const a = await grabGrayRegion(this.opts.ffmpegPath, rendition.url, region, this.opts.run);
     if (a) await new Promise((r) => setTimeout(r, this.opts.gapMs ?? DEFAULT_GAP_MS));
     const b = a && await grabGrayRegion(this.opts.ffmpegPath, rendition.url, region, this.opts.run);
+    if (this.stopped) return;
     if (!a || !b) return this.unavailable('a frame could not be read from Twitch');
 
     this.inOutage = false;
@@ -194,16 +224,23 @@ export class TwitchReadback {
     logger.debug({ diff, region: region ?? 'whole frame' }, 'Twitch read-back');
     if (!bad) {
       this.badReads = 0;
+      this.stillNoted = false;
       return;
     }
     this.badReads++;
-    if (this.badReads >= BAD_READS_TO_ACT && (await this.opts.isChannelLive()) === true) {
+    if (this.badReads < BAD_READS_TO_ACT) return;
+    if (!region) {
+      if (!this.stillNoted) { this.stillNoted = true; this.opts.onStill(); }
+      return;
+    }
+    if ((await this.opts.isChannelLive()) === true && !this.stopped) {
       this.badReads = 0;
       this.opts.onFrozen();
     }
   }
 
   private unavailable(why: string): void {
+    this.badReads = 0;
     this.current = { ...this.current, lastCheckAt: Date.now(), state: 'unavailable' };
     if (this.inOutage) return;
     this.inOutage = true;

@@ -497,6 +497,34 @@ describe('TwitchLivenessChecker', () => {
       expect(discord.notifyCritical).not.toHaveBeenCalled();
     });
 
+    it('keeps the 30 min limit across a config reload', async () => {
+      // Arrange: index.ts passes the same options object to every new checker
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const opts = { restartClock: { lastAttemptAt: null } };
+      await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
+
+      // Act
+      await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
+
+      // Assert
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+    });
+
+    it('a still whole frame only records a timeline event', () => {
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+
+      checker.handleStill();
+
+      expect(addEvent).toHaveBeenCalledOnce();
+      expect(client.control).not.toHaveBeenCalled();
+      expect(discord.notifyCritical).not.toHaveBeenCalled();
+    });
+
     it('runs no read-back without an ffmpeg path', () => {
       const checker = new TwitchLivenessChecker(makeConfig(), mockClient(true), mockDiscord(), { ffmpegPath: null });
       expect(checker.getStatus().readback.state).toBe('off');

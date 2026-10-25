@@ -28,6 +28,8 @@ export interface TwitchLivenessOptions {
   /** The install's ffmpeg under ROOT; without it the read-back is off. */
   ffmpegPath?: string | null;
   addEvent?: (message: string) => void;
+  /** Shared by every checker a config reload builds, so a reload cannot lift the 30 min limit. */
+  restartClock?: { lastAttemptAt: number | null };
 }
 
 export class TwitchLivenessChecker {
@@ -48,7 +50,7 @@ export class TwitchLivenessChecker {
   private lastCheckAt: number | null = null;
   private lastRestartAt: number | null = null;
   private restartCount = 0;
-  private lastAttemptAt: number | null = null;
+  private readonly restartClock: { lastAttemptAt: number | null };
   private readonly addEvent: (message: string) => void;
   private readonly readback: TwitchReadback | null;
 
@@ -57,6 +59,7 @@ export class TwitchLivenessChecker {
     this.client = client;
     this.discord = discord;
     this.addEvent = opts.addEvent ?? (() => {});
+    this.restartClock = opts.restartClock ?? { lastAttemptAt: null };
     this.readback = opts.ffmpegPath && this.enabled
       ? new TwitchReadback({
         channel: config.twitchChannel,
@@ -66,6 +69,7 @@ export class TwitchLivenessChecker {
         isChannelLive: () => this.isChannelLive(),
         onFrozen: () => { void this.handleFrozen(); },
         onUnavailable: (why) => this.handleUnavailable(why),
+        onStill: () => this.handleStill(),
       })
       : null;
   }
@@ -174,6 +178,11 @@ export class TwitchLivenessChecker {
   }
 
   /** The read-back itself could not run: recorded only, never acted on. */
+  /** The whole picture stood still with no overlay clock to tell a stale stream from still content. */
+  handleStill(): void {
+    this.addEvent('The picture on Twitch is not changing (no overlay clock to check, so no restart)');
+  }
+
   handleUnavailable(why: string): void {
     this.addEvent(`Could not check the picture on Twitch: ${why}`);
   }
@@ -186,13 +195,14 @@ export class TwitchLivenessChecker {
   /** `reason` goes to the supervisor's log and into any alert. */
   private async restartEncoder(reason: string, offline = false): Promise<void> {
     if (this.restartInProgress) return;
-    if (this.lastAttemptAt !== null && Date.now() - this.lastAttemptAt < RESTART_LIMIT_MS) {
+    const last = this.restartClock.lastAttemptAt;
+    if (last !== null && Date.now() - last < RESTART_LIMIT_MS) {
       logger.warn({ reason }, 'Twitch liveness: encoder restarted less than 30 min ago, alerting only');
       await this.discord.notifyCritical(`${reason}, and the encoder was already restarted in the last 30 minutes. Check the stream.`);
       return;
     }
     this.restartInProgress = true;
-    this.lastAttemptAt = Date.now();
+    this.restartClock.lastAttemptAt = Date.now();
 
     logger.warn({ reason }, 'Twitch liveness: restarting the encoder');
     if (offline) await this.discord.notifyTwitchMismatch(this.config.twitchChannel);

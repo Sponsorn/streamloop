@@ -27,13 +27,36 @@ const MASTER = [
   'https://video.example/audio_only/index.m3u8',
 ].join('\n');
 
-function twitchFetch(master: string | null): typeof fetch {
+const LIVE_MEDIA = [
+  '#EXTM3U',
+  '#EXT-X-TARGETDURATION:2',
+  '#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z',
+  '#EXTINF:2.000,live',
+  'https://video.example/seg1.ts',
+  '#EXTINF:2.000,live',
+  'https://video.example/seg2.ts',
+].join('\n');
+
+// Twitch's stitched ad break, in the form streamlink's twitch plugin checks for.
+const AD_DATERANGE_MEDIA = [
+  '#EXTM3U',
+  '#EXT-X-DATERANGE:ID="stitched-ad-1",CLASS="twitch-stitched-ad",START-DATE="2026-10-25T10:00:00.000Z",DURATION=30.000',
+  '#EXTINF:2.000,live',
+  'https://video.example/seg1.ts',
+].join('\n');
+const AD_TITLE_MEDIA = LIVE_MEDIA.replace('#EXTINF:2.000,live\nhttps://video.example/seg2.ts', '#EXTINF:2.000,Amazon\nhttps://video.example/ad.ts');
+
+type Media = string | null | (() => string | null);
+
+function twitchFetch(master: string | null, media: Media = LIVE_MEDIA): typeof fetch {
   return vi.fn(async (url: string | URL | Request) => {
     const u = String(url);
     if (u.startsWith('https://gql.twitch.tv/')) {
       return new Response(JSON.stringify({ data: { streamPlaybackAccessToken: { value: '{"t":1}', signature: 'sig' } } }));
     }
     if (u.startsWith('https://usher.ttvnw.net/') && master !== null) return new Response(master);
+    const body = typeof media === 'function' ? media() : media;
+    if (u.startsWith('https://video.example/') && body !== null) return new Response(body);
     return new Response('not found', { status: 404 });
   }) as unknown as typeof fetch;
 }
@@ -46,6 +69,7 @@ function setup(opts: {
   status?: SupervisorStatus | null;
   frames?: (Buffer | null)[];
   master?: string | null;
+  media?: Media;
   live?: boolean | null;
   overlay?: boolean;
 } = {}) {
@@ -59,19 +83,21 @@ function setup(opts: {
   });
   const onFrozen = vi.fn();
   const onUnavailable = vi.fn();
+  const onStill = vi.fn();
   const rb = new TwitchReadback({
     channel: 'testchannel',
     ffmpegPath: 'ffmpeg.exe',
     client,
     onFrozen,
     onUnavailable,
+    onStill,
     overlay: opts.overlay ?? true,
     isChannelLive: async () => (opts.live === undefined ? true : opts.live),
     gapMs: 0,
-    fetchImpl: twitchFetch(opts.master === undefined ? MASTER : opts.master),
+    fetchImpl: twitchFetch(opts.master === undefined ? MASTER : opts.master, opts.media === undefined ? LIVE_MEDIA : opts.media),
     run,
   });
-  return { rb, run, onFrozen, onUnavailable, status };
+  return { rb, run, onFrozen, onUnavailable, onStill, status };
 }
 
 const REGION_1080 = timerRegion(1920, 1080);
@@ -264,6 +290,85 @@ describe('TwitchReadback', () => {
     await rb.check();
 
     expect(onUnavailable).toHaveBeenCalledTimes(2);
+    expect(onFrozen).not.toHaveBeenCalled();
+  });
+
+  it('whole-frame reads only report: two identical frames never act and note the episode once', async () => {
+    // Arrange: a still music upload with the overlay off
+    const { rb, onFrozen, onStill } = setup({ overlay: false, frames: Array.from({ length: 8 }, () => frame(40)) });
+
+    // Act
+    for (let i = 0; i < 4; i++) await rb.check();
+
+    // Assert
+    expect(onFrozen).not.toHaveBeenCalled();
+    expect(onStill).toHaveBeenCalledOnce();
+    expect(rb.status().state).toBe('frozen');
+  });
+
+  it('notes a new whole-frame episode after the picture moved', async () => {
+    const f = (n: number): Buffer => frame(n);
+    const { rb, onStill } = setup({ overlay: false, frames: [f(1), f(1), f(1), f(1), f(1), f(9), f(1), f(1), f(1), f(1)] });
+
+    for (let i = 0; i < 5; i++) await rb.check();
+
+    expect(onStill).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['a stitched-ad date range', AD_DATERANGE_MEDIA],
+    ['a segment not titled live', AD_TITLE_MEDIA],
+  ])('skips the check during an ad (%s) and resets the bad-read streak', async (_name, media) => {
+    // Arrange: one bad read, then an ad, then one bad read
+    let current = LIVE_MEDIA;
+    const { rb, run, onFrozen } = setup({ media: () => current, frames: [still(), still(), still(), still()] });
+    await rb.check();
+    current = media;
+    const grabsBefore = (run as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Act
+    await rb.check();
+
+    // Assert
+    expect((run as ReturnType<typeof vi.fn>).mock.calls.length).toBe(grabsBefore);
+    current = LIVE_MEDIA;
+    await rb.check();
+    expect(onFrozen).not.toHaveBeenCalled();
+  });
+
+  it('grabs during plain live segments', async () => {
+    const { rb, run } = setup({ media: LIVE_MEDIA, frames: [still(), moved()] });
+    await rb.check();
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('a media playlist that cannot be fetched counts as unavailable', async () => {
+    const { rb, run, onUnavailable } = setup({ media: null });
+    await rb.check();
+    expect(run).not.toHaveBeenCalled();
+    expect(onUnavailable).toHaveBeenCalledOnce();
+  });
+
+  it('an unavailable check between two bad reads resets the streak', async () => {
+    const { rb, onFrozen } = setup({ frames: [still(), still(), still(), null, still(), still()] });
+
+    await rb.check();
+    await rb.check();
+    await rb.check();
+
+    expect(onFrozen).not.toHaveBeenCalled();
+  });
+
+  it('a check still in flight when stop() runs does nothing', async () => {
+    // Arrange: one bad read, then a second bad read whose grab finishes after stop()
+    const { rb, run, onFrozen } = setup({ frames: [still(), still()] });
+    await rb.check();
+    (run as ReturnType<typeof vi.fn>).mockImplementation(async () => { rb.stop(); return still(); });
+
+    // Act
+    await rb.check();
+
+    // Assert
     expect(onFrozen).not.toHaveBeenCalled();
   });
 });
