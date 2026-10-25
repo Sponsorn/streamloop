@@ -7,12 +7,13 @@ import { EventEmitter } from 'events';
 import { installRoot, SupervisorLauncher } from '../supervisor-launcher.js';
 import type { SupervisorClient, SupervisorStatus } from '../supervisor-client.js';
 import { SPAWN_CWD } from '../spawn-cwd.js';
+import { launchGuard, OBS_RUNNING, type Encoder, type RunFn } from '../setup-check.js';
 
 class FakeChild extends EventEmitter {
   unref = vi.fn();
 }
 
-function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: boolean } = {}) {
+function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: boolean; beforeLaunch?: () => Promise<string | null> } = {}) {
   let answering = opts.answering ?? false;
   const client = {
     status: vi.fn(async (): Promise<SupervisorStatus | null> => (answering ? { state: 'playing' } : null)),
@@ -31,6 +32,7 @@ function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: 
     spawnImpl: spawnImpl as unknown as typeof spawn,
     onEvent: (kind) => events.push(kind),
     debugFaults: opts.debugFaults,
+    beforeLaunch: opts.beforeLaunch,
   });
   return { launcher, client, spawnImpl, children, events, setAnswering: (v: boolean) => { answering = v; } };
 }
@@ -486,5 +488,119 @@ describe('stopped-by-user marker', () => {
     // Assert
     expect(start).not.toThrow();
     expect(launcher.isStoppedByUser()).toBe(false);
+  });
+});
+describe('launch guard', () => {
+  function guarded(o: { obs?: () => boolean; working?: Encoder[]; configured?: Encoder; answering?: boolean } = {}) {
+    let encoder: Encoder = o.configured ?? 'h264_nvenc';
+    const saveEncoder = vi.fn((e: Encoder) => { encoder = e; });
+    const guardEvents: { kind: string; detail?: Record<string, unknown> }[] = [];
+    const run: RunFn = vi.fn(async (_f: string, args: string[]) => (o.working ?? ['h264_nvenc']).includes(args[args.indexOf('-c:v') + 1] as Encoder));
+    const obsRunning = vi.fn(async () => (o.obs ? o.obs() : false));
+    const beforeLaunch = launchGuard({
+      root,
+      getEncoder: () => encoder,
+      saveEncoder,
+      onEvent: (kind, detail) => guardEvents.push({ kind, detail }),
+      obsRunning,
+      run,
+    });
+    return { ...setup({ beforeLaunch, answering: o.answering }), saveEncoder, guardEvents, run, obsRunning };
+  }
+
+  it('holds the launch while OBS runs, with the reason and one event, and launches once OBS closes', async () => {
+    // Arrange
+    let obs = true;
+    const { launcher, spawnImpl, guardEvents } = guarded({ obs: () => obs });
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(20_000);
+    const blockedReason = launcher.blockReason();
+    const spawnsWhileBlocked = spawnImpl.mock.calls.length;
+    obs = false;
+    await vi.advanceTimersByTimeAsync(2_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnsWhileBlocked).toBe(0);
+    expect(blockedReason).toBe(OBS_RUNNING);
+    expect(guardEvents.filter((e) => e.kind === 'supervisor-blocked-by-obs')).toHaveLength(1);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(launcher.blockReason()).toBeNull();
+  });
+
+  it('saves amf and emits encoder-fallback once when the configured nvenc fails, then spawns', async () => {
+    // Arrange
+    const { launcher, spawnImpl, saveEncoder, guardEvents } = guarded({ working: ['h264_amf', 'libx264'] });
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(20_000);
+    launcher.stop();
+
+    // Assert
+    expect(saveEncoder).toHaveBeenCalledWith('h264_amf');
+    expect(guardEvents.filter((e) => e.kind === 'encoder-fallback')).toEqual([{ kind: 'encoder-fallback', detail: { from: 'h264_nvenc', to: 'h264_amf' } }]);
+    expect(spawnImpl.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(saveEncoder.mock.invocationCallOrder[0]).toBeLessThan(spawnImpl.mock.invocationCallOrder[0]);
+  });
+
+  it('neither saves nor emits when the configured encoder works', async () => {
+    // Arrange
+    const { launcher, spawnImpl, saveEncoder, guardEvents } = guarded();
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(saveEncoder).not.toHaveBeenCalled();
+    expect(guardEvents).toEqual([]);
+  });
+
+  it('never spawns when no encoder works, with one alert and a plain reason', async () => {
+    // Arrange
+    const { launcher, spawnImpl, guardEvents } = guarded({ working: [] });
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(20_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(launcher.blockReason()).toBe('No encoder works on this PC. Check the graphics driver.');
+    expect(guardEvents.filter((e) => e.kind === 'no-encoder')).toHaveLength(1);
+  });
+
+  it('does not run on attach', async () => {
+    // Arrange
+    const { launcher, obsRunning, run } = guarded({ answering: true });
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(20_000);
+    launcher.stop();
+
+    // Assert
+    expect(obsRunning).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('does not run again while a spawn waits out its backoff', async () => {
+    // Arrange: the first spawn at 4 s owes a 10 s backoff
+    const { launcher, obsRunning, spawnImpl } = guarded();
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(obsRunning).toHaveBeenCalledTimes(1);
   });
 });

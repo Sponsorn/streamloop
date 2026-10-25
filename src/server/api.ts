@@ -14,6 +14,7 @@ import { protectStreamKey, type SupervisorClient, type SupervisorStatus } from '
 import type { LauncherState, SupervisorLauncher } from './supervisor-launcher.js';
 import type { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
+import { readSetupReport, runSetupCheck as runSetupCheckDefault, type SetupReport } from './setup-check.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
@@ -21,7 +22,7 @@ export interface ApiDependencies {
   applyConfig: (config: AppConfig) => void;
   saveConfig?: (patch: Partial<AppConfig>) => AppConfig;
   client: Pick<SupervisorClient, 'status' | 'control' | 'reload' | 'shutdown'>;
-  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow' | 'waitReason'>;
+  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow' | 'waitReason' | 'blockReason'>;
   eventLog: Pick<EventLog, 'getEvents'>;
   /** The install root holding supervisor\ and data\; null when it is unknown. */
   root: string | null;
@@ -36,6 +37,7 @@ export interface ApiDependencies {
   getTwitch: () => TwitchLivenessChecker;
   getUptime: () => number;
   apiToken: string;
+  runSetupCheck?: (root: string) => Promise<SetupReport>;
   /** STREAMLOOP_TEST_HOOKS=1 only: adds POST /test/exit-75, the update restart without an update. */
   testHooks?: boolean;
 }
@@ -70,12 +72,14 @@ export function streamState(
   launcher: LauncherState,
   stoppedByUser: boolean,
   waitReason: string | null = null,
+  blockReason: string | null = null,
 ): { state: StreamState; reason: string | null } {
   // The old supervisor can answer for a moment after Stop, so the user's stop wins.
   if (stoppedByUser) return { state: 'stopped', reason: 'The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start.' };
   // So does a Start that waits for that old supervisor to exit.
   if (waitReason) return { state: 'starting', reason: waitReason };
   if (!sup) {
+    if (blockReason) return { state: 'off-air', reason: blockReason };
     if (launcher === 'starting') return { state: 'starting', reason: 'The supervisor is starting.' };
     if (launcher === 'missing') return { state: 'off-air', reason: 'The supervisor program was not found in the install folder.' };
     return { state: 'off-air', reason: 'The supervisor is not answering.' };
@@ -123,6 +127,8 @@ function errorText(err: unknown): string {
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
   const save = deps.saveConfig ?? ((patch: Partial<AppConfig>) => saveConfigFile(patch));
+  const runSetupCheck = deps.runSetupCheck ?? ((root: string) => runSetupCheckDefault(root));
+  let setupRun: Promise<SetupReport> | null = null;
   const protect = deps.protect ?? ((exe: string, plain: string) => protectStreamKey(exe, plain));
   const logDirs: Record<string, string | null> = {
     supervisor: deps.root ? join(deps.root, 'data', 'logs') : null,
@@ -164,7 +170,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const sup = await deps.client.status();
     const launcher = deps.launcher.state();
     res.json({
-      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser(), deps.launcher.waitReason()),
+      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser(), deps.launcher.waitReason(), deps.launcher.blockReason()),
       supervisor: sup,
       launcher,
       twitch: deps.getTwitch().getStatus(),
@@ -393,6 +399,29 @@ export function createApiRouter(deps: ApiDependencies): Router {
     deps.launcher.launchNow();
     logger.info('Stream started from the dashboard');
     res.json({ ok: true });
+  });
+
+  // --- Setup check ---
+
+  const NO_ROOT = 'The install folder is not known, so the setup check cannot run.';
+
+  router.get('/setup-check', (_req, res) => {
+    if (!deps.root) return res.status(503).json({ error: NO_ROOT });
+    res.json(readSetupReport(deps.root));
+  });
+
+  // Recommendations are not applied here; the dashboard saves them through POST /config.
+  router.post('/setup-check/run', async (_req, res) => {
+    const root = deps.root;
+    if (!root) return res.status(503).json({ error: NO_ROOT });
+    // A second click while the probes run gets the same result instead of a second set of probes.
+    setupRun ??= runSetupCheck(root).finally(() => { setupRun = null; });
+    try {
+      res.json(await setupRun);
+    } catch (err) {
+      logger.error({ err }, 'Setup check failed');
+      res.status(500).json({ error: errorText(err) });
+    }
   });
 
   // --- Log endpoints ---

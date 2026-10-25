@@ -2,6 +2,7 @@ import { closeSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import type { DiscordConfig } from './types.js';
 import { logger } from './logger.js';
+import { NO_ENCODER, OBS_RUNNING } from './setup-check.js';
 
 export interface SupervisorEvent {
   ts: string;
@@ -128,6 +129,9 @@ export function describe(e: SupervisorEvent): Described {
     case 'supervisor-missing':
       return critical('The supervisor program is missing from the install.');
     case 'supervisor-launched': return { message: 'Supervisor launched' };
+    case 'supervisor-blocked-by-obs': return { message: OBS_RUNNING };
+    case 'encoder-fallback': return critical(`The ${one(e.from)} encoder failed its test, so the stream uses ${one(e.to)}.`);
+    case 'no-encoder': return critical(NO_ENCODER);
     case 'start': return { message: 'Supervisor started' };
     case 'shutdown': return { message: 'Supervisor shut down' };
     case 'reload': return { message: 'Configuration reloaded' };
@@ -167,6 +171,8 @@ export class AlertGate {
   private encoderAlerted = false;
   private spawnAlerted = false;
   private tokenAlerted = false;
+  /** from>to of the last encoder-fallback alert. */
+  private lastFallback = '';
 
   describe(e: SupervisorEvent): Described {
     const d = describe(e);
@@ -196,6 +202,12 @@ export class AlertGate {
         if (this.tokenAlerted) return drop();
         this.tokenAlerted = true;
         return d;
+      case 'encoder-fallback': {
+        const change = `${one(e.from)}>${one(e.to)}`;
+        if (change === this.lastFallback) return drop();
+        this.lastFallback = change;
+        return d;
+      }
       case 'token-server-spawn':
       case 'token-server-adopt':
         this.tokenAlerted = false;
@@ -206,9 +218,11 @@ export class AlertGate {
   }
 }
 
+const CRITICAL_LAUNCHER = new Set(['supervisor-down', 'supervisor-missing', 'encoder-fallback', 'no-encoder']);
+
 /** Shape a launcher callback as a SupervisorEvent, so one function routes both sources. */
 export function launcherEvent(kind: string, detail?: Record<string, unknown>): SupervisorEvent {
-  const level = kind === 'supervisor-down' || kind === 'supervisor-missing' ? 'critical' : 'info';
+  const level = CRITICAL_LAUNCHER.has(kind) ? 'critical' : kind === 'supervisor-blocked-by-obs' ? 'warn' : 'info';
   return { ts: new Date().toISOString(), level, kind, ...detail };
 }
 

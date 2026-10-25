@@ -40,7 +40,8 @@ interface Harness {
   sup: { value: SupervisorStatus | null };
   launcherState: { value: LauncherState; stopped: boolean };
   client: { status: ReturnType<typeof vi.fn>; control: ReturnType<typeof vi.fn>; reload: ReturnType<typeof vi.fn>; shutdown: ReturnType<typeof vi.fn> };
-  launcher: { state: ReturnType<typeof vi.fn>; isStoppedByUser: ReturnType<typeof vi.fn>; markStoppedByUser: ReturnType<typeof vi.fn>; launchNow: ReturnType<typeof vi.fn>; waitReason: ReturnType<typeof vi.fn> };
+  launcher: { state: ReturnType<typeof vi.fn>; isStoppedByUser: ReturnType<typeof vi.fn>; markStoppedByUser: ReturnType<typeof vi.fn>; launchNow: ReturnType<typeof vi.fn>; waitReason: ReturnType<typeof vi.fn>; blockReason: ReturnType<typeof vi.fn> };
+  runSetupCheck: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
   applyConfig: ReturnType<typeof vi.fn>;
   protect: ReturnType<typeof vi.fn>;
@@ -63,7 +64,9 @@ function harness(): Harness {
     markStoppedByUser: vi.fn(() => { launcherState.stopped = true; }),
     launchNow: vi.fn(() => { launcherState.stopped = false; }),
     waitReason: vi.fn((): string | null => null),
+    blockReason: vi.fn((): string | null => null),
   };
+  const runSetupCheck = vi.fn(async () => ({ at: 'now', encoder: { chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false }, cache: { freeMb: 1, recommendedMb: 50, warning: null }, dependencies: [] }));
   const save = vi.fn((patch: Partial<AppConfig>) => {
     config.value = { ...config.value, ...patch, supervisor: { ...config.value.supervisor, ...(patch.supervisor ?? {}) } };
     return config.value;
@@ -89,8 +92,9 @@ function harness(): Harness {
     getTwitch: () => ({ getStatus: () => ({ enabled: false }) }),
     getUptime: () => 1234,
     apiToken: TOKEN,
+    runSetupCheck,
   } as unknown as ApiDependencies;
-  return { deps, sup, launcherState, client, launcher, save, applyConfig, protect, config };
+  return { deps, sup, launcherState, client, launcher, save, applyConfig, protect, config, runSetupCheck };
 }
 
 let server: Server;
@@ -177,6 +181,15 @@ describe('API on the supervisor', () => {
       const body = await (await get('/status')).json();
 
       expect(body.stream).toEqual({ state: 'starting', reason: 'Waiting for the stopped supervisor to exit before starting it again.' });
+    });
+
+    it('is off air with the launcher reason while the launch is held', async () => {
+      h.launcherState.value = 'starting';
+      h.launcher.blockReason.mockReturnValue('OBS is running.');
+
+      const body = await (await get('/status')).json();
+
+      expect(body.stream).toEqual({ state: 'off-air', reason: 'OBS is running.' });
     });
 
     it('keeps firstRun, systemMemory, uptimeMs and twitch', async () => {
@@ -370,6 +383,7 @@ describe('API on the supervisor', () => {
       expect(res.status).toBe(503);
       expect(typeof (await res.json()).error).toBe('string');
       expect(h.client.control).not.toHaveBeenCalled();
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
     });
 
     it('POST /player/jump returns 503 after Stop stream', async () => {
@@ -435,7 +449,35 @@ describe('API on the supervisor', () => {
     });
   });
 
-  it.each(['/stream/stop', '/stream/start', '/stream-key', '/playlist/switch', '/player/next', '/config'])(
+  describe('setup check', () => {
+    it('GET /setup-check is null before the first run', async () => {
+      expect(await (await get('/setup-check')).json()).toBeNull();
+    });
+
+    it('POST /setup-check/run runs the check on the install root, then GET returns the stored report', async () => {
+      const report = await (await post('/setup-check/run')).json();
+      mkdirSync(join(tmp, 'root', 'data'), { recursive: true });
+      writeFileSync(join(tmp, 'root', 'data', 'setup-check.json'), JSON.stringify(report));
+
+      expect(h.runSetupCheck).toHaveBeenCalledWith(join(tmp, 'root'));
+      expect(report.encoder.chosen).toBe('h264_nvenc');
+      expect(await (await get('/setup-check')).json()).toEqual(report);
+    });
+
+    it('answers 503 with a reason when there is no install root', async () => {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+      await listen({ ...h.deps, root: null });
+
+      const [g, p] = await Promise.all([get('/setup-check'), post('/setup-check/run')]);
+
+      expect([g.status, p.status]).toEqual([503, 503]);
+      expect((await p.json()).error).toMatch(/install folder/);
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(['/stream/stop', '/stream/start', '/stream-key', '/playlist/switch', '/player/next', '/config', '/setup-check/run'])(
     'refuses POST %s without the API token', async (path) => {
       const res = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: KEY, playlistIndex: 1 }) });
 

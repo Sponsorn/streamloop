@@ -320,3 +320,32 @@ describe('AlertGate', () => {
     expect(got).toEqual(['critical', undefined, 'critical']);
   });
 });
+
+describe('launch guard events', () => {
+  it('puts the OBS block on the timeline only, as a warning', () => {
+    const e = launcherEvent('supervisor-blocked-by-obs');
+    expect(e.level).toBe('warn');
+    expect(describeEvent(e).discord).toBeUndefined();
+    expect(describeEvent(e).message).toMatch(/OBS is running/);
+  });
+
+  it('sends encoder-fallback as critical with both encoders named', () => {
+    const e = launcherEvent('encoder-fallback', { from: 'h264_nvenc', to: 'h264_amf' });
+    expect(e.level).toBe('critical');
+    expect(describeEvent(e)).toEqual({
+      message: 'The h264_nvenc encoder failed its test, so the stream uses h264_amf.',
+      discord: { kind: 'critical', vars: { message: 'The h264_nvenc encoder failed its test, so the stream uses h264_amf.' }, level: 'error' },
+    });
+  });
+
+  it('alerts encoder-fallback once per change', () => {
+    const gate = new AlertGate();
+    const fb = (from: string, to: string) => gate.describe(launcherEvent('encoder-fallback', { from, to })).discord?.kind;
+    expect([fb('h264_nvenc', 'h264_amf'), fb('h264_nvenc', 'h264_amf'), fb('h264_amf', 'libx264')]).toEqual(['critical', undefined, 'critical']);
+  });
+
+  it('sends no-encoder as critical', () => {
+    const e = launcherEvent('no-encoder');
+    expect(describeEvent(e).discord?.vars.message).toBe('No encoder works on this PC. Check the graphics driver.');
+  });
+});

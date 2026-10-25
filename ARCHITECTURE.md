@@ -133,6 +133,7 @@ Green is proven by a spike, by the stage 2 runs or by the stage 3 runs against l
 - Media bytes never pass through a loop that also does disk writes or control work, and a critical output is never teed synchronously with a non-critical one. (Spike 1 lessons)
 - The supervisor is a sibling of Node, not its child: Node restarts and app updates must not drop the stream. Node starts it through `streamloop-supervisor.exe launch`, an intermediate that exits once the supervisor is up, so the supervisor's parent is dead and it has left Node's job when the job allows breakaway: no tree kill (`taskkill /T`, "End process tree") and no job of Node's reaches it.
 - 2.x (from 2.3.7) will not start its OBS stream while `GET 127.0.0.1:4417/status` reports `encoder.alive: true`, so 3.0 must keep that endpoint and field. The check fails open: anything else lets 2.x stream (`src/server/stream-guard.ts` on the `2.x` branch).
+- The other way round, Node does not launch the supervisor while `obs64.exe` runs, since 2.x may be streaming on the same key. Before each launch it also test-encodes with the configured encoder and saves a working fallback (`src/server/setup-check.ts`).
 - 2.x (from 2.3.7) only updates to releases with its own major version; 3.x releases are never marked "latest" on GitHub, because older 2.x installs still read it.
 
 ## Where things live
