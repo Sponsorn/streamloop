@@ -14,7 +14,7 @@
  * asset), a .sha256 per ZIP, and run verify-release.mjs on the ZIP.
  *
  * The full build needs cargo (it builds the supervisor) and spikes/buffer/media/slate.mp4.
- * ffmpeg, the token server source and the yt-dlp plugin are pinned by SHA-256; a mismatch
+ * Node, ffmpeg, the token server source and the yt-dlp plugin are pinned by SHA-256; a mismatch
  * fails the build.
  */
 
@@ -26,7 +26,11 @@ import { pipeline } from 'stream/promises';
 
 const NODE_VERSION = '22.23.4';
 const NODE_ARCH = 'win-x64';
-const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`;
+const NODE = {
+  url: `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`,
+  // from nodejs.org/dist/v22.23.4/SHASUMS256.txt
+  sha256: 'cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20',
+};
 const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe';
 const DENO_URL = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip';
 
@@ -37,6 +41,7 @@ const FFMPEG = {
 };
 const POT_TAG = '2.0.0';
 const POT_SERVER = {
+  // tag 2.0.0 is commit 37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8
   url: `https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/${POT_TAG}.tar.gz`,
   sha256: '47038f7e0556a3d689044460f1b6d78381212e1bd04723a27358e1a42279f866',
   dir: `bgutil-ytdlp-pot-provider-${POT_TAG}/server`,
@@ -55,6 +60,13 @@ const WORK = join(DIST, 'work');
 async function main() {
   const SLIM = process.argv.includes('--slim');
   console.log(`=== StreamLoop Release Builder ${SLIM ? '(update ZIP)' : '(full)'} ===\n`);
+  if (!SLIM) {
+    try {
+      execSync('cargo --version', { stdio: 'ignore', windowsHide: true });
+    } catch {
+      throw new Error('Rust (cargo) is needed for the full build');
+    }
+  }
 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const suffix = SLIM ? '-update' : '';
@@ -73,7 +85,7 @@ async function main() {
   if (!SLIM) {
     console.log(`Node.js v${NODE_VERSION}...`);
     const nodeZip = join(WORK, 'node.zip');
-    await downloadFile(NODE_URL, nodeZip);
+    await downloadPinned(NODE, nodeZip);
     execFileSync(TAR, ['-xf', nodeZip, '-C', WORK], { stdio: 'inherit', windowsHide: true });
     cpSync(join(WORK, `node-v${NODE_VERSION}-${NODE_ARCH}`), join(RELEASE, 'node'), { recursive: true });
     const nodeDir = join(RELEASE, 'node');
@@ -86,8 +98,8 @@ async function main() {
   for (const file of ['package.json', 'package-lock.json', 'tsconfig.json']) {
     if (existsSync(join(ROOT, file))) cpSync(join(ROOT, file), join(appDir, file));
   }
-  // never the real config.json; START.bat carries the installed one across updates
-  cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.json'));
+  // no config.json: Node creates it from the example on first start
+  cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.example.json'));
   writeFileSync(join(appDir, 'node-version.txt'), `${NODE_VERSION}\n`);
   writeFileSync(join(DIST, 'node-version.txt'), `${NODE_VERSION}\n`);
   execSync(`${npm.cmd} install --omit=dev`, { cwd: appDir, env: npm.env, stdio: 'inherit', windowsHide: true });
@@ -117,6 +129,8 @@ async function main() {
     const denoZip = join(WORK, 'deno.zip');
     await downloadFile(DENO_URL, denoZip);
     execFileSync(TAR, ['-xf', denoZip, '-C', ytdlpDir], { stdio: 'inherit', windowsHide: true });
+    // unpinned "latest" downloads; the log records what shipped
+    for (const exe of ['yt-dlp.exe', 'deno.exe']) console.log(`  ${exe} sha256 ${await sha256File(join(ytdlpDir, exe))}`);
     await downloadPinned(POT_PLUGIN, join(ytdlpDir, 'plugins', 'bgutil-ytdlp-pot-provider.zip'));
 
     // upstream has no build script; its Dockerfile and README build with tsc

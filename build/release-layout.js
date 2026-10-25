@@ -1,12 +1,18 @@
 // Paths each release ZIP must hold, relative to its top folder (streamloop/).
-// The full list covers every path supervisor/src/paths.rs resolves (release-layout.test.ts).
-
-const APP = ['app/package.json', 'app/node-version.txt', 'app/src/server/index.ts', 'app/node_modules', 'START.bat'];
+// The full list covers every path supervisor/src/paths.rs resolves (release-layout.test.ts),
+// except app/config.json: Node creates it from the example, so a reinstall keeps the user's.
+const APP = [
+  'app/package.json',
+  'app/node-version.txt',
+  'app/config.example.json',
+  'app/src/server/index.ts',
+  'app/node_modules/tsx/dist/cli.mjs',
+  'START.bat',
+];
 
 /** @type {string[]} */
 export const FULL_LAYOUT = [
   ...APP,
-  'app/config.json',
   'node/node.exe',
   'supervisor/streamloop-supervisor.exe',
   'supervisor/slate.mp4',

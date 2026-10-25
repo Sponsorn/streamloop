@@ -14,11 +14,25 @@ describe('release layout', () => {
     const supervisorPaths = [...pathsRs.matchAll(/\bat\("([^"]+)"\)/g)].map((m) => m[1]);
 
     // Act
-    const absent = supervisorPaths.filter((p) => !FULL_LAYOUT.includes(p));
+    // Node creates app/config.json from the shipped example on first start
+    const absent = supervisorPaths.filter((p) => p !== 'app/config.json' && !FULL_LAYOUT.includes(p));
 
     // Assert
     expect(supervisorPaths.length).toBeGreaterThan(5);
     expect(absent).toEqual([]);
+  });
+
+  it('never ships a config.json that would overwrite the installed one', () => {
+    // Assert
+    expect(FULL_LAYOUT).not.toContain('app/config.json');
+    expect(UPDATE_LAYOUT).not.toContain('app/config.json');
+    expect(FULL_LAYOUT).toContain('app/config.example.json');
+  });
+
+  it('ships the tsx CLI that START.bat runs the server with', () => {
+    // Assert
+    expect(FULL_LAYOUT).toContain('app/node_modules/tsx/dist/cli.mjs');
+    expect(UPDATE_LAYOUT).toContain('app/node_modules/tsx/dist/cli.mjs');
   });
 
   it('keeps the update ZIP to app and the launcher', () => {

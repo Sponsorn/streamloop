@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, renameSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'fs';
+import { resolve, dirname, join } from 'path';
 import { z } from 'zod';
 import type { AppConfig, DiscordTemplates } from './types.js';
 import { logger } from './logger.js';
@@ -112,6 +112,9 @@ function migrateJson(json: Record<string, unknown>): void {
 
 export function loadConfig(path?: string): AppConfig {
   resolvedConfigPath = resolve(path ?? 'config.json');
+  // Releases ship only the example, so a reinstall can never overwrite the user's config.
+  const example = join(dirname(resolvedConfigPath), 'config.example.json');
+  if (!existsSync(resolvedConfigPath) && existsSync(example)) copyFileSync(example, resolvedConfigPath);
   const raw = readFileSync(resolvedConfigPath, 'utf-8');
   const json = JSON.parse(raw);
   migrateJson(json);

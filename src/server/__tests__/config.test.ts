@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'fs';
+import { writeFileSync, unlinkSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { loadConfig, saveConfig, isFirstRun } from '../config.js';
 
@@ -12,6 +12,46 @@ beforeEach(() => {
 
 afterEach(() => {
   try { unlinkSync(tmpConfig); } catch {}
+});
+
+describe('loadConfig on a fresh install', () => {
+  const dir = join(tmpDir, 'fresh-install');
+  const configPath = join(dir, 'config.json');
+  const examplePath = join(dir, 'config.example.json');
+
+  beforeEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(examplePath, JSON.stringify({ playlists: [{ id: 'PLxxxxxxxxxxxxxxxx' }] }));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('creates config.json from the example next to it when it is missing', () => {
+    // Act
+    const cfg = loadConfig(configPath);
+
+    // Assert
+    expect(cfg.playlists).toEqual([{ id: 'PLxxxxxxxxxxxxxxxx' }]);
+    expect(isFirstRun(cfg)).toBe(true);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).playlists).toEqual([{ id: 'PLxxxxxxxxxxxxxxxx' }]);
+  });
+
+  it('never replaces an existing config.json with the example', () => {
+    // Arrange
+    writeFileSync(configPath, JSON.stringify({ playlists: [{ id: 'PLmine' }], supervisor: { streamKeyProtected: 'BLOB' } }));
+
+    // Act
+    const cfg = loadConfig(configPath);
+
+    // Assert
+    expect(cfg.playlists).toEqual([{ id: 'PLmine' }]);
+    const onDisk = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(onDisk.playlists).toEqual([{ id: 'PLmine' }]);
+    expect(onDisk.supervisor.streamKeyProtected).toBe('BLOB');
+  });
 });
 
 describe('loadConfig', () => {
