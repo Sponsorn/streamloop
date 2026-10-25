@@ -239,8 +239,22 @@ async function runVerification() {
   $('#wiz-back').classList.add('invisible');
   wizCollectStepData();
 
+  setVerifyIcon('key', 'spin');
+  statusEl.textContent = 'Saving the stream key...';
+  const keyInput = $('#wiz-stream-key');
+  // The key goes first: the supervisor must never start on a first run without one.
+  let keyOk = false;
+  try {
+    await post('/api/stream-key', { key: keyInput.value });
+    keyOk = true;
+    setVerifyIcon('key', 'pass');
+  } catch (err) {
+    setVerifyIcon('key', 'fail');
+    statusEl.textContent = 'Could not save the stream key: ' + err.message;
+  }
+
   setVerifyIcon('config', 'spin');
-  statusEl.textContent = 'Saving settings...';
+  if (keyOk) statusEl.textContent = 'Saving settings...';
   const body = {
     playlists: wizState.playlists,
     discord: { webhookUrl: wizState.discordWebhookUrl },
@@ -249,6 +263,8 @@ async function runVerification() {
   try {
     // The supervisor is not up yet on a first save, so a refused reload is expected here.
     await saveConfig(body);
+    // cleared only now, so a Retry after a failed save sends the key again
+    if (keyOk) keyInput.value = '';
     setVerifyIcon('config', 'pass');
   } catch (err) {
     setVerifyIcon('config', 'fail');
@@ -257,20 +273,6 @@ async function runVerification() {
     nextBtn.disabled = false;
     nextBtn.textContent = 'Retry';
     return;
-  }
-
-  setVerifyIcon('key', 'spin');
-  statusEl.textContent = 'Saving the stream key...';
-  const keyInput = $('#wiz-stream-key');
-  let keyOk = false;
-  try {
-    await post('/api/stream-key', { key: keyInput.value });
-    keyInput.value = '';
-    keyOk = true;
-    setVerifyIcon('key', 'pass');
-  } catch (err) {
-    setVerifyIcon('key', 'fail');
-    statusEl.textContent = 'Could not save the stream key: ' + err.message;
   }
 
   if (wizState.autostart) {
