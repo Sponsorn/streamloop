@@ -1,4 +1,4 @@
-import { Router, type Response } from 'express';
+import express, { Router, type Response, type NextFunction, type Request } from 'express';
 import { existsSync, writeFileSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
 import { freemem, totalmem } from 'os';
@@ -131,6 +131,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const reload = await deps.client.reload();
     return { config, restartRequired: reload.restartRequired === true, reloadError: reload.ok ? null : reload.error ?? 'reload failed' };
   }
+
+  router.use(express.json());
 
   // CSRF/auth protection: require API token on all state-changing requests.
   // Token is served via GET /token (same-origin only — no CORS headers).
@@ -406,6 +408,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
     if (!full || !existsSync(full)) return res.status(404).json({ error: 'Log file not found' });
     try {
       const stat = statSync(full);
+      // A folder, or a device name like con.log, passes the name check and can block a read.
+      if (!stat.isFile()) return res.status(404).json({ error: 'Log file not found' });
       if (stat.size <= LOG_TAIL_BYTES) {
         res.type('text/plain').send(readFileSync(full, 'utf-8'));
       } else {
@@ -444,6 +448,15 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.post('/shutdown', (_req, res) => {
     res.json({ ok: true, message: 'Shutting down...' });
     setTimeout(() => deps.triggerShutdown(), 500);
+  });
+
+  // Never echo the body or err.message: a JSON parse error quotes the body, which may hold the stream key.
+  router.use((err: { type?: unknown; status?: unknown }, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(err);
+    const parse = err?.type === 'entity.parse.failed';
+    const status = parse ? 400 : 500;
+    logger.warn({ type: typeof err?.type === 'string' ? err.type : null, status }, 'API request failed');
+    res.status(status).json({ error: parse ? 'Invalid JSON' : 'Internal error' });
   });
 
   return router;

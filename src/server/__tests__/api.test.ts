@@ -97,7 +97,6 @@ let base = '';
 
 async function listen(deps: ApiDependencies): Promise<void> {
   const app = express();
-  app.use(express.json());
   app.use('/api', createApiRouter(deps));
   server = app.listen(0, '127.0.0.1');
   await new Promise((r) => server.once('listening', r));
@@ -235,6 +234,21 @@ describe('API on the supervisor', () => {
       expect(JSON.stringify(spies.flatMap((s) => s.mock.calls))).not.toContain(KEY);
     });
 
+    it('answers malformed JSON without echoing or logging the key', async () => {
+      const spies = spyLogs();
+
+      const res = await fetch(base + '/stream-key', {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-api-token': TOKEN }, body: `{"key":${KEY}}`,
+      });
+      const text = await res.text();
+
+      expect(res.status).toBe(400);
+      expect(JSON.parse(text)).toEqual({ error: 'Invalid JSON' });
+      expect(text).not.toContain('TESTKEY');
+      expect(JSON.stringify(spies.flatMap((s) => s.mock.calls))).not.toContain('TESTKEY');
+      expect(h.protect).not.toHaveBeenCalled();
+    });
+
     it('rejects an empty key', async () => {
       const res = await post('/stream-key', { key: '  ' });
 
@@ -306,6 +320,14 @@ describe('API on the supervisor', () => {
 
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('{"kind":"x"}\n');
+    });
+
+    it('answers 404 for a folder whose name passes the check', async () => {
+      mkdirSync(join(tmp, 'app-logs', 'con.log'));
+
+      const res = await get('/logs/node/con.log');
+
+      expect(res.status).toBe(404);
     });
 
     it.each([
@@ -392,6 +414,18 @@ describe('API on the supervisor', () => {
       expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: 1 });
     });
   });
+
+  it.each(['/stream/stop', '/stream/start', '/stream-key', '/playlist/switch', '/player/next', '/config'])(
+    'refuses POST %s without the API token', async (path) => {
+      const res = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: KEY, playlistIndex: 1 }) });
+
+      expect(res.status).toBe(403);
+      expect(h.launcher.markStoppedByUser).not.toHaveBeenCalled();
+      expect(h.launcher.launchNow).not.toHaveBeenCalled();
+      expect(h.protect).not.toHaveBeenCalled();
+      expect(h.save).not.toHaveBeenCalled();
+      expect(h.client.control).not.toHaveBeenCalled();
+    });
 
   it.each(['/player/seek', '/player/pause', '/player/stop', '/player/resume', '/player/restart-mpv', '/obs-path/detect'])(
     'no longer serves POST %s', async (path) => {

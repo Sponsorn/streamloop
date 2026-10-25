@@ -37,7 +37,6 @@ async function main() {
   const getUptime = () => Date.now() - startedAt;
 
   const app = express();
-  app.use(express.json());
 
   // Admin dashboard static files
   const adminDir = resolve(__dirname, '..', 'admin');
