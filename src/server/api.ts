@@ -211,6 +211,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
       if (supervisor) {
         delete supervisor.streamKeyProtected;
         delete supervisor.streamKeySet;
+        // A chosen encoder becomes the preference a fallback returns to. Resending the current
+        // one (any settings save after a fallback) must not make the fallback the preference.
+        if (typeof supervisor.encoder === 'string' && supervisor.encoder !== deps.getConfig().supervisor.encoder) {
+          supervisor.preferredEncoder = supervisor.encoder;
+        }
       }
       const r = await saveAndReload(body as Partial<AppConfig>);
       logger.info({ restartRequired: r.restartRequired, reloadError: r.reloadError }, 'Config updated via API');

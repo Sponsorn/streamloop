@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import {
   ENCODER_ARGS,
+  PROBE_TAIL,
   checkDependencies,
   pickEncoder,
   probeEncoder,
@@ -32,7 +33,7 @@ describe('probeEncoder', () => {
     const [file, args, timeoutMs] = run.mock.calls[0] as [string, string[], number];
     expect(file).toBe(FFMPEG);
     expect(args.join(' ')).toContain('-f lavfi -i testsrc2=size=1920x1080:rate=30 -t 2 -c:v h264_nvenc -preset p4 -rc cbr');
-    expect(args.slice(-3)).toEqual(['-f', 'null', '-']);
+    expect(args.join(' ')).toContain('-profile:v high -b:v 4500k -maxrate 4500k -bufsize 9000k -g 60 -pix_fmt yuv420p -f null -');
     expect(timeoutMs).toBe(20_000);
   });
 });
@@ -53,6 +54,25 @@ describe('pickEncoder', () => {
     const r = await pickEncoder(FFMPEG, 'h264_qsv', run);
     expect(r).toMatchObject({ encoder: 'h264_qsv', tried: ['h264_qsv'], software: false });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries the preferred encoder once after a pause and keeps it when the second try passes', async () => {
+    // Arrange
+    vi.useFakeTimers();
+    let calls = 0;
+    const run: RunFn = vi.fn(async () => ++calls > 1);
+
+    // Act
+    const picking = pickEncoder(FFMPEG, 'h264_nvenc', run, 2_000);
+    await vi.advanceTimersByTimeAsync(1_999);
+    const beforePause = calls;
+    await vi.advanceTimersByTimeAsync(1);
+    const r = await picking;
+    vi.useRealTimers();
+
+    // Assert
+    expect(beforePause).toBe(1);
+    expect(r).toMatchObject({ encoder: 'h264_nvenc', tried: ['h264_nvenc'], works: true });
   });
 
   it('probes at most four times and reports when nothing works', async () => {
@@ -94,6 +114,19 @@ describe('checkDependencies', () => {
 });
 
 describe('ENCODER_ARGS', () => {
+  it('probes with the common tail of encoder_args in supervisor/src/media.rs', () => {
+    // Arrange
+    const rs = readFileSync(join(process.cwd(), 'supervisor', 'src', 'media.rs'), 'utf-8');
+    const start = rs.indexOf('a.extend([', rs.indexOf('pub fn encoder_args'));
+    const tail = rs.slice(start, rs.indexOf('"-vf"', start));
+
+    // Act
+    const parsed = [...tail.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+
+    // Assert
+    expect(parsed).toEqual(PROBE_TAIL);
+  });
+
   it('matches video_set in supervisor/src/media.rs', () => {
     // Arrange
     const rs = readFileSync(join(process.cwd(), 'supervisor', 'src', 'media.rs'), 'utf-8');
@@ -128,9 +161,15 @@ describe('runSetupCheck', () => {
 
     // Assert
     expect(statfs).toHaveBeenCalledWith(join(root, 'data'));
-    expect(report.encoder).toEqual({ chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false });
+    expect(report.encoder).toEqual({ chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false, works: true });
     expect(report.cache).toEqual({ freeMb: 10240, recommendedMb: 1024, warning: null });
     expect(report.dependencies.every((d) => d.ok)).toBe(true);
     expect(JSON.parse(readFileSync(join(root, 'data', 'setup-check.json'), 'utf-8'))).toEqual(report);
+  });
+
+  it('reports works: false only when every encoder failed', async () => {
+    const statfs = async () => ({ bavail: 1, bsize: 1 });
+    const report = await runSetupCheck(root, { run: runWhere([]), exists: () => true, statfs });
+    expect(report.encoder).toEqual({ chosen: 'libx264', tried: ['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264'], software: true, works: false });
   });
 });

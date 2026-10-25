@@ -170,6 +170,8 @@ export class SupervisorLauncher {
     if (this.startWaitSince !== null) {
       if (answered) return;
       this.startWaitSince = null;
+      // If beforeLaunch holds this launch, the next poll retries it instead of counting misses again.
+      this.misses = MISSES_BEFORE_LAUNCH;
       await this.launch();
       return;
     }
@@ -234,6 +236,8 @@ export class SupervisorLauncher {
       this.held = held;
       if (held) return;
     }
+    // The guard can take seconds; the port-taken window and the backoff count from the real spawn.
+    const spawnedAt = this.now();
 
     // `launch` starts the supervisor detached and exits, so no Node exit or tree kill reaches it.
     // Its exit code is the supervisor's port-taken 2, relayed; 1 when the supervisor crashed
@@ -245,7 +249,6 @@ export class SupervisorLauncher {
       stdio: 'ignore',
       windowsHide: true,
     });
-    const spawnedAt = t;
     const seq = ++this.spawnSeq;
     child.on('error', () => {
       if (seq === this.spawnSeq && this.phase === 'starting') this.phase = 'down';
@@ -259,7 +262,7 @@ export class SupervisorLauncher {
     child.unref();
 
     this.spawns++;
-    this.lastSpawnAt = t;
+    this.lastSpawnAt = spawnedAt;
     this.phase = 'starting';
     this.onEvent('supervisor-launched', { exe });
   }

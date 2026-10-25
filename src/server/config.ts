@@ -70,6 +70,8 @@ const supervisorSchema = z.object({
   ingestUrl: blankIsDefault('rtmp://live.twitch.tv/app'),
   streamKeyProtected: z.string().default(''),
   encoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).default('h264_nvenc'),
+  /** The user's choice; encoder may hold a fallback. Node only, the supervisor reads encoder. */
+  preferredEncoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).optional(),
   cacheBudgetMb: z.number().int().min(50).default(300),
   readAheadSeconds: z.number().min(2).default(20),
   playerClient: blankIsDefault('mweb,web_embedded'),

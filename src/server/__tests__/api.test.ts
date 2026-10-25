@@ -301,7 +301,7 @@ describe('API on the supervisor', () => {
       const body = await res.json();
 
       expect(res.status).toBe(200);
-      expect(h.save).toHaveBeenCalledWith({ supervisor: { encoder: 'h264_amf' } });
+      expect(h.save).toHaveBeenCalledWith({ supervisor: { encoder: 'h264_amf', preferredEncoder: 'h264_amf' } });
       expect(h.applyConfig).toHaveBeenCalledOnce();
       expect(h.client.reload).toHaveBeenCalledOnce();
       expect(body).toMatchObject({ ok: true, restartRequired: true, reloadError: null });
@@ -446,6 +446,18 @@ describe('API on the supervisor', () => {
       const body = await (await get('/playlist/videos?page=1&perPage=1')).json();
 
       expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: 1 });
+    });
+  });
+
+  describe('encoder preference', () => {
+    it('POST /config that changes the encoder also sets preferredEncoder', async () => {
+      await post('/config', { supervisor: { encoder: 'h264_amf' } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_amf', preferredEncoder: 'h264_amf' });
+    });
+
+    it('POST /config that resends the current encoder leaves the preference alone', async () => {
+      await post('/config', { supervisor: { encoder: 'h264_nvenc', overlay: false } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_nvenc', overlay: false });
     });
   });
 

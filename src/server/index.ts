@@ -84,9 +84,9 @@ async function main() {
     beforeLaunch: root
       ? launchGuard({
         root,
-        getEncoder: () => config.supervisor.encoder,
-        saveEncoder: (encoder) => {
-          config = saveConfig({ supervisor: { encoder } } as Partial<AppConfig>);
+        getSupervisor: () => config.supervisor,
+        saveEncoder: (patch) => {
+          config = saveConfig({ supervisor: patch } as Partial<AppConfig>);
         },
         onEvent: (kind, detail) => onEvent(launcherEvent(kind, detail)),
       })

@@ -344,6 +344,26 @@ describe('launch guard events', () => {
     expect([fb('h264_nvenc', 'h264_amf'), fb('h264_nvenc', 'h264_amf'), fb('h264_amf', 'libx264')]).toEqual(['critical', undefined, 'critical']);
   });
 
+  it('alerts the same fallback again after the encoder was restored', () => {
+    const gate = new AlertGate();
+    const fallback = () => gate.describe(launcherEvent('encoder-fallback', { from: 'h264_nvenc', to: 'h264_amf' })).discord?.kind;
+    const restored = () => gate.describe(launcherEvent('encoder-restored', { from: 'h264_amf', to: 'h264_nvenc' })).discord?.kind;
+    expect([fallback(), restored(), fallback()]).toEqual(['critical', 'recovery', 'critical']);
+  });
+
+  it('sends encoder-restored as an info all-clear through the recovery toggle', () => {
+    const e = launcherEvent('encoder-restored', { from: 'h264_amf', to: 'h264_nvenc' });
+    expect(e.level).toBe('info');
+    expect(describeEvent(e)).toEqual({
+      message: 'The h264_nvenc encoder works again, so the stream uses it.',
+      discord: { kind: 'recovery', vars: { step: 'Back on the h264_nvenc encoder' }, level: 'info' },
+    });
+  });
+
+  it('sends ffmpeg-missing as critical', () => {
+    expect(describeEvent(launcherEvent('ffmpeg-missing')).discord?.vars.message).toBe('ffmpeg is missing from the install. Reinstall StreamLoop from the full ZIP.');
+  });
+
   it('sends no-encoder as critical', () => {
     const e = launcherEvent('no-encoder');
     expect(describeEvent(e).discord?.vars.message).toBe('No encoder works on this PC. Check the graphics driver.');

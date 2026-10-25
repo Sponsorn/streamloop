@@ -2,7 +2,7 @@ import { closeSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import type { DiscordConfig } from './types.js';
 import { logger } from './logger.js';
-import { NO_ENCODER, OBS_RUNNING } from './setup-check.js';
+import { FFMPEG_MISSING, NO_ENCODER, OBS_RUNNING } from './setup-check.js';
 
 export interface SupervisorEvent {
   ts: string;
@@ -132,6 +132,12 @@ export function describe(e: SupervisorEvent): Described {
     case 'supervisor-blocked-by-obs': return { message: OBS_RUNNING };
     case 'encoder-fallback': return critical(`The ${one(e.from)} encoder failed its test, so the stream uses ${one(e.to)}.`);
     case 'no-encoder': return critical(NO_ENCODER);
+    case 'ffmpeg-missing': return critical(FFMPEG_MISSING);
+    case 'encoder-restored':
+      return {
+        message: `The ${one(e.to)} encoder works again, so the stream uses it.`,
+        discord: { kind: 'recovery', vars: { step: `Back on the ${one(e.to)} encoder` }, level: 'info' },
+      };
     case 'start': return { message: 'Supervisor started' };
     case 'shutdown': return { message: 'Supervisor shut down' };
     case 'reload': return { message: 'Configuration reloaded' };
@@ -208,6 +214,9 @@ export class AlertGate {
         this.lastFallback = change;
         return d;
       }
+      case 'encoder-restored':
+        this.lastFallback = '';
+        return d;
       case 'token-server-spawn':
       case 'token-server-adopt':
         this.tokenAlerted = false;
@@ -218,7 +227,7 @@ export class AlertGate {
   }
 }
 
-const CRITICAL_LAUNCHER = new Set(['supervisor-down', 'supervisor-missing', 'encoder-fallback', 'no-encoder']);
+const CRITICAL_LAUNCHER = new Set(['supervisor-down', 'supervisor-missing', 'encoder-fallback', 'no-encoder', 'ffmpeg-missing']);
 
 /** Shape a launcher callback as a SupervisorEvent, so one function routes both sources. */
 export function launcherEvent(kind: string, detail?: Record<string, unknown>): SupervisorEvent {
