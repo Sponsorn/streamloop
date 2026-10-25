@@ -14,7 +14,7 @@ pub enum Input<'a> {
     Url { video: &'a str, audio: &'a str, headers: &'a str },
 }
 
-const VF: &str = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p";
+const VF: &str = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
 
 const AF: &str = "aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo";
 
@@ -408,6 +408,20 @@ mod tests {
         assert_eq!(chain(Some(super::FeederFault::Freeze), "-af"), af);
         assert_eq!(chain(Some(super::FeederFault::Mute), "-af"), format!("volume=0,{af}"));
         assert_eq!(chain(Some(super::FeederFault::Mute), "-vf"), vf);
+    }
+
+    #[test]
+    fn feeder_filter_fixes_colour_tags() {
+        // Arrange: the slate is a File input, so it shares the file feeder's chain
+        let tail = "format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
+        let inputs = [super::Input::File("v.mp4"), super::Input::File("slate.mp4"), super::Input::Url { video: "v", audio: "a", headers: "" }];
+        for input in &inputs {
+            // Act
+            let args = super::feeder_args(input, 0.0, crate::rules::BASE, None, None);
+            let vf = args[args.iter().position(|x| x == "-vf").unwrap() + 1].clone();
+            // Assert
+            assert!(vf.ends_with(tail), "{vf}");
+        }
     }
 
     #[test]
