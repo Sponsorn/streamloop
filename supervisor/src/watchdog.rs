@@ -27,8 +27,9 @@ pub const SETTLE_S: f64 = 5.0;
 
 pub fn parse_line(line: &str) -> Option<Detect> {
     if line.contains("] Reconfiguring filter graph") {
-        let video = line.starts_with("[vf#");
-        return (video || line.starts_with("[af#")).then_some(Detect::Rebuilt { video });
+        let video = line.starts_with("[vf#") || line.contains("because video parameters");
+        let audio = line.starts_with("[af#") || line.contains("because audio parameters");
+        return (video || audio).then_some(Detect::Rebuilt { video });
     }
     let keys: [(&str, &str, fn(f64) -> Detect); 4] = [
         ("[freezedetect @", "freeze_start:", Detect::FreezeStart),
@@ -130,6 +131,9 @@ mod tests {
             ),
             // not seen in a run: built from ffmpeg's audio message
             ("[af#0:1 @ 00000208bbfbe880] Reconfiguring filter graph because audio parameters changed to 48000 Hz, stereo, fltp", Some(Detect::Rebuilt { video: false })),
+            // older ffmpeg and -filter_complex name the graph differently; the message still says which
+            ("[fc#0 @ 000001] Reconfiguring filter graph because video parameters changed to yuv420p(tv, bt709), 1920x1080", Some(Detect::Rebuilt { video: true })),
+            ("[Parsed_x @ 000001] Reconfiguring filter graph because audio parameters changed to 48000 Hz, stereo, fltp", Some(Detect::Rebuilt { video: false })),
         ];
         for (line, want) in lines {
             assert_eq!(parse_line(line), want, "{line}");

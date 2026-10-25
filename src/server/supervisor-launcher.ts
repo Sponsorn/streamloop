@@ -211,7 +211,8 @@ export class SupervisorLauncher {
     this.missingReported = false;
 
     // `launch` starts the supervisor detached and exits, so no Node exit or tree kill reaches it.
-    // Its exit code is the supervisor's port-taken 2, relayed, or 0.
+    // Its exit code is the supervisor's port-taken 2, relayed; 1 when the supervisor crashed
+    // during the bind wait or could not spawn; otherwise 0.
     const args = ['launch', '--root', this.root];
     if (this.debugFaults) args.push('--debug-faults');
     const child = this.spawnImpl(exe, args, {

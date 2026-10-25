@@ -404,6 +404,20 @@ describe('SupervisorLauncher fixes', () => {
     expect(launcher.state()).toBe('starting');
     launcher.stop();
   });
+
+  it('reports down when the current launch exits 1 (the supervisor crashed during the bind wait)', async () => {
+    // Arrange: the first spawn at 4 s
+    const { launcher, children } = setup();
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // Act
+    children[0].emit('exit', 1);
+
+    // Assert
+    expect(launcher.state()).toBe('down');
+    launcher.stop();
+  });
 });
 
 describe('installRoot', () => {
