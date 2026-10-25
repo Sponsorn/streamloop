@@ -103,8 +103,9 @@ async function main() {
   writeFileSync(join(appDir, 'node-version.txt'), `${NODE_VERSION}\n`);
   writeFileSync(join(DIST, 'node-version.txt'), `${NODE_VERSION}\n`);
   execSync(`${npm.cmd} install --omit=dev`, { cwd: appDir, env: npm.env, stdio: 'inherit', windowsHide: true });
-  // tsx is a devDependency, but START.bat runs the server through it
-  execSync(`${npm.cmd} install tsx@4`, { cwd: appDir, env: npm.env, stdio: 'inherit', windowsHide: true });
+  // tsx is a devDependency, but START.bat runs the server through it. --save-prod makes it a
+  // dependency of the release copy only; without it --omit=dev would leave tsx out too.
+  execSync(`${npm.cmd} install --omit=dev --save-prod tsx@4`, { cwd: appDir, env: npm.env, stdio: 'inherit', windowsHide: true });
 
   if (!SLIM) {
     console.log('supervisor\\...');
