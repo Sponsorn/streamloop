@@ -5,140 +5,89 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>StreamLoop - Admin</title>
   <link rel="stylesheet" href="/admin/admin.css">
-  <style>
-    .video-table { border-collapse: collapse; width: 100%; font-size: 13px; }
-    .video-table th, .video-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
-    .video-table tr.current { background: rgba(59, 130, 246, 0.15); }
-    .video-table .btn-play { padding: 2px 8px; font-size: 12px; cursor: pointer; }
-    .transport-controls { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-    .transport-controls button { font-size: 18px; min-width: 36px; }
-    #seek-bar { flex: 1; }
-  </style>
 </head>
 <body>
 
-  <!-- ===== SETUP WIZARD ===== -->
+  <!-- Setup wizard -->
   <div id="view-wizard" class="hidden">
     <div class="wizard">
-      <!-- Progress bar -->
       <div class="wiz-progress">
         <div class="wiz-progress-dot completed" data-step="1"><span class="wiz-dot-num">1</span><span class="wiz-dot-label">Welcome</span></div>
         <div class="wiz-progress-line" data-after="1"></div>
-        <div class="wiz-progress-dot" data-step="2"><span class="wiz-dot-num">2</span><span class="wiz-dot-label">OBS WebSocket</span></div>
+        <div class="wiz-progress-dot" data-step="2"><span class="wiz-dot-num">2</span><span class="wiz-dot-label">Playlists</span></div>
         <div class="wiz-progress-line" data-after="2"></div>
-        <div class="wiz-progress-dot" data-step="3"><span class="wiz-dot-num">3</span><span class="wiz-dot-label">Window Capture</span></div>
+        <div class="wiz-progress-dot" data-step="3"><span class="wiz-dot-num">3</span><span class="wiz-dot-label">Stream</span></div>
         <div class="wiz-progress-line" data-after="3"></div>
-        <div class="wiz-progress-dot" data-step="4"><span class="wiz-dot-num">4</span><span class="wiz-dot-label">Playlists</span></div>
+        <div class="wiz-progress-dot" data-step="4"><span class="wiz-dot-num">4</span><span class="wiz-dot-label">Extras</span></div>
         <div class="wiz-progress-line" data-after="4"></div>
-        <div class="wiz-progress-dot" data-step="5"><span class="wiz-dot-num">5</span><span class="wiz-dot-label">Extras</span></div>
-        <div class="wiz-progress-line" data-after="5"></div>
-        <div class="wiz-progress-dot" data-step="6"><span class="wiz-dot-num">6</span><span class="wiz-dot-label">Finish</span></div>
+        <div class="wiz-progress-dot" data-step="5"><span class="wiz-dot-num">5</span><span class="wiz-dot-label">Finish</span></div>
       </div>
 
       <!-- Step 1: Welcome -->
       <div class="wiz-step" data-step="1">
         <h2>Welcome to StreamLoop</h2>
-        <p>This app plays YouTube playlists in OBS and automatically recovers from freezes, errors, and failures.</p>
+        <p>StreamLoop plays YouTube playlists to Twitch around the clock and recovers on its own when a video fails.</p>
         <div class="wiz-info-box">
-          <div class="wiz-info-title">What we'll set up:</div>
+          <div class="wiz-info-title">Setup takes four steps:</div>
           <ol class="wiz-checklist-preview">
-            <li>Connect to OBS via WebSocket</li>
-            <li>Set up Window Capture in OBS for the mpv player</li>
             <li>Add your YouTube playlists</li>
-            <li>Optional: Discord alerts &amp; Windows autostart</li>
+            <li>Enter your Twitch stream key</li>
+            <li>Optional: Discord alerts and Windows autostart</li>
+            <li>Check that the stream goes live</li>
           </ol>
-        </div>
-        <div class="wiz-info-box wiz-info-reminder">
-          <div class="wiz-info-title">Before you begin</div>
-          <p>Make sure OBS Studio is open and running. You'll need it for the next steps.</p>
         </div>
       </div>
 
-      <!-- Step 2: OBS WebSocket -->
+      <!-- Step 2: YouTube Playlists -->
       <div class="wiz-step hidden" data-step="2">
-        <h2>OBS WebSocket Connection</h2>
-        <p>StreamLoop talks to OBS through WebSocket. Let's make sure it's enabled.</p>
-        <div class="wiz-info-box">
-          <div class="wiz-info-title">In OBS, follow these steps:</div>
-          <ol class="wiz-instructions">
-            <li>Open OBS and go to <strong>Tools</strong> in the menu bar</li>
-            <li>Click <strong>WebSocket Server Settings</strong></li>
-            <li>Check <strong>Enable WebSocket Server</strong></li>
-            <li>The default port is <strong>4455</strong> &mdash; leave it as-is unless you changed it</li>
-            <li>If you set a password, enter it below. Otherwise leave it blank.</li>
-            <li>Click <strong>OK</strong> to save</li>
-          </ol>
-        </div>
-        <div class="form-group">
-          <label for="wiz-obs-pass">OBS WebSocket Password</label>
-          <input type="password" id="wiz-obs-pass" placeholder="Leave blank if no password is set">
-          <div class="hint">Only needed if you enabled authentication in OBS WebSocket settings</div>
-        </div>
-        <div class="wiz-test-row">
-          <button type="button" class="btn btn-secondary" id="wiz-test-obs" onclick="wizTestObs()">Test Connection</button>
-          <span class="wiz-test-result" id="wiz-obs-result"></span>
-        </div>
-      </div>
-
-      <!-- Step 3: Window Capture -->
-      <div class="wiz-step hidden" data-step="3">
-        <h2>Window Capture Setup</h2>
-        <p>StreamLoop uses mpv to play videos. You need two OBS sources:</p>
-
-        <h3 style="margin-top: 16px;">1. Video Player</h3>
-        <ol>
-          <li>In OBS, add a <strong>Window Capture</strong> source</li>
-          <li>Select the <strong>mpv</strong> window from the dropdown</li>
-          <li>Resize the capture to fit your canvas</li>
-        </ol>
-
-        <h3 style="margin-top: 16px;">2. Now Playing Overlay</h3>
-        <ol>
-          <li>In OBS, add a <strong>Browser Source</strong></li>
-          <li>Set the URL to: <code id="wiz-overlay-url" style="cursor:pointer; user-select:all;"></code>
-            <button type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 12px; margin-left: 4px;" onclick="navigator.clipboard.writeText(document.getElementById('wiz-overlay-url').textContent)">Copy</button>
-          </li>
-          <li>Set width/height to match your canvas (e.g. 1920x1080)</li>
-          <li>Place it <strong>above</strong> the Window Capture source in OBS</li>
-        </ol>
-
-        <div style="margin: 16px 0;">
-          <button type="button" id="wiz-check-mpv" class="btn btn-secondary">Check mpv</button>
-          <span id="wiz-mpv-result" style="margin-left: 12px;"></span>
-        </div>
-        <div style="margin: 16px 0;">
-          <button type="button" id="wiz-check-capture" class="btn btn-secondary">Verify OBS connection</button>
-          <span id="wiz-capture-result" style="margin-left: 12px;"></span>
-        </div>
-      </div>
-
-      <!-- Step 4: YouTube Playlists -->
-      <div class="wiz-step hidden" data-step="4">
         <h2>YouTube Playlists</h2>
-        <p>Add the YouTube playlists you want to play. Videos will play in order across all playlists.</p>
+        <p>Add the playlists you want to stream. The first one plays; you can switch later from the dashboard.</p>
         <div class="wiz-info-box">
           <div class="wiz-info-title">Where to find a playlist ID</div>
           <div class="wiz-url-diagram">
             <code>youtube.com/playlist?list=<strong>PLxxxxxxxxxxxxxxxx</strong></code>
           </div>
-          <p class="wiz-url-hint">Copy the part after <strong>list=</strong> &mdash; it starts with <strong>PL</strong></p>
-          <p class="wiz-url-hint" style="margin-top: 8px;"><strong>Note:</strong> YouTube limits playlists to 200 videos in the embedded player. If your playlist has more, split it into multiple playlists of 200 or fewer.</p>
+          <p class="wiz-url-hint">Paste the whole playlist URL, or just the part after <strong>list=</strong>.</p>
         </div>
         <div class="form-group">
           <label>Playlists</label>
           <div id="wiz-playlists-list"></div>
-          <button type="button" class="btn btn-secondary" onclick="wizAddPlaylist()">+ Add Playlist</button>
+          <button type="button" class="btn btn-secondary" id="wiz-add-playlist">+ Add Playlist</button>
         </div>
       </div>
 
-      <!-- Step 5: Optional Extras -->
-      <div class="wiz-step hidden" data-step="5">
+      <!-- Step 3: Stream -->
+      <div class="wiz-step hidden" data-step="3">
+        <h2>Twitch Stream</h2>
+        <p>StreamLoop sends the stream straight to Twitch.</p>
+        <div class="wiz-info-box">
+          <div class="wiz-info-title">Where to find your stream key</div>
+          <ol class="wiz-instructions">
+            <li>Open the <strong>Twitch Creator Dashboard</strong></li>
+            <li>Go to <strong>Settings</strong>, then <strong>Stream</strong></li>
+            <li>Click <strong>Copy</strong> next to <strong>Primary Stream key</strong> and paste it below</li>
+          </ol>
+        </div>
+        <div class="form-group">
+          <label for="wiz-stream-key">Stream key</label>
+          <input type="password" id="wiz-stream-key" autocomplete="off" placeholder="live_...">
+          <div class="hint">Stored encrypted on this PC. The dashboard never shows it again.</div>
+        </div>
+        <div class="form-group">
+          <label for="wiz-ingest">Ingest URL</label>
+          <input type="text" id="wiz-ingest" placeholder="rtmp://live.twitch.tv/app">
+          <div class="hint">Leave the default unless you use a specific Twitch ingest server.</div>
+        </div>
+      </div>
+
+      <!-- Step 4: Optional Extras -->
+      <div class="wiz-step hidden" data-step="4">
         <h2>Optional Extras</h2>
-        <p>These are completely optional. You can skip this step or set them up later in Settings.</p>
+        <p>You can skip this step and set these up later in Settings and Webhooks.</p>
         <div class="form-group">
           <label for="wiz-discord">Discord Webhook URL</label>
           <input type="url" id="wiz-discord" placeholder="https://discord.com/api/webhooks/...">
-          <div class="hint">Get notified about errors and recovery actions</div>
+          <div class="hint">Get a Discord message when a video fails or the stream drops</div>
           <details class="wiz-collapsible">
             <summary>How do I create a Discord webhook?</summary>
             <ol class="wiz-instructions">
@@ -153,147 +102,95 @@
         <div class="wiz-toggle-row">
           <div>
             <div class="toggle-label">Run on Windows startup</div>
-            <div class="toggle-desc">Automatically start the monitor when Windows boots</div>
+            <div class="toggle-desc">Start StreamLoop when Windows starts</div>
           </div>
           <label class="toggle">
             <input type="checkbox" id="wiz-autostart">
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <div class="wiz-optional-badge">Optional &mdash; you can configure these later</div>
       </div>
 
-      <!-- Step 6: Verify & Finish -->
-      <div class="wiz-step hidden" data-step="6">
-        <h2>Verify &amp; Finish</h2>
-        <p>Let's make sure everything is working. Your settings will be saved when you click Finish.</p>
-        <div class="wiz-verify-checklist" id="wiz-verify-list">
-          <div class="wiz-verify-item" data-check="config">
+      <!-- Step 5: Verify & Finish -->
+      <div class="wiz-step hidden" data-step="5">
+        <h2>Finish</h2>
+        <p>Click Finish to save your settings and start the stream.</p>
+        <div class="wiz-verify-checklist">
+          <div class="wiz-verify-item">
             <span class="wiz-verify-icon" id="wiz-chk-config">&#9679;</span>
-            <span>Save configuration</span>
+            <span>Save settings</span>
           </div>
-          <div class="wiz-verify-item" data-check="obs">
-            <span class="wiz-verify-icon" id="wiz-chk-obs">&#9679;</span>
-            <span>OBS WebSocket connected</span>
+          <div class="wiz-verify-item">
+            <span class="wiz-verify-icon" id="wiz-chk-key">&#9679;</span>
+            <span>Save the stream key</span>
           </div>
-          <div class="wiz-verify-item" data-check="player">
-            <span class="wiz-verify-icon" id="wiz-chk-player">&#9679;</span>
-            <span>mpv player running</span>
+          <div class="wiz-verify-item">
+            <span class="wiz-verify-icon" id="wiz-chk-live">&#9679;</span>
+            <span>Stream is live</span>
           </div>
         </div>
         <div class="wiz-verify-status" id="wiz-verify-status"></div>
       </div>
 
-      <!-- Navigation buttons -->
       <div class="wiz-nav">
-        <button type="button" class="btn btn-secondary" id="wiz-back" onclick="wizBack()">Back</button>
-        <button type="button" class="btn btn-primary" id="wiz-next" onclick="wizNext()">Continue</button>
+        <button type="button" class="btn btn-secondary" id="wiz-back">Back</button>
+        <button type="button" class="btn btn-primary" id="wiz-next">Continue</button>
       </div>
     </div>
   </div>
 
-  <!-- ===== DASHBOARD ===== -->
+  <!-- Dashboard -->
   <div id="view-dashboard" class="hidden">
-    <!-- Connection lost banner -->
     <div id="connection-lost" class="connection-lost-banner hidden">
       <div class="connection-lost-content">
-        <span>Server unreachable — dashboard data may be stale</span>
+        <span>Can't reach the server. The dashboard may be out of date.</span>
       </div>
     </div>
 
-    <!-- Update banner -->
     <div id="update-banner" class="update-banner hidden">
       <div class="update-banner-content">
-        <span id="update-banner-text">A new version is available!</span>
-        <button id="update-btn" class="btn btn-update" onclick="handleUpdate()">Update Now</button>
+        <span id="update-banner-text">A new version is available.</span>
+        <button type="button" id="update-btn" class="btn btn-update">Update Now</button>
       </div>
     </div>
 
     <div class="container">
       <header>
         <h1>StreamLoop</h1>
-        <div>
-          <span id="header-pill" class="status-pill pill-muted">Loading</span>
-          <span id="heartbeat-pill" class="status-pill pill-muted" style="display:none;">Heartbeat: -</span>
-          <span id="uptime" class="uptime"></span>
-        </div>
+        <span id="uptime" class="uptime"></span>
       </header>
 
-      <!-- Tabs -->
       <div class="tabs">
-        <button class="tab active" data-tab="monitor">Monitor</button>
-        <button class="tab" data-tab="playback">Playback</button>
-        <button class="tab" data-tab="webhooks">Webhooks</button>
-        <button class="tab" data-tab="settings">Settings</button>
+        <button type="button" class="tab active" data-tab="monitor">Monitor</button>
+        <button type="button" class="tab" data-tab="playback">Playback</button>
+        <button type="button" class="tab" data-tab="webhooks">Webhooks</button>
+        <button type="button" class="tab" data-tab="settings">Settings</button>
       </div>
 
       <!-- Monitor tab -->
       <div id="panel-monitor" class="tab-panel">
-        <!-- Playback Controls -->
-        <div class="card" style="margin-bottom: 20px;" id="playback-controls">
-          <div class="form-group" style="margin-bottom: 12px;">
-            <label for="playlist-select">Playlist</label>
-            <select id="playlist-select" class="wh-preview-select"></select>
+        <div class="card stream-card">
+          <div class="stream-head">
+            <span id="stream-word" class="stream-word muted">Loading</span>
+            <div class="stream-actions">
+              <button type="button" id="btn-stream-start" class="btn btn-secondary">Start stream</button>
+              <button type="button" id="btn-stream-stop" class="btn btn-secondary">Stop stream</button>
+            </div>
           </div>
-          <div class="transport-controls">
-            <button type="button" id="btn-prev" class="btn btn-secondary" title="Previous">&#9198;</button>
-            <button type="button" id="btn-pause" class="btn btn-secondary" title="Pause/Resume">&#9208;</button>
-            <button type="button" id="btn-next" class="btn btn-secondary" title="Next">&#9197;</button>
-            <button type="button" id="btn-stop" class="btn btn-secondary" title="Stop (prevents auto-resume)" style="margin-left: 8px;">&#9209;</button>
-            <button type="button" id="btn-restart-mpv" class="btn btn-secondary" title="Restart mpv" style="margin-left: 8px;">&#128260;</button>
-            <span id="seek-time" style="font-size: 13px; color: var(--text-dim);">0:00 / 0:00</span>
-            <input type="range" id="seek-bar" min="0" max="100" value="0">
-          </div>
-          <div id="video-list-container">
-            <table class="video-table">
-              <thead><tr><th style="width:40px">#</th><th>Title</th><th style="width:60px">Duration</th><th style="width:40px"></th></tr></thead>
-              <tbody id="video-list-body"></tbody>
-            </table>
-            <div id="video-list-pagination" style="text-align: center; margin-top: 8px;"></div>
-            <div id="video-list-loading" class="hint" style="text-align: center; padding: 16px;">Loading playlist...</div>
-          </div>
+          <div id="stream-reason" class="stream-reason hidden"></div>
+          <div id="twitch-line" class="stream-detail"></div>
+          <div id="encoder-line" class="stream-detail"></div>
         </div>
 
-        <!-- Status cards -->
-        <div class="cards">
-          <div class="card">
-            <div class="card-label">Player</div>
-            <div class="card-value" id="player-status">-</div>
-          </div>
-          <div class="card">
-            <div class="card-label">OBS</div>
-            <div class="card-value" id="obs-status">-</div>
-          </div>
-          <div class="card" id="twitch-card">
-            <div class="card-label">Twitch</div>
-            <div class="card-value" id="twitch-status">-</div>
-          </div>
-        </div>
-        <div class="cards" style="margin-top: 8px;">
-          <div class="card">
-            <div class="card-label">Recovery</div>
-            <div class="card-value" id="recovery-step">-</div>
-          </div>
-          <div class="card">
-            <div class="card-label">Errors</div>
-            <div class="card-value" id="errors">-</div>
-          </div>
-        </div>
-
-        <!-- Now playing -->
         <div class="section">
           <div class="section-title">Now Playing</div>
           <div class="now-playing">
-            <div class="np-item">
-              <div class="np-label">Playlist</div>
-              <div class="np-value" id="np-playlist">-</div>
-            </div>
             <div class="np-item np-title-item">
               <div class="np-label">Video Title</div>
               <div class="np-value" id="np-title">-</div>
             </div>
             <div class="np-item">
-              <div class="np-label">Video Index</div>
+              <div class="np-label">Video</div>
               <div class="np-value" id="np-index">-</div>
             </div>
             <div class="np-item">
@@ -301,151 +198,142 @@
               <div class="np-value" id="np-videoid">-</div>
             </div>
             <div class="np-item">
-              <div class="np-label">Video Time</div>
+              <div class="np-label">Position</div>
               <div class="np-value" id="np-time">-</div>
             </div>
             <div class="np-item">
-              <div class="np-label">Last Updated</div>
-              <div class="np-value" id="np-updated">-</div>
+              <div class="np-label">Source</div>
+              <div class="np-value" id="np-source">-</div>
             </div>
           </div>
         </div>
 
-        <!-- Event log -->
+        <div class="card section">
+          <div class="form-group">
+            <label for="playlist-select">Playlist</label>
+            <select id="playlist-select" class="wh-preview-select"></select>
+          </div>
+          <div class="transport-controls">
+            <button type="button" id="btn-prev" class="btn btn-secondary">Previous</button>
+            <button type="button" id="btn-restart" class="btn btn-secondary">Restart video</button>
+            <button type="button" id="btn-next" class="btn btn-secondary">Next</button>
+          </div>
+          <table class="video-table">
+            <thead><tr><th class="col-num">#</th><th>Title</th><th class="col-dur">Duration</th><th class="col-play"></th></tr></thead>
+            <tbody id="video-list-body"></tbody>
+          </table>
+          <div id="video-list-pagination" class="video-pagination"></div>
+          <div id="video-list-status" class="hint video-list-status">Loading playlist...</div>
+        </div>
+
         <div class="section">
-          <div class="section-title">Event Log</div>
+          <div class="section-title">Timeline</div>
           <div class="event-log" id="event-log">
-            <div class="event-empty">No events yet</div>
+            <div class="event-empty">Loading events...</div>
           </div>
         </div>
 
-        <!-- mpv diagnostic logs -->
         <div class="section">
-          <div class="section-title">mpv Diagnostic Logs</div>
-          <div class="hint" style="margin-bottom: 8px;">
-            Per-spawn mpv log files. When a recovery loop happens, the file covering
-            that time window will contain the actual yt-dlp / mpv errors.
+          <div class="section-title">Logs</div>
+          <div class="log-picker">
+            <select id="log-select" class="wh-preview-select" aria-label="Log file"></select>
+            <button type="button" id="log-refresh" class="btn btn-secondary">Refresh</button>
           </div>
-          <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-            <select id="mpv-log-select" style="flex: 1;"></select>
-            <button id="mpv-log-refresh" class="btn btn-secondary">Refresh</button>
-          </div>
-          <pre id="mpv-log-view" style="background: var(--bg-alt, #111); color: var(--fg, #ddd); padding: 8px; height: 320px; overflow: auto; font-size: 11px; white-space: pre-wrap; word-break: break-all; margin: 0;">Select a log file to view.</pre>
+          <pre id="log-view" class="log-view">Select a log file to view.</pre>
         </div>
       </div>
 
       <!-- Playback tab -->
       <div id="panel-playback" class="tab-panel hidden">
         <div class="section">
-          <div class="section-title">Recovery</div>
+          <div class="section-title">Stream Output</div>
           <div class="settings-panel">
             <div class="form-group">
-              <label for="pb-recovery-delay">Recovery delay</label>
-              <select id="pb-recovery-delay" class="wh-preview-select">
-                <option value="3000">3 seconds</option>
-                <option value="5000">5 seconds</option>
-                <option value="10000">10 seconds</option>
+              <label for="pb-encoder">Encoder</label>
+              <select id="pb-encoder" class="wh-preview-select">
+                <option value="h264_nvenc">NVIDIA (NVENC)</option>
+                <option value="h264_amf">AMD (AMF)</option>
+                <option value="h264_qsv">Intel (Quick Sync)</option>
+                <option value="libx264">Software (x264, uses the CPU)</option>
               </select>
-              <div class="hint">Wait time before retrying a failed video and before escalating to source refresh</div>
+              <div class="hint">Pick the graphics card in this PC. Software encoding works anywhere but loads the CPU.</div>
             </div>
-            <div class="form-group">
-              <label for="pb-max-errors">Max consecutive errors before skip</label>
-              <select id="pb-max-errors" class="wh-preview-select">
-                <option value="2">2 errors</option>
-                <option value="3">3 errors</option>
-                <option value="5">5 errors</option>
-              </select>
-              <div class="hint">How many errors on the same video before skipping to the next</div>
-            </div>
-            <div class="toggle-row" style="border: none; padding: 0; background: none; margin: 12px 0;">
+            <div class="toggle-row toggle-row-plain">
               <div>
-                <div class="toggle-label">Detect frozen output</div>
-                <div class="toggle-desc">Screenshot the OBS capture and reload in place if the streamed picture freezes</div>
+                <div class="toggle-label">Now-playing overlay</div>
+                <div class="toggle-desc">Draw the video title and a progress line on the stream</div>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="pb-output-toggle">
+                <input type="checkbox" id="pb-overlay">
                 <span class="toggle-slider"></span>
               </label>
             </div>
-            <div class="form-group">
-              <label for="pb-output-window">Output freeze window</label>
-              <select id="pb-output-window" class="wh-preview-select">
-                <option value="20000">20 seconds</option>
-                <option value="30000">30 seconds</option>
-                <option value="45000">45 seconds</option>
-                <option value="60000">60 seconds</option>
-              </select>
-              <div class="hint">How long the streamed picture must stay frozen before an in-place reload. Raise this if you ever stream legitimately static content.</div>
-            </div>
-            <div class="form-group">
-              <label for="pb-url-refresh">Proactive URL refresh</label>
-              <select id="pb-url-refresh" class="wh-preview-select">
-                <option value="0">Disabled</option>
-                <option value="14400000">After 4 hours</option>
-                <option value="16200000">After 4.5 hours</option>
-                <option value="18000000">After 5 hours</option>
-                <option value="19800000">After 5.5 hours</option>
-              </select>
-              <div class="hint">YouTube stream URLs expire ~6 hours after they're resolved, freezing videos longer than that mid-playback. This reloads the current video in place before the URL expires (a brief rebuffer instead of a freeze). Only fires on videos that run past this age; leave below 6 hours.</div>
-            </div>
           </div>
         </div>
-        <div class="section" style="margin-top: 20px;">
-          <div class="section-title">Maintenance</div>
+        <div class="section">
+          <div class="section-title">Buffering</div>
           <div class="settings-panel">
             <div class="form-group">
-              <label for="pb-refresh-interval">Periodic mpv restart</label>
-              <select id="pb-refresh-interval" class="wh-preview-select">
-                <option value="0">Disabled</option>
-                <option value="300000">Every 5 minutes</option>
-                <option value="600000">Every 10 minutes</option>
-                <option value="1800000">Every 30 minutes</option>
-                <option value="3600000">Every 1 hour</option>
-                <option value="14400000">Every 4 hours</option>
-                <option value="21600000">Every 6 hours</option>
-                <option value="28800000">Every 8 hours</option>
-                <option value="43200000">Every 12 hours</option>
-              </select>
-              <div class="hint">Proactively restart mpv to prevent memory buildup during long sessions</div>
+              <label for="pb-read-ahead">Read-ahead (seconds)</label>
+              <input type="number" id="pb-read-ahead" min="2" step="1">
+              <div class="hint">Seconds of video kept ready ahead of what viewers see. Minimum 2.</div>
             </div>
             <div class="form-group">
-              <label for="pb-ytdl-cookies">yt-dlp cookies from browser</label>
-              <input type="text" id="pb-ytdl-cookies" class="wh-preview-select" placeholder="e.g. brave, chrome, firefox, chrome:Profile 2">
-              <div class="hint">Pass a logged-in session to yt-dlp to avoid "Sign in to confirm you're not a bot" errors. Leave blank to disable. Browser profile optional (after a colon). Requires server restart to take effect.</div>
+              <label for="pb-cache">Download cache (MB)</label>
+              <input type="number" id="pb-cache" min="50" step="10">
+              <div class="hint">Disk space for videos downloaded ahead of time. Minimum 50.</div>
             </div>
             <div class="form-group">
-              <label for="pb-ytdl-player-client">yt-dlp player client</label>
-              <input type="text" id="pb-ytdl-player-client" class="wh-preview-select" placeholder="e.g. tv,web_safari (default)">
-              <div class="hint">Which YouTube client(s) yt-dlp uses to resolve streams. Accepts a comma-separated fallback list — yt-dlp tries each in order and merges formats, so if one client gets a 403 or returns no usable formats for a video, the next one covers it. Default <code>tv,web_safari</code>. Leave blank for yt-dlp's own default. Requires server restart to take effect.</div>
+              <label for="pb-player-client">yt-dlp player client</label>
+              <input type="text" id="pb-player-client" placeholder="mweb,web_embedded">
+              <div class="hint">Which YouTube clients yt-dlp asks for video, tried in order. Change it only if videos keep failing to load.</div>
             </div>
           </div>
         </div>
-        <button type="button" id="pb-save-btn" class="btn btn-primary" style="margin-top: 20px;">Save Playback Settings</button>
+        <div class="section">
+          <div class="section-title">Watchdog</div>
+          <div class="settings-panel">
+            <div class="form-group">
+              <label for="pb-freeze">Frozen picture (seconds)</label>
+              <input type="number" id="pb-freeze" min="5" step="1">
+              <div class="hint">How long the picture must stay still before the video is retried. Minimum 5. Raise it if you stream still images.</div>
+            </div>
+            <div class="form-group">
+              <label for="pb-silence">Silence (seconds)</label>
+              <input type="number" id="pb-silence" min="5" step="1">
+              <div class="hint">How long the audio must stay silent before the video is retried. Minimum 5.</div>
+            </div>
+          </div>
+        </div>
+        <button type="button" id="pb-save-btn" class="btn btn-primary">Save Playback Settings</button>
+        <div id="pb-restart-note" class="restart-note hidden">
+          <span>Some changes apply only after the stream restarts. Viewers see a short drop.</span>
+          <button type="button" class="btn btn-secondary restart-stream-btn">Restart stream</button>
+        </div>
       </div>
 
       <!-- Webhooks tab -->
       <div id="panel-webhooks" class="tab-panel hidden">
-        <!-- Webhook & Identity -->
         <div class="section">
           <div class="section-title">Webhook &amp; Identity</div>
           <div class="settings-panel">
             <div class="form-group">
               <label for="wh-url">Discord Webhook URL</label>
-              <div class="obs-path-row">
+              <div class="input-row">
                 <input type="url" id="wh-url" placeholder="https://discord.com/api/webhooks/...">
-                <button type="button" class="btn btn-secondary btn-small" onclick="testDiscordWebhook()">Test</button>
+                <button type="button" id="wh-test-btn" class="btn btn-secondary btn-small">Test</button>
               </div>
-              <div id="wh-test-result" class="obs-path-result" style="display:none;"></div>
+              <div id="wh-test-result" class="result-line hidden"></div>
             </div>
             <div class="form-group">
               <label for="wh-bot-name">Bot Name</label>
               <input type="text" id="wh-bot-name" placeholder="StreamLoop (default)">
-              <div class="hint">Custom username shown for webhook messages</div>
+              <div class="hint">Name shown on webhook messages</div>
             </div>
             <div class="form-group">
               <label for="wh-avatar-url">Avatar URL</label>
               <input type="url" id="wh-avatar-url" placeholder="https://example.com/avatar.png">
-              <div class="hint">Custom avatar image URL for webhook messages</div>
+              <div class="hint">Image shown on webhook messages</div>
             </div>
             <div class="form-group">
               <label for="wh-role-ping">Role Ping ID</label>
@@ -455,220 +343,135 @@
           </div>
         </div>
 
-        <!-- Event Notifications -->
         <div class="section">
           <div class="section-title">Event Notifications</div>
-          <div class="settings-panel">
-            <div class="wh-category-label">Playback</div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Playback Errors</div><div class="toggle-desc">When a video encounters a playback error</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-error"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Video Skips</div><div class="toggle-desc">When a video is skipped due to repeated errors</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-skip"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Recovery Actions</div><div class="toggle-desc">When recovery steps are executed (retry, refresh, toggle)</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-recovery"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Critical Alerts</div><div class="toggle-desc">When all recovery steps are exhausted</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-critical"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Playback Resumed</div><div class="toggle-desc">When playback resumes after recovery</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-resume"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-category-label">OBS</div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">OBS Disconnected</div><div class="toggle-desc">When connection to OBS is lost</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-obsDisconnect"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">OBS Reconnected</div><div class="toggle-desc">When OBS connection is restored</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-obsReconnect"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Stream Dropped</div><div class="toggle-desc">When OBS stream output stops unexpectedly</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-streamDrop"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Stream Restarted</div><div class="toggle-desc">When OBS stream is successfully restarted after a drop</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-streamRestart"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-category-label">Twitch</div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Twitch Mismatch</div><div class="toggle-desc">When OBS reports streaming but the channel is offline on Twitch</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-twitchMismatch"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="wh-toggle">
-              <div><div class="toggle-label">Twitch Restarted</div><div class="toggle-desc">When the stream restarts after a Twitch liveness mismatch</div></div>
-              <label class="toggle"><input type="checkbox" id="wh-evt-twitchRestart"><span class="toggle-slider"></span></label>
-            </div>
+          <div class="settings-panel" id="wh-events-container">
+            <div class="hint">Loading events...</div>
           </div>
         </div>
 
-        <!-- Message Templates -->
         <div class="section">
           <div class="section-title">Message Templates</div>
           <div id="wh-templates-container"></div>
         </div>
 
-        <!-- Preview -->
         <div class="section">
           <div class="section-title">Preview</div>
           <div class="settings-panel">
             <div class="form-group">
               <label for="wh-preview-select">Event Type</label>
-              <select id="wh-preview-select" class="wh-preview-select">
-                <option value="error">Playback Error</option>
-                <option value="skip">Video Skip</option>
-                <option value="recovery">Recovery Action</option>
-                <option value="critical">Critical Alert</option>
-                <option value="resume">Playback Resumed</option>
-                <option value="obsDisconnect">OBS Disconnected</option>
-                <option value="obsReconnect">OBS Reconnected</option>
-                <option value="streamDrop">Stream Dropped</option>
-                <option value="streamRestart">Stream Restarted</option>
-                <option value="twitchMismatch">Twitch Mismatch</option>
-                <option value="twitchRestart">Twitch Restarted</option>
-              </select>
+              <select id="wh-preview-select" class="wh-preview-select"></select>
             </div>
-            <div class="wh-discord-preview" id="wh-preview">
+            <div class="wh-discord-preview">
               <div class="wh-preview-color-bar" id="wh-preview-bar"></div>
               <div class="wh-preview-body">
                 <div class="wh-preview-title" id="wh-preview-title"></div>
                 <div class="wh-preview-desc" id="wh-preview-desc"></div>
                 <div class="wh-preview-fields" id="wh-preview-fields"></div>
-                <div class="wh-preview-footer" id="wh-preview-footer"></div>
               </div>
             </div>
           </div>
         </div>
 
-        <button type="button" id="wh-save-btn" class="btn btn-primary" onclick="handleWebhookSave()">Save Webhook Settings</button>
+        <button type="button" id="wh-save-btn" class="btn btn-primary">Save Webhook Settings</button>
       </div>
 
       <!-- Settings tab -->
       <div id="panel-settings" class="tab-panel hidden">
-        <div class="settings-panel">
-          <form id="settings-form">
+        <div class="section">
+          <div class="section-title">Playlists</div>
+          <div class="settings-panel">
             <div class="form-group">
-              <label>YouTube Playlists</label>
               <div id="set-playlists-list"></div>
-              <button type="button" class="btn btn-secondary" onclick="addSetPlaylist()">+ Add Playlist</button>
+              <button type="button" id="set-add-playlist" class="btn btn-secondary">+ Add Playlist</button>
+              <div class="hint">Order is play order: the first playlist plays.</div>
             </div>
-            <div class="form-group">
-              <label for="set-source">OBS Browser Source Name</label>
-              <input type="text" id="set-source" required>
-            </div>
-            <div class="form-group">
-              <label for="set-obs-pass">OBS WebSocket Password</label>
-              <input type="password" id="set-obs-pass">
-            </div>
-          </form>
-        </div>
-
-        <!-- OBS Auto-Restart -->
-        <div class="section" style="margin-top: 20px;">
-          <div class="section-title">OBS Recovery</div>
-          <div class="toggle-row">
-            <div>
-              <div class="toggle-label">Relaunch OBS on crash</div>
-              <div class="toggle-desc">Automatically restart OBS if it closes or crashes</div>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="obs-restart-toggle">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <div class="toggle-row" style="margin-top: 8px;">
-            <div>
-              <div class="toggle-label">Auto-start streaming</div>
-              <div class="toggle-desc">Automatically start streaming after OBS reconnects (disable for testing)</div>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="obs-stream-toggle">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <div class="form-group" style="margin-top: 12px;">
-            <label for="set-obs-path">OBS Executable Path</label>
-            <div class="obs-path-row">
-              <input type="text" id="set-obs-path" placeholder="Auto-detect (Program Files)">
-              <button type="button" class="btn btn-secondary btn-small" onclick="detectObsPath()">Detect</button>
-              <button type="button" class="btn btn-secondary btn-small" onclick="validateObsPath()">Validate</button>
-            </div>
-            <div class="obs-path-result" id="obs-path-result"></div>
-            <div class="hint">Should look like: <code>C:\Program Files\obs-studio\bin\64bit\obs64.exe</code></div>
-            <div class="hint">Leave blank to auto-detect from default install locations</div>
           </div>
         </div>
 
-        <!-- Twitch Liveness -->
-        <div class="section" style="margin-top: 20px;">
+        <div class="section">
+          <div class="section-title">Stream</div>
+          <div class="settings-panel">
+            <div class="form-group">
+              <label for="set-ingest">Ingest URL</label>
+              <input type="text" id="set-ingest" placeholder="rtmp://live.twitch.tv/app">
+            </div>
+            <div class="form-group">
+              <label for="set-stream-key">Stream key</label>
+              <div class="input-row">
+                <input type="password" id="set-stream-key" autocomplete="off">
+                <button type="button" id="set-stream-key-btn" class="btn btn-secondary btn-small">Set</button>
+              </div>
+              <div id="set-stream-key-state" class="hint"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
           <div class="section-title">Twitch Liveness Check</div>
           <div class="toggle-row">
             <div>
-              <div class="toggle-label">Enable Twitch liveness monitoring</div>
-              <div class="toggle-desc">Restart the stream when OBS reports streaming but the channel is offline on Twitch (e.g. after Twitch's 48-hour RTMP disconnect)</div>
+              <div class="toggle-label">Check that Twitch is receiving the stream</div>
+              <div class="toggle-desc">Restart the stream when the encoder runs but the channel is offline, or when the picture on Twitch stops moving (for example after Twitch's 48-hour disconnect)</div>
             </div>
             <label class="toggle">
               <input type="checkbox" id="twitch-enabled-toggle">
               <span class="toggle-slider"></span>
             </label>
           </div>
-          <details class="wiz-collapsible" style="margin-top: 12px;">
+          <details class="wiz-collapsible">
             <summary>How do I get Twitch API credentials?</summary>
             <ol class="wiz-instructions">
-              <li>Go to <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener"><strong>dev.twitch.tv/console/apps</strong></a> and log in with <strong>the same Twitch account you stream from</strong></li>
+              <li>Go to <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener"><strong>dev.twitch.tv/console/apps</strong></a> and log in with <strong>the Twitch account you stream from</strong></li>
               <li>Click <strong>Register Your Application</strong></li>
               <li>Fill in the form:
-                <ul style="margin: 6px 0 6px 16px; list-style: disc;">
-                  <li><strong>Name</strong> &mdash; anything you like (e.g. <em>StreamLoop</em>)</li>
-                  <li><strong>OAuth Redirect URLs</strong> &mdash; copy the value below, paste it in, and click <strong>Add</strong>. This is required by Twitch but StreamLoop doesn't use it.
-                    <div class="wiz-copy-box" style="margin-top: 6px;">
-                      <div class="wiz-copy-row">
-                        <code>https://localhost</code>
-                        <button type="button" class="btn btn-secondary btn-small" onclick="copyRedirectUrl(this)">Copy</button>
-                      </div>
+                <ul class="wiz-sublist">
+                  <li><strong>Name</strong>: anything you like (e.g. <em>StreamLoop</em>)</li>
+                  <li><strong>OAuth Redirect URLs</strong>: copy the value below, paste it in, and click <strong>Add</strong>. Twitch requires it; StreamLoop doesn't use it.
+                    <div class="wiz-copy-row">
+                      <code>https://localhost</code>
+                      <button type="button" id="copy-redirect-btn" class="btn btn-secondary btn-small">Copy</button>
                     </div>
                   </li>
-                  <li><strong>Category</strong> &mdash; select <strong>Application Integration</strong></li>
-                  <li><strong>Client Type</strong> &mdash; select <strong>Confidential</strong></li>
+                  <li><strong>Category</strong>: select <strong>Application Integration</strong></li>
+                  <li><strong>Client Type</strong>: select <strong>Confidential</strong></li>
                 </ul>
               </li>
               <li>Click <strong>Create</strong></li>
-              <li>You'll be taken back to the app list. Click <strong>Manage</strong> on your new app.</li>
+              <li>Back in the app list, click <strong>Manage</strong> on your new app.</li>
               <li>Copy the <strong>Client ID</strong> and paste it below</li>
-              <li>Click <strong>New Secret</strong>, confirm, then copy the generated <strong>Client Secret</strong> and paste it below. You won't be able to see this secret again after leaving the page.</li>
+              <li>Click <strong>New Secret</strong>, confirm, then copy the <strong>Client Secret</strong> and paste it below. Twitch shows it only once.</li>
             </ol>
           </details>
-          <div class="form-group" style="margin-top: 12px;">
-            <label for="set-twitch-client-id">Twitch Client ID</label>
-            <input type="text" id="set-twitch-client-id" placeholder="Your Twitch application Client ID">
-          </div>
-          <div class="form-group">
-            <label for="set-twitch-client-secret">Twitch Client Secret</label>
-            <input type="password" id="set-twitch-client-secret" placeholder="Your Twitch application Client Secret">
-          </div>
-          <div class="form-group">
-            <label for="set-twitch-channel">Twitch Channel Name</label>
-            <input type="text" id="set-twitch-channel" placeholder="Your Twitch channel username (lowercase)">
-            <div class="hint">The channel name from your Twitch URL: twitch.tv/<strong>yourname</strong></div>
+          <div class="settings-panel twitch-fields">
+            <div class="form-group">
+              <label for="set-twitch-client-id">Twitch Client ID</label>
+              <input type="text" id="set-twitch-client-id" placeholder="Your Twitch application Client ID">
+            </div>
+            <div class="form-group">
+              <label for="set-twitch-client-secret">Twitch Client Secret</label>
+              <input type="password" id="set-twitch-client-secret" autocomplete="off" placeholder="Your Twitch application Client Secret">
+            </div>
+            <div class="form-group">
+              <label for="set-twitch-channel">Twitch Channel Name</label>
+              <input type="text" id="set-twitch-channel" placeholder="Your Twitch channel name (lowercase)">
+              <div class="hint">The channel name from your Twitch URL: twitch.tv/<strong>yourname</strong></div>
+            </div>
           </div>
         </div>
 
-        <button type="button" id="set-btn" class="btn btn-primary" style="margin-top: 20px;">Save Settings</button>
+        <button type="button" id="set-btn" class="btn btn-primary">Save Settings</button>
+        <div id="set-restart-note" class="restart-note hidden">
+          <span>The new ingest URL applies after the stream restarts. Viewers see a short drop.</span>
+          <button type="button" class="btn btn-secondary restart-stream-btn">Restart stream</button>
+        </div>
 
-        <!-- Autostart -->
-        <div class="section" style="margin-top: 20px;">
+        <div class="section section-gap">
           <div class="section-title">Startup</div>
           <div class="toggle-row">
             <div>
               <div class="toggle-label">Run on Windows startup</div>
-              <div class="toggle-desc">Automatically start the monitor when Windows boots</div>
+              <div class="toggle-desc">Start StreamLoop when Windows starts</div>
             </div>
             <label class="toggle">
               <input type="checkbox" id="autostart-toggle">
@@ -677,27 +480,25 @@
           </div>
         </div>
 
-        <!-- Updates -->
-        <div class="section" style="margin-top: 20px;">
+        <div class="section">
           <div class="section-title">Updates</div>
-          <div style="display: flex; align-items: center; gap: 12px;">
+          <div class="action-row">
             <button type="button" id="check-update-btn" class="btn btn-secondary">Check for Updates</button>
-            <button type="button" id="settings-update-btn" class="btn btn-update hidden" onclick="handleUpdate()">Update Now</button>
-            <span id="check-update-result" style="font-size: 13px; color: var(--text-muted);"></span>
+            <button type="button" id="settings-update-btn" class="btn btn-update hidden">Update Now</button>
+            <span id="check-update-result" class="result-line"></span>
           </div>
-          <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
+          <div class="action-row">
             <button type="button" id="update-ytdlp-btn" class="btn btn-secondary">Update yt-dlp</button>
-            <span id="update-ytdlp-result" style="font-size: 13px; color: var(--text-muted);"></span>
+            <span id="update-ytdlp-result" class="result-line"></span>
           </div>
-          <div class="hint" style="margin-top: 6px;">yt-dlp is updated automatically on startup. Update it manually if playlists show fewer videos than expected — an outdated yt-dlp stops loading after ~100 videos.</div>
+          <div class="hint">yt-dlp updates itself on startup. Update it by hand if playlists show fewer videos than expected.</div>
         </div>
 
-        <!-- Server Control -->
-        <div class="section" style="margin-top: 20px;">
-          <div class="section-title">Server</div>
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <button type="button" id="shutdown-btn" class="btn btn-secondary" style="background: var(--error, #ef4444); border-color: var(--error, #ef4444); color: #fff;">Shutdown StreamLoop</button>
-            <span style="font-size: 13px; color: var(--text-muted);">Stops the server, mpv, and all processes</span>
+        <div class="section">
+          <div class="section-title">Dashboard Server</div>
+          <div class="action-row">
+            <button type="button" id="shutdown-btn" class="btn btn-danger">Shut down the dashboard</button>
+            <span class="result-line">Stops the dashboard server only. The stream keeps running.</span>
           </div>
         </div>
       </div>
@@ -705,6 +506,6 @@
   </div>
 
   <div id="toast-container" class="toast-container"></div>
-  <script src="/admin/admin.js"></script>
+  <script type="module" src="/admin/admin.js"></script>
 </body>
 </html>
