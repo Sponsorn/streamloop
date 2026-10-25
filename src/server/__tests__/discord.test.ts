@@ -165,32 +165,6 @@ describe('DiscordNotifier', () => {
     expect(result).toBe('Hello world, {unknown}');
   });
 
-  it('respects event toggle - disabled event does not send', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, error: false },
-    });
-    await notifier.notifyError(1, 'abc', 'loading failed', 1);
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('respects event toggle - disabled skip does not send', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, skip: false },
-    });
-    await notifier.notifySkip(1, 'abc', 'test');
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it('includes bot identity in payload when set', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(null, { status: 200 }),
@@ -230,21 +204,6 @@ describe('DiscordNotifier', () => {
     expect(footer).toContain('v1.0.0');
   });
 
-  it('includes structured fields on error notification', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
-    // notifyError uses warn level, need to flush manually
-    await notifier.notifyError(3, 'abc123', 'HTTP error 403', 2);
-    await vi.advanceTimersByTimeAsync(30000);
-    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
-    expect(body.embeds[0].fields).toBeDefined();
-    expect(body.embeds[0].fields).toHaveLength(3);
-    expect(body.embeds[0].fields[0].name).toBe('Reason');
-    expect(body.embeds[0].fields[0].value).toBe('HTTP error 403');
-  });
-
   it('includes structured fields on critical notification', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(null, { status: 200 }),
@@ -281,43 +240,6 @@ describe('DiscordNotifier', () => {
     await vi.advanceTimersByTimeAsync(30000);
     const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
     expect(body.content).toBeUndefined();
-  });
-
-  it('uses custom template for notifications', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      templates: {
-        ...defaultDiscord.templates,
-        recovery: 'Custom recovery: {step} happened!',
-      },
-    });
-    await notifier.notifyRecovery('refreshSource');
-    await vi.advanceTimersByTimeAsync(30000);
-    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
-    expect(body.embeds[0].description).toBe('Custom recovery: refreshSource happened!');
-  });
-
-  it('renders the output-frozen template with kind and video', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
-    const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
-    await notifier.notifyOutputFrozen('freeze', 4);
-    await vi.advanceTimersByTimeAsync(30000);
-    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
-    expect(body.embeds[0].description).toBe('Frozen (freeze) on #4');
-  });
-
-  it('skips the output-frozen alert when its event is off', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, outputFrozen: false },
-    });
-    await notifier.notifyOutputFrozen('silence', 1);
-    await vi.advanceTimersByTimeAsync(30000);
-    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('sends a described supervisor event with its template and level', async () => {

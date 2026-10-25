@@ -13,16 +13,16 @@ const TOKEN_QUERY =
 const REQUEST_TIMEOUT_MS = 10_000;
 const GRAB_TIMEOUT_MS = 20_000;
 
-export const DEFAULT_INTERVAL_MS = 300_000;
-export const DEFAULT_GAP_MS = 5_000;
+const DEFAULT_INTERVAL_MS = 300_000;
+const DEFAULT_GAP_MS = 5_000;
 /** Mean gray-level difference per pixel. One changed clock digit measures about 3.4 (render test). */
 export const DEFAULT_THRESHOLD = 1.0;
 const BAD_READS_TO_ACT = 2;
 
 /** In source-frame pixels. */
-export interface Region { x: number; y: number; w: number; h: number }
-export interface Rendition { url: string; width: number; height: number }
-export type ReadbackState = 'ok' | 'frozen' | 'unavailable' | 'off';
+interface Region { x: number; y: number; w: number; h: number }
+interface Rendition { url: string; width: number; height: number }
+type ReadbackState = 'ok' | 'frozen' | 'unavailable' | 'off';
 export interface ReadbackStatus { lastCheckAt: number | null; lastDiff: number | null; state: ReadbackState }
 /** Runs ffmpeg and resolves with its stdout, or rejects. */
 export type GrabRun = (exe: string, args: string[]) => Promise<Buffer>;
@@ -128,7 +128,7 @@ export function meanAbsDiff(a: Uint8Array, b: Uint8Array): number {
   return sum / a.length;
 }
 
-export interface TwitchReadbackOptions {
+interface TwitchReadbackOptions {
   channel: string;
   ffmpegPath: string;
   client: SupervisorClient;

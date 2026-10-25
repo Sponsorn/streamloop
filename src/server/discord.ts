@@ -162,36 +162,6 @@ export class DiscordNotifier {
     }
   }
 
-  async notifyError(videoIndex: number, videoId: string, reason: string, attempt: number): Promise<void> {
-    if (!this.discord.events.error) return;
-    const content = this.renderTemplate(this.discord.templates.error, {
-      // `errorCode` kept as a template var name for backwards compatibility
-      // with existing user templates; it now carries mpv's error string.
-      videoIndex, videoId, errorCode: reason, attempt,
-    });
-    const fields: EmbedField[] = [
-      { name: 'Reason', value: reason, inline: true },
-      { name: 'Video', value: `#${videoIndex} (\`${videoId}\`)`, inline: true },
-      { name: 'Attempt', value: String(attempt), inline: true },
-    ];
-    await this.send(content, 'warn', fields);
-  }
-
-  async notifySkip(videoIndex: number, videoId: string, reason: string): Promise<void> {
-    if (!this.discord.events.skip) return;
-    const content = this.renderTemplate(this.discord.templates.skip, {
-      videoIndex, videoId, reason,
-    });
-    await this.send(content, 'warn');
-  }
-
-  async notifyRecovery(step: string): Promise<void> {
-    if (!this.discord.events.recovery) return;
-    const content = this.renderTemplate(this.discord.templates.recovery, { step });
-    const mem = this.getMemoryField();
-    await this.send(content, 'warn', [mem]);
-  }
-
   async notifyCritical(message: string): Promise<void> {
     if (!this.discord.events.critical) return;
     const content = this.renderTemplate(this.discord.templates.critical, { message });
@@ -200,32 +170,6 @@ export class DiscordNotifier {
       this.getMemoryField(),
     ];
     await this.send(content, 'error', fields);
-  }
-
-  async notifyResume(videoIndex: number, videoId: string): Promise<void> {
-    if (!this.discord.events.resume) return;
-    const content = this.renderTemplate(this.discord.templates.resume, {
-      videoIndex, videoId,
-    });
-    await this.send(content, 'info');
-  }
-
-  async notifyStreamDrop(attempt: number, maxAttempts: number): Promise<void> {
-    if (!this.discord.events.streamDrop) return;
-    const content = this.renderTemplate(this.discord.templates.streamDrop, { attempt, maxAttempts });
-    await this.send(content, 'warn');
-  }
-
-  async notifyStreamRestart(attempts: number): Promise<void> {
-    if (!this.discord.events.streamRestart) return;
-    const content = this.renderTemplate(this.discord.templates.streamRestart, { attempts });
-    await this.send(content, 'info');
-  }
-
-  async notifyOutputFrozen(kind: 'freeze' | 'silence', videoIndex: number): Promise<void> {
-    if (!this.discord.events.outputFrozen) return;
-    const content = this.renderTemplate(this.discord.templates.outputFrozen, { kind, videoIndex });
-    await this.send(content, 'warn');
   }
 
   /** A supervisor or launcher event from describe(), under its own toggle and template. */
