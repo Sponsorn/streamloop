@@ -100,8 +100,17 @@ describe('selectReleaseAssets', () => {
   });
 });
 
-function release(tag: string, opts: { draft?: boolean; prerelease?: boolean } = {}): GithubRelease {
-  return { tag_name: tag, draft: opts.draft ?? false, prerelease: opts.prerelease ?? false, assets: [] };
+function release(
+  tag: string,
+  opts: { draft?: boolean; prerelease?: boolean; assets?: GithubRelease['assets'] } = {},
+): GithubRelease {
+  const v = tag.replace(/^v/, '');
+  return {
+    tag_name: tag,
+    draft: opts.draft ?? false,
+    prerelease: opts.prerelease ?? false,
+    assets: opts.assets ?? [asset(`streamloop-v${v}.zip`), asset(`streamloop-v${v}-update.zip`)],
+  };
 }
 
 describe('pickRelease', () => {
@@ -228,9 +237,46 @@ describe('stageUpdate', () => {
   });
 });
 
+describe('pickRelease with incomplete releases', () => {
+  it('skips a newer release whose update or full ZIP is not uploaded yet', () => {
+    // Arrange
+    const releases = [
+      release('v3.0.3', { prerelease: true, assets: [asset('streamloop-v3.0.3.zip')] }),
+      release('v3.0.2', { prerelease: true, assets: [asset('streamloop-v3.0.2-update.zip')] }),
+      release('v3.0.1', { prerelease: true }),
+    ];
+    // Act
+    const picked = pickRelease(releases, '3.0.0');
+    // Assert
+    expect(picked?.tag_name).toBe('v3.0.1');
+  });
+});
+
+describe('stageUpdate with a flat ZIP', () => {
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-flat');
+  const extractDir = join(root, 'extracted');
+  const tmpDir = join(root, 'tmp');
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('stages START.bat from an archive that extracts app/ directly', () => {
+    // Arrange
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(join(extractDir, 'app', 'src'), { recursive: true });
+    writeFileSync(join(extractDir, 'START.bat'), '@echo off');
+    mkdirSync(tmpDir, { recursive: true });
+    // Act
+    stageUpdate(extractDir, tmpDir);
+    // Assert
+    expect(readdirSync(tmpDir).sort()).toEqual(['START.bat', 'app']);
+  });
+});
+
 describe('Updater node notice', () => {
   const zip = 'streamloop-v3.0.1-update.zip';
-  const assets = [asset(zip), asset(`${zip}.sha256`), asset('node-version.txt')];
+  const assets = [asset(zip), asset(`${zip}.sha256`), asset('streamloop-v3.0.1.zip'), asset('node-version.txt')];
 
   function stubFetch(nodeVersionText: string | null) {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -250,7 +296,7 @@ describe('Updater node notice', () => {
     // Arrange
     stubFetch('v1.2.3\n');
     // Act
-    const info = await new Updater().checkForUpdate();
+    const info = await new Updater({ isDevMode: false }).checkForUpdate();
     // Assert
     expect(info.updateAvailable).toBe(true);
     expect(info.nodeNotice).toBe('This release bundles Node 1.2.3. Install the full ZIP to get it.');
@@ -258,13 +304,97 @@ describe('Updater node notice', () => {
 
   it('leaves the notice empty when the Node versions match', async () => {
     stubFetch(process.versions.node);
-    expect((await new Updater().checkForUpdate()).nodeNotice).toBeNull();
+    expect((await new Updater({ isDevMode: false }).checkForUpdate()).nodeNotice).toBeNull();
   });
 
   it('leaves the notice empty when node-version.txt is missing or malformed', async () => {
     stubFetch(null);
-    expect((await new Updater().checkForUpdate()).nodeNotice).toBeNull();
+    expect((await new Updater({ isDevMode: false }).checkForUpdate()).nodeNotice).toBeNull();
     stubFetch('latest');
-    expect((await new Updater().checkForUpdate()).nodeNotice).toBeNull();
+    expect((await new Updater({ isDevMode: false }).checkForUpdate()).nodeNotice).toBeNull();
+  });
+
+  it('leaves the notice empty in dev mode, which runs the system Node', async () => {
+    stubFetch('v1.2.3');
+    expect((await new Updater({ isDevMode: true }).checkForUpdate()).nodeNotice).toBeNull();
+  });
+});
+
+describe('Updater fetch timeouts', () => {
+  const zip = 'streamloop-v3.0.1-update.zip';
+  const assets = [asset(zip), asset(`${zip}.sha256`), asset('streamloop-v3.0.1.zip'), asset('node-version.txt')];
+
+  // Answers only when aborted, like a stalled CDN.
+  function hang(init?: RequestInit): Promise<Response> {
+    return new Promise((_, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      if (signal.aborted) reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason));
+    });
+  }
+
+  beforeEach(() => {
+    // AbortSignal.timeout runs on Node's internal timers, which fake timers do not reach.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(() =>
+      AbortSignal.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('gives up on a stalled node-version.txt and shows no notice', async () => {
+    // Arrange
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: 'v3.0.1', draft: false, prerelease: true, assets }]));
+      }
+      return hang(init);
+    }));
+    // Act
+    const info = await new Updater({ isDevMode: false }).checkForUpdate();
+    // Assert
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(10_000);
+    expect(info.status).toBe('idle');
+    expect(info.updateAvailable).toBe(true);
+    expect(info.nodeNotice).toBeNull();
+  });
+
+  it('shows a plain error when the GitHub API stalls', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => hang(init)));
+    const info = await new Updater({ isDevMode: false }).checkForUpdate();
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(10_000);
+    expect(info.status).toBe('error');
+    expect(info.error).toBe('GitHub did not answer within 10 seconds.');
+  });
+});
+
+describe('Updater checksum', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses to install a release with no checksum for its ZIP', async () => {
+    // Arrange
+    const download = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: 'v3.0.1', draft: false, prerelease: true, assets: [
+          asset('streamloop-v3.0.1-update.zip'), asset('streamloop-v3.0.1.zip'), asset('streamloop-v3.0.1.zip.sha256'),
+        ] }]));
+      }
+      download(url);
+      return new Response('', { status: 404 });
+    }));
+    const updater = new Updater({ isDevMode: false });
+    await updater.checkForUpdate();
+    // Act
+    const apply = updater.downloadAndApply();
+    // Assert
+    await expect(apply).rejects.toThrow('This release has no checksum file, so it was not installed.');
+    expect(download).not.toHaveBeenCalled();
+    expect(updater.getStatus().status).toBe('error');
   });
 });

@@ -111,7 +111,7 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - `POST /api/update/check` — manually trigger a version check (60s cooldown)
 - `POST /api/update/apply` — download, extract, swap, and restart
 
-**Release selection:** `pickRelease()` takes only releases with the running major version. 2.x takes stable releases; 3.x also takes prereleases, since 3.x ships as `--prerelease` while on trial. `compareVersions()` sorts a suffixed version such as `3.0.0-dev` below its release.
+**Release selection:** `pickRelease()` takes only releases with the running major version. 2.x takes stable releases; 3.x also takes prereleases, since 3.x ships as `--prerelease` while on trial. A release without both the full and the `-update.zip` is skipped, so one still uploading never wins. `compareVersions()` sorts a suffixed version such as `3.0.0-dev` below its release.
 
 **Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. `stageUpdate()` stages only `app/` and `START.bat`; `yt-dlp/`, `node/` and `mpv/` in the ZIP are ignored, because the 3.0 supervisor holds `yt-dlp\` and its token server holds `node\`. When the release's `node-version.txt` names another Node than the running one, the status carries `nodeNotice`, which points at the full ZIP.
 
@@ -130,7 +130,8 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - Inside `START.bat`'s parenthesized blocks, comments are `rem` without parentheses, never `::`. cmd parses the whole exit-code block on every server exit, and a `::` line in it aborts the launcher (window closes, no crash restart). `launcher.test.ts` enforces this.
 - Every process the server starts gets `cwd: SPAWN_CWD` (`spawn-cwd.ts`, the temp folder). A child that inherits `cwd=app\` and outlives the server (browser, yt-dlp) blocks the `rename app _update_old` step. `spawn-cwd.test.ts` fails when a spawn site lacks a `cwd`.
 - Dashboard `waitForRestart()` times out after 60s instead of looping forever
-- Checksum verification uses streaming hash (no full ZIP in memory)
+- Checksum verification uses streaming hash (no full ZIP in memory); a ZIP with no matching `.sha256` is refused before anything is downloaded
+- GitHub API and `node-version.txt` fetches time out after 10s
 
 **Dev mode:** When the `node/` sibling directory doesn't exist (i.e., running via `npm start`), the updater operates in check-only mode — it can detect available updates but won't download or apply them.
 

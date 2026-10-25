@@ -11,6 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const GITHUB_REPO = 'Sponsorn/streamloop';
 const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=50`;
+const FETCH_TIMEOUT_MS = 10_000;
 const ALLOWED_DOWNLOAD_HOSTS = new Set(['github.com', 'objects.githubusercontent.com']);
 
 function isAllowedDownloadUrl(url: string): boolean {
@@ -80,7 +81,7 @@ export function stageUpdate(extractDir: string, tmpDir: string): void {
   // so late config changes and the final flushed state are preserved.
 
   // START.bat never replaces itself in place; it stages this copy as START.bat.new.
-  const newStartBat = join(extractDir, 'streamloop', 'START.bat');
+  const newStartBat = join(root, 'START.bat');
   if (existsSync(newStartBat)) {
     cpSync(newStartBat, join(tmpDir, 'START.bat'));
   }
@@ -126,6 +127,10 @@ export function pickRelease(releases: GithubRelease[], currentVersion: string): 
   for (const r of releases) {
     const m = VERSION_TAG.exec(r.tag_name);
     if (r.draft || (r.prerelease && !allowPrerelease) || !m || m[1] !== major) continue;
+    // A release still uploading its assets must not beat a complete older one.
+    const hasUpdateZip = r.assets.some((a) => a.name.endsWith('-update.zip'));
+    const hasFullZip = r.assets.some((a) => a.name.endsWith('.zip') && !a.name.endsWith('-update.zip'));
+    if (!hasUpdateZip || !hasFullZip) continue;
     if (!best || compareVersions(r.tag_name, best.tag_name) > 0) best = r;
   }
   return best;
@@ -145,7 +150,7 @@ export class Updater {
   private releaseChecksumUrl: string | null = null;
   private nodeNotice: string | null = null;
 
-  constructor() {
+  constructor(opts: { isDevMode?: boolean } = {}) {
     // Read version from package.json
     const require = createRequire(import.meta.url);
     const pkg = require('../../package.json');
@@ -154,7 +159,7 @@ export class Updater {
     // Dev mode: no sibling node/ directory means we're in dev
     const appDir = resolve(__dirname, '..', '..');
     const nodeDir = resolve(appDir, '..', 'node');
-    this.isDevMode = !existsSync(nodeDir);
+    this.isDevMode = opts.isDevMode ?? !existsSync(nodeDir);
   }
 
   getStatus(): UpdateInfo {
@@ -186,6 +191,7 @@ export class Updater {
           'Accept': 'application/vnd.github.v3+json',
           'User-Agent': `streamloop/${this.currentVersion}`,
         },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
 
       if (res.status === 404) {
@@ -222,7 +228,8 @@ export class Updater {
         this.releaseAssetUrl = zipUrl;
         this.releaseChecksumUrl =
           checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
-        const releaseNode = await this.fetchReleaseNodeVersion(release);
+        // Dev mode runs the system Node, which no release bundles.
+        const releaseNode = this.isDevMode ? null : await this.fetchReleaseNodeVersion(release);
         if (releaseNode && releaseNode !== process.versions.node) {
           this.nodeNotice = `This release bundles Node ${releaseNode}. Install the full ZIP to get it.`;
         }
@@ -233,7 +240,9 @@ export class Updater {
       logger.info({ currentVersion: this.currentVersion, latestVersion: this.latestVersion, updateAvailable: this.updateAvailable }, 'Update check complete');
     } catch (err) {
       this.status = 'error';
-      this.error = err instanceof Error ? err.message : String(err);
+      this.error = err instanceof Error && err.name === 'TimeoutError'
+        ? 'GitHub did not answer within 10 seconds.'
+        : err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'Update check failed');
     }
 
@@ -244,7 +253,10 @@ export class Updater {
     const url = release.assets.find((a) => a.name === 'node-version.txt')?.browser_download_url;
     if (!url || !isAllowedDownloadUrl(url)) return null;
     try {
-      const res = await fetch(url, { headers: { 'User-Agent': `streamloop/${this.currentVersion}` } });
+      const res = await fetch(url, {
+        headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       return res.ok ? parseNodeVersion(await res.text()) : null;
     } catch (err) {
       logger.warn({ err }, 'Could not read the release Node version');
@@ -263,6 +275,13 @@ export class Updater {
 
     if (this.status === 'downloading' || this.status === 'extracting' || this.status === 'ready') {
       throw new Error('Update already in progress');
+    }
+
+    const checksumUrl = this.releaseChecksumUrl;
+    if (!checksumUrl) {
+      this.status = 'error';
+      this.error = 'This release has no checksum file, so it was not installed.';
+      throw new Error(this.error);
     }
 
     const appDir = resolve(__dirname, '..', '..');
@@ -291,25 +310,20 @@ export class Updater {
       const fileStream = createWriteStream(zipPath);
       await pipeline(res.body as unknown as NodeJS.ReadableStream, fileStream);
 
-      // Verify SHA-256 checksum if available
-      if (this.releaseChecksumUrl) {
-        logger.info('Verifying update checksum');
-        const checksumRes = await fetch(this.releaseChecksumUrl, {
-          headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
-        });
-        if (!checksumRes.ok) throw new Error(`Checksum download failed: ${checksumRes.status}`);
-        const checksumText = await checksumRes.text();
-        const expectedHash = checksumText.trim().split(/\s+/)[0].toLowerCase();
-        const hash = createHash('sha256');
-        await pipeline(createReadStream(zipPath), hash);
-        const actualHash = hash.digest('hex');
-        if (actualHash !== expectedHash) {
-          throw new Error(`Checksum mismatch: expected ${expectedHash}, got ${actualHash}`);
-        }
-        logger.info('Update checksum verified');
-      } else {
-        logger.warn('No checksum file in release — skipping integrity verification');
+      logger.info('Verifying update checksum');
+      const checksumRes = await fetch(checksumUrl, {
+        headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
+      });
+      if (!checksumRes.ok) throw new Error(`Checksum download failed: ${checksumRes.status}`);
+      const checksumText = await checksumRes.text();
+      const expectedHash = checksumText.trim().split(/\s+/)[0].toLowerCase();
+      const hash = createHash('sha256');
+      await pipeline(createReadStream(zipPath), hash);
+      const actualHash = hash.digest('hex');
+      if (actualHash !== expectedHash) {
+        throw new Error(`Checksum mismatch: expected ${expectedHash}, got ${actualHash}`);
       }
+      logger.info('Update checksum verified');
 
       // Extract
       this.status = 'extracting';
