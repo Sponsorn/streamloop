@@ -72,7 +72,7 @@ export function streamState(
   waitReason: string | null = null,
 ): { state: StreamState; reason: string | null } {
   // The old supervisor can answer for a moment after Stop, so the user's stop wins.
-  if (stoppedByUser) return { state: 'stopped', reason: 'The stream was stopped from the dashboard.' };
+  if (stoppedByUser) return { state: 'stopped', reason: 'The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start.' };
   // So does a Start that waits for that old supervisor to exit.
   if (waitReason) return { state: 'starting', reason: waitReason };
   if (!sup) {

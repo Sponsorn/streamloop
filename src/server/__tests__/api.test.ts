@@ -165,7 +165,8 @@ describe('API on the supervisor', () => {
       const body = await (await get('/status')).json();
 
       expect(body.stream.state).toBe('stopped');
-      expect(body.stream.reason).toMatch(/stopped/i);
+      expect(body.stream.reason).toMatch(/stopped from the dashboard/i);
+    expect(body.stream.reason).toMatch(/until you press Start/i);
     });
 
     it('is starting with the launcher reason while a Start waits for the stopped supervisor', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
@@ -66,7 +66,7 @@ describe('SupervisorLauncher', () => {
     expect(launcher.state()).toBe('running');
   });
 
-  it('spawns once, detached, after three missed polls', async () => {
+  it('spawns the launch intermediate once, hidden and not detached, after three missed polls', async () => {
     // Arrange
     const { launcher, spawnImpl, children, events } = setup();
 
@@ -80,9 +80,8 @@ describe('SupervisorLauncher', () => {
     // Assert
     expect(afterTwo).toBe(0);
     expect(spawnImpl).toHaveBeenCalledTimes(1);
-    expect(spawnImpl).toHaveBeenCalledWith(exe, ['--root', root], {
+    expect(spawnImpl).toHaveBeenCalledWith(exe, ['launch', '--root', root], {
       cwd: SPAWN_CWD,
-      detached: true,
       stdio: 'ignore',
       windowsHide: true,
     });
@@ -104,8 +103,8 @@ describe('SupervisorLauncher', () => {
     debug.launcher.stop();
 
     // Assert
-    expect((plain.spawnImpl.mock.calls[0] as unknown[])[1]).toEqual(['--root', root]);
-    expect((debug.spawnImpl.mock.calls[0] as unknown[])[1]).toEqual(['--root', root, '--debug-faults']);
+    expect((plain.spawnImpl.mock.calls[0] as unknown[])[1]).toEqual(['launch', '--root', root]);
+    expect((debug.spawnImpl.mock.calls[0] as unknown[])[1]).toEqual(['launch', '--root', root, '--debug-faults']);
   });
 
   it('does not spawn again while starting and inside the backoff', async () => {
@@ -214,7 +213,21 @@ describe('SupervisorLauncher', () => {
     expect(launcher.state()).toBe('running');
   });
 
-  it('treats a spawn that exits with code 2 while another supervisor answers as attach', async () => {
+  it('stays starting when the intermediate exits 0 after handing off', async () => {
+    // Arrange
+    const { launcher, children } = setup();
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    // Act
+    children[0].emit('exit', 0);
+
+    // Assert
+    expect(launcher.state()).toBe('starting');
+    launcher.stop();
+  });
+
+  it('treats an intermediate that relays exit 2 while another supervisor answers as attach', async () => {
     // Arrange
     const { launcher, spawnImpl, children, setAnswering } = setup();
     launcher.start();
@@ -411,5 +424,40 @@ describe('installRoot', () => {
   it('is null otherwise', () => {
     mkdirSync(join(root, 'app'));
     expect(installRoot(join(root, 'app'), {})).toBeNull();
+  });
+});
+
+describe('stopped-by-user marker', () => {
+  const marker = (): string => join(root, 'data', 'stopped-by-user');
+
+  it('a launcher constructed with the marker present starts stopped and never spawns', async () => {
+    // Arrange
+    mkdirSync(join(root, 'data'));
+    writeFileSync(marker(), '');
+    const { launcher, spawnImpl } = setup();
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(600_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(launcher.state()).toBe('stopped-by-user');
+    expect(launcher.isStoppedByUser()).toBe(true);
+  });
+
+  it('Stop writes the marker and Start removes it', () => {
+    // Arrange
+    const { launcher } = setup();
+
+    // Act
+    launcher.markStoppedByUser();
+    const afterStop = existsSync(marker());
+    launcher.launchNow();
+
+    // Assert
+    expect(afterStop).toBe(true);
+    expect(existsSync(marker())).toBe(false);
   });
 });

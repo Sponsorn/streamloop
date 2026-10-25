@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import type { SupervisorClient } from './supervisor-client.js';
@@ -68,6 +68,13 @@ export class SupervisorLauncher {
     this.intervalMs = opts.intervalMs ?? 2000;
     this.onEvent = opts.onEvent ?? (() => {});
     this.debugFaults = opts.debugFaults ?? false;
+    // A Stop survives a Node restart: the marker keeps the supervisor down until Start.
+    const marker = this.marker();
+    this.stoppedByUser = marker !== null && existsSync(marker);
+  }
+
+  private marker(): string | null {
+    return this.root ? join(this.root, 'data', 'stopped-by-user') : null;
   }
 
   start(): void {
@@ -94,6 +101,14 @@ export class SupervisorLauncher {
   markStoppedByUser(): void {
     this.stoppedByUser = true;
     this.draining = true;
+    const marker = this.marker();
+    if (!marker) return;
+    try {
+      mkdirSync(dirname(marker), { recursive: true });
+      writeFileSync(marker, '');
+    } catch {
+      // ponytail: the Stop still holds until Node restarts; only its persistence is lost.
+    }
   }
 
   /** Why a Start has not launched yet, while it waits for the stopped supervisor to exit. */
@@ -107,6 +122,8 @@ export class SupervisorLauncher {
   /** An operator Start: no backoff, and the spawn still goes through the one guarded poll. */
   launchNow(): void {
     this.stoppedByUser = false;
+    const marker = this.marker();
+    if (marker) rmSync(marker, { force: true });
     this.spawns = 0;
     if (this.draining) {
       // The old supervisor still holds the port; launch once it stops answering, with no outage.
@@ -189,12 +206,13 @@ export class SupervisorLauncher {
     }
     this.missingReported = false;
 
-    // detached: own process group and no console, so closing the launcher window or a Node
-    // exit (crash, exit 75) leaves the supervisor and the stream running.
-    const args = this.debugFaults ? ['--root', this.root, '--debug-faults'] : ['--root', this.root];
+    // `launch` is a short-lived intermediate: it starts the supervisor detached, outside our job
+    // when the job allows it, and exits. The supervisor's parent is then dead, so no Node exit,
+    // window close or tree kill reaches the stream. Its exit code is the relayed port-taken 2, or 0.
+    const args = ['launch', '--root', this.root];
+    if (this.debugFaults) args.push('--debug-faults');
     const child = this.spawnImpl(exe, args, {
       cwd: SPAWN_CWD,
-      detached: true,
       stdio: 'ignore',
       windowsHide: true,
     });
@@ -206,7 +224,8 @@ export class SupervisorLauncher {
     child.on('exit', (code: number | null) => {
       if (seq !== this.spawnSeq) return;
       this.lastExit = { code, at: this.now(), spawnedAt };
-      if (this.phase === 'starting') this.phase = 'down';
+      // 0 is the intermediate handing off to a running supervisor
+      if (code !== 0 && this.phase === 'starting') this.phase = 'down';
     });
     child.unref();
 
