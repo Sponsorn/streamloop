@@ -23,12 +23,13 @@ pub fn retry_without_breakaway(err: &std::io::Error, breakaway: bool) -> bool {
     breakaway && err.raw_os_error() == Some(ERROR_ACCESS_DENIED)
 }
 
-/// The intermediate's exit code: port taken is relayed so Node can attach, anything else is 0.
+/// The intermediate's exit code for a supervisor that exited during the wait: port taken is
+/// relayed so Node can attach, a clean exit is 0, and any crash is 1 so Node sees it as down.
 pub fn relay(code: Option<i32>) -> i32 {
-    if code == Some(PORT_TAKEN_EXIT) {
-        PORT_TAKEN_EXIT
-    } else {
-        0
+    match code {
+        Some(PORT_TAKEN_EXIT) => PORT_TAKEN_EXIT,
+        Some(0) => 0,
+        _ => 1,
     }
 }
 
@@ -98,10 +99,10 @@ mod tests {
     }
 
     #[test]
-    fn port_taken_is_relayed_and_everything_else_is_zero() {
+    fn port_taken_is_relayed_and_a_crash_is_one() {
         assert_eq!(relay(Some(2)), 2);
-        assert_eq!(relay(Some(1)), 0);
+        assert_eq!(relay(Some(1)), 1);
         assert_eq!(relay(Some(0)), 0);
-        assert_eq!(relay(None), 0);
+        assert_eq!(relay(None), 1);
     }
 }
