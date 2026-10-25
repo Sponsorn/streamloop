@@ -41,10 +41,9 @@ export function twitchLine(twitch) {
   return { text: text + (rb.lastCheckAt ? ' · read-back: picture moving' : ' · read-back: waiting for the first check'), level };
 }
 
-/** A failed reload is harmless when the supervisor is simply not running: it reads the saved config at start. */
-export function isBenignReloadError(err) {
-  if (!err) return true;
-  return /refused|ECONNREFUSED|fetch failed/i.test(String(err));
+/** A refused reload is harmless: no supervisor is running, and it reads the saved config at start. */
+export function isBenignReloadError({ reloadError, reloadErrorCode }) {
+  return !reloadError || reloadErrorCode === 'ECONNREFUSED';
 }
 
 const SOURCE_LABELS = { file: 'Cached file', url: 'YouTube', slate: 'Standby slate' };

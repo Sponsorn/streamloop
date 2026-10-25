@@ -21,6 +21,7 @@ const BACKOFF_MS = [10_000, 30_000, 60_000, 300_000];
 const BACKOFF_RESET_MS = 60_000;
 const PORT_TAKEN_EXIT = 2;
 const PORT_TAKEN_WINDOW_MS = 5_000;
+const DRAIN_LIMIT_MS = 20_000;
 
 /** The release layout is ROOT\app + ROOT\node; in dev the root comes from STREAMLOOP_ROOT. */
 export function installRoot(appDir: string, env: NodeJS.ProcessEnv): string | null {
@@ -43,6 +44,10 @@ export class SupervisorLauncher {
   private polling = false;
   private phase: LauncherState = 'starting';
   private stoppedByUser = false;
+  /** Stop was sent and the old supervisor has not been seen gone yet. */
+  private draining = false;
+  /** When a Start came in while draining; the launch waits for the old one to exit. */
+  private startWaitSince: number | null = null;
   private misses = 0;
   private inOutage = false;
   private missingReported = false;
@@ -84,13 +89,29 @@ export class SupervisorLauncher {
 
   markStoppedByUser(): void {
     this.stoppedByUser = true;
+    this.draining = true;
+  }
+
+  /** Why a Start has not launched yet, while it waits for the stopped supervisor to exit. */
+  waitReason(): string | null {
+    if (this.startWaitSince === null) return null;
+    return this.now() - this.startWaitSince >= DRAIN_LIMIT_MS
+      ? 'The stopped supervisor is still running after 20 s. The new one starts when it exits.'
+      : 'Waiting for the stopped supervisor to exit before starting it again.';
   }
 
   /** An operator Start: no backoff, and the spawn still goes through the one guarded poll. */
   launchNow(): void {
     this.stoppedByUser = false;
-    this.misses = MISSES_BEFORE_LAUNCH;
     this.spawns = 0;
+    if (this.draining) {
+      // The old supervisor still holds the port; launch once it stops answering, with no outage.
+      this.startWaitSince = this.now();
+      this.phase = 'starting';
+      if (this.timer) void this.poll();
+      return;
+    }
+    this.misses = MISSES_BEFORE_LAUNCH;
     // a supervisor still answering after Stop must not turn the next miss into an outage
     if (this.phase === 'running') this.phase = 'starting';
     if (this.timer) void this.poll();
@@ -109,6 +130,13 @@ export class SupervisorLauncher {
 
   private onPoll(answered: boolean): void {
     const t = this.now();
+    if (!answered) this.draining = false;
+    if (this.startWaitSince !== null) {
+      if (answered) return;
+      this.startWaitSince = null;
+      this.launch();
+      return;
+    }
     if (answered) {
       this.misses = 0;
       const exit = this.lastExit;

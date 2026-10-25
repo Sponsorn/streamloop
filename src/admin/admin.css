@@ -254,6 +254,7 @@ header h1 { font-size: 20px; font-weight: 600; }
 .section-gap { margin-top: 24px; }
 .toggle-row-plain { border: none; padding: 0; background: none; margin: 12px 0; }
 .twitch-fields { margin-top: 12px; }
+.toggle-row-stacked { margin-top: 8px; }
 
 /* Webhooks tab */
 .wh-toggle {
@@ -347,23 +348,6 @@ header h1 { font-size: 20px; font-weight: 600; }
   white-space: pre-wrap;
   word-wrap: break-word;
   margin-bottom: 8px;
-}
-.wh-preview-fields {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.wh-preview-fields:empty { display: none; }
-.wh-preview-field-wide { grid-column: 1 / -1; }
-.wh-preview-field-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: #dcddde;
-}
-.wh-preview-field-value {
-  font-size: 13px;
-  color: #b9bbbe;
 }
 .wh-preview-select {
   width: 100%;

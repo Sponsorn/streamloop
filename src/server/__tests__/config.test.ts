@@ -285,6 +285,13 @@ describe('supervisor config', () => {
     expect(JSON.parse(readFileSync(tmpConfig, 'utf-8')).supervisor.streamKeyProtected).toBe('new');
   });
 
+  it('saves a blank ingestUrl or playerClient as the default', () => {
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { ingestUrl: 'rtmp://custom/app', playerClient: 'tv' } }));
+    const saved = saveConfig({ supervisor: { ingestUrl: '', playerClient: ' ' } } as any, tmpConfig);
+    expect(saved.supervisor.ingestUrl).toBe('rtmp://live.twitch.tv/app');
+    expect(saved.supervisor.playerClient).toBe('mweb,web_embedded');
+  });
+
   it('keeps unknown supervisor keys through load and save', () => {
     writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { futureKnob: 7 } }));
     loadConfig(tmpConfig);

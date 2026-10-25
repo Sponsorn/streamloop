@@ -313,6 +313,53 @@ describe('SupervisorLauncher fixes', () => {
     expect(events).not.toContain('supervisor-down');
   });
 
+  it('stop then launchNow while the old one is still answering → exactly one spawn, no supervisor-down event', async () => {
+    // Arrange: running, then Stop and Start back to back (the dashboard's Restart stream)
+    const { launcher, spawnImpl, events, setAnswering } = setup({ answering: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Act: the old one keeps answering for 6 s while it shuts down, then goes away
+    launcher.markStoppedByUser();
+    launcher.launchNow();
+    await vi.advanceTimersByTimeAsync(6_000);
+    const spawnsWhileDraining = spawnImpl.mock.calls.length;
+    setAnswering(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnsWhileDraining).toBe(0);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(events).not.toContain('supervisor-down');
+    expect(launcher.isStoppedByUser()).toBe(false);
+  });
+
+  it('the old one never goes away within the bound → a plain reason, no down event', async () => {
+    // Arrange
+    const { launcher, spawnImpl, events, setAnswering } = setup({ answering: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    launcher.markStoppedByUser();
+    launcher.launchNow();
+
+    // Act
+    await vi.advanceTimersByTimeAsync(5_000);
+    const earlyReason = launcher.waitReason();
+    await vi.advanceTimersByTimeAsync(25_000);
+    const lateReason = launcher.waitReason();
+    setAnswering(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    launcher.stop();
+
+    // Assert: a reason the whole time, a different one past 20 s, and a quiet launch once it exits
+    expect(earlyReason).toMatch(/waiting for the stopped supervisor/i);
+    expect(lateReason).toMatch(/still running after 20 s/i);
+    expect(events).not.toContain('supervisor-down');
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(launcher.waitReason()).toBeNull();
+  });
+
   it("ignores an older child's exit once a newer spawn is starting", async () => {
     // Arrange: spawns at 4 s and 14 s
     const { launcher, children } = setup();

@@ -131,6 +131,12 @@ describe('SupervisorClient.reload and shutdown', () => {
     expect(await client(f).reload()).toEqual({ ok: false, error: 'bad config' });
   });
 
+  it('keeps the cause code of a refused connection', async () => {
+    const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    const f = (async () => { throw refused; }) as typeof fetch;
+    expect(await client(f).reload()).toEqual({ ok: false, error: 'fetch failed', code: 'ECONNREFUSED' });
+  });
+
   it('shutdown is true on 200 and false on failure', async () => {
     expect(await client((async () => jsonResponse({})) as typeof fetch).shutdown()).toBe(true);
     expect(await client((async () => { throw new Error('x'); }) as typeof fetch).shutdown()).toBe(false);

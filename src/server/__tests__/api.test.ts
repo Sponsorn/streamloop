@@ -40,7 +40,7 @@ interface Harness {
   sup: { value: SupervisorStatus | null };
   launcherState: { value: LauncherState; stopped: boolean };
   client: { status: ReturnType<typeof vi.fn>; control: ReturnType<typeof vi.fn>; reload: ReturnType<typeof vi.fn>; shutdown: ReturnType<typeof vi.fn> };
-  launcher: { state: ReturnType<typeof vi.fn>; isStoppedByUser: ReturnType<typeof vi.fn>; markStoppedByUser: ReturnType<typeof vi.fn>; launchNow: ReturnType<typeof vi.fn> };
+  launcher: { state: ReturnType<typeof vi.fn>; isStoppedByUser: ReturnType<typeof vi.fn>; markStoppedByUser: ReturnType<typeof vi.fn>; launchNow: ReturnType<typeof vi.fn>; waitReason: ReturnType<typeof vi.fn> };
   save: ReturnType<typeof vi.fn>;
   applyConfig: ReturnType<typeof vi.fn>;
   protect: ReturnType<typeof vi.fn>;
@@ -62,6 +62,7 @@ function harness(): Harness {
     isStoppedByUser: vi.fn(() => launcherState.stopped),
     markStoppedByUser: vi.fn(() => { launcherState.stopped = true; }),
     launchNow: vi.fn(() => { launcherState.stopped = false; }),
+    waitReason: vi.fn((): string | null => null),
   };
   const save = vi.fn((patch: Partial<AppConfig>) => {
     config.value = { ...config.value, ...patch, supervisor: { ...config.value.supervisor, ...(patch.supervisor ?? {}) } };
@@ -165,6 +166,16 @@ describe('API on the supervisor', () => {
 
       expect(body.stream.state).toBe('stopped');
       expect(body.stream.reason).toMatch(/stopped/i);
+    });
+
+    it('is starting with the launcher reason while a Start waits for the stopped supervisor', async () => {
+      h.sup.value = playing({ state: 'stopping' });
+      h.launcherState.value = 'starting';
+      h.launcher.waitReason.mockReturnValue('Waiting for the stopped supervisor to exit before starting it again.');
+
+      const body = await (await get('/status')).json();
+
+      expect(body.stream).toEqual({ state: 'starting', reason: 'Waiting for the stopped supervisor to exit before starting it again.' });
     });
 
     it('keeps firstRun, systemMemory, uptimeMs and twitch', async () => {
@@ -284,11 +295,19 @@ describe('API on the supervisor', () => {
     });
 
     it('POST /config reports a failed reload', async () => {
-      h.client.reload.mockResolvedValueOnce({ ok: false, error: 'connection refused' });
+      h.client.reload.mockResolvedValueOnce({ ok: false, error: 'fetch failed', code: 'ECONNREFUSED' });
 
       const body = await (await post('/config', { twitchChannel: 'x' })).json();
 
-      expect(body).toMatchObject({ ok: true, restartRequired: false, reloadError: 'connection refused' });
+      expect(body).toMatchObject({ ok: true, restartRequired: false, reloadError: 'fetch failed', reloadErrorCode: 'ECONNREFUSED' });
+    });
+
+    it('POST /config gives a null reloadErrorCode when the supervisor answered with an error', async () => {
+      h.client.reload.mockResolvedValueOnce({ ok: false, error: 'bad config' });
+
+      const body = await (await post('/config', { twitchChannel: 'x' })).json();
+
+      expect(body).toMatchObject({ reloadError: 'bad config', reloadErrorCode: null });
     });
   });
 

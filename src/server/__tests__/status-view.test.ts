@@ -67,13 +67,17 @@ describe('twitchLine', () => {
 
 describe('isBenignReloadError', () => {
   it('treats no error and a refused connection as benign', () => {
-    expect(isBenignReloadError(null)).toBe(true);
-    expect(isBenignReloadError('connection refused')).toBe(true);
-    expect(isBenignReloadError('fetch failed')).toBe(true);
+    expect(isBenignReloadError({ reloadError: null, reloadErrorCode: null })).toBe(true);
+    expect(isBenignReloadError({ reloadError: 'fetch failed', reloadErrorCode: 'ECONNREFUSED' })).toBe(true);
+  });
+
+  it('reports any other failed fetch, such as a timeout or a reset', () => {
+    expect(isBenignReloadError({ reloadError: 'fetch failed', reloadErrorCode: 'ECONNRESET' })).toBe(false);
+    expect(isBenignReloadError({ reloadError: 'The operation was aborted due to timeout', reloadErrorCode: null })).toBe(false);
   });
 
   it('reports an error the supervisor answered with', () => {
-    expect(isBenignReloadError('HTTP 400')).toBe(false);
+    expect(isBenignReloadError({ reloadError: 'HTTP 400', reloadErrorCode: null })).toBe(false);
   });
 });
 

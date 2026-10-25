@@ -70,7 +70,7 @@
         </div>
         <div class="form-group">
           <label for="wiz-stream-key">Stream key</label>
-          <input type="password" id="wiz-stream-key" autocomplete="off" placeholder="live_...">
+          <input type="password" id="wiz-stream-key" autocomplete="off" aria-label="Twitch stream key" placeholder="live_...">
           <div class="hint">Stored encrypted on this PC. The dashboard never shows it again.</div>
         </div>
         <div class="form-group">
@@ -105,7 +105,7 @@
             <div class="toggle-desc">Start StreamLoop when Windows starts</div>
           </div>
           <label class="toggle">
-            <input type="checkbox" id="wiz-autostart">
+            <input type="checkbox" id="wiz-autostart" aria-label="Run on Windows startup">
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -264,7 +264,7 @@
                 <div class="toggle-desc">Draw the video title and a progress line on the stream</div>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="pb-overlay">
+                <input type="checkbox" id="pb-overlay" aria-label="Now-playing overlay">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -286,7 +286,12 @@
             <div class="form-group">
               <label for="pb-player-client">yt-dlp player client</label>
               <input type="text" id="pb-player-client" placeholder="mweb,web_embedded">
-              <div class="hint">Which YouTube clients yt-dlp asks for video, tried in order. Change it only if videos keep failing to load.</div>
+              <div class="hint">Which YouTube clients yt-dlp asks for video, tried in order. Change it only if videos keep failing to load. The default is mweb,web_embedded; a blank field keeps the saved value.</div>
+            </div>
+            <div class="form-group">
+              <label for="pb-ytdl-cookies">yt-dlp cookies from browser</label>
+              <input type="text" id="pb-ytdl-cookies" placeholder="e.g. brave, chrome, firefox, chrome:Profile 2">
+              <div class="hint">Lets the video list on the Monitor tab load with your YouTube login, which avoids "Sign in to confirm you're not a bot" errors. Leave blank for none. Applies after StreamLoop restarts.</div>
             </div>
           </div>
         </div>
@@ -367,7 +372,6 @@
               <div class="wh-preview-body">
                 <div class="wh-preview-title" id="wh-preview-title"></div>
                 <div class="wh-preview-desc" id="wh-preview-desc"></div>
-                <div class="wh-preview-fields" id="wh-preview-fields"></div>
               </div>
             </div>
           </div>
@@ -395,11 +399,12 @@
             <div class="form-group">
               <label for="set-ingest">Ingest URL</label>
               <input type="text" id="set-ingest" placeholder="rtmp://live.twitch.tv/app">
+              <div class="hint">The default is rtmp://live.twitch.tv/app. A blank field keeps the saved URL.</div>
             </div>
             <div class="form-group">
               <label for="set-stream-key">Stream key</label>
               <div class="input-row">
-                <input type="password" id="set-stream-key" autocomplete="off">
+                <input type="password" id="set-stream-key" autocomplete="off" aria-label="Twitch stream key" aria-describedby="set-stream-key-state">
                 <button type="button" id="set-stream-key-btn" class="btn btn-secondary btn-small">Set</button>
               </div>
               <div id="set-stream-key-state" class="hint"></div>
@@ -415,7 +420,7 @@
               <div class="toggle-desc">Restart the stream when the encoder runs but the channel is offline, or when the picture on Twitch stops moving (for example after Twitch's 48-hour disconnect)</div>
             </div>
             <label class="toggle">
-              <input type="checkbox" id="twitch-enabled-toggle">
+              <input type="checkbox" id="twitch-enabled-toggle" aria-label="Check that Twitch is receiving the stream">
               <span class="toggle-slider"></span>
             </label>
           </div>
@@ -474,7 +479,17 @@
               <div class="toggle-desc">Start StreamLoop when Windows starts</div>
             </div>
             <label class="toggle">
-              <input type="checkbox" id="autostart-toggle">
+              <input type="checkbox" id="autostart-toggle" aria-label="Run on Windows startup">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="toggle-row toggle-row-stacked">
+            <div>
+              <div class="toggle-label">Open the dashboard when StreamLoop starts</div>
+              <div class="toggle-desc">Opens this page in your browser each time the server starts</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="auto-open-toggle" aria-label="Open the dashboard when StreamLoop starts">
               <span class="toggle-slider"></span>
             </label>
           </div>

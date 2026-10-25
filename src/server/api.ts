@@ -21,7 +21,7 @@ export interface ApiDependencies {
   applyConfig: (config: AppConfig) => void;
   saveConfig?: (patch: Partial<AppConfig>) => AppConfig;
   client: Pick<SupervisorClient, 'status' | 'control' | 'reload' | 'shutdown'>;
-  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow'>;
+  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow' | 'waitReason'>;
   eventLog: Pick<EventLog, 'getEvents'>;
   /** The install root holding supervisor\ and data\; null when it is unknown. */
   root: string | null;
@@ -67,9 +67,12 @@ export function streamState(
   sup: SupervisorStatus | null,
   launcher: LauncherState,
   stoppedByUser: boolean,
+  waitReason: string | null = null,
 ): { state: StreamState; reason: string | null } {
   // The old supervisor can answer for a moment after Stop, so the user's stop wins.
   if (stoppedByUser) return { state: 'stopped', reason: 'The stream was stopped from the dashboard.' };
+  // So does a Start that waits for that old supervisor to exit.
+  if (waitReason) return { state: 'starting', reason: waitReason };
   if (!sup) {
     if (launcher === 'starting') return { state: 'starting', reason: 'The supervisor is starting.' };
     if (launcher === 'missing') return { state: 'off-air', reason: 'The supervisor program was not found in the install folder.' };
@@ -129,7 +132,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const config = save(patch);
     deps.applyConfig(config);
     const reload = await deps.client.reload();
-    return { config, restartRequired: reload.restartRequired === true, reloadError: reload.ok ? null : reload.error ?? 'reload failed' };
+    return {
+      config,
+      restartRequired: reload.restartRequired === true,
+      reloadError: reload.ok ? null : reload.error ?? 'reload failed',
+      reloadErrorCode: reload.ok ? null : reload.code ?? null,
+    };
   }
 
   router.use(express.json());
@@ -154,7 +162,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const sup = await deps.client.status();
     const launcher = deps.launcher.state();
     res.json({
-      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser()),
+      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser(), deps.launcher.waitReason()),
       supervisor: sup,
       launcher,
       twitch: deps.getTwitch().getStatus(),
@@ -198,7 +206,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       }
       const r = await saveAndReload(body as Partial<AppConfig>);
       logger.info({ restartRequired: r.restartRequired, reloadError: r.reloadError }, 'Config updated via API');
-      res.json({ ok: true, config: maskConfig(r.config), restartRequired: r.restartRequired, reloadError: r.reloadError });
+      res.json({ ok: true, config: maskConfig(r.config), restartRequired: r.restartRequired, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
     } catch (err) {
       logger.error({ err }, 'Failed to save config');
       res.status(400).json({ error: errorText(err) });
@@ -337,7 +345,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const [chosen] = playlists.splice(playlistIndex, 1);
     try {
       const r = await saveAndReload({ playlists: [chosen, ...playlists] });
-      res.json({ ok: true, reloadError: r.reloadError });
+      res.json({ ok: true, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
     } catch (err) {
       logger.error({ err }, 'Failed to switch playlist');
       res.status(500).json({ error: 'Failed to switch playlist' });

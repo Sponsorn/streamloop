@@ -41,6 +41,12 @@ function msg(e: unknown): string {
   return e instanceof Error ? e.message : 'unknown error';
 }
 
+/** undici's "fetch failed" carries the socket error code (ECONNREFUSED, ...) on its cause. */
+function causeCode(e: unknown): string | undefined {
+  const code = e instanceof Error ? (e.cause as { code?: unknown } | undefined)?.code : undefined;
+  return typeof code === 'string' ? code : undefined;
+}
+
 /** Never throws: callers run on timers. */
 export class SupervisorClient {
   private readonly baseUrl: string;
@@ -88,13 +94,14 @@ export class SupervisorClient {
     }
   }
 
-  async reload(): Promise<{ ok: boolean; restartRequired?: boolean; error?: string }> {
+  async reload(): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
     try {
       const r = await this.call('/reload', {});
       if (r.status !== 200) return { ok: false, error: String(r.json?.error ?? `HTTP ${r.status}`) };
       return { ok: true, restartRequired: r.json?.restartRequired === true };
     } catch (e) {
-      return { ok: false, error: msg(e) };
+      const code = causeCode(e);
+      return code ? { ok: false, error: msg(e), code } : { ok: false, error: msg(e) };
     }
   }
 

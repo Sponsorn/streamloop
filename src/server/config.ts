@@ -61,14 +61,18 @@ const discordSchema = z.object({
   }).default({}),
 }).default({});
 
+/** A blank string means the default, so clearing a field cannot leave the encoder without a target. */
+const blankIsDefault = (fallback: string) =>
+  z.preprocess((v) => (typeof v === 'string' && !v.trim() ? undefined : v), z.string().default(fallback));
+
 // Bounds and defaults match supervisor/src/config.rs.
 const supervisorSchema = z.object({
-  ingestUrl: z.string().default('rtmp://live.twitch.tv/app'),
+  ingestUrl: blankIsDefault('rtmp://live.twitch.tv/app'),
   streamKeyProtected: z.string().default(''),
   encoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).default('h264_nvenc'),
   cacheBudgetMb: z.number().int().min(50).default(300),
   readAheadSeconds: z.number().min(2).default(20),
-  playerClient: z.string().default('mweb,web_embedded'),
+  playerClient: blankIsDefault('mweb,web_embedded'),
   overlay: z.boolean().default(true),
   freezeSeconds: z.number().min(5).default(20),
   silenceSeconds: z.number().min(5).default(30),

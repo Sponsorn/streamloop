@@ -74,7 +74,7 @@ function post(url, body) {
 /** Saves a config patch; returns the response. Shows a reload error unless it only means the supervisor is down. */
 async function saveConfig(patch) {
   const r = await post('/api/config', patch);
-  if (!isBenignReloadError(r.reloadError)) showToast('Saved, but the supervisor could not reload: ' + r.reloadError);
+  if (!isBenignReloadError(r)) showToast('Saved, but the supervisor could not reload: ' + r.reloadError);
   return r;
 }
 
@@ -407,7 +407,7 @@ function initMonitorControls() {
     const playlistIndex = Number(e.target.value);
     post('/api/playlist/switch', { playlistIndex })
       .then((r) => {
-        if (!isBenignReloadError(r.reloadError)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
+        if (!isBenignReloadError(r)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
         settingsLoaded = false;
         loadPlaylistSelector();
         loadVideoList(1);
@@ -629,6 +629,7 @@ async function loadSettings() {
     $('#set-twitch-client-id').value = cfg.twitchClientId || '';
     $('#set-twitch-client-secret').value = cfg.twitchClientSecret || '';
     $('#set-twitch-channel').value = cfg.twitchChannel || '';
+    $('#auto-open-toggle').checked = cfg.autoOpenAdmin !== false;
     settingsLoaded = true;
   } catch (err) {
     showToast('Could not load settings: ' + err.message);
@@ -671,7 +672,7 @@ async function handleSettingsSave() {
   const btn = $('#set-btn');
   const body = {
     playlists,
-    supervisor: { ingestUrl: $('#set-ingest').value.trim() },
+    supervisor: withoutBlanks({ ingestUrl: $('#set-ingest').value.trim() }),
     twitchLivenessEnabled: $('#twitch-enabled-toggle').checked,
     twitchClientId: $('#set-twitch-client-id').value.trim(),
     twitchClientSecret: $('#set-twitch-client-secret').value,
@@ -684,6 +685,7 @@ async function handleSettingsSave() {
     btn.textContent = 'Saved';
     if (r.restartRequired) $('#set-restart-note').classList.remove('hidden');
     settingsLoaded = false;
+    loadSettings();
     loadPlaylistSelector();
     loadVideoList(1);
   } catch (err) {
@@ -725,6 +727,16 @@ async function handleAutostartToggle() {
   }
 }
 
+async function handleAutoOpenToggle() {
+  const input = $('#auto-open-toggle');
+  try {
+    await saveConfig({ autoOpenAdmin: input.checked });
+  } catch (err) {
+    showToast('Could not change the setting: ' + err.message);
+    input.checked = !input.checked;
+  }
+}
+
 // Playback tab
 
 let playbackSettingsLoaded = false;
@@ -739,8 +751,9 @@ const PLAYBACK_FIELDS = [
 async function loadPlaybackSettings() {
   if (playbackSettingsLoaded) return;
   try {
-    const { supervisor } = await api('/api/config');
+    const { supervisor, ytdlCookiesFromBrowser } = await api('/api/config');
     $('#pb-encoder').value = supervisor.encoder;
+    $('#pb-ytdl-cookies').value = ytdlCookiesFromBrowser || '';
     $('#pb-overlay').checked = supervisor.overlay !== false;
     $('#pb-player-client').value = supervisor.playerClient || '';
     for (const f of PLAYBACK_FIELDS) $(f.id).value = String(supervisor[f.key]);
@@ -752,11 +765,11 @@ async function loadPlaybackSettings() {
 
 async function handlePlaybackSave() {
   const btn = $('#pb-save-btn');
-  const supervisor = {
+  const supervisor = withoutBlanks({
     encoder: $('#pb-encoder').value,
     overlay: $('#pb-overlay').checked,
     playerClient: $('#pb-player-client').value.trim(),
-  };
+  });
   for (const f of PLAYBACK_FIELDS) {
     const input = $(f.id);
     const n = Number(input.value);
@@ -771,10 +784,12 @@ async function handlePlaybackSave() {
   try {
     btn.disabled = true;
     btn.textContent = 'Saving...';
-    const r = await saveConfig({ supervisor });
+    // Blank cookies is a real value (none), so it is sent as is.
+    const r = await saveConfig({ supervisor, ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim() });
     btn.textContent = 'Saved';
     if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
     playbackSettingsLoaded = false;
+    loadPlaybackSettings();
   } catch (err) {
     showToast('Could not save: ' + err.message);
   }
@@ -933,30 +948,11 @@ function updatePreview() {
   const textarea = document.getElementById(`wh-tpl-${eventType}`);
   const template = textarea ? textarea.value : '';
   const rendered = template.replace(/\{(\w+)\}/g, (match, key) => (key in SAMPLE_VARS ? String(SAMPLE_VARS[key]) : match));
-  const botName = $('#wh-bot-name').value.trim() || 'StreamLoop';
 
+  // Discord's embed title is always StreamLoop; the bot name sets the sender, and notifyEvent sends no fields.
   $('#wh-preview-bar').style.background = colors[level];
-  $('#wh-preview-title').textContent = `${emoji[level]} ${botName}`;
+  $('#wh-preview-title').textContent = `${emoji[level]} StreamLoop`;
   $('#wh-preview-desc').textContent = rendered;
-
-  // Error and critical messages carry fields in Discord (see discord.ts).
-  const fields = eventType === 'error'
-    ? [['Reason', SAMPLE_VARS.errorCode], ['Video', `#${SAMPLE_VARS.videoIndex} (${SAMPLE_VARS.videoId})`], ['Attempt', SAMPLE_VARS.attempt]]
-    : eventType === 'critical' ? [['Status', SAMPLE_VARS.message]] : [];
-  const container = $('#wh-preview-fields');
-  container.innerHTML = '';
-  for (const [name, value] of fields) {
-    const field = document.createElement('div');
-    if (eventType === 'critical') field.className = 'wh-preview-field-wide';
-    const n = document.createElement('div');
-    n.className = 'wh-preview-field-name';
-    n.textContent = name;
-    const v = document.createElement('div');
-    v.className = 'wh-preview-field-value';
-    v.textContent = String(value);
-    field.append(n, v);
-    container.appendChild(field);
-  }
 }
 
 async function handleWebhookSave() {
@@ -1020,6 +1016,11 @@ function formatDuration(ms) {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s % 60}s`;
   return `${s}s`;
+}
+
+/** Drops blank strings, so the server keeps the saved value instead of storing ''. */
+function withoutBlanks(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== ''));
 }
 
 function escapeHtml(str) {
@@ -1193,13 +1194,13 @@ async function boot() {
   $('#wh-test-btn').addEventListener('click', testDiscordWebhook);
   $('#wh-save-btn').addEventListener('click', handleWebhookSave);
   $('#wh-preview-select').addEventListener('change', updatePreview);
-  $('#wh-bot-name').addEventListener('input', updatePreview);
 
   $('#set-add-playlist').addEventListener('click', () => addPlaylistRow('#set-playlists-list', '', ''));
   $('#set-stream-key-btn').addEventListener('click', handleStreamKeySet);
   $('#set-btn').addEventListener('click', handleSettingsSave);
   $('#copy-redirect-btn').addEventListener('click', (e) => copyRedirectUrl(e.currentTarget));
   $('#autostart-toggle').addEventListener('change', handleAutostartToggle);
+  $('#auto-open-toggle').addEventListener('change', handleAutoOpenToggle);
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
   $('#settings-update-btn').addEventListener('click', handleUpdate);
   $('#update-btn').addEventListener('click', handleUpdate);
