@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]";
+pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][dynamic_range=SDR?]+ba/b[height<=1080][dynamic_range=SDR?]";
 
 pub struct Ytdlp {
     exe: PathBuf,
@@ -331,5 +331,15 @@ mod tests {
         assert_eq!(parse_download_progress("[download] Destination: x"), None);
         assert_eq!(describe_error("x\nERROR: [youtube] abc: Video unavailable\n", Some(1)), "ERROR: [youtube] abc: Video unavailable");
         assert!(describe_error("ERROR: Sign in to confirm you’re not a bot", None).starts_with("YouTube bot check"));
+    }
+
+    #[test]
+    fn format_fallbacks_exclude_hdr_video() {
+        // Assert: every video branch past the avc1 one is SDR only, the muxed fallback too
+        let branches: Vec<&str> = FORMAT.split('/').collect();
+        assert!(branches[0].contains("vcodec^=avc1"));
+        for b in &branches[1..] {
+            assert!(b.contains("[dynamic_range=SDR?]"), "{b}");
+        }
     }
 }

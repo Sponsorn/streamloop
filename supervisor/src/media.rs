@@ -14,7 +14,7 @@ pub enum Input<'a> {
     Url { video: &'a str, audio: &'a str, headers: &'a str },
 }
 
-const VF: &str = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
+const VF: &str = "scale=1920:1080:force_original_aspect_ratio=decrease:in_color_matrix=auto:out_color_matrix=bt709:out_range=tv,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
 
 const AF: &str = "aresample=48000,aformat=sample_fmts=s16:channel_layouts=stereo";
 
@@ -421,6 +421,8 @@ mod tests {
             let vf = args[args.iter().position(|x| x == "-vf").unwrap() + 1].clone();
             // Assert
             assert!(vf.ends_with(tail), "{vf}");
+            // converted, not just relabelled: the matrix and range follow the source into bt709 tv
+            assert!(vf.starts_with("scale=1920:1080:force_original_aspect_ratio=decrease:in_color_matrix=auto:out_color_matrix=bt709:out_range=tv,"), "{vf}");
         }
     }
 
