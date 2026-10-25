@@ -221,6 +221,12 @@ export class DiscordNotifier {
     await this.send(content, 'info');
   }
 
+  async notifyOutputFrozen(kind: 'freeze' | 'silence', videoIndex: number): Promise<void> {
+    if (!this.discord.events.outputFrozen) return;
+    const content = this.renderTemplate(this.discord.templates.outputFrozen, { kind, videoIndex });
+    await this.send(content, 'warn');
+  }
+
   async notifyTwitchMismatch(channel: string): Promise<void> {
     if (!this.discord.events.twitchMismatch) return;
     const content = this.renderTemplate(this.discord.templates.twitchMismatch, { channel });

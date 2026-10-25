@@ -299,4 +299,24 @@ describe('DiscordNotifier', () => {
     const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
     expect(body.embeds[0].description).toBe('Custom recovery: refreshSource happened!');
   });
+
+  it('renders the output-frozen template with kind and video', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+    const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
+    await notifier.notifyOutputFrozen('freeze', 4);
+    await vi.advanceTimersByTimeAsync(30000);
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
+    expect(body.embeds[0].description).toBe('Frozen (freeze) on #4');
+  });
+
+  it('skips the output-frozen alert when its event is off', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+    const notifier = makeNotifier({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+      events: { ...defaultDiscord.events, outputFrozen: false },
+    });
+    await notifier.notifyOutputFrozen('silence', 1);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
