@@ -12,11 +12,14 @@
  * Usage:
  *   node build/prepare-release.js          full bundle (node + mpv + yt-dlp + app)
  *   node build/prepare-release.js --slim   update-only bundle: app + yt-dlp only,
- *                                          no node/ or mpv/ (the auto-updater never
- *                                          swaps those). Produces streamloop-vX.Y.Z-
+ *                                          no node/ or mpv/. Produces streamloop-vX.Y.Z-
  *                                          update.zip — much smaller, and the updater
- *                                          prefers it over the full ZIP. Use the full
- *                                          bundle for first-time installs.
+ *                                          prefers it unless the install runs a
+ *                                          different Node than NODE_VERSION. Use the
+ *                                          full bundle for first-time installs.
+ *
+ * Both modes write NODE_VERSION to app/ and dist/node-version.txt. Upload the dist/
+ * copy as a release asset; the updater reads it to decide whether to swap node/.
  *
  * Note: mpv.exe must be manually placed in build/mpv/mpv.exe before building (full only).
  * Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases
@@ -29,7 +32,7 @@ import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, cre
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 
-const NODE_VERSION = '22.12.0';
+const NODE_VERSION = '22.23.4';
 const NODE_ARCH = 'win-x64';
 const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`;
 const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe';
@@ -55,7 +58,7 @@ async function main() {
   mkdirSync(DIST, { recursive: true });
   rmSync(RELEASE, { recursive: true, force: true });
   rmSync(join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`), { recursive: true, force: true });
-  for (const f of ['node.zip', 'deno.zip', zipFilename, checksumFilename]) {
+  for (const f of ['node.zip', 'deno.zip', 'node-version.txt', zipFilename, checksumFilename]) {
     rmSync(join(DIST, f), { force: true });
   }
 
@@ -63,8 +66,8 @@ async function main() {
   mkdirSync(join(RELEASE, 'app', 'src'), { recursive: true });
   if (!SLIM) mkdirSync(join(RELEASE, 'node'), { recursive: true });
 
-  // Step 1: Download portable Node.js (full bundle only — the auto-updater never
-  // delivers node/, so a slim update relies on the existing install's runtime).
+  // Step 1: Download portable Node.js (full bundle only; a slim update runs on the
+  // install's existing node/, and the updater takes the full ZIP when that differs).
   if (!SLIM) {
     console.log(`Downloading Node.js v${NODE_VERSION} (${NODE_ARCH})...`);
     const nodeZip = join(DIST, 'node.zip');
@@ -137,6 +140,8 @@ async function main() {
     }
   }
   cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.json'));
+  writeFileSync(join(appDir, 'node-version.txt'), `${NODE_VERSION}\n`);
+  writeFileSync(join(DIST, 'node-version.txt'), `${NODE_VERSION}\n`);
 
   // Step 5: Install production dependencies. The full bundle uses its own
   // bundled npm (pinned Node version); the slim bundle skips node/, so it falls
@@ -181,6 +186,7 @@ async function main() {
   console.log(`\nRelease built successfully!`);
   console.log(`  ZIP: ${zipPath}`);
   console.log(`  SHA-256: ${checksumPath}`);
+  console.log(`  Node version asset: ${join(DIST, 'node-version.txt')}`);
   console.log(`  Dir: ${RELEASE}`);
 }
 

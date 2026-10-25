@@ -235,7 +235,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   router.post('/update/check', async (_req, res) => {
     try {
-      const status = await deps.updater.checkForUpdate();
+      const status = await deps.updater.checkForUpdate(true);
       res.json(status);
     } catch (err) {
       res.status(500).json({ error: String(err) });
