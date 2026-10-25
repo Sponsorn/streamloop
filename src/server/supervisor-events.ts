@@ -132,7 +132,8 @@ export function describe(e: SupervisorEvent): Described {
     // The launch helper's own event; "Supervisor launched" already covers a normal launch.
     case 'launched':
       return { message: e.breakaway === false ? "Supervisor launched inside the caller's job and may stop with it" : '' };
-    case 'supervisor-blocked-by-obs': return { message: OBS_RUNNING };
+    // The launch guard reports each block once, so this alerts once per block, not per check.
+    case 'supervisor-blocked-by-obs': return critical(OBS_RUNNING);
     case 'encoder-fallback': return critical(`The ${one(e.from)} encoder failed its test, so the stream uses ${one(e.to)}.`);
     case 'no-encoder': return critical(NO_ENCODER);
     case 'ffmpeg-missing': return critical(FFMPEG_MISSING);
@@ -230,11 +231,11 @@ export class AlertGate {
   }
 }
 
-const CRITICAL_LAUNCHER = new Set(['supervisor-down', 'supervisor-missing', 'encoder-fallback', 'no-encoder', 'ffmpeg-missing']);
+const CRITICAL_LAUNCHER = new Set(['supervisor-down', 'supervisor-missing', 'supervisor-blocked-by-obs', 'encoder-fallback', 'no-encoder', 'ffmpeg-missing']);
 
 /** Shape a launcher callback as a SupervisorEvent, so one function routes both sources. */
 export function launcherEvent(kind: string, detail?: Record<string, unknown>): SupervisorEvent {
-  const level = CRITICAL_LAUNCHER.has(kind) ? 'critical' : kind === 'supervisor-blocked-by-obs' ? 'warn' : 'info';
+  const level = CRITICAL_LAUNCHER.has(kind) ? 'critical' : 'info';
   return { ts: new Date().toISOString(), level, kind, ...detail };
 }
 

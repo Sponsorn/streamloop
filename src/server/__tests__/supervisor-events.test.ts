@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { SupervisorEvents, AlertGate, describe as describeEvent, launcherEvent, type SupervisorEvent } from '../supervisor-events.js';
+import { launchGuard, OBS_RUNNING, type RunFn } from '../setup-check.js';
 
 const dir = join(process.cwd(), '.test-tmp', 'supervisor-events');
 const ev = (kind: string, extra: Record<string, unknown> = {}, level: SupervisorEvent['level'] = 'info'): SupervisorEvent =>
@@ -332,11 +333,39 @@ describe('AlertGate', () => {
 });
 
 describe('launch guard events', () => {
-  it('puts the OBS block on the timeline only, as a warning', () => {
+  it('sends the OBS block to Discord as critical', () => {
     const e = launcherEvent('supervisor-blocked-by-obs');
-    expect(e.level).toBe('warn');
-    expect(describeEvent(e).discord).toBeUndefined();
-    expect(describeEvent(e).message).toMatch(/OBS is running/);
+    expect(e.level).toBe('critical');
+    expect(describeEvent(e)).toEqual({ message: OBS_RUNNING, discord: { kind: 'critical', vars: { message: OBS_RUNNING }, level: 'error' } });
+  });
+
+  it('sends one critical per OBS block through the launch guard: one for a long block, two for two', async () => {
+    // Arrange
+    const gate = new AlertGate();
+    const sent: string[] = [];
+    let obs = true;
+    const guard = launchGuard({
+      root: dir,
+      getSupervisor: () => ({ encoder: 'libx264' }),
+      saveEncoder: () => {},
+      onEvent: (kind, detail) => { const d = gate.describe(launcherEvent(kind, detail)).discord; if (d) sent.push(d.kind); },
+      obsRunning: async () => obs,
+      run: (async () => true) as RunFn,
+      exists: () => true,
+    });
+    const checks = async (n: number) => { for (let i = 0; i < n; i++) await guard(); };
+
+    // Act: one long block
+    await checks(5);
+    const afterOneBlock = sent.length;
+    // OBS closes, opens, closes, opens again
+    obs = false; await checks(2);
+    obs = true; await checks(3);
+    obs = false; await checks(1);
+
+    // Assert
+    expect(afterOneBlock).toBe(1);
+    expect(sent).toEqual(['critical', 'critical']);
   });
 
   it('sends encoder-fallback as critical with both encoders named', () => {
