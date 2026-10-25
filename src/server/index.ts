@@ -96,6 +96,8 @@ async function main() {
   if (!root) logger.warn('No install root (set STREAMLOOP_ROOT in dev): the supervisor cannot be launched');
 
   const updater = new Updater();
+  const testHooks = process.env.STREAMLOOP_TEST_HOOKS === '1';
+  if (testHooks) logger.warn('STREAMLOOP_TEST_HOOKS=1: POST /api/test/exit-75 is open');
 
   // A first run has only the placeholder playlist: nothing starts until the wizard saves a real one.
   let started = false;
@@ -163,7 +165,7 @@ async function main() {
     getTwitch: () => twitch,
     getUptime,
     apiToken,
-    testHooks: process.env.STREAMLOOP_TEST_HOOKS === '1',
+    testHooks,
   }));
 
   // 2.x binds the same port: while it runs, exit and let START.bat retry until it is stopped.
