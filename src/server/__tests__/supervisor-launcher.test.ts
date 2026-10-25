@@ -460,4 +460,17 @@ describe('stopped-by-user marker', () => {
     expect(afterStop).toBe(true);
     expect(existsSync(marker())).toBe(false);
   });
+
+  it('Start still starts when the marker cannot be removed', () => {
+    // Arrange: a folder at the marker path makes the delete throw, like a file held by antivirus
+    const { launcher } = setup();
+    mkdirSync(join(marker(), 'held'), { recursive: true });
+
+    // Act
+    const start = (): void => launcher.launchNow();
+
+    // Assert
+    expect(start).not.toThrow();
+    expect(launcher.isStoppedByUser()).toBe(false);
+  });
 });

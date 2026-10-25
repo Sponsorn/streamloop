@@ -161,7 +161,7 @@ export class TwitchLivenessChecker {
       );
 
       if (live === null) {
-        // API error â€” don't change counter
+        // API error — don't change counter
         return;
       }
 
@@ -259,7 +259,7 @@ export class TwitchLivenessChecker {
       });
 
       if (res.status === 401) {
-        // Token expired or revoked â€” invalidate and retry once
+        // Token expired or revoked — invalidate and retry once
         logger.warn('Twitch API returned 401, refreshing token');
         this.accessToken = null;
         this.tokenExpiresAt = 0;

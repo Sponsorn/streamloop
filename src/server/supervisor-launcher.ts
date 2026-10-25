@@ -123,7 +123,11 @@ export class SupervisorLauncher {
   launchNow(): void {
     this.stoppedByUser = false;
     const marker = this.marker();
-    if (marker) rmSync(marker, { force: true });
+    try {
+      if (marker) rmSync(marker, { force: true });
+    } catch {
+      // ponytail: the Start still holds; a Node restart before the marker goes would come up stopped.
+    }
     this.spawns = 0;
     if (this.draining) {
       // The old supervisor still holds the port; launch once it stops answering, with no outage.
