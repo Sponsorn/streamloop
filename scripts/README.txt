@@ -10,13 +10,15 @@ It installs beside StreamLoop 2.x and does not touch a 2.x folder.
 
 Install
 -------
-1. Extract this ZIP to a new folder, for example C:\StreamLoop3.
-   Do not extract it over a 2.x folder.
+1. Make a new, empty folder, for example C:\StreamLoop3, and extract
+   this ZIP into it. The ZIP holds one folder, streamloop, so the
+   install is C:\StreamLoop3\streamloop. Do not extract it into a 2.x
+   folder: the 2.x ZIP has a streamloop folder too.
 2. Close OBS. StreamLoop 3 will not start its stream while OBS is
    running, so 2.x and 3 never stream on the same key at once.
 3. Stop StreamLoop 2.x if it is running. Both use port 7654, so only one
    of them can run at a time.
-4. Double-click START.bat.
+4. Double-click START.bat in C:\StreamLoop3\streamloop.
 
 Node.js, ffmpeg and yt-dlp are all in the folder. Nothing else needs
 installing.
@@ -55,10 +57,17 @@ it installs.
 yt-dlp updates itself each time StreamLoop starts. Some releases also
 change Node.js, the supervisor, ffmpeg or the token server. The release
 notes say so, and the dashboard tells you when a release brings a new
-Node.js. For those, press Stop, close the START.bat window, extract the
-new full ZIP over this folder and start START.bat again. Your settings
-stay, because the ZIP holds only config.example.json and never a
-config.json.
+Node.js. For those:
+
+1. Press Stop and close the START.bat window.
+2. Extract the new full ZIP into the same folder as the first time
+   (C:\StreamLoop3 in the example above, not C:\StreamLoop3\streamloop).
+   Its streamloop folder lands on the existing one; let Windows replace
+   the files.
+3. Start START.bat again and press Start.
+
+Your settings, the stream key and data\ are kept, because the ZIP holds
+only config.example.json and never a config.json.
 
 Switching back to 2.x
 ---------------------

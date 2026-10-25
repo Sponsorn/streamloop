@@ -307,6 +307,10 @@ async function step2() {
   const supBefore = await supervisors();
   const genBefore = (await supStatus())?.encoder?.generation ?? null;
   const ytBefore = (await ps()).filter((p) => p.Name === 'yt-dlp.exe' && inInstall(p)).map((p) => p.ProcessId);
+  // The swap must happen during a download; the supervisor's own status says whether one runs.
+  const inFlight = await waitFor('a download in the supervisor status', async () => (await supStatus())?.downloading ?? null, 120_000, 250);
+  if (!inFlight.value) throw new Stop('no yt-dlp download in flight for the exit-75 hook');
+  r.downloadAtHook = inFlight.value;
   const t = Date.now();
   r.hook = (await api('POST', '/test/exit-75')).status;
   await waitFor('Node gone after exit 75', async () => { try { await fetch(`${NODE_API}/token`, { signal: AbortSignal.timeout(1000) }); return false; } catch { return true; } }, 30_000, 250);
