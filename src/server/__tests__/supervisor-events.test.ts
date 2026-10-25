@@ -133,7 +133,7 @@ describe('describe', () => {
   });
 
   it('maps supervisor-back to an info alert and supervisor-launched to the timeline', () => {
-    expect(describeEvent(ev('supervisor-back')).discord).toMatchObject({ kind: 'streamRestart', level: 'info' });
+    expect(describeEvent(ev('supervisor-back')).discord).toMatchObject({ kind: 'recovery', level: 'info', vars: { step: 'Supervisor answering again' } });
     expect(describeEvent(ev('supervisor-launched')).discord).toBeUndefined();
   });
 

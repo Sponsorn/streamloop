@@ -116,7 +116,8 @@ export function describe(e: SupervisorEvent): Described {
     case 'supervisor-down':
       return critical('The supervisor has stopped answering.');
     case 'supervisor-back':
-      return { message: 'Supervisor is answering again', discord: { kind: 'streamRestart', vars: { attempts: 1 }, level: 'info' } };
+      // The recovery template ("Recovery action: {step}") fits; streamRestart would read as a stream restart.
+      return { message: 'Supervisor is answering again', discord: { kind: 'recovery', vars: { step: 'Supervisor answering again' }, level: 'info' } };
     case 'supervisor-missing':
       return critical('The supervisor program is missing from the install.');
     case 'supervisor-launched': return { message: 'Supervisor launched' };
