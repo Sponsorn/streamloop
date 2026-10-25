@@ -129,6 +129,9 @@ export function describe(e: SupervisorEvent): Described {
     case 'supervisor-missing':
       return critical('The supervisor program is missing from the install.');
     case 'supervisor-launched': return { message: 'Supervisor launched' };
+    // The launch helper's own event; "Supervisor launched" already covers a normal launch.
+    case 'launched':
+      return { message: e.breakaway === false ? "Supervisor launched inside the caller's job and may stop with it" : '' };
     case 'supervisor-blocked-by-obs': return { message: OBS_RUNNING };
     case 'encoder-fallback': return critical(`The ${one(e.from)} encoder failed its test, so the stream uses ${one(e.to)}.`);
     case 'no-encoder': return critical(NO_ENCODER);

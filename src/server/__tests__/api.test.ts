@@ -317,6 +317,12 @@ WshShell.Run """${bat}""", 1, False`;
   });
 
   describe('POST /stream-key', () => {
+    const exe = join(tmp, 'root', 'supervisor', 'streamloop-supervisor.exe');
+    beforeEach(() => {
+      mkdirSync(join(tmp, 'root', 'supervisor'), { recursive: true });
+      writeFileSync(exe, '');
+    });
+
     function spyLogs() {
       return (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((l) => vi.spyOn(logger, l));
     }
@@ -365,6 +371,16 @@ WshShell.Run """${bat}""", 1, False`;
       expect(JSON.parse(text)).toEqual({ error: 'Invalid JSON' });
       expect(text).not.toContain('TESTKEY');
       expect(JSON.stringify(spies.flatMap((s) => s.mock.calls))).not.toContain('TESTKEY');
+      expect(h.protect).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 with only the plain sentence when the supervisor exe is missing', async () => {
+      rmSync(exe);
+
+      const res = await post('/stream-key', { key: KEY });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP.' });
       expect(h.protect).not.toHaveBeenCalled();
     });
 
@@ -547,6 +563,17 @@ WshShell.Run """${bat}""", 1, False`;
     it('POST /config that changes the encoder also sets preferredEncoder', async () => {
       await post('/config', { supervisor: { encoder: 'h264_amf' } });
       expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_amf', preferredEncoder: 'h264_amf' });
+    });
+
+    it('POST /config takes an explicit preferredEncoder, even for the encoder running now', async () => {
+      h.config.value = { ...h.config.value, supervisor: { ...h.config.value.supervisor, encoder: 'libx264', preferredEncoder: 'h264_nvenc' } };
+      await post('/config', { supervisor: { encoder: 'libx264', preferredEncoder: 'libx264' } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'libx264', preferredEncoder: 'libx264' });
+    });
+
+    it('POST /config keeps an explicit preferredEncoder over the changed-encoder rule', async () => {
+      await post('/config', { supervisor: { encoder: 'h264_amf', preferredEncoder: 'h264_qsv' } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_amf', preferredEncoder: 'h264_qsv' });
     });
 
     it('POST /config that resends the current encoder leaves the preference alone', async () => {

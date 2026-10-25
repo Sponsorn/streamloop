@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -150,7 +150,7 @@ describe('autostartLabel', () => {
   });
 
   it('flags a StreamLoop.vbs that StreamLoop did not write', () => {
-    expect(autostartLabel({ enabled: true, target: null, thisInstall: false })).toContain('not written by StreamLoop');
+    expect(autostartLabel({ enabled: true, target: null, thisInstall: false })).toBe('set by another program (StreamLoop.vbs in the Startup folder)');
   });
 });
 
@@ -163,6 +163,32 @@ describe('dependencyRows', () => {
       { name: 'Deno', ok: false, path: 'd' },
     ]));
     expect(rows.map((r: { name: string }) => r.name)).toEqual(['ffmpeg', 'Deno', 'Supervisor', 'yt-dlp']);
+  });
+
+  it('gives each row a line that reads as a sentence', () => {
+    const rows = dependencyRows(report({}, [
+      { name: 'Token server modules', ok: false, path: 'C:\\SL\\pot\\node_modules' },
+      { name: 'ffmpeg', ok: false, path: 'C:\\SL\\ffmpeg\\ffmpeg.exe' },
+      { name: 'Deno', ok: true, path: 'C:\\SL\\yt-dlp\\deno.exe' },
+    ]));
+    expect(rows.map((r: { text: string }) => r.text)).toEqual([
+      'Token server packages are missing: C:\\SL\\pot\\node_modules',
+      'ffmpeg is missing: C:\\SL\\ffmpeg\\ffmpeg.exe',
+      'Deno',
+    ]);
+  });
+});
+
+describe('savePatch', () => {
+  const loaded = { supervisor: { encoder: 'h264_nvenc', cacheBudgetMb: 300 } };
+
+  it('makes a picked encoder the preference', () => {
+    expect(savePatch(loaded, { supervisor: { encoder: 'libx264', cacheBudgetMb: 300 } }))
+      .toEqual({ supervisor: { encoder: 'libx264', preferredEncoder: 'libx264' } });
+  });
+
+  it('sends no preference when the encoder was not changed', () => {
+    expect(savePatch(loaded, { supervisor: { encoder: 'h264_nvenc', cacheBudgetMb: 500 } })).toEqual({ supervisor: { cacheBudgetMb: 500 } });
   });
 });
 

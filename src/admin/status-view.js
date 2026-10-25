@@ -99,12 +99,19 @@ export function autostartLabel(status) {
   if (!status.enabled) return 'Off';
   if (status.thisInstall) return 'This install';
   if (status.target) return `Another install: ${status.target}`;
-  return 'Unknown: StreamLoop.vbs in the Startup folder was not written by StreamLoop';
+  return 'set by another program (StreamLoop.vbs in the Startup folder)';
 }
 
+/** Names that read better in the missing line than the server's label. */
+const MISSING_TEXT = { 'Token server modules': 'Token server packages are missing' };
+
+/** The dependency list with failures first, each with its display line. */
 export function dependencyRows(report) {
   const deps = report.dependencies || [];
-  return [...deps.filter((d) => !d.ok), ...deps.filter((d) => d.ok)];
+  return [...deps.filter((d) => !d.ok), ...deps.filter((d) => d.ok)].map((d) => ({
+    ...d,
+    text: d.ok ? d.name : `${MISSING_TEXT[d.name] || d.name + ' is missing'}: ${d.path}`,
+  }));
 }
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -123,4 +130,11 @@ export function changedFields(original, edited) {
     }
   }
   return out;
+}
+
+/** changedFields plus the user's encoder pick as the preference, which a fallback then returns to. */
+export function savePatch(original, edited) {
+  const patch = changedFields(original, edited);
+  if (patch.supervisor && patch.supervisor.encoder) patch.supervisor.preferredEncoder = patch.supervisor.encoder;
+  return patch;
 }

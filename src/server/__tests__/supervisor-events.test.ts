@@ -191,6 +191,16 @@ describe('describe', () => {
     expect(describeEvent(ev('supervisor-launched')).discord).toBeUndefined();
   });
 
+  it('keeps a launch that broke away from the caller\'s job off the timeline', () => {
+    expect(describeEvent(ev('launched', { breakaway: true, pid: 1 }))).toEqual({ message: '' });
+  });
+
+  it('notes a launch that stayed inside the caller\'s job', () => {
+    const d = describeEvent(ev('launched', { breakaway: false, pid: 1 }));
+    expect(d.message).toContain("inside the caller's job");
+    expect(d.discord).toBeUndefined();
+  });
+
   it.each(['token-server-spawn', 'token-server-down', 'token-server-restart', 'token-server-adopt', 'reload', 'start', 'control', 'playlist', 'youtube-probe-failed'])(
     'keeps %s off Discord', (kind) => {
       expect(describeEvent(ev(kind, { error: 'e', reason: 'r' })).discord).toBeUndefined();

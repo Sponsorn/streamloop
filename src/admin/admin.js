@@ -1,6 +1,6 @@
 import {
   streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
-  encoderLabel, autostartLabel, dependencyRows, changedFields,
+  encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch,
 } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -128,6 +128,7 @@ function collectPlaylists(containerSel) {
 // Wizard
 
 const WIZ_TOTAL_STEPS = 6;
+const WIZ_CHECK_STEP = 5;
 let wizSetupReport = null;
 let wizStep = 1;
 let wizFinished = false;
@@ -166,10 +167,11 @@ function wizGoTo(step) {
   wizInitStep(step);
 }
 
-function wizNext() {
+async function wizNext() {
   if (wizFinished) { showDashboard(); return; }
   if (wizStep === WIZ_TOTAL_STEPS) { runVerification(); return; }
   if (!wizValidateStep()) return;
+  if (wizStep === WIZ_CHECK_STEP && !(await wizSaveSetup())) return;
   wizGoTo(wizStep + 1);
 }
 
@@ -210,8 +212,8 @@ function wizInitStep(step) {
       $('#wiz-discord').value = wizState.discordWebhookUrl;
       $('#wiz-autostart').checked = wizState.autostart;
       break;
-    case 5:
-      if (!wizSetupReport) wizRunSetupCheck();
+    case WIZ_CHECK_STEP:
+      if (!wizSetupReport && !setupRun) wizRunSetupCheck();
       break;
     case 6:
       ['config', 'key', 'live'].forEach(key => setVerifyIcon(key, ''));
@@ -290,6 +292,15 @@ async function runVerification() {
     }
   }
 
+  if (!keyOk) {
+    setVerifyIcon('live', 'fail');
+    statusEl.textContent += ' You can set the key later in Settings.';
+    wizFinished = true;
+    nextBtn.disabled = false;
+    nextBtn.textContent = 'Go to Dashboard';
+    return;
+  }
+
   setVerifyIcon('live', 'spin');
   nextBtn.textContent = 'Checking...';
   const started = Date.now();
@@ -299,7 +310,7 @@ async function runVerification() {
     await sleep(2000);
     try {
       stream = (await api('/api/status')).stream;
-      if (keyOk) statusEl.textContent = streamLine(stream).word + (stream.reason ? ': ' + stream.reason : '');
+      statusEl.textContent = streamLine(stream).word + (stream.reason ? ': ' + stream.reason : '');
     } catch {
       // The server can drop a poll while it takes the new config in.
     }
@@ -312,7 +323,7 @@ async function runVerification() {
   } else {
     setVerifyIcon('live', 'fail');
     const why = (stream && stream.reason) || 'The server did not answer.';
-    statusEl.textContent = (keyOk ? '' : statusEl.textContent + ' ') + why + ' You can fix this later from the dashboard.';
+    statusEl.textContent = why + ' You can fix this later from the dashboard.';
   }
   wizFinished = true;
   nextBtn.disabled = false;
@@ -322,6 +333,7 @@ async function runVerification() {
 async function wizRunSetupCheck() {
   $('#wiz-setup-apply').classList.add('hidden');
   $('#wiz-setup-use').classList.add('hidden');
+  $('#wiz-setup-hint').classList.add('hidden');
   wizSetupReport = await runSetupCheck($('#wiz-setup-run'), $('#wiz-setup-report'));
   if (!wizSetupReport) return;
   const { encoder, cache } = wizSetupReport;
@@ -332,52 +344,79 @@ async function wizRunSetupCheck() {
   $('#wiz-cache').value = String(cache.recommendedMb);
   $('#wiz-setup-apply').classList.remove('hidden');
   $('#wiz-setup-use').classList.remove('hidden');
+  $('#wiz-setup-hint').classList.remove('hidden');
 }
 
-async function wizUseSetup(e) {
+/** The wizard's encoder and cache fields, or null after flagging an invalid cache size. */
+function wizPicked() {
   const input = $('#wiz-cache');
   const cacheBudgetMb = Number(input.value);
   if (!Number.isInteger(cacheBudgetMb) || cacheBudgetMb < 50) {
     input.classList.add('invalid');
     showToast('Download cache must be a whole number, at least 50.');
-    return;
+    return null;
   }
   input.classList.remove('invalid');
   const picked = { cacheBudgetMb };
   if (wizSetupReport.encoder.works) picked.encoder = $('#wiz-encoder').value;
-  await applySetup(e.currentTarget, picked);
+  return picked;
 }
 
-/** Saves the picked encoder and cache size, only where they differ from the saved config. */
-async function applySetup(btn, picked) {
+async function wizUseSetup(e) {
+  const picked = wizPicked();
+  if (!picked) return;
+  const btn = e.currentTarget;
   btn.disabled = true;
   try {
-    const cfg = await api('/api/config');
-    const patch = changedFields({ supervisor: cfg.supervisor }, { supervisor: picked });
-    if (!patch.supervisor) {
-      showToast('These settings are already in use.', 'success');
-      return null;
-    }
-    const r = await saveConfig(patch);
-    showToast('Settings saved.', 'success');
-    return r;
+    const r = await applySetup(picked);
+    showToast(r ? 'Settings saved.' : 'These settings are already in use.', 'success');
   } catch (err) {
     showToast('Could not save: ' + err.message);
-    return null;
   } finally {
     btn.disabled = false;
   }
 }
 
+/** Continue on the check step saves the values shown; true lets the wizard move on. */
+async function wizSaveSetup() {
+  // Nothing is shown while the check runs or after it failed.
+  if (!wizSetupReport || setupRun) return true;
+  const picked = wizPicked();
+  if (!picked) return false;
+  const btn = $('#wiz-next');
+  btn.disabled = true;
+  try {
+    await applySetup(picked);
+    return true;
+  } catch (err) {
+    showToast('Could not save: ' + err.message);
+    return false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Saves the picked encoder and cache size where they differ from the saved config.
+ *  Returns the save response, or null when nothing differs; throws when the save fails. */
+async function applySetup(picked) {
+  const cfg = await api('/api/config');
+  const patch = savePatch({ supervisor: cfg.supervisor }, { supervisor: picked });
+  return patch.supervisor ? saveConfig(patch) : null;
+}
+
+const RUN_CHECK_LABEL = 'Run checks again';
+/** The check in flight; a second caller waits for it instead of starting another. */
+let setupRun = null;
+
 /** Runs POST /api/setup-check/run with a busy button; returns the report, or null after showing why not. */
 async function runSetupCheck(btn, container) {
-  const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Checking...';
-  container.textContent = 'Checking this PC. This takes about 10 seconds.';
+  container.textContent = 'Checking this PC. This can take up to a minute.';
   container.className = 'setup-report muted';
+  setupRun ??= post('/api/setup-check/run').finally(() => { setupRun = null; });
   try {
-    const report = await post('/api/setup-check/run');
+    const report = await setupRun;
     renderSetupReport(container, report);
     return report;
   } catch (err) {
@@ -386,7 +425,7 @@ async function runSetupCheck(btn, container) {
     return null;
   } finally {
     btn.disabled = false;
-    btn.textContent = label;
+    btn.textContent = RUN_CHECK_LABEL;
   }
 }
 
@@ -410,7 +449,7 @@ function renderSetupReport(container, report) {
   for (const d of dependencyRows(report)) {
     const li = document.createElement('li');
     li.className = d.ok ? 'ok' : 'err';
-    li.textContent = d.ok ? `✔ ${d.name}` : `✘ ${d.name} is missing: ${d.path}`;
+    li.textContent = (d.ok ? '✔ ' : '✘ ') + d.text;
     if (d.ok) li.title = d.path;
     list.appendChild(li);
   }
@@ -904,7 +943,7 @@ async function handlePlaybackSave() {
     supervisor[f.key] = n;
   }
   // Blank cookies is a real value (none), so it is not dropped like the blanks above.
-  const patch = changedFields(playbackConfig, { supervisor, ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim() });
+  const patch = savePatch(playbackConfig, { supervisor, ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim() });
   try {
     btn.disabled = true;
     if (Object.keys(patch).length === 0) {
@@ -924,6 +963,8 @@ async function handlePlaybackSave() {
 }
 
 async function loadPlaybackSetupReport() {
+  // A run in flight keeps its busy state; the saved report would look current.
+  if (setupRun) return;
   const container = $('#pb-setup-report');
   try {
     showPlaybackReport(await api('/api/setup-check'));
@@ -958,11 +999,23 @@ async function handlePlaybackSetupUse(e) {
   const { encoder, cache } = playbackReport;
   const picked = { cacheBudgetMb: cache.recommendedMb };
   if (encoder.works) picked.encoder = encoder.chosen;
-  const r = await applySetup(e.currentTarget, picked);
-  if (!r) return;
-  if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
-  playbackSettingsLoaded = false;
-  loadPlaybackSettings();
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const r = await applySetup(picked);
+    if (!r) {
+      showToast('These settings are already in use.', 'success');
+      return;
+    }
+    showToast('Settings saved.', 'success');
+    if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
+    playbackSettingsLoaded = false;
+    loadPlaybackSettings();
+  } catch (err) {
+    showToast('Could not save: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Webhooks tab

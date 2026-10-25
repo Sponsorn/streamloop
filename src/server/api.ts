@@ -120,6 +120,8 @@ export function streamState(
   }
 }
 
+const SUPERVISOR_EXE_MISSING = 'The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP.';
+
 function maskConfig(config: AppConfig): Record<string, unknown> {
   const { streamKeyProtected, ...supervisor } = config.supervisor;
   return {
@@ -225,9 +227,10 @@ export function createApiRouter(deps: ApiDependencies): Router {
       if (supervisor) {
         delete supervisor.streamKeyProtected;
         delete supervisor.streamKeySet;
-        // A chosen encoder becomes the preference a fallback returns to. Resending the current
-        // one (any settings save after a fallback) must not make the fallback the preference.
-        if (typeof supervisor.encoder === 'string' && supervisor.encoder !== deps.getConfig().supervisor.encoder) {
+        // An explicit preferredEncoder is the user's pick. Without one, a changed encoder becomes the preference;
+        // resending the current one (any save after a fallback) must not make the fallback the preference.
+        if (typeof supervisor.preferredEncoder !== 'string' && typeof supervisor.encoder === 'string'
+          && supervisor.encoder !== deps.getConfig().supervisor.encoder) {
           supervisor.preferredEncoder = supervisor.encoder;
         }
       }
@@ -248,10 +251,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
     if (!deps.root) {
       return res.status(503).json({ error: 'The supervisor program was not found, so the key cannot be encrypted.' });
     }
+    const exe = join(deps.root, 'supervisor', 'streamloop-supervisor.exe');
+    if (!existsSync(exe)) return res.status(503).json({ error: SUPERVISOR_EXE_MISSING });
     // protectStreamKey already redacts; this guards any other error text too.
     const redact = (s: string): string => s.split(key.trim()).join('[redacted]');
     try {
-      const blob = await protect(join(deps.root, 'supervisor', 'streamloop-supervisor.exe'), key);
+      const blob = await protect(exe, key);
       const r = await saveAndReload({ supervisor: { streamKeyProtected: blob } } as Partial<AppConfig>);
       logger.info({ reloadError: r.reloadError }, 'Stream key replaced');
       res.json({ ok: true, streamKeySet: true });
