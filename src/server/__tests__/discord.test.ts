@@ -13,10 +13,8 @@ const defaultDiscord: DiscordConfig = {
     recovery: true,
     critical: true,
     resume: true,
-    obsDisconnect: true,
-    obsReconnect: true,
     streamDrop: true,
-    streamRestart: true, twitchMismatch: true, twitchRestart: true,
+    streamRestart: true, outputFrozen: true, twitchMismatch: true, twitchRestart: true,
   },
   templates: {
     error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
@@ -24,10 +22,9 @@ const defaultDiscord: DiscordConfig = {
     recovery: 'Recovery action: **{step}**',
     critical: '**CRITICAL:** {message}',
     resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
-    obsDisconnect: 'OBS disconnected — attempting to reconnect',
-    obsReconnect: 'OBS reconnected',
     streamDrop: 'Stream dropped (attempt {attempt}/{maxAttempts})',
     streamRestart: 'Stream restarted after {attempts} attempt(s)',
+    outputFrozen: 'Frozen ({kind}) on #{videoIndex}',
     twitchMismatch: 'Twitch mismatch on {channel}',
     twitchRestart: 'Stream restarted after Twitch mismatch on {channel}',
   },
@@ -36,9 +33,6 @@ const defaultDiscord: DiscordConfig = {
 function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partial<DiscordConfig> = {}): AppConfig {
   return {
     port: 7654,
-    obsWebsocketUrl: '',
-    obsWebsocketPassword: '',
-    obsBrowserSourceName: 'Source',
     playlists: [{ id: 'PL123' }],
     discord: {
       ...defaultDiscord,
@@ -46,33 +40,17 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
       events: { ...defaultDiscord.events, ...discordOverrides.events },
       templates: { ...defaultDiscord.templates, ...discordOverrides.templates },
     },
-    heartbeatIntervalMs: 5000,
-    heartbeatTimeoutMs: 15000,
-    maxConsecutiveErrors: 3,
-    stateFilePath: './state.json',
-    recoveryDelayMs: 5000,
-    initialLoadGraceMs: 90000,
-    outputCheckEnabled: true,
-    outputFreezeWindowMs: 30000,
-    proactiveUrlRefreshMs: 19800000,
-    obsAutoRestart: false,
-    obsAutoStream: false,
-    obsPath: '',
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
     autoOpenAdmin: true,
     updateCheckIntervalMs: 21600000,
-    sourceRefreshIntervalMs: 0,
     twitchClientId: '',
     twitchClientSecret: '',
     twitchChannel: '',
     twitchLivenessEnabled: false,
     twitchPollIntervalMs: 60000,
-    mpvGeometry: '1920x1080+0+0',
-    mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
-    mpvExtraArgs: [],
     ytdlCookiesFromBrowser: '',
-    ytdlPlayerClient: '',
+    supervisor: { ingestUrl: '', streamKeyProtected: '', encoder: 'libx264', cacheBudgetMb: 300, readAheadSeconds: 20, playerClient: '', overlay: true, freezeSeconds: 20, silenceSeconds: 30 },
     ...overrides,
   };
 }
@@ -209,19 +187,6 @@ describe('DiscordNotifier', () => {
       events: { ...defaultDiscord.events, skip: false },
     });
     await notifier.notifySkip(1, 'abc', 'test');
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('respects event toggle - disabled obsDisconnect does not send', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, obsDisconnect: false },
-    });
-    await notifier.notifyObsDisconnect();
     await vi.advanceTimersByTimeAsync(60000);
     expect(fetchSpy).not.toHaveBeenCalled();
   });

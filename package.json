@@ -1,6 +1,6 @@
 {
   "name": "streamloop",
-  "version": "2.3.7",
+  "version": "3.0.0-dev",
   "description": "24/7 YouTube playlist streamer for OBS with auto-recovery",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "express": "^4.21.0",
-    "obs-websocket-js": "^5.0.6",
     "pino": "^9.5.0",
     "zod": "^3.23.0"
   },

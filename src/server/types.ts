@@ -60,10 +60,9 @@ export interface DiscordEventToggles {
   recovery: boolean;
   critical: boolean;
   resume: boolean;
-  obsDisconnect: boolean;
-  obsReconnect: boolean;
   streamDrop: boolean;
   streamRestart: boolean;
+  outputFrozen: boolean;
   twitchMismatch: boolean;
   twitchRestart: boolean;
 }
@@ -74,10 +73,9 @@ export interface DiscordTemplates {
   recovery: string;
   critical: string;
   resume: string;
-  obsDisconnect: string;
-  obsReconnect: string;
   streamDrop: string;
   streamRestart: string;
+  outputFrozen: string;
   twitchMismatch: string;
   twitchRestart: string;
 }
@@ -91,40 +89,37 @@ export interface DiscordConfig {
   templates: DiscordTemplates;
 }
 
+export type SupervisorEncoder = 'h264_nvenc' | 'h264_amf' | 'h264_qsv' | 'libx264';
+
+/** The `supervisor` block of config.json; the Rust supervisor reads the same keys. */
+export interface SupervisorConfig {
+  ingestUrl: string;
+  /** DPAPI blob; the plain stream key is never stored. */
+  streamKeyProtected: string;
+  encoder: SupervisorEncoder;
+  cacheBudgetMb: number;
+  readAheadSeconds: number;
+  playerClient: string;
+  overlay: boolean;
+  freezeSeconds: number;
+  silenceSeconds: number;
+}
+
 export interface AppConfig {
   port: number;
-  obsWebsocketUrl: string;
-  obsWebsocketPassword: string;
-  obsBrowserSourceName: string;
   playlists: PlaylistEntry[];
   discord: DiscordConfig;
-  heartbeatIntervalMs: number;
-  heartbeatTimeoutMs: number;
-  maxConsecutiveErrors: number;
-  stateFilePath: string;
-  recoveryDelayMs: number;
-  initialLoadGraceMs: number;
-  outputCheckEnabled: boolean;
-  outputFreezeWindowMs: number;
-  proactiveUrlRefreshMs: number;
-  obsAutoRestart: boolean;
-  obsAutoStream: boolean;
-  obsPath: string;
+  supervisor: SupervisorConfig;
   autoUpdateCheck: boolean;
   updateCheckIntervalMs: number;
   autoUpdateYtdlp: boolean;
   autoOpenAdmin: boolean;
-  sourceRefreshIntervalMs: number;
   twitchClientId: string;
   twitchClientSecret: string;
   twitchChannel: string;
   twitchLivenessEnabled: boolean;
   twitchPollIntervalMs: number;
-  mpvGeometry: string;
-  mpvYtdlFormat: string;
-  mpvExtraArgs: string[];
   ytdlCookiesFromBrowser: string;
-  ytdlPlayerClient: string;
 }
 
 // --- Event log ---

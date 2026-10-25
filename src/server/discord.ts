@@ -209,16 +209,6 @@ export class DiscordNotifier {
     await this.send(content, 'info');
   }
 
-  async notifyObsDisconnect(): Promise<void> {
-    if (!this.discord.events.obsDisconnect) return;
-    await this.send(this.discord.templates.obsDisconnect, 'warn');
-  }
-
-  async notifyObsReconnect(): Promise<void> {
-    if (!this.discord.events.obsReconnect) return;
-    await this.send(this.discord.templates.obsReconnect, 'info');
-  }
-
   async notifyStreamDrop(attempt: number, maxAttempts: number): Promise<void> {
     if (!this.discord.events.streamDrop) return;
     const content = this.renderTemplate(this.discord.templates.streamDrop, { attempt, maxAttempts });

@@ -10,11 +10,10 @@ export const DEFAULT_DISCORD_TEMPLATES: DiscordTemplates = {
   recovery: 'Recovery action: **{step}**',
   critical: '**CRITICAL:** {message}',
   resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
-  obsDisconnect: 'OBS disconnected — attempting to reconnect',
-  obsReconnect: 'OBS reconnected',
-  streamDrop: 'OBS stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})',
-  streamRestart: 'OBS stream restarted successfully after {attempts} attempt(s)',
-  twitchMismatch: 'Twitch liveness mismatch — OBS reports streaming but **{channel}** is offline on Twitch. Restarting stream.',
+  streamDrop: 'Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})',
+  streamRestart: 'Stream restarted successfully after {attempts} attempt(s)',
+  outputFrozen: 'Output frozen ({kind}) on video #{videoIndex}',
+  twitchMismatch: 'Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.',
   twitchRestart: 'Stream restarted after Twitch liveness mismatch on **{channel}**',
 };
 
@@ -24,10 +23,9 @@ export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]
   recovery: ['step'],
   critical: ['message'],
   resume: ['videoIndex', 'videoId'],
-  obsDisconnect: [],
-  obsReconnect: [],
   streamDrop: ['attempt', 'maxAttempts'],
   streamRestart: ['attempts'],
+  outputFrozen: ['kind', 'videoIndex'],
   twitchMismatch: ['channel'],
   twitchRestart: ['channel'],
 };
@@ -43,10 +41,9 @@ const discordSchema = z.object({
     recovery: z.boolean().default(true),
     critical: z.boolean().default(true),
     resume: z.boolean().default(true),
-    obsDisconnect: z.boolean().default(true),
-    obsReconnect: z.boolean().default(true),
     streamDrop: z.boolean().default(true),
     streamRestart: z.boolean().default(true),
+    outputFrozen: z.boolean().default(true),
     twitchMismatch: z.boolean().default(true),
     twitchRestart: z.boolean().default(true),
   }).default({}),
@@ -56,73 +53,42 @@ const discordSchema = z.object({
     recovery: z.string().default(DEFAULT_DISCORD_TEMPLATES.recovery),
     critical: z.string().default(DEFAULT_DISCORD_TEMPLATES.critical),
     resume: z.string().default(DEFAULT_DISCORD_TEMPLATES.resume),
-    obsDisconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsDisconnect),
-    obsReconnect: z.string().default(DEFAULT_DISCORD_TEMPLATES.obsReconnect),
     streamDrop: z.string().default(DEFAULT_DISCORD_TEMPLATES.streamDrop),
     streamRestart: z.string().default(DEFAULT_DISCORD_TEMPLATES.streamRestart),
+    outputFrozen: z.string().default(DEFAULT_DISCORD_TEMPLATES.outputFrozen),
     twitchMismatch: z.string().default(DEFAULT_DISCORD_TEMPLATES.twitchMismatch),
     twitchRestart: z.string().default(DEFAULT_DISCORD_TEMPLATES.twitchRestart),
   }).default({}),
 }).default({});
 
+// Bounds and defaults match supervisor/src/config.rs.
+const supervisorSchema = z.object({
+  ingestUrl: z.string().default('rtmp://live.twitch.tv/app'),
+  streamKeyProtected: z.string().default(''),
+  encoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).default('h264_nvenc'),
+  cacheBudgetMb: z.number().min(50).default(300),
+  readAheadSeconds: z.number().min(2).default(20),
+  playerClient: z.string().default('mweb,web_embedded'),
+  overlay: z.boolean().default(true),
+  freezeSeconds: z.number().min(5).default(20),
+  silenceSeconds: z.number().min(5).default(30),
+}).default({});
+
 const configSchema = z.object({
   port: z.number().int().positive().default(7654),
-  obsWebsocketUrl: z.string().default('ws://127.0.0.1:4455'),
-  obsWebsocketPassword: z.string().default(''),
-  obsBrowserSourceName: z.string().min(1),
   playlists: z.array(z.object({ id: z.string().min(1), name: z.string().optional() })).min(1),
   discord: discordSchema,
-  heartbeatIntervalMs: z.number().int().positive().default(5000),
-  heartbeatTimeoutMs: z.number().int().positive().default(15000),
-  stateFilePath: z.string().default('./state.json').refine(
-    (p) => !p.includes('..') && /^\.?[/\\]?[\w.\-]+\.json$/i.test(p),
-    { message: 'stateFilePath must be a simple filename like ./state.json' },
-  ),
-  maxConsecutiveErrors: z.number().int().positive().default(3),
-  recoveryDelayMs: z.number().int().positive().default(5000),
-  // Grace window after each mpv connect during which the non-playing watchdog
-  // won't escalate to a restart. Covers slow cold yt-dlp resolve/seek on
-  // startup so a normal resume isn't mistaken for a fault. 0 disables the grace.
-  initialLoadGraceMs: z.number().int().min(0).default(90000),
-  outputCheckEnabled: z.boolean().default(true),
-  outputFreezeWindowMs: z.number().int().min(10000).default(30000),
-  // Proactively reload the current video this long after its URL was resolved,
-  // pre-empting YouTube's ~6h signed-URL expiry on videos longer than the TTL.
-  // 5.5h leaves a ~30min margin before the observed ~6.1h failure window. 0 disables.
-  proactiveUrlRefreshMs: z.number().int().min(0).default(19800000),
-  obsAutoRestart: z.boolean().default(false),
-  obsAutoStream: z.boolean().default(false),
-  obsPath: z.string().default('').refine(
-    (p) => {
-      if (!p) return true;
-      const lower = p.toLowerCase();
-      return lower.endsWith('.exe') && lower.includes('obs');
-    },
-    { message: 'obsPath must point to an OBS executable (e.g. obs64.exe)' },
-  ),
+  supervisor: supervisorSchema,
   autoUpdateCheck: z.boolean().default(true),
   updateCheckIntervalMs: z.number().int().positive().default(21600000),
   autoUpdateYtdlp: z.boolean().default(true),
   autoOpenAdmin: z.boolean().default(true),
-  sourceRefreshIntervalMs: z.number().int().min(0).default(1800000),
   twitchClientId: z.string().default(''),
   twitchClientSecret: z.string().default(''),
   twitchChannel: z.string().default(''),
   twitchLivenessEnabled: z.boolean().default(false),
   twitchPollIntervalMs: z.number().int().min(30000).default(60000),
-  mpvGeometry: z.string().default('1920x1080+0+0'),
-  mpvYtdlFormat: z.string().default('bestvideo[height<=?1080]+bestaudio/best'),
-  mpvExtraArgs: z.array(z.string()).default([]),
   ytdlCookiesFromBrowser: z.string().default(''),
-  // yt-dlp YouTube player_client, passed to mpv as
-  // --extractor-args youtube:player_client=<value>. Accepts a comma-separated
-  // fallback list: yt-dlp tries each client in order and merges their formats,
-  // so if one client goes thin or gets CDN-403'd for a given video the next one
-  // covers it. Defaults to `tv,web_safari` because YouTube's per-client
-  // availability keeps shifting (observed: `tv` 403'd everything one week, then
-  // `web_safari` returned "only images" for older VODs the next; each rescues
-  // the other's failures). Set to '' to fall back to yt-dlp's default selection.
-  ytdlPlayerClient: z.string().default('tv,web_safari'),
 });
 
 let resolvedConfigPath = '';
@@ -185,6 +151,11 @@ export function saveConfig(config: Partial<AppConfig>, path?: string): AppConfig
       events: { ...(existingDiscord.events as object || {}), ...(incomingDiscord.events as object || {}) },
       templates: { ...(existingDiscord.templates as object || {}), ...(incomingDiscord.templates as object || {}) },
     };
+  }
+
+  // Same for supervisor, so a partial patch never wipes streamKeyProtected
+  if (incoming.supervisor && typeof incoming.supervisor === 'object' && existing.supervisor && typeof existing.supervisor === 'object') {
+    incoming.supervisor = { ...(existing.supervisor as object), ...(incoming.supervisor as object) };
   }
 
   const merged = { ...existing, ...incoming } as Record<string, unknown>;
