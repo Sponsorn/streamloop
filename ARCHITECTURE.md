@@ -44,7 +44,7 @@ flowchart LR
 - `discord.ts`: webhook notifications with templates.
 - `twitch.ts`: Twitch liveness check (app token + Helix streams) cross-checked with OBS's streaming state.
 - `api.ts`: REST surface for the dashboard and overlay; masks secrets in `GET /api/config`.
-- `updater.ts` / `ytdlp-updater.ts`: GitHub Releases updater (slim ZIP preferred, SHA-256 verified); yt-dlp self-update.
+- `updater.ts` / `ytdlp-updater.ts`: GitHub Releases updater (own major only, 3.x from prereleases; slim ZIP preferred, SHA-256 verified; stages `app\` and `START.bat` only, a different bundled Node is a notice); yt-dlp self-update.
 - `logger.ts` / `file-log-transport.js`: pino to console and file.
 - `spawn-cwd.ts`: the temp folder every child process starts in, so nothing holds `app\` during the update swap.
 - `src/admin/`: dashboard (status, timeline, transport, config, update button). `src/overlay/`: now-playing page for the OBS Browser Source.

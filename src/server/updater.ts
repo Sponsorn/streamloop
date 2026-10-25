@@ -31,11 +31,13 @@ export interface UpdateInfo {
   status: UpdateStatus;
   error: string | null;
   isDevMode: boolean;
+  /** Set when the release bundles another Node than the running one. Updates never deliver node/. */
+  nodeNotice: string | null;
 }
 
 /** Pick the best ZIP asset and its matching checksum from a release's assets.
- *  Prefers a slim "-update.zip" (app + yt-dlp only, no node/mpv — for in-place
- *  updates, much smaller) over the full bundle, falling back to any ".zip". The
+ *  Prefers the slim "-update.zip" (much smaller) over the full bundle, falling
+ *  back to any ".zip". The
  *  checksum is matched to the *chosen* ZIP by name so a release carrying both
  *  bundles can't cross the wires. Accepts either "<file>.zip.sha256" or
  *  "<file>.sha256", since both naming conventions have shipped. */
@@ -58,9 +60,42 @@ export function selectReleaseAssets(
   };
 }
 
+/** The Node version a release names in its node-version.txt asset, or null. */
+export function parseNodeVersion(text: string): string | null {
+  const m = /^v?(\d+\.\d+\.\d+)$/.exec(text.trim());
+  return m ? m[1] : null;
+}
+
+/** Stage only app/ and START.bat into _update_tmp. START.bat swaps whatever lands
+ *  there, and the supervisor holds yt-dlp/ and the token server holds node/. */
+export function stageUpdate(extractDir: string, tmpDir: string): void {
+  // The ZIP holds streamloop/app/; older layouts may extract app/ directly.
+  let root = join(extractDir, 'streamloop');
+  if (!existsSync(join(root, 'app'))) root = extractDir;
+  if (!existsSync(join(root, 'app'))) {
+    throw new Error('Could not find app/ directory in update archive');
+  }
+
+  // config.json and state.json are copied by START.bat after the server exits,
+  // so late config changes and the final flushed state are preserved.
+
+  // START.bat never replaces itself in place; it stages this copy as START.bat.new.
+  const newStartBat = join(extractDir, 'streamloop', 'START.bat');
+  if (existsSync(newStartBat)) {
+    cpSync(newStartBat, join(tmpDir, 'START.bat'));
+  }
+
+  // The live app/ can't be renamed while the server runs (EBUSY on Windows),
+  // so START.bat swaps the staged copy in after the process exits.
+  renameSync(join(root, 'app'), join(tmpDir, 'app'));
+}
+
+/** Numeric X.Y.Z compare. A suffixed version such as "3.0.0-dev" sorts below its release. */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/, '').split('.').map(Number);
-  const pb = b.replace(/^v/, '').split('.').map(Number);
+  const [ca, sa] = a.replace(/^v/, '').split('-', 2);
+  const [cb, sb] = b.replace(/^v/, '').split('-', 2);
+  const pa = ca.split('.').map(Number);
+  const pb = cb.split('.').map(Number);
   const len = Math.max(pa.length, pb.length);
   for (let i = 0; i < len; i++) {
     const na = pa[i] ?? 0;
@@ -68,6 +103,8 @@ export function compareVersions(a: string, b: string): number {
     if (na > nb) return 1;
     if (na < nb) return -1;
   }
+  if (sa === undefined && sb !== undefined) return 1;
+  if (sa !== undefined && sb === undefined) return -1;
   return 0;
 }
 
@@ -80,14 +117,15 @@ export interface GithubRelease {
 
 const VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
-/** Newest stable release with the running major version. 3.x installs beside 2.x
- *  in its own folder, so a 2.x install must never take a 3.x release as an update. */
+/** Newest release with the running major version; 3.x installs beside 2.x, so neither takes the other's.
+ *  3.x ships as prereleases while on trial, so only 3.x accepts them. */
 export function pickRelease(releases: GithubRelease[], currentVersion: string): GithubRelease | null {
   const major = currentVersion.replace(/^v/, '').split('.')[0];
+  const allowPrerelease = Number(major) >= 3;
   let best: GithubRelease | null = null;
   for (const r of releases) {
     const m = VERSION_TAG.exec(r.tag_name);
-    if (r.draft || r.prerelease || !m || m[1] !== major) continue;
+    if (r.draft || (r.prerelease && !allowPrerelease) || !m || m[1] !== major) continue;
     if (!best || compareVersions(r.tag_name, best.tag_name) > 0) best = r;
   }
   return best;
@@ -105,6 +143,7 @@ export class Updater {
   private isDevMode: boolean;
   private releaseAssetUrl: string | null = null;
   private releaseChecksumUrl: string | null = null;
+  private nodeNotice: string | null = null;
 
   constructor() {
     // Read version from package.json
@@ -126,6 +165,7 @@ export class Updater {
       status: this.status,
       error: this.error,
       isDevMode: this.isDevMode,
+      nodeNotice: this.nodeNotice,
     };
   }
 
@@ -138,6 +178,7 @@ export class Updater {
 
     this.status = 'checking';
     this.error = null;
+    this.nodeNotice = null;
 
     try {
       const res = await fetch(GITHUB_API_URL, {
@@ -181,6 +222,10 @@ export class Updater {
         this.releaseAssetUrl = zipUrl;
         this.releaseChecksumUrl =
           checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
+        const releaseNode = await this.fetchReleaseNodeVersion(release);
+        if (releaseNode && releaseNode !== process.versions.node) {
+          this.nodeNotice = `This release bundles Node ${releaseNode}. Install the full ZIP to get it.`;
+        }
       }
 
       this.status = 'idle';
@@ -193,6 +238,18 @@ export class Updater {
     }
 
     return this.getStatus();
+  }
+
+  private async fetchReleaseNodeVersion(release: GithubRelease): Promise<string | null> {
+    const url = release.assets.find((a) => a.name === 'node-version.txt')?.browser_download_url;
+    if (!url || !isAllowedDownloadUrl(url)) return null;
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': `streamloop/${this.currentVersion}` } });
+      return res.ok ? parseNodeVersion(await res.text()) : null;
+    } catch (err) {
+      logger.warn({ err }, 'Could not read the release Node version');
+      return null;
+    }
   }
 
   async downloadAndApply(): Promise<void> {
@@ -261,41 +318,7 @@ export class Updater {
       mkdirSync(extractDir, { recursive: true });
       execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { timeout: 600_000 });
 
-      // Find the app directory inside the extracted zip
-      // The ZIP contains streamloop/app/ — we need the app folder
-      let newAppDir = join(extractDir, 'streamloop', 'app');
-      if (!existsSync(newAppDir)) {
-        // Maybe the zip extracts directly
-        newAppDir = join(extractDir, 'app');
-      }
-      if (!existsSync(newAppDir)) {
-        throw new Error('Could not find app/ directory in update archive');
-      }
-
-      // config.json and state.json are copied by START.bat after the server exits,
-      // so late config changes and the final flushed state are preserved.
-
-      // Copy new START.bat to tmp staging (START.bat swap also done by the batch file)
-      const newStartBat = join(extractDir, 'streamloop', 'START.bat');
-      if (existsSync(newStartBat)) {
-        cpSync(newStartBat, join(tmpDir, 'START.bat'));
-      }
-
-      // Stage the new app at _update_tmp/app/ for START.bat to swap after exit.
-      // We can't rename the live app/ directory while the server is running on Windows
-      // (EBUSY), so the batch file handles the swap after the process exits.
-      const stagedAppDir = join(tmpDir, 'app');
-      renameSync(newAppDir, stagedAppDir);
-
-      // Also stage yt-dlp/ (contains yt-dlp.exe + deno.exe) if the ZIP includes
-      // it. START.bat swaps it alongside app/ so new yt-dlp/deno binaries land
-      // on every update — YouTube's challenge shape rotates faster than we cut
-      // releases, and nightly yt-dlp helps track those rotations.
-      const newYtdlpDir = join(extractDir, 'streamloop', 'yt-dlp');
-      if (existsSync(newYtdlpDir)) {
-        const stagedYtdlpDir = join(tmpDir, 'yt-dlp');
-        renameSync(newYtdlpDir, stagedYtdlpDir);
-      }
+      stageUpdate(extractDir, tmpDir);
 
       this.status = 'ready';
       logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');
