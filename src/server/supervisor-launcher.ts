@@ -48,6 +48,7 @@ export class SupervisorLauncher {
   private missingReported = false;
   private runningSince = 0;
   private spawns = 0;
+  private spawnSeq = 0;
   private lastSpawnAt = 0;
   private lastExit: { code: number | null; at: number; spawnedAt: number } | null = null;
 
@@ -80,11 +81,14 @@ export class SupervisorLauncher {
     this.stoppedByUser = true;
   }
 
+  /** An operator Start: no backoff, and the spawn still goes through the one guarded poll. */
   launchNow(): void {
     this.stoppedByUser = false;
-    void this.client.status().then((s) => {
-      if (!s && this.timer) this.launch(true);
-    });
+    this.misses = MISSES_BEFORE_LAUNCH;
+    this.spawns = 0;
+    // a supervisor still answering after Stop must not turn the next miss into an outage
+    if (this.phase === 'running') this.phase = 'starting';
+    if (this.timer) void this.poll();
   }
 
   private async poll(): Promise<void> {
@@ -121,17 +125,21 @@ export class SupervisorLauncher {
 
     this.misses++;
     if (this.misses < MISSES_BEFORE_LAUNCH) return;
+    if (this.stoppedByUser) {
+      this.phase = 'stopped-by-user';
+      return;
+    }
     if (this.phase === 'running') {
       this.phase = 'down';
       if (!this.inOutage) this.onEvent('supervisor-down');
       this.inOutage = true;
     }
-    if (!this.stoppedByUser) this.launch(false);
+    this.launch();
   }
 
-  private launch(force: boolean): void {
+  private launch(): void {
     const t = this.now();
-    if (!force && this.spawns > 0) {
+    if (this.spawns > 0) {
       const wait = BACKOFF_MS[Math.min(this.spawns - 1, BACKOFF_MS.length - 1)];
       if (t - this.lastSpawnAt < wait) return;
     }
@@ -153,10 +161,12 @@ export class SupervisorLauncher {
       windowsHide: true,
     });
     const spawnedAt = t;
+    const seq = ++this.spawnSeq;
     child.on('error', () => {
-      if (this.phase === 'starting') this.phase = 'down';
+      if (seq === this.spawnSeq && this.phase === 'starting') this.phase = 'down';
     });
     child.on('exit', (code: number | null) => {
+      if (seq !== this.spawnSeq) return;
       this.lastExit = { code, at: this.now(), spawnedAt };
       if (this.phase === 'starting') this.phase = 'down';
     });

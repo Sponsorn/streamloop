@@ -233,6 +233,101 @@ describe('SupervisorLauncher', () => {
   });
 });
 
+describe('SupervisorLauncher fixes', () => {
+  it('spawns exactly once when launchNow lands while a poll is in flight', async () => {
+    // Arrange: stopped by the user, misses piled up, the next status() call hangs until released
+    const { launcher, client, spawnImpl } = setup();
+    launcher.markStoppedByUser();
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    let release: (v: null) => void = () => {};
+    client.status.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await vi.advanceTimersByTimeAsync(2_000); // that poll is now in flight
+
+    // Act
+    release(null); // its continuation is queued before launchNow runs
+    launcher.launchNow();
+    await vi.advanceTimersByTimeAsync(4_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('launchNow spawns at once without the backoff of earlier crashes', async () => {
+    // Arrange: two spawns put the next wait at 30 s, then the user stops it
+    const { launcher, spawnImpl } = setup();
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+    launcher.markStoppedByUser();
+
+    // Act
+    launcher.launchNow();
+    await vi.advanceTimersByTimeAsync(0);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('a user stop is not an outage: no down, no back, no spawn', async () => {
+    // Arrange
+    const { launcher, spawnImpl, events, setAnswering } = setup({ answering: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Act
+    launcher.markStoppedByUser();
+    setAnswering(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const stateAfterStop = launcher.state();
+    setAnswering(true);
+    launcher.launchNow();
+    await vi.advanceTimersByTimeAsync(2_000);
+    launcher.stop();
+
+    // Assert
+    expect(stateAfterStop).toBe('stopped-by-user');
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(events).not.toContain('supervisor-down');
+    expect(events).not.toContain('supervisor-back');
+  });
+
+  it('a Start soon after Stop is not an outage either', async () => {
+    // Arrange: Stop, then Start before three misses
+    const { launcher, spawnImpl, events, setAnswering } = setup({ answering: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(0);
+    launcher.markStoppedByUser();
+    setAnswering(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    // Act
+    launcher.launchNow();
+    await vi.advanceTimersByTimeAsync(6_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(events).not.toContain('supervisor-down');
+  });
+
+  it("ignores an older child's exit once a newer spawn is starting", async () => {
+    // Arrange: spawns at 4 s and 14 s
+    const { launcher, children } = setup();
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    // Act
+    children[0].emit('exit', 1);
+
+    // Assert
+    expect(launcher.state()).toBe('starting');
+    launcher.stop();
+  });
+});
+
 describe('installRoot', () => {
   it('is the parent of app when a node sibling exists', () => {
     // Arrange
