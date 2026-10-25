@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
-title StreamLoop
+title StreamLoop 3
 echo ======================================
-echo   StreamLoop - 24/7 YouTube Streamer
+echo   StreamLoop 3 - 24/7 YouTube Streamer
 echo ======================================
 echo.
 
@@ -11,38 +11,41 @@ set "ROOT=%~dp0"
 set "NODE=%ROOT%node\node.exe"
 set "APP=%ROOT%app"
 
-:: Self-heal: a previous update may have left app/ half-swapped (old app renamed
-:: to _update_old but the new app never moved into place). Restore it so a failed
-:: or interrupted update doesn't permanently brick startup.
-if not exist "%APP%\src\server\index.ts" (
-    if exist "%ROOT%_update_old\src\server\index.ts" (
-        echo [RECOVER] app missing - restoring from _update_old ...
-        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
-        rename "%ROOT%_update_old" app
-    ) else if exist "%ROOT%_update_tmp\app\src\server\index.ts" (
-        echo [RECOVER] app missing - promoting staged _update_tmp\app ...
-        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
-        move "%ROOT%_update_tmp\app" "%APP%"
-    )
-)
+call :heal
 
 :: Pre-flight checks
 if not exist "%NODE%" (
-    echo [ERROR] Portable Node.js not found at: %NODE%
-    echo Please ensure the node\ folder is present.
+    echo [ERROR] Node.js is missing: %NODE%. Reinstall StreamLoop from the full ZIP.
     pause
     exit /b 1
 )
 
 if not exist "%APP%\src\server\index.ts" (
-    echo [ERROR] Application files not found at: %APP%
-    echo Please ensure the app\ folder is present.
+    echo [ERROR] The app is missing: %APP%. Reinstall StreamLoop from the full ZIP.
     pause
     exit /b 1
 )
 
 if not exist "%APP%\node_modules" (
-    echo [ERROR] Dependencies not installed. node_modules folder missing.
+    echo [ERROR] The app's dependencies are missing: %APP%\node_modules. Reinstall StreamLoop from the full ZIP.
+    pause
+    exit /b 1
+)
+
+if not exist "%ROOT%supervisor\streamloop-supervisor.exe" (
+    echo [ERROR] The supervisor is missing: %ROOT%supervisor\streamloop-supervisor.exe. Reinstall StreamLoop from the full ZIP.
+    pause
+    exit /b 1
+)
+
+if not exist "%ROOT%ffmpeg\ffmpeg.exe" (
+    echo [ERROR] ffmpeg is missing: %ROOT%ffmpeg\ffmpeg.exe. Reinstall StreamLoop from the full ZIP.
+    pause
+    exit /b 1
+)
+
+if not exist "%ROOT%pot\build\main.js" (
+    echo [ERROR] The token server is missing: %ROOT%pot\build\main.js. Reinstall StreamLoop from the full ZIP.
     pause
     exit /b 1
 )
@@ -51,6 +54,9 @@ echo Starting server...
 echo.
 
 :loop
+:: Heal again on every start: a rollback in the update block below can fail too.
+call :heal
+
 :: Start the server (this blocks until the server exits)
 cd /d "%APP%"
 "%NODE%" node_modules\tsx\dist\cli.mjs src\server\index.ts
@@ -61,7 +67,8 @@ if %ERRORLEVEL% equ 75 (
     echo.
     cd /d "%ROOT%"
 
-    rem Swap app directory if a staged update exists
+    rem Swap app directory if a staged update exists. Only app\ is swapped:
+    rem the supervisor holds yt-dlp\ and its token server holds node\.
     if exist "%ROOT%_update_tmp\app" (
         echo Applying update...
         if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
@@ -96,38 +103,6 @@ if %ERRORLEVEL% equ 75 (
                 )
                 echo Update applied successfully.
 
-                rem Swap yt-dlp/ if the update bundled new binaries: yt-dlp.exe and
-                rem deno.exe. YouTube rotates challenge shapes faster than our
-                rem release cadence; refreshing on every update keeps things working.
-                if exist "%ROOT%_update_tmp\yt-dlp" (
-                    if exist "%ROOT%_update_old_ytdlp" rmdir /s /q "%ROOT%_update_old_ytdlp" 2>nul
-                    set "YTDLP_OK=0"
-                    for /L %%j in (1,1,5) do (
-                        if "!YTDLP_OK!"=="0" (
-                            rename "%ROOT%yt-dlp" _update_old_ytdlp 2>nul
-                            if not exist "%ROOT%yt-dlp" (
-                                set "YTDLP_OK=1"
-                            ) else (
-                                echo   Waiting for yt-dlp file locks (attempt %%j/5^)...
-                                timeout /t 3 /nobreak >nul
-                            )
-                        )
-                    )
-                    if not exist "%ROOT%yt-dlp" (
-                        move "%ROOT%_update_tmp\yt-dlp" "%ROOT%yt-dlp"
-                        if exist "%ROOT%yt-dlp\yt-dlp.exe" (
-                            echo yt-dlp updated.
-                            if exist "%ROOT%_update_old_ytdlp" rmdir /s /q "%ROOT%_update_old_ytdlp" 2>nul
-                        ) else (
-                            echo [WARNING] New yt-dlp directory incomplete, rolling back yt-dlp.
-                            if exist "%ROOT%yt-dlp" rmdir /s /q "%ROOT%yt-dlp" 2>nul
-                            rename "%ROOT%_update_old_ytdlp" yt-dlp
-                        )
-                    ) else (
-                        echo [WARNING] Could not rename old yt-dlp directory, keeping existing.
-                    )
-                )
-
                 rem Clean up temp directories only after successful swap
                 if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
                 if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
@@ -152,7 +127,7 @@ if %ERRORLEVEL% equ 75 (
         >> "!TRAMP!" echo timeout /t 2 /nobreak ^>nul
         >> "!TRAMP!" echo move /y "%ROOT%START.bat.new" "%ROOT%START.bat" ^>nul
         >> "!TRAMP!" echo cd /d "%ROOT%"
-        >> "!TRAMP!" echo start "StreamLoop" "%ROOT%START.bat"
+        >> "!TRAMP!" echo start "StreamLoop 3" "%ROOT%START.bat"
         >> "!TRAMP!" echo del "%%~f0"
         start "" cmd /c "!TRAMP!"
         exit /b 0
@@ -176,3 +151,19 @@ echo.
 echo Server crashed (exit code %ERRORLEVEL%). Restarting in 10 seconds...
 timeout /t 10 /nobreak >nul
 goto loop
+
+:: Self-heal: an interrupted swap or a failed rollback can leave app\ missing,
+:: which would fail every start. Restore the old copy, or promote the staged one.
+:heal
+if not exist "%APP%\src\server\index.ts" (
+    if exist "%ROOT%_update_old\src\server\index.ts" (
+        echo [RECOVER] app missing - restoring from _update_old ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        rename "%ROOT%_update_old" app
+    ) else if exist "%ROOT%_update_tmp\app\src\server\index.ts" (
+        echo [RECOVER] app missing - promoting staged _update_tmp\app ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        move "%ROOT%_update_tmp\app" "%APP%"
+    )
+)
+goto :eof

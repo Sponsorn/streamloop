@@ -48,7 +48,7 @@ flowchart LR
 - `logger.ts` / `file-log-transport.js`: pino to console and file.
 - `spawn-cwd.ts`: the temp folder every child process starts in, so nothing holds `app\` during the update swap.
 - `src/admin/`: dashboard (status, timeline, transport, config, update button). `src/overlay/`: now-playing page for the OBS Browser Source.
-- `scripts/START.bat`: preflight, half-swap self-heal, exit-code branching (75 update, 0 stay down, else restart in 10 s), launcher trampoline via `START.bat.new`.
+- `scripts/START.bat`: preflight (also `supervisor\`, `ffmpeg\`, `pot\`), half-swap self-heal before preflight and on every restart, exit-code branching (75 swaps `app\` only, 0 stay down, else restart in 10 s), launcher trampoline via `START.bat.new`.
 - `build/prepare-release.js`: full ZIP (`node\`, `mpv\`, `yt-dlp\`, `app\`, `START.bat`) and slim update ZIP, each with `.sha256`.
 - `shell/`: Tauri thin shell (stage 1 of the standalone admin UI track) that shows the local `/admin` in WebView2; not part of the release ZIP yet.
 
