@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
-import { mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createApiRouter, type ApiDependencies } from '../api.js';
 import { logger } from '../logger.js';
@@ -129,6 +129,71 @@ describe('API on the supervisor', () => {
     server.closeAllConnections(); // fetch keeps connections alive, which would hold close() open
     await new Promise((r) => server.close(r));
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  describe('autostart handover', () => {
+    const MINE = String.raw`C:\Users\Emma Ö\StreamLoop 3`;
+    const OLD = String.raw`D:\old\START.bat`;
+    const startup = join(tmp, 'startup');
+    const vbsPath = join(startup, 'StreamLoop.vbs');
+    const vbsFor = (bat: string) => `Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """${bat}""", 1, False`;
+
+    beforeEach(() => {
+      mkdirSync(startup, { recursive: true });
+      h.deps.startupDir = startup;
+      h.deps.root = MINE;
+    });
+
+    it('writes a UTF-16LE VBS with a BOM that targets this install START.bat', async () => {
+      const r = await post('/autostart', { enabled: true });
+      expect(r.status).toBe(200);
+      const raw = readFileSync(vbsPath);
+      expect([raw[0], raw[1]]).toEqual([0xff, 0xfe]);
+      const text = raw.subarray(2).toString('utf16le');
+      expect(text).toContain(`WshShell.Run """${MINE}\\START.bat""", 1, False`);
+      const g = await (await get('/autostart')).json();
+      expect(g).toEqual({ enabled: true, target: `${MINE}\\START.bat`, thisInstall: true });
+    });
+
+    it('reads a 2.x UTF-8 VBS without a BOM as another install', async () => {
+      const other = String.raw`C:\Users\Emma Ö\StreamLoop 2\START.bat`;
+      writeFileSync(vbsPath, Buffer.from(vbsFor(other), 'latin1'));
+      const g = await (await get('/autostart')).json();
+      expect(g).toEqual({ enabled: true, target: other, thisInstall: false });
+    });
+
+    it('reads a UTF-8 VBS with a BOM and ignores path case', async () => {
+      writeFileSync(vbsPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(vbsFor(`${MINE.toLowerCase()}\\start.bat`), 'utf8')]));
+      const g = await (await get('/autostart')).json();
+      expect(g.thisInstall).toBe(true);
+    });
+
+    it('reports disabled when there is no VBS', async () => {
+      expect(await (await get('/autostart')).json()).toEqual({ enabled: false, target: null, thisInstall: false });
+    });
+
+    it('enabling replaces another install VBS', async () => {
+      writeFileSync(vbsPath, vbsFor(OLD));
+      await post('/autostart', { enabled: true });
+      const g = await (await get('/autostart')).json();
+      expect(g.thisInstall).toBe(true);
+    });
+
+    it('disabling removes this install VBS', async () => {
+      await post('/autostart', { enabled: true });
+      const r = await post('/autostart', { enabled: false });
+      expect(r.status).toBe(200);
+      expect(existsSync(vbsPath)).toBe(false);
+    });
+
+    it('disabling leaves another install VBS and answers 409', async () => {
+      writeFileSync(vbsPath, vbsFor(OLD));
+      const r = await post('/autostart', { enabled: false });
+      expect(r.status).toBe(409);
+      expect((await r.json()).error).toBe(`Autostart points to another StreamLoop install: ${OLD}.`);
+      expect(existsSync(vbsPath)).toBe(true);
+    });
   });
 
   describe('GET /status stream.state', () => {
