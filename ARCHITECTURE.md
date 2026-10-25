@@ -92,9 +92,9 @@ Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber 
 | Supervisor: process model, Job Object, controls, URL cold start, recovery ladder, token server, YouTube breaker | Proven as product code in `supervisor/` | Spike 5 (`spikes/supervisor/`); stage 2 runs A (1 h, 12 controls), B (every fault) and C (crash and resume) against local MediaMTX with `supervisor/scripts/`, tools only from the install layout |
 | Freeze and silence watchdog in the encoder (`freezedetect` -50 dB, `silencedetect`) | Proven against injected faults | Stage 2 run B: freeze acted on 25.1 s after the frozen picture went out and healed, silence at 35.2 s and retried once; no verdict on normal content over runs A and B |
 | Hardware encoder on the real box | Open, deferred to the product trial | Spike 2 (`spikes/encoder/`): kit built and dry-run on NVENC and AMF; the box run was skipped (the box has an RTX 2070, NVENC). A first-run setup check in the product detects the encoder by test encode. The supervisor still accepts `libx264` |
-| Node as HTTP client of the supervisor | Design | Spike 5 and the stage 2 runs drove the API from `drive.mjs`; nothing in `src/` talks to the supervisor yet |
+| Node as HTTP client of the supervisor | Built in `src/server/` (client, launcher, event bridge, API); end-to-end proof is task 9 | Unit tests against stubs; spike 5 and the stage 2 runs drove the API from `drive.mjs` |
 | Supervisor config from `config.json`, `POST /reload` with a live playlist switch, DPAPI key via `protect`, install layout | Proven | Stage 2: run A streamed on a protected key, the key never reached `data\` (grep, runs A to C); a reload switched to another playlist's video 0 and back |
-| Launch by Node, own folder next to `node\`, binary updates | Design | Spike 5 spec |
+| Launch by Node, own folder next to `node\`, binary updates | Launch by Node built (`src/server/supervisor-launcher.ts`, detached sibling, relaunch with backoff); binary updates: design | Spike 5 spec; unit tests against stubs |
 
 ## Supervisor interface (3.0)
 
@@ -123,7 +123,7 @@ Green is proven by a spike or by the stage 2 runs against local MediaMTX, amber 
 - State is not written while a recovery or switch is in progress, so a transient position cannot overwrite the resume point.
 - Media bytes never pass through a loop that also does disk writes or control work, and a critical output is never teed synchronously with a non-critical one. (Spike 1 lessons)
 - The supervisor is a sibling of Node, not its child: Node restarts and app updates must not drop the stream.
-- 2.x (from 2.3.7) will not start its OBS stream while `GET 127.0.0.1:4417/status` reports `encoder.alive: true`, so 3.0 must keep that endpoint and field. The check fails open: anything else lets 2.x stream (`src/server/stream-guard.ts`).
+- 2.x (from 2.3.7) will not start its OBS stream while `GET 127.0.0.1:4417/status` reports `encoder.alive: true`, so 3.0 must keep that endpoint and field. The check fails open: anything else lets 2.x stream (`src/server/stream-guard.ts` on the `2.x` branch).
 - 2.x (from 2.3.7) only updates to releases with its own major version; 3.x releases are never marked "latest" on GitHub, because older 2.x installs still read it.
 
 ## Where things live

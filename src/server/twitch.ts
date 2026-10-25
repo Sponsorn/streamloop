@@ -1,5 +1,5 @@
 import type { AppConfig } from './types.js';
-import type { OBSClient } from './obs-client.js';
+import type { SupervisorClient } from './supervisor-client.js';
 import type { DiscordNotifier } from './discord.js';
 import { logger } from './logger.js';
 
@@ -7,13 +7,12 @@ const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
 const TWITCH_STREAMS_URL = 'https://api.twitch.tv/helix/streams';
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // Refresh 5 min before expiry
 const MISMATCH_THRESHOLD = 3;
-const RESTART_DELAY_MS = 5000;
 const INITIAL_CHECK_DELAY_MS = 15000;
 
 export interface TwitchLivenessStatus {
   enabled: boolean;
   channelLive: boolean | null;
-  obsStreaming: boolean | null;
+  encoderAlive: boolean | null;
   consecutiveMismatches: number;
   mismatchThreshold: number;
   lastCheckAt: number | null;
@@ -23,7 +22,7 @@ export interface TwitchLivenessStatus {
 
 export class TwitchLivenessChecker {
   private config: AppConfig;
-  private obs: OBSClient;
+  private client: SupervisorClient;
   private discord: DiscordNotifier;
 
   private accessToken: string | null = null;
@@ -35,14 +34,14 @@ export class TwitchLivenessChecker {
   private restartInProgress = false;
 
   private channelLive: boolean | null = null;
-  private obsStreaming: boolean | null = null;
+  private encoderAlive: boolean | null = null;
   private lastCheckAt: number | null = null;
   private lastRestartAt: number | null = null;
   private restartCount = 0;
 
-  constructor(config: AppConfig, obs: OBSClient, discord: DiscordNotifier) {
+  constructor(config: AppConfig, client: SupervisorClient, discord: DiscordNotifier) {
     this.config = config;
-    this.obs = obs;
+    this.client = client;
     this.discord = discord;
   }
 
@@ -90,7 +89,7 @@ export class TwitchLivenessChecker {
     return {
       enabled: this.enabled,
       channelLive: this.channelLive,
-      obsStreaming: this.obsStreaming,
+      encoderAlive: this.encoderAlive,
       consecutiveMismatches: this.consecutiveMismatches,
       mismatchThreshold: MISMATCH_THRESHOLD,
       lastCheckAt: this.lastCheckAt,
@@ -104,16 +103,17 @@ export class TwitchLivenessChecker {
     this.lastCheckAt = Date.now();
 
     try {
-      const [obsActive, live] = await Promise.all([
-        this.obs.isStreaming(),
+      const [status, live] = await Promise.all([
+        this.client.status(),
         this.isChannelLive(),
       ]);
+      const encoderAlive = status?.encoder?.alive === true;
 
-      this.obsStreaming = obsActive;
+      this.encoderAlive = encoderAlive;
       this.channelLive = live;
 
       logger.debug(
-        { obsStreaming: obsActive, channelLive: live, consecutiveMismatches: this.consecutiveMismatches },
+        { encoderAlive, channelLive: live, consecutiveMismatches: this.consecutiveMismatches },
         'Twitch liveness check',
       );
 
@@ -122,11 +122,11 @@ export class TwitchLivenessChecker {
         return;
       }
 
-      if (obsActive && !live) {
+      if (encoderAlive && !live) {
         this.consecutiveMismatches++;
         logger.warn(
           { consecutiveMismatches: this.consecutiveMismatches, threshold: MISMATCH_THRESHOLD },
-          'Twitch liveness mismatch: OBS streaming but channel not live',
+          'Twitch liveness mismatch: encoder running but channel not live',
         );
         if (this.consecutiveMismatches >= MISMATCH_THRESHOLD) {
           await this.restartStream();
@@ -144,33 +144,21 @@ export class TwitchLivenessChecker {
     this.restartInProgress = true;
     this.consecutiveMismatches = 0;
 
-    logger.warn('Twitch liveness: restarting stream (OBS says live, Twitch says offline)');
+    logger.warn('Twitch liveness: restarting the encoder (encoder running, Twitch says offline)');
     await this.discord.notifyTwitchMismatch(this.config.twitchChannel);
 
     try {
-      const stopped = await this.obs.stopStream();
-      if (!stopped) {
-        logger.error('Failed to stop OBS stream for Twitch liveness restart');
-        await this.discord.notifyCritical('Twitch liveness restart failed: could not stop stream.');
+      const r = await this.client.control('restart-encoder', undefined, 'Twitch shows the channel offline');
+      if (!r.ok) {
+        const why = r.error?.startsWith('needs-stream-key') ? 'no stream key is set, so no encoder is running' : r.error ?? 'unknown error';
+        logger.error({ error: why }, 'Twitch liveness: encoder restart refused');
+        await this.discord.notifyCritical(`Could not restart the encoder after Twitch showed the channel offline: ${why}.`);
         return;
       }
-
-      await new Promise((r) => setTimeout(r, RESTART_DELAY_MS));
-
-      const started = await this.obs.startStreaming();
       this.lastRestartAt = Date.now();
       this.restartCount++;
-
-      if (started) {
-        logger.info('Twitch liveness: stream restarted successfully');
-        await this.discord.notifyTwitchRestart(this.config.twitchChannel);
-      } else {
-        logger.error('Twitch liveness: failed to restart stream');
-        await this.discord.notifyCritical('Twitch liveness restart failed: could not start stream.');
-      }
-    } catch (err) {
-      logger.error({ err }, 'Twitch liveness stream restart error');
-      await this.discord.notifyCritical('Twitch liveness restart encountered an error.');
+      logger.info({ alreadyRestarting: r.alreadyRestarting === true }, 'Twitch liveness: encoder restart requested');
+      await this.discord.notifyTwitchRestart(this.config.twitchChannel);
     } finally {
       this.restartInProgress = false;
     }

@@ -197,6 +197,7 @@ export class AlertGate {
         this.tokenAlerted = true;
         return d;
       case 'token-server-spawn':
+      case 'token-server-adopt':
         this.tokenAlerted = false;
         return d;
       default:

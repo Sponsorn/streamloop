@@ -1,6 +1,7 @@
 import { freemem, totalmem } from 'os';
 import type { AppConfig, DiscordConfig } from './types.js';
 import { logger } from './logger.js';
+import type { Described } from './supervisor-events.js';
 
 type Level = 'info' | 'warn' | 'error';
 const LEVEL_PRIORITY: Record<Level, number> = { info: 0, warn: 1, error: 2 };
@@ -225,6 +226,12 @@ export class DiscordNotifier {
     if (!this.discord.events.outputFrozen) return;
     const content = this.renderTemplate(this.discord.templates.outputFrozen, { kind, videoIndex });
     await this.send(content, 'warn');
+  }
+
+  /** A supervisor or launcher event from describe(), under its own toggle and template. */
+  async notifyEvent(alert: NonNullable<Described['discord']>): Promise<void> {
+    if (!this.discord.events[alert.kind]) return;
+    await this.send(this.renderTemplate(this.discord.templates[alert.kind], alert.vars), alert.level);
   }
 
   async notifyTwitchMismatch(channel: string): Promise<void> {

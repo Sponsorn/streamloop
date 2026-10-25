@@ -309,4 +309,14 @@ describe('AlertGate', () => {
 
     expect(got).toEqual(['critical', undefined, undefined, 'critical']);
   });
+
+  it('re-arms the token alert when the supervisor adopts a running token server', () => {
+    const got = kinds(new AlertGate(), [
+      ev('token-server-spawn-failed', { error: 'e' }, 'critical'),
+      ev('token-server-adopt', {}),
+      ev('token-server-spawn-failed', { error: 'e' }, 'critical'),
+    ]);
+
+    expect(got).toEqual(['critical', undefined, 'critical']);
+  });
 });

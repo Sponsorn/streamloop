@@ -77,6 +77,11 @@ export class SupervisorLauncher {
     return this.phase;
   }
 
+  /** Set by Stop stream until the next Start, even while the old supervisor still answers. */
+  isStoppedByUser(): boolean {
+    return this.stoppedByUser;
+  }
+
   markStoppedByUser(): void {
     this.stoppedByUser = true;
   }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { EventStore } from '../event-store.js';
@@ -23,25 +23,20 @@ describe('EventStore', () => {
     const store = new EventStore({ dir: tmpDir });
     store.append({ timestamp: '2026-06-09T00:00:01Z', message: 'first' });
     store.append({ timestamp: '2026-06-09T00:00:02Z', message: 'second' });
-    // append is async fire-and-forget; give the write a tick
-    await new Promise((r) => setTimeout(r, 50));
-    const recent = store.loadRecent(10);
-    expect(recent.map((e) => e.message)).toEqual(['first', 'second']);
+    // append is async fire-and-forget: wait for the write, a fixed sleep flakes under a loaded suite
+    await vi.waitFor(() => expect(store.loadRecent(10).map((e) => e.message)).toEqual(['first', 'second']));
   });
 
   it('writes to a date-named .jsonl file', async () => {
     const store = new EventStore({ dir: tmpDir });
     store.append({ timestamp: 't', message: 'x' });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(existsSync(join(tmpDir, `events-${todayString()}.jsonl`))).toBe(true);
+    await vi.waitFor(() => expect(existsSync(join(tmpDir, `events-${todayString()}.jsonl`))).toBe(true));
   });
 
   it('loadRecent returns at most `limit`, the most recent ones', async () => {
     const store = new EventStore({ dir: tmpDir });
     for (let i = 1; i <= 5; i++) store.append({ timestamp: `t${i}`, message: `m${i}` });
-    await new Promise((r) => setTimeout(r, 50));
-    const recent = store.loadRecent(2);
-    expect(recent.map((e) => e.message)).toEqual(['m4', 'm5']);
+    await vi.waitFor(() => expect(store.loadRecent(2).map((e) => e.message)).toEqual(['m4', 'm5']));
   });
 
   it('cleans up files older than retentionDays on construction', () => {

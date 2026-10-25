@@ -15,6 +15,7 @@ export interface SupervisorStatus {
     duration?: number | null;
   };
   encoder?: { alive?: boolean; speed?: number | null; cpuPercent?: number; restarts?: number; generation?: number; mediaTime?: number | null };
+  recovery?: { step?: string; retries?: number };
   watchdog?: { last?: unknown };
   hold?: { reason?: string; level?: number; until?: string } | null;
   youtube?: { breaker?: string; retryAt?: string | null };
@@ -76,9 +77,10 @@ export class SupervisorClient {
     }
   }
 
-  async control(cmd: ControlCmd, index?: number): Promise<ControlResult> {
+  /** `reason` is a note for `restart-encoder`, which the supervisor logs; other commands ignore it. */
+  async control(cmd: ControlCmd, index?: number, reason?: string): Promise<ControlResult> {
     try {
-      const r = await this.call('/control', index === undefined ? { cmd } : { cmd, index });
+      const r = await this.call('/control', { cmd, index, reason });
       if (r.status !== 200) return { ok: false, error: String(r.json?.error ?? `HTTP ${r.status}`) };
       return r.json?.alreadyRestarting ? { ok: true, alreadyRestarting: true } : { ok: true };
     } catch (e) {

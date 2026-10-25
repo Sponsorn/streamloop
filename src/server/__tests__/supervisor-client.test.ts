@@ -96,6 +96,12 @@ describe('SupervisorClient.control', () => {
     expect(calls[0].init.body).toBe('{"cmd":"next"}');
   });
 
+  it('sends the caller reason with restart-encoder', async () => {
+    const { calls, f } = recorder(jsonResponse({ accepted: true }));
+    await client(f).control('restart-encoder', undefined, 'Twitch shows the channel offline');
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ cmd: 'restart-encoder', reason: 'Twitch shows the channel offline' });
+  });
+
   it('reports alreadyRestarting for a pending encoder restart', async () => {
     const { f } = recorder(jsonResponse({ accepted: true, alreadyRestarting: true }));
     expect(await client(f).control('restart-encoder')).toEqual({ ok: true, alreadyRestarting: true });

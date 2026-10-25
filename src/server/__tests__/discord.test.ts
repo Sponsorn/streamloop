@@ -319,4 +319,24 @@ describe('DiscordNotifier', () => {
     await vi.advanceTimersByTimeAsync(30000);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it('sends a described supervisor event with its template and level', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+    const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
+    await notifier.notifyEvent({ kind: 'critical', vars: { message: 'All videos failed' }, level: 'error' });
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
+    expect(body.embeds[0].description).toBe('**CRITICAL:** All videos failed');
+    expect(body.embeds[0].color).toBe(15158332);
+  });
+
+  it('skips a described event whose toggle is off', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+    const notifier = makeNotifier({
+      webhookUrl: 'https://discord.com/api/webhooks/test',
+      events: { ...defaultDiscord.events, skip: false },
+    });
+    await notifier.notifyEvent({ kind: 'skip', vars: { videoIndex: 1, videoId: 'x', reason: 'r' }, level: 'warn' });
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
