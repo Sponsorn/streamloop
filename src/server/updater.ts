@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream, createReadStream } from 'fs';
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync, readFileSync, writeFileSync, createWriteStream, createReadStream } from 'fs';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, resolve, dirname } from 'path';
@@ -31,6 +31,9 @@ export interface UpdateInfo {
   status: UpdateStatus;
   error: string | null;
   isDevMode: boolean;
+  nodeVersion: string;
+  /** Target Node version when the available update only replaces Node. */
+  nodeUpdate: string | null;
 }
 
 export interface SelectedAssets {
@@ -72,8 +75,8 @@ export function parseNodeVersion(text: string): string | null {
 }
 
 /** Move what START.bat swaps out of an extracted release into _update_tmp:
- *  app/, START.bat, yt-dlp/ and, with includeNode, node/. mpv/ is never staged. */
-export function stageUpdate(extractDir: string, tmpDir: string, includeNode: boolean): void {
+ *  app/, START.bat, optionally yt-dlp/ and node/. mpv/ is never staged. */
+export function stageUpdate(extractDir: string, tmpDir: string, includeNode: boolean, includeYtdlp = true): void {
   // The ZIP holds streamloop/app/; older layouts may extract app/ directly.
   let root = join(extractDir, 'streamloop');
   if (!existsSync(join(root, 'app'))) root = extractDir;
@@ -97,7 +100,7 @@ export function stageUpdate(extractDir: string, tmpDir: string, includeNode: boo
   // yt-dlp/ (yt-dlp.exe + deno.exe) rides along on every update: YouTube's
   // challenge shape rotates faster than we cut releases.
   const newYtdlpDir = join(extractDir, 'streamloop', 'yt-dlp');
-  if (existsSync(newYtdlpDir)) {
+  if (includeYtdlp && existsSync(newYtdlpDir)) {
     renameSync(newYtdlpDir, join(tmpDir, 'yt-dlp'));
   }
 
@@ -142,6 +145,37 @@ export function pickRelease(releases: GithubRelease[], currentVersion: string): 
   return best;
 }
 
+export interface UpdatePlan extends SelectedAssets {
+  updateAvailable: boolean;
+  /** Target Node version when the update only replaces Node. */
+  nodeOnly: string | null;
+}
+
+export interface PlanOptions {
+  runningNode?: string;
+  /** Node version of the last staged Node swap; still differing from runningNode means it rolled back. */
+  lastNodeAttempt?: string | null;
+  /** A user-requested check, which offers a failed Node version again. */
+  manual?: boolean;
+}
+
+/** A newer release is a normal update. The current release is a Node-only update when
+ *  its full ZIP bundles another Node, unless that swap already failed and the check is automatic. */
+export function planUpdate(
+  release: GithubRelease,
+  currentVersion: string,
+  releaseNode: string | null,
+  { runningNode = process.versions.node, lastNodeAttempt = null, manual = false }: PlanOptions = {},
+): UpdatePlan {
+  const assets = selectReleaseAssets(release.assets, releaseNode, runningNode);
+  const cmp = compareVersions(release.tag_name, currentVersion);
+  if (cmp > 0) return { ...assets, updateAvailable: true, nodeOnly: null };
+  if (cmp === 0 && assets.stageNode && (manual || lastNodeAttempt !== releaseNode)) {
+    return { ...assets, updateAvailable: true, nodeOnly: releaseNode };
+  }
+  return { ...assets, updateAvailable: false, nodeOnly: null };
+}
+
 export class Updater {
   private currentVersion: string;
   private latestVersion: string | null = null;
@@ -155,6 +189,11 @@ export class Updater {
   private releaseAssetUrl: string | null = null;
   private releaseChecksumUrl: string | null = null;
   private stageNode = false;
+  private nodeUpdate: string | null = null;
+  private release: GithubRelease | null = null;
+  private releaseNode: string | null = null;
+  /** Survives the app/ swap, unlike anything inside app/. */
+  private readonly attemptFile = resolve(__dirname, '..', '..', '..', 'node-update-attempt.txt');
 
   constructor() {
     // Read version from package.json
@@ -176,13 +215,17 @@ export class Updater {
       status: this.status,
       error: this.error,
       isDevMode: this.isDevMode,
+      nodeVersion: process.versions.node,
+      nodeUpdate: this.nodeUpdate,
     };
   }
 
-  async checkForUpdate(): Promise<UpdateInfo> {
+  /** manual: the dashboard's "Check for Updates", which may re-offer a Node update that rolled back. */
+  async checkForUpdate(manual = false): Promise<UpdateInfo> {
     // 60-second cooldown
     const now = Date.now();
     if (now - this.lastCheckTime < 60_000 && this.latestVersion !== null) {
+      if (manual && this.release && this.status === 'idle') this.applyPlan(this.release, true);
       return this.getStatus();
     }
 
@@ -201,6 +244,7 @@ export class Updater {
         // No releases yet
         this.latestVersion = this.currentVersion;
         this.updateAvailable = false;
+        this.nodeUpdate = null;
         this.status = 'idle';
         this.lastCheckTime = now;
         return this.getStatus();
@@ -214,29 +258,18 @@ export class Updater {
       if (!release) {
         this.latestVersion = this.currentVersion;
         this.updateAvailable = false;
+        this.nodeUpdate = null;
         this.status = 'idle';
         this.lastCheckTime = now;
         return this.getStatus();
       }
       this.latestVersion = release.tag_name.replace(/^v/, '');
-      this.updateAvailable = compareVersions(this.latestVersion, this.currentVersion) > 0;
-
-      // Pick the ZIP (slim unless the release bundles a different Node) + its
-      // matching checksum, then validate URLs against allowed domains.
-      if (this.updateAvailable) {
-        const releaseNode = await this.fetchReleaseNodeVersion(release);
-        const { zipUrl, checksumUrl, stageNode } = selectReleaseAssets(release.assets, releaseNode);
-        if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
-          throw new Error(`Untrusted download URL domain: ${zipUrl}`);
-        }
-        this.releaseAssetUrl = zipUrl;
-        this.releaseChecksumUrl =
-          checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
-        this.stageNode = stageNode;
-        if (stageNode) {
-          logger.info({ from: process.versions.node, to: releaseNode }, 'Update will also replace Node');
-        }
-      }
+      // Dev mode runs the system Node, which the updater does not manage.
+      this.releaseNode = this.isDevMode || compareVersions(this.latestVersion, this.currentVersion) < 0
+        ? null
+        : await this.fetchReleaseNodeVersion(release);
+      this.release = release;
+      this.applyPlan(release, manual);
 
       this.status = 'idle';
       this.lastCheckTime = now;
@@ -248,6 +281,33 @@ export class Updater {
     }
 
     return this.getStatus();
+  }
+
+  private applyPlan(release: GithubRelease, manual: boolean): void {
+    const plan = planUpdate(release, this.currentVersion, this.releaseNode, {
+      lastNodeAttempt: this.readNodeAttempt(),
+      manual,
+    });
+    if (plan.zipUrl && !isAllowedDownloadUrl(plan.zipUrl)) {
+      throw new Error(`Untrusted download URL domain: ${plan.zipUrl}`);
+    }
+    this.updateAvailable = plan.updateAvailable;
+    this.nodeUpdate = plan.nodeOnly;
+    this.releaseAssetUrl = plan.updateAvailable ? plan.zipUrl : null;
+    this.releaseChecksumUrl =
+      plan.checksumUrl && isAllowedDownloadUrl(plan.checksumUrl) ? plan.checksumUrl : null;
+    this.stageNode = plan.updateAvailable && plan.stageNode;
+    if (this.stageNode) {
+      logger.info({ from: process.versions.node, to: this.releaseNode, nodeOnly: plan.nodeOnly !== null }, 'Update will replace Node');
+    }
+  }
+
+  private readNodeAttempt(): string | null {
+    try {
+      return parseNodeVersion(readFileSync(this.attemptFile, 'utf-8'));
+    } catch {
+      return null;
+    }
   }
 
   /** Reads the release's node-version.txt asset. Any failure means "unknown",
@@ -330,7 +390,12 @@ export class Updater {
       mkdirSync(extractDir, { recursive: true });
       execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { timeout: 600_000 });
 
-      stageUpdate(extractDir, tmpDir, this.stageNode);
+      // A Node-only update restages the same app and launcher but keeps the
+      // installed yt-dlp, which may be newer after a self-update.
+      stageUpdate(extractDir, tmpDir, this.stageNode, this.nodeUpdate === null);
+      if (this.stageNode && this.releaseNode) {
+        writeFileSync(this.attemptFile, `${this.releaseNode}\n`);
+      }
 
       this.status = 'ready';
       logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');

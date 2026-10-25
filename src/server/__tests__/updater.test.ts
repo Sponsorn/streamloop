@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import {
-  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, type GithubRelease,
+  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, planUpdate, type GithubRelease,
 } from '../updater.js';
 
 function asset(name: string) {
@@ -229,8 +229,62 @@ describe('stageUpdate', () => {
     expect(existsSync(join(tmpDir, 'mpv'))).toBe(false);
   });
 
+  it('leaves yt-dlp/ out of a Node-only update', () => {
+    stageUpdate(extractDir, tmpDir, true, false);
+    expect(existsSync(join(tmpDir, 'node', 'node.exe'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'yt-dlp'))).toBe(false);
+  });
+
   it('throws when the archive has no app/', () => {
     rmSync(join(extractDir, 'streamloop', 'app'), { recursive: true });
     expect(() => stageUpdate(extractDir, tmpDir, true)).toThrow(/app\//);
+  });
+});
+
+describe('planUpdate', () => {
+  const v238 = {
+    tag_name: 'v2.3.8', draft: false, prerelease: false,
+    assets: [asset('streamloop-v2.3.8.zip'), asset('streamloop-v2.3.8.sha256'), asset('streamloop-v2.3.8-update.zip')],
+  };
+
+  it('offers nothing when the current release bundles the running Node', () => {
+    // Act
+    const plan = planUpdate(v238, '2.3.8', '22.23.4', { runningNode: '22.23.4' });
+
+    // Assert
+    expect(plan.updateAvailable).toBe(false);
+    expect(plan.nodeOnly).toBeNull();
+  });
+
+  it('offers a Node-only update from the full ZIP when the current release bundles another Node', () => {
+    const plan = planUpdate(v238, '2.3.8', '22.23.4', { runningNode: '22.12.0' });
+    expect(plan.updateAvailable).toBe(true);
+    expect(plan.nodeOnly).toBe('22.23.4');
+    expect(plan.zipUrl).toMatch(/streamloop-v2\.3\.8\.zip$/);
+    expect(plan.stageNode).toBe(true);
+  });
+
+  it('does not re-offer a Node version whose swap already failed on an automatic check', () => {
+    const plan = planUpdate(v238, '2.3.8', '22.23.4', { runningNode: '22.12.0', lastNodeAttempt: '22.23.4' });
+    expect(plan.updateAvailable).toBe(false);
+    expect(plan.nodeOnly).toBeNull();
+  });
+
+  it('offers a failed Node version again on a manual check', () => {
+    const plan = planUpdate(v238, '2.3.8', '22.23.4', { runningNode: '22.12.0', lastNodeAttempt: '22.23.4', manual: true });
+    expect(plan.nodeOnly).toBe('22.23.4');
+  });
+
+  it('offers nothing when the current release does not name its Node', () => {
+    expect(planUpdate(v238, '2.3.8', null, { runningNode: '22.12.0' }).updateAvailable).toBe(false);
+  });
+
+  it('treats a newer release as a normal update, not a Node-only one', () => {
+    const plan = planUpdate({ ...v238, tag_name: 'v2.3.9' }, '2.3.8', '22.23.4', {
+      runningNode: '22.12.0', lastNodeAttempt: '22.23.4',
+    });
+    expect(plan.updateAvailable).toBe(true);
+    expect(plan.nodeOnly).toBeNull();
+    expect(plan.stageNode).toBe(true);
   });
 });
