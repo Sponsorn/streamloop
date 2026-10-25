@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { parsePlaylistOutput, PlaylistMetadataCache } from '../playlist-metadata.js';
+
+const execFileMock = vi.hoisted(() => vi.fn());
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('child_process')>()),
+  execFile: execFileMock,
+}));
 
 describe('parsePlaylistOutput', () => {
   it('parses valid JSON lines into PlaylistVideo array with correct indices', () => {
@@ -78,5 +84,58 @@ describe('PlaylistMetadataCache argv', () => {
     const idx = argv.indexOf('--cookies-from-browser');
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(argv[idx + 1]).toBe('chrome:Profile 2');
+  });
+});
+
+describe('PlaylistMetadataCache failures', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_f: string, _a: string[], _o: object, cb: (e: Error) => void) => cb(new Error('Sign in to confirm you are not a bot')));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns the cached error for 5 min without running yt-dlp again', async () => {
+    // Arrange
+    const cache = new PlaylistMetadataCache('/tmp/yt-dlp');
+    await expect(cache.fetch('PL123')).rejects.toThrow(/bot/);
+
+    // Act
+    vi.advanceTimersByTime(4 * 60 * 1000);
+    const again = cache.fetch('PL123');
+
+    // Assert
+    await expect(again).rejects.toThrow(/bot/);
+    expect(execFileMock).toHaveBeenCalledOnce();
+  });
+
+  it('runs yt-dlp again after 5 min, and per playlist id', async () => {
+    // Arrange
+    const cache = new PlaylistMetadataCache('/tmp/yt-dlp');
+    await expect(cache.fetch('PL123')).rejects.toThrow();
+
+    // Act
+    await expect(cache.fetch('PL999')).rejects.toThrow();
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    await expect(cache.fetch('PL123')).rejects.toThrow();
+
+    // Assert
+    expect(execFileMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('clear() drops cached failures, so a yt-dlp update retries at once', async () => {
+    // Arrange
+    const cache = new PlaylistMetadataCache('/tmp/yt-dlp');
+    await expect(cache.fetch('PL123')).rejects.toThrow();
+
+    // Act
+    cache.clear();
+    await expect(cache.fetch('PL123')).rejects.toThrow();
+
+    // Assert
+    expect(execFileMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -10,6 +10,9 @@ pub enum Detect {
     FreezeEnd(f64),
     SilenceStart(f64),
     SilenceEnd(f64),
+    /// ffmpeg rebuilt the video (`true`) or audio filter graph, for example on new colour tags.
+    /// The detector in it starts over, so a stretch it had open never gets an end line.
+    Rebuilt { video: bool },
 }
 
 #[derive(Debug, PartialEq)]
@@ -23,6 +26,11 @@ pub enum Verdict {
 pub const SETTLE_S: f64 = 5.0;
 
 pub fn parse_line(line: &str) -> Option<Detect> {
+    if line.contains("] Reconfiguring filter graph") {
+        let video = line.starts_with("[vf#") || line.contains("because video parameters");
+        let audio = line.starts_with("[af#") || line.contains("because audio parameters");
+        return (video || audio).then_some(Detect::Rebuilt { video });
+    }
     let keys: [(&str, &str, fn(f64) -> Detect); 4] = [
         ("[freezedetect @", "freeze_start:", Detect::FreezeStart),
         ("[freezedetect @", "freeze_end:", Detect::FreezeEnd),
@@ -75,20 +83,27 @@ pub fn moves_cut(reason: &str) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Heal {
+    /// Restart the video in place at the cut.
     Retry,
     Skip,
-    EventOnly,
+    /// The silence is in the video ("brb" stretches): report it, play on, never skip.
+    Content,
 }
 
-/// A freeze takes the stall ladder (its retry budget); a silence one retry per video, never a skip.
-pub fn heal(v: &Verdict, retries: u32, silence_retried: bool) -> Option<Heal> {
+/// A freeze is a fault: the stall ladder (`retries`), then a skip. A silence gets one retry per
+/// stretch; `retried` = (video, when that retry went on air), and a silence on that video that
+/// began within `SETTLE_S` of it re-began with the restart: content.
+pub fn heal(v: &Verdict, since: f64, retried: Option<(usize, f64)>, retries: u32) -> Option<Heal> {
     match v {
         Verdict::Ignore => None,
         Verdict::Freeze { .. } => Some(match rules::after_failure(retries) {
             rules::Ladder::Retry => Heal::Retry,
             rules::Ladder::Skip => Heal::Skip,
         }),
-        Verdict::Silence { .. } => Some(if silence_retried { Heal::EventOnly } else { Heal::Retry }),
+        Verdict::Silence { index, .. } => {
+            let same_stretch = retried.is_some_and(|(i, aired)| i == *index && since < aired + SETTLE_S);
+            Some(if same_stretch { Heal::Content } else { Heal::Retry })
+        }
     }
 }
 
@@ -110,6 +125,15 @@ mod tests {
             ("[silencedetect @ 0000019c22640880] silence_start: -0.0213", Some(Detect::SilenceStart(-0.0213))),
             ("Output #0, flv, to 'rtmp://127.0.0.1:1935/live/test':", None),
             ("[flv @ 000001] silence_start: 3", None),
+            (
+                "[vf#0:0 @ 00000208bbfbe440] Reconfiguring filter graph because video parameters changed to yuv420p(tv, bt709), 1920x1080",
+                Some(Detect::Rebuilt { video: true }),
+            ),
+            // not seen in a run: built from ffmpeg's audio message
+            ("[af#0:1 @ 00000208bbfbe880] Reconfiguring filter graph because audio parameters changed to 48000 Hz, stereo, fltp", Some(Detect::Rebuilt { video: false })),
+            // older ffmpeg and -filter_complex name the graph differently; the message still says which
+            ("[fc#0 @ 000001] Reconfiguring filter graph because video parameters changed to yuv420p(tv, bt709), 1920x1080", Some(Detect::Rebuilt { video: true })),
+            ("[Parsed_x @ 000001] Reconfiguring filter graph because audio parameters changed to 48000 Hz, stereo, fltp", Some(Detect::Rebuilt { video: false })),
         ];
         for (line, want) in lines {
             assert_eq!(parse_line(line), want, "{line}");
@@ -201,38 +225,92 @@ mod tests {
         assert!(!moves_cut("normal") && !moves_cut("handover") && !moves_cut("refresh"));
     }
 
-    #[test]
-    fn a_frozen_video_retries_twice_then_skips() {
-        assert_eq!(heal(&Verdict::Freeze { index: 3, pos: 5.0 }, 0, false), Some(Heal::Retry));
-        assert_eq!(heal(&Verdict::Freeze { index: 3, pos: 5.0 }, 1, true), Some(Heal::Retry));
-        assert_eq!(heal(&Verdict::Freeze { index: 3, pos: 5.0 }, 2, false), Some(Heal::Skip));
-        assert_eq!(heal(&Verdict::Ignore, 0, false), None);
+    const NEED: f64 = 20.0;
+
+    /// What the detector sees after a retry of a still stretch.
+    #[derive(Clone, Copy)]
+    enum After {
+        /// The stretch runs on across the retry's seam (no end line).
+        Continues,
+        /// The restart's first frames read as a change: an end, then a new start at once.
+        BeginsAgainAtTheSeam,
+        /// The retry cleared it: an end line, then normal picture and sound.
+        Cleared,
     }
 
-    /// Ten minutes of silence that belongs to the video: one retry, then events only, never a skip.
-    #[test]
-    fn long_content_silence_retries_once_per_video_and_never_skips() {
+    /// Ten minutes of a video still from 0 s, judged and healed as `watchdog_work` does; a new
+    /// stretch opens at `reopen_at` if nothing is open then.
+    fn ten_still_minutes(freeze: bool, after: After, reopen_at: Option<f64>) -> Vec<Heal> {
         let mut s = vec![seam(0.0, 2, Source::File, 0.0)];
-        let mut open = Some(0.0);
-        let (mut retried, mut heals) = (false, vec![]);
-        let mut now = 0.0;
+        let (mut open, mut reopen, mut retried, mut retries, mut heals, mut now) = (Some(0.0), reopen_at, None, 0, vec![], 0.0);
         while now < 600.0 {
             now += 0.1;
-            let Some(since) = open else { continue };
-            let Some(start) = due(since, &s, now, 30.0) else { continue };
-            let v = judge(&Detect::SilenceStart(start), &s, now);
-            let h = heal(&v, 2, retried).unwrap();
-            heals.push(h);
-            if h == Heal::Retry {
-                // the retry restarts the same silent video one second on: a new seam, still silent
-                retried = true;
-                crate::rules::push_seam(&mut s, seam(now + 1.0, 2, Source::File, now + 1.0));
-                open = Some(now + 1.0);
-            } else {
-                open = None;
+            if open.is_none() && reopen.is_some_and(|t| now >= t) {
+                open = reopen.take();
             }
+            let Some(since) = open else { continue };
+            let Some(start) = due(since, &s, now, NEED) else { continue };
+            let d = if freeze { Detect::FreezeStart(start) } else { Detect::SilenceStart(start) };
+            let h = heal(&judge(&d, &s, now), since, retried, retries).unwrap();
+            heals.push(h);
+            if h != Heal::Retry {
+                open = None;
+                continue;
+            }
+            // the retry restarts the same video one second on: a new seam
+            (retries, retried) = (retries + 1, Some((2, now + 1.0)));
+            crate::rules::push_seam(&mut s, seam(now + 1.0, 2, Source::File, now + 1.0));
+            open = match after {
+                After::Continues => open,
+                After::BeginsAgainAtTheSeam => Some(now + 1.5),
+                After::Cleared => None,
+            };
         }
-        assert_eq!(heals, [Heal::Retry, Heal::EventOnly]);
+        heals
+    }
+
+    #[test]
+    fn a_freeze_that_returns_after_its_retry_escalates_to_a_skip() {
+        let v = Verdict::Freeze { index: 3, pos: 125.0 };
+        assert_eq!(heal(&v, 15.0, None, 0), Some(Heal::Retry));
+        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 1), Some(Heal::Retry), "a freeze is never content");
+        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 2), Some(Heal::Skip));
+
+        assert_eq!(ten_still_minutes(true, After::Continues, None), [Heal::Retry, Heal::Retry, Heal::Skip]);
+        assert_eq!(ten_still_minutes(true, After::BeginsAgainAtTheSeam, None), [Heal::Retry, Heal::Retry, Heal::Skip]);
+    }
+
+    /// Ten minutes of "brb" silence that belongs to the video: one retry, then content, never a skip.
+    #[test]
+    fn a_silence_that_returns_after_its_retry_is_content() {
+        let v = Verdict::Silence { index: 3, pos: 125.0 };
+        assert_eq!(heal(&v, 15.0, None, 0), Some(Heal::Retry));
+        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 5), Some(Heal::Content));
+        assert_eq!(heal(&v, 41.0, Some((3, 40.0)), 5), Some(Heal::Content), "re-began at the seam");
+
+        assert_eq!(ten_still_minutes(false, After::Continues, None), [Heal::Retry, Heal::Content]);
+        assert_eq!(ten_still_minutes(false, After::BeginsAgainAtTheSeam, None), [Heal::Retry, Heal::Content]);
+    }
+
+    #[test]
+    fn a_silence_starting_10s_after_the_retry_gets_a_retry() {
+        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 80.0 }, 50.0, Some((3, 40.0)), 0), Some(Heal::Retry));
+    }
+
+    #[test]
+    fn a_later_separate_stretch_gets_one_retry_again() {
+        // retried at 40 s; the sound came back, and a new silence began at 200 s
+        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 300.0 }, 200.0, Some((3, 40.0)), 0), Some(Heal::Retry));
+        // another video's retry never makes this one content
+        assert_eq!(heal(&Verdict::Silence { index: 4, pos: 5.0 }, 41.0, Some((3, 40.0)), 0), Some(Heal::Retry));
+        assert_eq!(heal(&Verdict::Ignore, 41.0, Some((3, 40.0)), 0), None);
+    }
+
+    #[test]
+    fn a_freeze_cleared_by_its_retry_stays_healed() {
+        // cleared, then a new stretch on the same video long after: a retry again, not content or a skip
+        assert_eq!(ten_still_minutes(true, After::Cleared, Some(200.0)), [Heal::Retry, Heal::Retry]);
+        assert_eq!(ten_still_minutes(false, After::Cleared, Some(200.0)), [Heal::Retry, Heal::Retry]);
     }
 
     #[test]

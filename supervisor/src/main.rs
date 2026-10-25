@@ -3,6 +3,7 @@
 
 mod api;
 mod config;
+mod launch;
 mod logs;
 mod media;
 mod overlay;
@@ -266,7 +267,7 @@ pub enum Purpose {
 }
 
 pub enum Msg {
-    Control { cmd: String, index: Option<i64>, reply: Sender<Result<Value, String>> },
+    Control { cmd: String, index: Option<i64>, reason: Option<String>, reply: Sender<Result<Value, String>> },
     Fault { kind: String, count: Option<u32>, reply: Sender<Result<Value, String>> },
     Shutdown,
     Reload(Sender<Result<Value, String>>),
@@ -296,8 +297,6 @@ struct Video {
     dl_failed: bool,
     skipped: bool,
     retries: u32,
-    /// The watchdog's one in-place retry for silence was used.
-    silence_retried: bool,
 }
 
 /// A second resolved URL for the video on air, so a retry skips yt-dlp and the site's wait.
@@ -406,6 +405,8 @@ struct Watch {
     silence: Option<(f64, bool)>,
     /// Where the last heal cut: nothing before it counts again.
     cut_at: f64,
+    /// The last silence retry: (video index, when its feeder went on air).
+    retried: Option<(usize, f64)>,
     /// For /status.watchdog: the last verdict, its time and outcome.
     last: Value,
     /// Debug fault on this video's feeders until the watchdog acts.
@@ -512,6 +513,8 @@ struct Ctl {
     last_resolve: Option<Instant>,
     probe_key: Option<(usize, bool)>,
     fake_bot: bool,
+    /// Distinct videos answered "unavailable" since the last successful resolve.
+    unavailable_streak: HashSet<usize>,
 }
 
 const STALL: Duration = Duration::from_secs(10);
@@ -584,6 +587,7 @@ impl Ctl {
             last_resolve: None,
             probe_key: None,
             fake_bot: false,
+            unavailable_streak: HashSet::new(),
         }
     }
 
@@ -680,6 +684,10 @@ impl Ctl {
         let offset = self.queue_end();
         if watchdog::moves_cut(reason) {
             self.watch.cut_at = self.watch.cut_at.max(secs(offset - BASE));
+        }
+        // Only a silence retry feeds as "watchdog". Taken before the spawn: a failed spawn is retried and overwrites it.
+        if reason == "watchdog" && !filler {
+            self.watch.retried = Some((index, secs(offset - BASE)));
         }
         let fault = self.watch.fault.filter(|(i, _)| *i == index && !filler && source != Source::Slate).map(|(_, f)| f);
         let overlay = self.overlay_for(index, &source, pos, filler);
@@ -797,9 +805,8 @@ impl Ctl {
         if matches!(reason, "normal" | "skip" | "control" | "coldstart") {
             if let Some(v) = self.videos.get_mut(index) {
                 v.retries = 0;
-                v.silence_retried = false;
             }
-            self.watch.fault = None;
+            (self.watch.fault, self.watch.retried) = (None, None);
         }
         self.target = Some(Target { index, pos, reason, gated });
     }
@@ -807,19 +814,10 @@ impl Ctl {
     /// Ladder levels 1 and 2 for the video a feeder or resolve failed on.
     fn fail(&mut self, index: usize, fed: f64, why: &str, detail: Value) {
         let retries = self.videos[index].retries;
-        match rules::after_failure(retries) {
+        match rules::ladder_for(why, retries) {
             Ladder::Retry => {
                 self.videos[index].retries += 1;
-                let (now_s, id, margin) = (unix_ms() as u64 / 1000, self.id(index), self.margin_s());
-                match retry_spare(&mut self.spare, &mut self.spare_due, index, &id, now_s, margin, self.args.dev.url_ttl, Instant::now()) {
-                    Some(r) => {
-                        self.logs.event("info", "spare-used", json!({"index": index, "id": self.id(index)}));
-                        self.resolved.insert(index, (r, Instant::now()));
-                    }
-                    None => {
-                        self.resolved.remove(&index);
-                    }
-                }
+                self.renew_url(index);
                 self.step = "retry";
                 self.step_offset = self.queue_end();
                 self.count("retries");
@@ -836,6 +834,20 @@ impl Ctl {
                 self.logs.event(level, "skip", json!({"index": index, "id": self.id(index), "why": why, "detail": detail, "consecutive": self.consecutive_skips}));
                 let next = self.next_playable(index + 1);
                 self.set_target(next, 0.0, "skip", false);
+            }
+        }
+    }
+
+    /// A retry plays from a new URL: the spare if usable, else a fresh resolve.
+    fn renew_url(&mut self, index: usize) {
+        let (now_s, id, margin) = (unix_ms() as u64 / 1000, self.id(index), self.margin_s());
+        match retry_spare(&mut self.spare, &mut self.spare_due, index, &id, now_s, margin, self.args.dev.url_ttl, Instant::now()) {
+            Some(r) => {
+                self.logs.event("info", "spare-used", json!({"index": index, "id": id}));
+                self.resolved.insert(index, (r, Instant::now()));
+            }
+            None => {
+                self.resolved.remove(&index);
             }
         }
     }
@@ -990,7 +1002,8 @@ impl Ctl {
             self.shared.cv.notify_all();
         }
         self.seams.clear();
-        (self.watch.freeze, self.watch.silence, self.watch.cut_at) = (None, None, 0.0);
+        // A new encoder starts its media clock at 0: nothing judged on the old one carries over.
+        (self.watch.freeze, self.watch.silence, self.watch.cut_at, self.watch.retried) = (None, None, 0.0, None);
         self.enc.speed = None;
         self.enc.failures += 1;
         let wait = rules::encoder_backoff_s(self.enc.failures - 1);
@@ -1221,23 +1234,24 @@ impl Ctl {
                 }
                 Verdict::Freeze { index, pos } | Verdict::Silence { index, pos } => (index, pos),
             };
-            let Some(v) = self.videos.get(index) else { continue }; // a seam from before a playlist switch
-            let heal = watchdog::heal(&verdict, v.retries, v.silence_retried).unwrap();
+            if self.videos.get(index).is_none() {
+                continue; // a seam from before a playlist switch
+            }
+            let heal = watchdog::heal(&verdict, since, self.watch.retried, self.videos[index].retries).unwrap();
             self.watch.fault = None;
             self.count(if freeze { "watchdogFreezes" } else { "watchdogSilences" });
-            if heal == Heal::EventOnly {
-                // Silence that stays after its retry belongs to the video: report it once, play on.
+            if heal == Heal::Content {
+                // Silent again right after a clean restart: the silence is the video's. Report it once, play on.
                 self.watch.silence = None;
-                self.watchdog_event(kind, index, pos, start, "event-only");
+                self.watchdog_event(kind, index, pos, start, "content");
                 continue;
             }
             let at = self.cut_for_heal(index, pos);
             self.watchdog_event(kind, index, pos, start, if heal == Heal::Skip { "skip" } else { "retry" });
             if freeze {
-                // The stall ladder: its retry budget, its skip.
+                // The stall ladder: its retry budget, its new URL, its skip.
                 self.fail(index, at, "freeze", json!({"since": start, "pos": pos}));
             } else {
-                self.videos[index].silence_retried = true;
                 self.step = "retry";
                 self.step_offset = self.queue_end();
                 self.set_target(index, at, "watchdog", false);
@@ -1248,7 +1262,7 @@ impl Ctl {
 
     fn watchdog_event(&mut self, kind: &str, index: usize, pos: f64, since: f64, outcome: &str) {
         let v = json!({"verdict": kind, "index": index, "id": self.id(index), "pos": round2(pos), "since": round2(since), "outcome": outcome, "at": iso_now()});
-        let level = if outcome == "ignored" { "info" } else { "warn" };
+        let level = if matches!(outcome, "ignored" | "content") { "info" } else { "warn" };
         self.logs.event(level, &format!("watchdog-{kind}"), v.clone());
         self.watch.last = v;
     }
@@ -1391,8 +1405,8 @@ impl Ctl {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Control { cmd, index, reply } => {
-                let _ = reply.send(self.control(&cmd, index));
+            Msg::Control { cmd, index, reason, reply } => {
+                let _ = reply.send(self.control(&cmd, index, reason));
             }
             Msg::Fault { kind, count, reply } => {
                 let _ = reply.send(self.fault(&kind, count));
@@ -1426,6 +1440,8 @@ impl Ctl {
                     Detect::FreezeEnd(_) => self.watch.freeze = None,
                     Detect::SilenceStart(t) => self.watch.silence = Some((t, false)),
                     Detect::SilenceEnd(_) => self.watch.silence = None,
+                    Detect::Rebuilt { video: true } => self.watch.freeze = None,
+                    Detect::Rebuilt { video: false } => self.watch.silence = None,
                 }
             }
             Msg::DlProgress { index, percent } => {
@@ -1522,7 +1538,7 @@ impl Ctl {
             self.logs.event("info", "playlist-recovered", json!({"playlistId": id}));
         }
         self.logs.write("playlist.json", &serde_json::to_string_pretty(&entries.iter().map(|e| json!({"id": e.id, "title": e.title, "duration": e.duration})).collect::<Vec<_>>()).unwrap());
-        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0, silence_retried: false }).collect();
+        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
         let old = std::mem::replace(&mut self.videos, new);
         self.playlist = id.clone();
         self.logs.event("info", "playlist", json!({"playlistId": id, "count": self.n()}));
@@ -1542,7 +1558,8 @@ impl Ctl {
             self.resolved.clear();
             (self.spare, self.spare_due) = (None, None);
             (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
-            if let Err(e) = self.control("jump", Some(0)) {
+            self.unavailable_streak.clear();
+            if let Err(e) = self.control("jump", Some(0), None) {
                 self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
             }
             return;
@@ -1615,7 +1632,8 @@ impl Ctl {
         }
         let reason = result.as_ref().err().cloned().unwrap_or_default();
         let per_video = rules::is_video_unavailable(&reason);
-        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), !per_video, probe, &reason);
+        let counts = rules::unavailable_counts(&mut self.unavailable_streak, result.is_ok(), per_video, index);
+        self.breaker_result(result.is_ok(), rules::is_bot_check(&reason), counts, probe, &reason);
         if self.id(index) != id {
             return; // resolved across a playlist switch
         }
@@ -1761,9 +1779,22 @@ impl Ctl {
         head
     }
 
-    fn control(&mut self, cmd: &str, index: Option<i64>) -> Result<Value, String> {
+    /// `reason` is the caller's note for `restart-encoder`; the other commands ignore it.
+    fn control(&mut self, cmd: &str, index: Option<i64>, reason: Option<String>) -> Result<Value, String> {
         if self.stopping {
             return Err("stopping".into());
+        }
+        if cmd == "restart-encoder" {
+            if self.enc.child.is_none() {
+                return if self.waiting_for_key {
+                    Err("needs-stream-key: no encoder runs until a reload brings a working key".into())
+                } else {
+                    Ok(json!({"accepted": true, "alreadyRestarting": true}))
+                };
+            }
+            self.logs.event("info", "encoder-restart-requested", json!({"reason": reason}));
+            self.encoder_down("restart requested");
+            return Ok(json!({"accepted": true}));
         }
         let view = self.view().0;
         let t = rules::control_target(cmd, index, view, self.n())?;
@@ -2018,6 +2049,17 @@ fn main() {
         }
         return;
     }
+    if argv.first().is_some_and(|a| a == "launch") {
+        let rest = &argv[1..];
+        let logs = parse_args(rest).ok().map(|a| a.paths.data.join("logs"));
+        let code = launch::run(rest, PORT, |breakaway, pid| {
+            if let Some(dir) = &logs {
+                let _ = std::fs::create_dir_all(dir);
+                Logs::new(dir.clone(), "").event("info", "launched", json!({"breakaway": breakaway, "pid": pid}));
+            }
+        });
+        std::process::exit(code);
+    }
     let started = parse_args(&argv).and_then(|a| {
         let s = read_settings(&a)?;
         Ok((a, s))
@@ -2029,6 +2071,14 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Bind before anything else: a duplicate launch must exit 2 before it prunes logs, wipes the
+    // cache or starts a thread or child, all of which the live instance owns.
+    let (tx, rx) = channel::<Msg>();
+    let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
+    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone(), snapshot.clone()) {
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        std::process::exit(2);
+    }
     if let Err(e) = procs::enter_job() {
         logs::echo(&mut std::io::stderr().lock(), &format!("warning: {e}; children will not die with the supervisor"));
     }
@@ -2041,7 +2091,6 @@ fn main() {
     let _ = std::fs::create_dir_all(&cache);
 
     let yt = Arc::new(Ytdlp::new(&args.paths, &settings.player_client, args.dev.limit_rate.clone()));
-    let (tx, rx) = channel::<Msg>();
     let mut queue = Queue::new(192 * 1024 * 1024);
     queue.ahead = ticks(settings.read_ahead_seconds);
     let shared = Arc::new(Shared { q: Mutex::new(queue), cv: Condvar::new() });
@@ -2059,11 +2108,6 @@ fn main() {
     {
         let (yt, l, tx, c) = (yt.clone(), logs.clone(), tx.clone(), cache.clone());
         std::thread::spawn(move || downloader(jobs_rx, yt, l, tx, c));
-    }
-    let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
-    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone(), snapshot.clone()) {
-        logs.event("critical", "api-failed", json!({"error": e}));
-        std::process::exit(2);
     }
 
     let mut ctl = Ctl::new(args, settings, logs, tx, shared, yt, cache, jobs_tx, token, snapshot);
@@ -2118,21 +2162,19 @@ mod tests {
         let (jobs, _) = channel();
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
         ctl.playlist_wanted = false;
-        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0, silence_retried: false }).collect();
+        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
         ctl
     }
 
     #[test]
-    fn an_unavailable_video_is_skipped_after_its_retries_without_opening_the_breaker() {
+    fn an_unavailable_video_is_skipped_at_once_without_opening_the_breaker() {
         let mut ctl = test_ctl("unavailable", &["a", "b", "c"]);
         ctl.set_target(0, 0.0, "coldstart", false);
         let reason = "ERROR: [youtube] a: Private video. Sign in if you've been granted access to this video";
 
-        for _ in 0..3 {
-            ctl.on_resolved(0, "a", Purpose::Play, Err(reason.into()));
-        }
+        ctl.on_resolved(0, "a", Purpose::Play, Err(reason.into()));
 
-        assert!(!ctl.breaker.open, "a private video opened the breaker");
+        assert_eq!((ctl.breaker.open, ctl.breaker.failures), (false, 0), "a private video counted toward the breaker");
         assert!(ctl.videos[0].skipped);
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((1, "skip")), "the next video is not up");
     }
@@ -2173,7 +2215,7 @@ mod tests {
         let now = ctl.now_s();
         assert!(ctl.hold.holding(now), "no hold after every video was skipped");
         assert!(ctl.status()["hold"]["reason"].is_string(), "{}", ctl.status());
-        ctl.control("next", None).unwrap();
+        ctl.control("next", None, None).unwrap();
         assert!(!ctl.hold.holding(now), "a control did not lift the hold");
     }
 
@@ -2204,6 +2246,129 @@ mod tests {
         ctl.encoder_down("test");
 
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((2, "control")));
+    }
+
+    #[test]
+    fn restart_encoder_control_takes_the_encoder_down_path() {
+        let mut ctl = test_ctl("restart-encoder", &["a", "b", "c"]);
+        ctl.seams.push(Seam { offset: BASE, index: 1, source: Source::File, start_pos: 12.0 });
+        (ctl.enc.child, ctl.waiting_for_key) = (Some(exited_child()), false);
+
+        let reply = ctl.control("restart-encoder", None, Some("twitch shows the channel offline".into()));
+
+        assert_eq!(reply, Ok(json!({"accepted": true})));
+        assert!(ctl.enc.child.is_none() && ctl.enc.restart_at.is_some(), "the encoder is not down with a restart scheduled");
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 12.0, "encoder-restart")), "does not resume at P_view");
+        let ev = events(&ctl);
+        assert!(ev.contains(&("info".into(), "encoder-restart-requested".into())) && ev.iter().any(|(_, k)| k == "encoder-exit"), "{ev:?}");
+        let log = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("events-")).unwrap();
+        assert!(std::fs::read_to_string(log.path()).unwrap().contains("twitch shows the channel offline"));
+        assert_eq!(ctl.control("restart-encoder", None, None), Ok(json!({"accepted": true, "alreadyRestarting": true})), "a restart is already pending");
+        ctl.waiting_for_key = true;
+        assert!(ctl.control("restart-encoder", None, None).is_err(), "no encoder until a key arrives");
+    }
+
+    /// Video 1 on air from timeline 0 at position 0; the stretch began at 5 s, the encoder is at `media`.
+    fn watchdog_ctl(name: &str, freeze: bool, media: f64) -> Ctl {
+        let mut ctl = test_ctl(name, &["a", "b", "c"]);
+        ctl.seams.push(Seam { offset: BASE, index: 1, source: Source::File, start_pos: 0.0 });
+        ctl.enc.media = media;
+        if freeze { ctl.watch.freeze = Some((5.0, false)) } else { ctl.watch.silence = Some((5.0, false)) }
+        ctl
+    }
+
+    /// The retry's feeder went on air where the queue ends: its seam is pushed as `start_feeder` would.
+    fn retry_aired(ctl: &mut Ctl) -> f64 {
+        let t = ctl.target.take().expect("no retry target");
+        let offset = ctl.queue_end();
+        ctl.seams.push(Seam { offset, index: t.index, source: Source::File, start_pos: t.pos });
+        secs(offset - BASE)
+    }
+
+    #[test]
+    fn a_silence_still_there_after_its_retry_is_reported_as_content_and_plays_on() {
+        let mut ctl = watchdog_ctl("wd-silence", false, 40.0);
+        ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(50.0));
+
+        ctl.watchdog_work();
+
+        let t = ctl.target.clone().expect("no retry");
+        assert_eq!((t.index, t.reason), (1, "watchdog"));
+        // the retry's feeder starts (no ffmpeg in the test root, so the spawn fails after the offset is taken)
+        ctl.start_feeder(1, Source::File, t.pos, "watchdog", false);
+        let aired = secs(BASE + ticks(50.0) + FRAME - BASE);
+        assert_eq!(ctl.watch.retried, Some((1, aired)), "retried is not in encoder media seconds");
+        retry_aired(&mut ctl);
+        ctl.enc.media = aired + 5.0 + 30.0 + 1.0;
+
+        ctl.watchdog_work();
+
+        assert_eq!((ctl.watch.last["outcome"].as_str(), ctl.watch.last["verdict"].as_str()), (Some("content"), Some("silence")), "{}", ctl.watch.last);
+        assert_eq!(events(&ctl).last(), Some(&("info".into(), "watchdog-silence".into())));
+        assert!(ctl.target.is_none(), "content changed the target");
+        assert!(!ctl.videos[1].skipped);
+    }
+
+    #[test]
+    fn a_freeze_still_there_after_its_retries_is_skipped() {
+        let mut ctl = watchdog_ctl("wd-freeze", true, 30.0);
+        ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(40.0));
+        let mut outcomes = vec![];
+
+        for _ in 0..3 {
+            ctl.watchdog_work();
+            outcomes.push(ctl.watch.last["outcome"].as_str().unwrap_or("").to_string());
+            if ctl.videos[1].skipped {
+                break;
+            }
+            let aired = retry_aired(&mut ctl);
+            ctl.enc.media = aired + 5.0 + 20.0 + 1.0;
+            ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(ctl.enc.media + 2.0));
+        }
+
+        assert_eq!(outcomes, ["retry", "retry", "skip"]);
+        assert!(ctl.videos[1].skipped);
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((2, "skip")));
+    }
+
+    /// The tree-kill run of 2026-10-25: 21 s of slate came out frozen, then the video's bt709 tags
+    /// rebuilt the filter graph, which resets freezedetect, so no freeze_end ever came.
+    #[test]
+    fn a_slate_freeze_cut_off_by_a_filter_graph_rebuild_does_not_carry_into_the_video() {
+        let mut ctl = test_ctl("wd-rebuild", &["a", "b"]);
+        ctl.seams.push(Seam { offset: BASE, index: 0, source: Source::Slate, start_pos: 0.0 });
+        ctl.seams.push(Seam { offset: BASE + ticks(21.0), index: 0, source: Source::Url, start_pos: 0.0 });
+        ctl.enc.child = Some(exited_child());
+        let generation = ctl.shared.q.lock().unwrap().generation;
+        let feed = |ctl: &mut Ctl, line: &str| {
+            let (tx, rx) = channel();
+            encoder_stderr_line(&ctl.logs, &tx, generation, line, &mut None, &mut String::new());
+            rx.try_iter().for_each(|m| ctl.handle(m));
+        };
+        let play = |ctl: &mut Ctl, from: f64, to: f64| {
+            let mut m = from;
+            while m < to && ctl.target.is_none() {
+                ctl.enc.media = m;
+                ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(m + 2.0));
+                ctl.watchdog_work();
+                m += 0.5;
+            }
+        };
+
+        feed(&mut ctl, "[freezedetect @ 00000208bbfa5440] lavfi.freezedetect.freeze_start: 0.0100222");
+        feed(&mut ctl, "[vf#0:0 @ 00000208bbfbe440] Reconfiguring filter graph because video parameters changed to yuv420p(tv, bt709), 1920x1080");
+        play(&mut ctl, 20.0, 65.0);
+
+        assert!(ctl.target.is_none(), "moving video judged frozen: {}", ctl.watch.last);
+        assert!(!events(&ctl).iter().any(|(_, k)| k == "watchdog-freeze"), "{:?}", events(&ctl));
+
+        // A real freeze after the rebuild is still caught once it has lasted d. The line is from the
+        // offline run: slate, then this video, frozen from 45 s by the freeze-video feeder filter.
+        feed(&mut ctl, "[freezedetect @ 0000018d23ae6c00] lavfi.freezedetect.freeze_start: 45.010022");
+        play(&mut ctl, 65.0, 90.0);
+        assert_eq!(ctl.enc.media, 65.5);
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((0, "retry")), "{}", ctl.watch.last);
+        assert_eq!(ctl.watch.last["verdict"].as_str(), Some("freeze"));
     }
 
     /// (level, kind) of every event the test control loop logged.

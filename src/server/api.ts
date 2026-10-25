@@ -1,36 +1,46 @@
-import { Router } from 'express';
+import express, { Router, type Response, type NextFunction, type Request } from 'express';
 import { existsSync, writeFileSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
+import { freemem, totalmem } from 'os';
 import { ZodError } from 'zod';
-import { saveConfig, isFirstRun, getConfigPath, DEFAULT_DISCORD_TEMPLATES, DISCORD_TEMPLATE_VARIABLES } from './config.js';
+import { saveConfig as saveConfigFile, isFirstRun, getConfigPath, DEFAULT_DISCORD_TEMPLATES, DISCORD_TEMPLATE_VARIABLES } from './config.js';
 import { logger } from './logger.js';
 import type { AppConfig } from './types.js';
-import type { RecoveryEngine } from './recovery.js';
-import type { MpvClient } from './mpv-client.js';
 import type { PlaylistMetadataCache } from './playlist-metadata.js';
-import type { OBSClient } from './obs-client.js';
-import type { StateManager } from './state.js';
 import type { Updater } from './updater.js';
 import type { DiscordNotifier } from './discord.js';
 import type { TwitchLivenessChecker } from './twitch.js';
+import { protectStreamKey, type SupervisorClient, type SupervisorStatus } from './supervisor-client.js';
+import type { LauncherState, SupervisorLauncher } from './supervisor-launcher.js';
+import type { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
-  getRecovery: () => RecoveryEngine;
-  mpv: MpvClient;
+  /** Takes a just-saved config into the running server (Discord, Twitch, launcher). */
+  applyConfig: (config: AppConfig) => void;
+  saveConfig?: (patch: Partial<AppConfig>) => AppConfig;
+  client: Pick<SupervisorClient, 'status' | 'control' | 'reload' | 'shutdown'>;
+  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow' | 'waitReason'>;
+  eventLog: Pick<EventLog, 'getEvents'>;
+  /** The install root holding supervisor\ and data\; null when it is unknown. */
+  root: string | null;
+  nodeLogsDir: string;
+  protect?: (exePath: string, plain: string) => Promise<string>;
   playlistCache: PlaylistMetadataCache;
   ytdlpPath: string;
-  getObs: () => OBSClient;
-  state: StateManager;
-  reloadConfig: () => Promise<void>;
   updater: Updater;
   triggerRestart: () => void;
   triggerShutdown: () => void;
   getDiscord: () => DiscordNotifier;
   getTwitch: () => TwitchLivenessChecker;
+  getUptime: () => number;
   apiToken: string;
+  /** STREAMLOOP_TEST_HOOKS=1 only: adds POST /test/exit-75, the update restart without an update. */
+  testHooks?: boolean;
 }
+
+export type StreamState = 'live' | 'recovering' | 'off-air' | 'starting' | 'stopped';
 
 const STARTUP_FOLDER = join(
   process.env.APPDATA ?? '',
@@ -38,20 +48,101 @@ const STARTUP_FOLDER = join(
 );
 const AUTOSTART_VBS = join(STARTUP_FOLDER, 'StreamLoop.vbs');
 
+const LOG_NAME = /^[A-Za-z0-9_.-]+\.(log|jsonl|csv)$/;
+const LOG_TAIL_BYTES = 1024 * 1024;
+const GiB = 1024 ** 3;
+
+function getSystemMemory() {
+  const totalBytes = totalmem();
+  const freeBytes = freemem();
+  const usedBytes = totalBytes - freeBytes;
+  return {
+    totalGB: +(totalBytes / GiB).toFixed(1),
+    freeGB: +(freeBytes / GiB).toFixed(1),
+    usedGB: +(usedBytes / GiB).toFixed(1),
+    usedPercent: Math.round((usedBytes / totalBytes) * 100),
+  };
+}
+
+/** The at-a-glance answer to "is it working", with one plain sentence when it is not. */
+export function streamState(
+  sup: SupervisorStatus | null,
+  launcher: LauncherState,
+  stoppedByUser: boolean,
+  waitReason: string | null = null,
+): { state: StreamState; reason: string | null } {
+  // The old supervisor can answer for a moment after Stop, so the user's stop wins.
+  if (stoppedByUser) return { state: 'stopped', reason: 'The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start.' };
+  // So does a Start that waits for that old supervisor to exit.
+  if (waitReason) return { state: 'starting', reason: waitReason };
+  if (!sup) {
+    if (launcher === 'starting') return { state: 'starting', reason: 'The supervisor is starting.' };
+    if (launcher === 'missing') return { state: 'off-air', reason: 'The supervisor program was not found in the install folder.' };
+    return { state: 'off-air', reason: 'The supervisor is not answering.' };
+  }
+  const alive = sup.encoder?.alive === true;
+  switch (sup.state) {
+    case 'starting':
+      return { state: 'starting', reason: 'The stream is starting.' };
+    case 'needs-stream-key':
+      return { state: 'off-air', reason: 'The stream key is missing or cannot be read. Set it again in Settings.' };
+    case 'waiting-for-playlist':
+      return { state: 'off-air', reason: 'The playlist could not be loaded.' };
+    case 'stopping':
+      return { state: 'off-air', reason: 'The supervisor is shutting down.' };
+    case 'recovering':
+      return { state: 'recovering', reason: alive ? 'Recovering the current video.' : 'The encoder is restarting.' };
+    case 'playing':
+      if (!alive) return { state: 'off-air', reason: 'The encoder is not running.' };
+      if (sup.hold) return { state: 'recovering', reason: 'Every video failed, so the slate airs until the next try.' };
+      if (sup.recovery?.step && sup.recovery.step !== 'none') return { state: 'recovering', reason: 'Recovering the current video.' };
+      return { state: 'live', reason: null };
+    default:
+      return { state: 'off-air', reason: `The supervisor reports an unknown state: ${String(sup.state)}.` };
+  }
+}
+
 function maskConfig(config: AppConfig): Record<string, unknown> {
+  const { streamKeyProtected, ...supervisor } = config.supervisor;
   return {
     ...config,
-    obsWebsocketPassword: config.obsWebsocketPassword ? '********' : '',
     twitchClientSecret: config.twitchClientSecret ? '********' : '',
     discord: {
       ...config.discord,
       webhookUrl: config.discord.webhookUrl ? '********' : '',
     },
+    supervisor: { ...supervisor, streamKeySet: streamKeyProtected.length > 0 },
   };
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof ZodError) return err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+  return err instanceof Error ? err.message : String(err);
 }
 
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
+  const save = deps.saveConfig ?? ((patch: Partial<AppConfig>) => saveConfigFile(patch));
+  const protect = deps.protect ?? ((exe: string, plain: string) => protectStreamKey(exe, plain));
+  const logDirs: Record<string, string | null> = {
+    supervisor: deps.root ? join(deps.root, 'data', 'logs') : null,
+    node: deps.nodeLogsDir,
+  };
+
+  /** Saves, takes the new config in and asks the supervisor to read it. */
+  async function saveAndReload(patch: Partial<AppConfig>) {
+    const config = save(patch);
+    deps.applyConfig(config);
+    const reload = await deps.client.reload();
+    return {
+      config,
+      restartRequired: reload.restartRequired === true,
+      reloadError: reload.ok ? null : reload.error ?? 'reload failed',
+      reloadErrorCode: reload.ok ? null : reload.code ?? null,
+    };
+  }
+
+  router.use(express.json());
 
   // CSRF/auth protection: require API token on all state-changing requests.
   // Token is served via GET /token (same-origin only — no CORS headers).
@@ -70,76 +161,80 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   router.get('/status', async (_req, res) => {
-    const config = deps.getConfig();
-    const status = deps.getRecovery().getStatus();
-    const obs = deps.getObs();
-    const obsConnected = obs.isConnected();
-    const obsStreaming = obsConnected ? await obs.isStreaming() : false;
+    const sup = await deps.client.status();
+    const launcher = deps.launcher.state();
     res.json({
-      mpvConnected: deps.mpv.isConnected(),
-      mpvRunning: deps.mpv.isRunning(),
-      obsConnected,
-      obsStreaming,
-      recoveryStep: status.recoveryStep,
-      lastHeartbeatAt: status.lastHeartbeatAt,
-      heartbeatIntervalMs: config.heartbeatIntervalMs,
-      consecutiveErrors: status.consecutiveErrors,
-      totalVideos: status.totalVideos,
-      uptimeMs: status.uptimeMs,
-      playlistIndex: status.playlistIndex,
-      totalPlaylists: status.totalPlaylists,
-      systemMemory: status.systemMemory,
-      paused: status.paused,
-      intentionallyStopped: status.intentionallyStopped,
-      firstRun: isFirstRun(config),
+      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser(), deps.launcher.waitReason()),
+      supervisor: sup,
+      launcher,
       twitch: deps.getTwitch().getStatus(),
+      firstRun: isFirstRun(deps.getConfig()),
+      systemMemory: getSystemMemory(),
+      uptimeMs: deps.getUptime(),
     });
   });
 
-  router.get('/state', (_req, res) => {
-    const state = deps.state.get();
-    res.json(state);
+  router.get('/state', async (_req, res) => {
+    const p = (await deps.client.status())?.playing;
+    res.json({
+      index: p?.index ?? null,
+      id: p?.id ?? null,
+      title: p?.title ?? null,
+      position: p?.position ?? null,
+      duration: p?.duration ?? null,
+      source: p?.source ?? null,
+    });
+  });
+
+  router.get('/events', (_req, res) => {
+    res.json(deps.eventLog.getEvents());
   });
 
   router.get('/config', (_req, res) => {
     res.json(maskConfig(deps.getConfig()));
   });
 
-  router.post('/config', (req, res) => {
+  router.post('/config', async (req, res) => {
     try {
-      const body = req.body as Partial<AppConfig>;
-      // Don't overwrite masked credentials
-      if (body.obsWebsocketPassword === '********') {
-        delete body.obsWebsocketPassword;
+      const body = req.body as Record<string, unknown>;
+      if (body.twitchClientSecret === '********') delete body.twitchClientSecret;
+      const discord = body.discord as Record<string, unknown> | undefined;
+      if (discord && discord.webhookUrl === '********') delete discord.webhookUrl;
+      // Only /stream-key sets the key; streamKeySet is the masked read-back.
+      const supervisor = body.supervisor as Record<string, unknown> | undefined;
+      if (supervisor) {
+        delete supervisor.streamKeyProtected;
+        delete supervisor.streamKeySet;
       }
-      if (body.twitchClientSecret === '********') {
-        delete body.twitchClientSecret;
-      }
-      // Handle nested discord webhook masking
-      if (body.discord && body.discord.webhookUrl === '********') {
-        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-        delete (body.discord as any).webhookUrl;
-      }
-      const updated = saveConfig(body);
-      logger.info('Config updated via API');
-      // Trigger reload asynchronously
-      deps.reloadConfig().catch((err) => {
-        logger.error({ err }, 'Failed to reload after config update');
-      });
-      res.json({ ok: true, config: maskConfig(updated) });
+      const r = await saveAndReload(body as Partial<AppConfig>);
+      logger.info({ restartRequired: r.restartRequired, reloadError: r.reloadError }, 'Config updated via API');
+      res.json({ ok: true, config: maskConfig(r.config), restartRequired: r.restartRequired, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
     } catch (err) {
       logger.error({ err }, 'Failed to save config');
-      if (err instanceof ZodError) {
-        const messages = err.issues.map(i => `${i.path.join('.')}: ${i.message}`);
-        res.status(400).json({ error: messages.join('; ') });
-      } else {
-        res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
-      }
+      res.status(400).json({ error: errorText(err) });
     }
   });
 
-  router.get('/events', (_req, res) => {
-    res.json(deps.getRecovery().getEvents());
+  router.post('/stream-key', async (req, res) => {
+    const key = (req.body as { key?: unknown }).key;
+    if (typeof key !== 'string' || !key.trim()) {
+      return res.status(400).json({ error: 'No stream key given' });
+    }
+    if (!deps.root) {
+      return res.status(503).json({ error: 'The supervisor program was not found, so the key cannot be encrypted.' });
+    }
+    // protectStreamKey already redacts; this guards any other error text too.
+    const redact = (s: string): string => s.split(key.trim()).join('[redacted]');
+    try {
+      const blob = await protect(join(deps.root, 'supervisor', 'streamloop-supervisor.exe'), key);
+      const r = await saveAndReload({ supervisor: { streamKeyProtected: blob } } as Partial<AppConfig>);
+      logger.info({ reloadError: r.reloadError }, 'Stream key replaced');
+      res.json({ ok: true, streamKeySet: true });
+    } catch (err) {
+      const why = redact(errorText(err));
+      logger.error({ error: why }, 'Failed to set the stream key');
+      res.status(500).json({ error: why });
+    }
   });
 
   router.get('/autostart', (_req, res) => {
@@ -169,40 +264,6 @@ export function createApiRouter(deps: ApiDependencies): Router {
       logger.error({ err }, 'Failed to set autostart');
       res.status(500).json({ error: String(err) });
     }
-  });
-
-  // --- OBS path endpoints ---
-
-  const OBS_SEARCH_PATHS = [
-    'C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe',
-    'C:\\Program Files (x86)\\obs-studio\\bin\\64bit\\obs64.exe',
-  ];
-
-  router.post('/obs-path/detect', (_req, res) => {
-    for (const p of OBS_SEARCH_PATHS) {
-      if (existsSync(p)) {
-        return res.json({ found: true, path: p });
-      }
-    }
-    res.json({ found: false, path: '' });
-  });
-
-  router.post('/obs-path/validate', (req, res) => {
-    const { path } = req.body as { path: string };
-    if (!path || typeof path !== 'string') {
-      return res.json({ valid: false, error: 'No path provided' });
-    }
-    if (!existsSync(path)) {
-      return res.json({ valid: false, error: 'File not found' });
-    }
-    const lower = path.toLowerCase();
-    if (!lower.endsWith('.exe')) {
-      return res.json({ valid: false, error: 'Not an executable (.exe) file' });
-    }
-    if (!lower.includes('obs')) {
-      return res.json({ valid: false, error: 'Doesn\'t look like an OBS executable' });
-    }
-    res.json({ valid: true });
   });
 
   // --- Discord endpoints ---
@@ -264,15 +325,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/playlist/videos', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const perPage = Math.min(100, Math.max(1, Number(req.query.perPage) || 25));
-    const config = deps.getConfig();
-    const state = deps.state.get();
-    const playlistIndex = state.playlistIndex < config.playlists.length ? state.playlistIndex : 0;
-    const playlist = config.playlists[playlistIndex];
+    // The supervisor plays the first playlist.
+    const playlist = deps.getConfig().playlists[0];
     try {
-      const metadata = await deps.playlistCache.fetch(playlist.id);
+      const [metadata, sup] = await Promise.all([deps.playlistCache.fetch(playlist.id), deps.client.status()]);
       const start = (page - 1) * perPage;
       const videos = metadata.videos.slice(start, start + perPage);
-      res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: state.videoIndex });
+      res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: sup?.playing?.index ?? null });
     } catch (err) {
       logger.error({ err }, 'Failed to fetch playlist metadata');
       res.status(500).json({ error: 'Failed to fetch playlist metadata' });
@@ -280,17 +339,15 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   router.post('/playlist/switch', async (req, res) => {
-    const { playlistIndex } = req.body as { playlistIndex: number };
-    const config = deps.getConfig();
-    if (typeof playlistIndex !== 'number' || playlistIndex < 0 || playlistIndex >= config.playlists.length) {
+    const { playlistIndex } = req.body as { playlistIndex: unknown };
+    const playlists = [...deps.getConfig().playlists];
+    if (typeof playlistIndex !== 'number' || !Number.isInteger(playlistIndex) || playlistIndex < 0 || playlistIndex >= playlists.length) {
       return res.status(400).json({ error: 'Invalid playlist index' });
     }
-    const playlist = config.playlists[playlistIndex];
-    const url = `https://www.youtube.com/playlist?list=${playlist.id}`;
-    deps.state.update({ playlistIndex, videoIndex: 0, currentTime: 0, videoId: '', videoTitle: '' });
+    const [chosen] = playlists.splice(playlistIndex, 1);
     try {
-      await deps.mpv.loadPlaylist(url);
-      res.json({ ok: true });
+      const r = await saveAndReload({ playlists: [chosen, ...playlists] });
+      res.json({ ok: true, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
     } catch (err) {
       logger.error({ err }, 'Failed to switch playlist');
       res.status(500).json({ error: 'Failed to switch playlist' });
@@ -299,139 +356,77 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   // --- Player control endpoints ---
 
-  router.post('/player/jump', async (req, res) => {
-    const { index } = req.body as { index: number };
-    try {
-      deps.getRecovery().setIntentionallyStopped(false);
-      await deps.mpv.jumpTo(index);
-      await deps.mpv.play();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to jump to video' });
+  async function control(res: Response, cmd: 'next' | 'prev' | 'restart' | 'jump', index?: number) {
+    if (deps.launcher.isStoppedByUser()) {
+      return res.status(503).json({ error: 'The stream is stopped. Start it first.' });
     }
+    if (deps.launcher.state() !== 'running') {
+      return res.status(503).json({ error: 'The supervisor is not running.' });
+    }
+    const r = await deps.client.control(cmd, index);
+    if (!r.ok) return res.status(502).json({ error: `The supervisor refused: ${r.error ?? 'unknown error'}` });
+    res.json({ ok: true });
+  }
+
+  router.post('/player/next', (_req, res) => control(res, 'next'));
+  router.post('/player/prev', (_req, res) => control(res, 'prev'));
+  router.post('/player/restart', (_req, res) => control(res, 'restart'));
+  router.post('/player/jump', (req, res) => {
+    const { index } = req.body as { index: unknown };
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+      return res.status(400).json({ error: 'Invalid video index' });
+    }
+    return control(res, 'jump', index);
   });
 
-  router.post('/player/next', async (_req, res) => {
-    try {
-      deps.getRecovery().setIntentionallyStopped(false);
-      await deps.mpv.next();
-      await deps.mpv.play();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to skip to next' });
-    }
+  // --- Stream endpoints ---
+
+  router.post('/stream/stop', async (_req, res) => {
+    // Mark first, so the launcher does not relaunch while the supervisor shuts down.
+    deps.launcher.markStoppedByUser();
+    const answered = await deps.client.shutdown();
+    logger.info({ answered }, 'Stream stopped from the dashboard');
+    res.json({ ok: true });
   });
 
-  router.post('/player/prev', async (_req, res) => {
-    try {
-      deps.getRecovery().setIntentionallyStopped(false);
-      await deps.mpv.prev();
-      await deps.mpv.play();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to go to previous' });
-    }
+  router.post('/stream/start', (_req, res) => {
+    deps.launcher.launchNow();
+    logger.info('Stream started from the dashboard');
+    res.json({ ok: true });
   });
 
-  router.post('/player/seek', async (req, res) => {
-    const { seconds } = req.body as { seconds: number };
-    try {
-      await deps.mpv.seek(seconds);
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to seek' });
-    }
+  // --- Log endpoints ---
+
+  router.get('/logs', (_req, res) => {
+    const files = Object.entries(logDirs).flatMap(([source, dir]) => {
+      if (!dir || !existsSync(dir)) return [];
+      return readdirSync(dir).flatMap((name) => {
+        if (!LOG_NAME.test(name)) return [];
+        const stat = statSync(join(dir, name));
+        return stat.isFile() ? [{ name, size: stat.size, mtime: stat.mtime.toISOString(), source }] : [];
+      });
+    });
+    res.json(files.sort((a, b) => b.mtime.localeCompare(a.mtime)));
   });
 
-  router.post('/player/pause', async (_req, res) => {
+  router.get('/logs/:source/:name', (req, res) => {
+    const { source, name } = req.params;
+    if (!Object.hasOwn(logDirs, source)) return res.status(400).json({ error: 'Unknown log source' });
+    if (!LOG_NAME.test(name) || basename(name) !== name) return res.status(400).json({ error: 'Invalid log file name' });
+    const dir = logDirs[source];
+    const full = dir ? join(dir, name) : null;
+    if (!full || !existsSync(full)) return res.status(404).json({ error: 'Log file not found' });
     try {
-      const paused = await deps.mpv.togglePause();
-      res.json({ ok: true, paused });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to toggle pause' });
-    }
-  });
-
-  router.post('/player/stop', async (_req, res) => {
-    try {
-      const recovery = deps.getRecovery();
-      recovery.setIntentionallyStopped(true);
-      await deps.mpv.pause();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to stop playback' });
-    }
-  });
-
-  router.post('/player/resume', async (_req, res) => {
-    try {
-      const recovery = deps.getRecovery();
-      recovery.setIntentionallyStopped(false);
-      await deps.mpv.play();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to resume playback' });
-    }
-  });
-
-  router.post('/player/restart-mpv', async (_req, res) => {
-    try {
-      await deps.mpv.restart();
-      res.json({ ok: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to restart mpv' });
-    }
-  });
-
-  // --- mpv log endpoints ---
-
-  router.get('/mpv-logs', (_req, res) => {
-    const logFile = deps.mpv.getCurrentLogFile();
-    if (!logFile) {
-      return res.json({ files: [], current: null });
-    }
-    try {
-      const logsDir = join(logFile, '..');
-      const files = readdirSync(logsDir)
-        .filter((f) => f.startsWith('mpv-') && f.endsWith('.log'))
-        .map((f) => {
-          const full = join(logsDir, f);
-          const stat = statSync(full);
-          return { name: f, size: stat.size, mtime: stat.mtime.toISOString() };
-        })
-        .sort((a, b) => b.mtime.localeCompare(a.mtime));
-      res.json({ files, current: basename(logFile) });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to list mpv logs' });
-    }
-  });
-
-  router.get('/mpv-logs/:filename', (req, res) => {
-    const logFile = deps.mpv.getCurrentLogFile();
-    if (!logFile) {
-      return res.status(404).json({ error: 'mpv logging not active' });
-    }
-    // Reject path traversal: only allow plain mpv-*.log filenames.
-    const requested = req.params.filename;
-    if (!/^mpv-[A-Za-z0-9_\-.]+\.log$/.test(requested)) {
-      return res.status(400).json({ error: 'Invalid filename' });
-    }
-    const logsDir = join(logFile, '..');
-    const full = join(logsDir, requested);
-    if (!existsSync(full)) {
-      return res.status(404).json({ error: 'Log file not found' });
-    }
-    try {
-      // Cap at 1MB — mpv logs can grow; dashboard only needs the tail.
-      const MAX_BYTES = 1024 * 1024;
       const stat = statSync(full);
-      if (stat.size <= MAX_BYTES) {
+      // A folder, or a device name like con.log, passes the name check and can block a read.
+      if (!stat.isFile()) return res.status(404).json({ error: 'Log file not found' });
+      if (stat.size <= LOG_TAIL_BYTES) {
         res.type('text/plain').send(readFileSync(full, 'utf-8'));
       } else {
         const fd = openSync(full, 'r');
         try {
-          const buf = Buffer.alloc(MAX_BYTES);
-          readSync(fd, buf, 0, MAX_BYTES, stat.size - MAX_BYTES);
+          const buf = Buffer.alloc(LOG_TAIL_BYTES);
+          readSync(fd, buf, 0, LOG_TAIL_BYTES, stat.size - LOG_TAIL_BYTES);
           res.type('text/plain').send('... (truncated, showing last 1 MB) ...\n' + buf.toString('utf-8'));
         } finally {
           closeSync(fd);
@@ -458,11 +453,28 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
+  if (deps.testHooks) {
+    router.post('/test/exit-75', (_req, res) => {
+      logger.warn('Test hook: exiting with code 75 as after an update');
+      res.json({ ok: true });
+      deps.triggerRestart();
+    });
+  }
+
   // --- Shutdown endpoint ---
 
   router.post('/shutdown', (_req, res) => {
     res.json({ ok: true, message: 'Shutting down...' });
     setTimeout(() => deps.triggerShutdown(), 500);
+  });
+
+  // Never echo the body or err.message: a JSON parse error quotes the body, which may hold the stream key.
+  router.use((err: { type?: unknown; status?: unknown }, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(err);
+    const parse = err?.type === 'entity.parse.failed';
+    const status = parse ? 400 : 500;
+    logger.warn({ type: typeof err?.type === 'string' ? err.type : null, status }, 'API request failed');
+    res.status(status).json({ error: parse ? 'Invalid JSON' : 'Internal error' });
   });
 
   return router;

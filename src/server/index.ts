@@ -3,24 +3,23 @@ import { randomBytes } from 'crypto';
 import { exec } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import express from 'express';
-import { resolve, dirname } from 'path';
+import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { loadConfig, isFirstRun } from './config.js';
 import { logger } from './logger.js';
-import { StateManager } from './state.js';
-import { MpvClient } from './mpv-client.js';
-import { buildMpvArgs } from './mpv-args.js';
 import { PlaylistMetadataCache } from './playlist-metadata.js';
-import { OBSClient } from './obs-client.js';
 import { DiscordNotifier } from './discord.js';
-import { RecoveryEngine } from './recovery.js';
 import { createApiRouter } from './api.js';
 import { Updater } from './updater.js';
 import { TwitchLivenessChecker } from './twitch.js';
 import { EventStore } from './event-store.js';
+import { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
-import { streamloop3IsStreaming } from './stream-guard.js';
+import { SupervisorClient } from './supervisor-client.js';
+import { SupervisorLauncher, installRoot } from './supervisor-launcher.js';
+import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent } from './supervisor-events.js';
+import type { AppConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -37,85 +36,87 @@ async function main() {
   const startedAt = Date.now();
   const getUptime = () => Date.now() - startedAt;
 
-  // State
-  const state = new StateManager(config.stateFilePath);
-
-  // Express + HTTP server
   const app = express();
-  app.use(express.json());
 
   // Admin dashboard static files
   const adminDir = resolve(__dirname, '..', 'admin');
   app.use('/admin', express.static(adminDir));
 
-  // Now-playing overlay for OBS
-  const overlayDir = resolve(__dirname, '..', 'overlay');
-  app.use('/overlay', express.static(overlayDir));
-
   const server = createServer(app);
 
-  // Resolve binary paths: check project root first (dev), then portable release structure
-  const projectRoot = resolve(__dirname, '..', '..');
-  const installRoot = resolve(projectRoot, '..');
-  const mpvPath = existsSync(resolve(projectRoot, 'mpv', 'mpv.exe'))
-    ? resolve(projectRoot, 'mpv', 'mpv.exe')
-    : resolve(installRoot, 'mpv', 'mpv.exe');
-  const ytdlpPath = existsSync(resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe'))
-    ? resolve(projectRoot, 'yt-dlp', 'yt-dlp.exe')
-    : resolve(installRoot, 'yt-dlp', 'yt-dlp.exe');
+  // app\ in a release, the repo in dev; ROOT holds supervisor\ and data\.
+  const appDir = resolve(__dirname, '..', '..');
+  const root = installRoot(appDir, process.env);
+  const ytdlpPath = existsSync(resolve(appDir, 'yt-dlp', 'yt-dlp.exe'))
+    ? resolve(appDir, 'yt-dlp', 'yt-dlp.exe')
+    : resolve(appDir, '..', 'yt-dlp', 'yt-dlp.exe');
 
-  const logsDir = resolve(projectRoot, 'logs');
-  const eventStore = new EventStore({ dir: logsDir });
-
-  const mpvArgs = buildMpvArgs(config, ytdlpPath);
-
-  const mpv = new MpvClient({
-    mpvPath,
-    pipePath: '\\\\.\\pipe\\mpv-streamloop',
-    logsDir,
-    mpvArgs,
-  });
-
+  const nodeLogsDir = resolve(appDir, 'logs');
+  const eventLog = new EventLog(new EventStore({ dir: nodeLogsDir }));
   const playlistCache = new PlaylistMetadataCache(ytdlpPath, config.ytdlCookiesFromBrowser);
-
-  // OBS client
-  let obs = new OBSClient(config);
-  // Reads discord and recovery at call time, so it follows a config reload's new instances.
-  function wireStartGuard(client: OBSClient): void {
-    client.setStartGuard(() => streamloop3IsStreaming());
-    client.onStartBlocked((blocked) => {
-      if (!blocked) {
-        logger.info('3.0 is no longer streaming; the 2.x stream may start again');
-        return;
-      }
-      discord.notifyCritical('StreamLoop 3.0 is streaming on this PC, so 2.x will not start its stream. Stop 3.0 first.');
-      recovery.addEvent('Not starting the stream: StreamLoop 3.0 is streaming on this PC');
-    });
-  }
+  const client = new SupervisorClient();
 
   const adminUrl = `http://localhost:${config.port}/admin`;
-
-  // Discord
   let discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
+  // The Twitch read-back pulls frames with the install's ffmpeg; without a ROOT it stays off.
+  // STREAMLOOP_TEST_HLS_URL is for the end-to-end runs against local MediaMTX; config.json cannot set it.
+  const testHlsUrl = process.env.STREAMLOOP_TEST_HLS_URL || null;
+  if (testHlsUrl) logger.warn('STREAMLOOP_TEST_HLS_URL is set: the Twitch read-back reads a local test stream and Twitch is never asked');
+  const twitchOpts = { ffmpegPath: root ? join(root, 'ffmpeg', 'ffmpeg.exe') : null, addEvent: (m: string) => eventLog.addEvent(m), restartClock: { lastAttemptAt: null, alertedAt: null }, testHlsUrl };
+  let twitch = new TwitchLivenessChecker(config, client, discord, twitchOpts);
 
-  // Recovery engine
-  let recovery = new RecoveryEngine(config, mpv, state, obs, discord, eventStore);
-  recovery.start();
+  // One gate for the process lifetime, so supervisor and launcher alerts share its streaks.
+  const gate = new AlertGate();
+  const onEvent = (e: SupervisorEvent): void => {
+    const d = gate.describe(e);
+    if (d.message) eventLog.addEvent(d.message);
+    if (d.discord) void discord.notifyEvent(d.discord);
+  };
 
-  // Twitch liveness checker
-  let twitch = new TwitchLivenessChecker(config, obs, discord);
+  const debugFaults = process.env.STREAMLOOP_DEBUG_FAULTS === '1';
+  if (debugFaults) logger.warn('STREAMLOOP_DEBUG_FAULTS=1: the supervisor starts with --debug-faults');
+  const launcher = new SupervisorLauncher({
+    root,
+    client,
+    debugFaults,
+    onEvent: (kind, detail) => onEvent(launcherEvent(kind, detail)),
+  });
+  const supervisorEvents = root ? new SupervisorEvents({ logsDir: join(root, 'data', 'logs'), onEvent }) : null;
+  if (!root) logger.warn('No install root (set STREAMLOOP_ROOT in dev): the supervisor cannot be launched');
 
-  // Updater
   const updater = new Updater();
 
-  const triggerRestart = async () => {
-    logger.info('Restart requested for update');
+  // A first run has only the placeholder playlist: nothing starts until the wizard saves a real one.
+  let started = false;
+  const startServices = (): void => {
+    if (started || isFirstRun(config)) return;
+    started = true;
+    launcher.start();
+    supervisorEvents?.start();
+    twitch.start();
+  };
+
+  const applyConfig = (next: AppConfig): void => {
+    config = next;
+    discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
+    twitch.stop();
+    twitch = new TwitchLivenessChecker(config, client, discord, twitchOpts);
+    if (started) twitch.start();
+    else startServices();
+    logger.info('Components reloaded with new config');
+  };
+
+  // Node's own timers only: the supervisor and the stream keep running.
+  const stopNode = (): void => {
     updater.stopAutoCheck();
     twitch.stop();
-    recovery.stop();
-    state.flush();
-    await mpv.stop();
-    obs.disconnect();
+    launcher.stop();
+    supervisorEvents?.stop();
+  };
+
+  const triggerRestart = (): void => {
+    logger.info('Restart requested for update');
+    stopNode();
     server.close(() => {
       logger.info('Server closed for update restart');
     });
@@ -123,172 +124,9 @@ async function main() {
     setTimeout(() => process.exit(75), 2000);
   };
 
-  // API router — uses getters so reloaded components are always current
-  const reloadConfig = async () => {
-    const newConfig = loadConfig();
-    config = newConfig;
-    // Reconnect OBS if settings changed
-    obs.disconnect();
-    obs = new OBSClient(config);
-    // Recreate discord notifier before OBS connect so callbacks use the new config
-    discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
-    obs.onConnect(async () => {
-      logger.info('OBS reconnected after config change');
-      discord.notifyObsReconnect();
-      if (config.obsAutoStream) {
-        const waitForVideo = setInterval(async () => {
-          const status = recovery.getStatus();
-          if (status.videoConfirmed) {
-            clearInterval(waitForVideo);
-            logger.info('Video confirmed rendering, starting stream');
-            await obs.startStreaming();
-          }
-        }, 2000);
-        setTimeout(() => clearInterval(waitForVideo), 120000);
-      }
-    });
-    obs.onDisconnect(() => {
-      logger.warn('OBS disconnected');
-      discord.notifyObsDisconnect();
-    });
-    obs.onStreamDrop((attempt, maxAttempts) => {
-      discord.notifyStreamDrop(attempt, maxAttempts);
-    });
-    obs.onStreamRestart((attempts) => {
-      discord.notifyStreamRestart(attempts);
-    });
-    obs.onStreamRestartFailed(() => {
-      discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
-    });
-    wireStartGuard(obs);
-    await obs.connect();
-    // Restart recovery with new config
-    recovery.stop();
-    recovery = new RecoveryEngine(config, mpv, state, obs, discord, eventStore);
-    recovery.start();
-    startStreamMonitor();
-    // Restart Twitch liveness checker with new config
-    twitch.stop();
-    twitch = new TwitchLivenessChecker(config, obs, discord);
-    twitch.start();
-    logger.info('Components reloaded with new config');
-  };
-
-  const apiRouter = createApiRouter({
-    getConfig: () => config,
-    getRecovery: () => recovery,
-    mpv,
-    playlistCache,
-    ytdlpPath,
-    getObs: () => obs,
-    state,
-    reloadConfig,
-    updater,
-    triggerRestart,
-    triggerShutdown: () => shutdown(),
-    getDiscord: () => discord,
-    getTwitch: () => twitch,
-    apiToken,
-  });
-  app.use('/api', apiRouter);
-
-  // Connect to OBS
-  obs.onConnect(async () => {
-    logger.info('OBS connected, checking player status');
-    discord.notifyObsReconnect();
-    if (!mpv.isConnected()) {
-      logger.warn('Player not connected after OBS reconnect');
-    }
-    // Auto-start stream — wait until video is confirmed rendering
-    if (config.obsAutoStream) {
-      const waitForVideo = setInterval(async () => {
-        const status = recovery.getStatus();
-        if (status.videoConfirmed) {
-          clearInterval(waitForVideo);
-          logger.info('Video confirmed rendering, starting stream');
-          await obs.startStreaming();
-        }
-      }, 2000);
-      // Give up after 2 minutes
-      setTimeout(() => clearInterval(waitForVideo), 120000);
-    }
-  });
-
-  obs.onDisconnect(() => {
-    logger.warn('OBS disconnected');
-    discord.notifyObsDisconnect();
-  });
-
-  obs.onStreamDrop((attempt, maxAttempts) => {
-    discord.notifyStreamDrop(attempt, maxAttempts);
-  });
-
-  obs.onStreamRestart((attempts) => {
-    discord.notifyStreamRestart(attempts);
-  });
-
-  obs.onStreamRestartFailed(() => {
-    discord.notifyCritical('Stream restart failed after all attempts. Manual intervention required.');
-  });
-
-  wireStartGuard(obs);
-
-  // Stream health monitor — restarts stream if it drops while player is healthy
-  const startStreamMonitor = () => {
-    obs.startStreamMonitor(() => {
-      if (!mpv.isConnected()) return false;
-      const status = recovery.getStatus();
-      const heartbeatAge = Date.now() - status.lastHeartbeatAt;
-      return heartbeatAge < config.heartbeatTimeoutMs;
-    });
-  };
-  startStreamMonitor();
-
-  if (!isFirstRun(config)) {
-    await mpv.start();
-    await obs.connect();
-    twitch.start();
-  }
-
-  // Start auto-update check if enabled
-  if (config.autoUpdateCheck) {
-    updater.startAutoCheck(config.updateCheckIntervalMs);
-  }
-
-  // Keep yt-dlp current. An outdated yt-dlp silently truncates YouTube playlists
-  // (it stops after the first ~100-entry page), so refresh it in the background on
-  // startup. Fire-and-forget: it must never block server boot or playback.
-  if (config.autoUpdateYtdlp) {
-    void updateYtdlp(ytdlpPath).then((result) => {
-      if (result.ok) {
-        logger.info({ version: result.version }, 'yt-dlp auto-update complete');
-        playlistCache.clear();
-      } else {
-        logger.warn({ error: result.error }, 'yt-dlp auto-update skipped');
-      }
-    });
-  }
-
-  // Start HTTP server
-  server.listen(config.port, '127.0.0.1', () => {
-    logger.info({ port: config.port }, 'Server listening');
-    logger.info(`Admin URL: ${adminUrl}`);
-
-    // Auto-open browser to admin dashboard
-    if (config.autoOpenAdmin && process.platform === 'win32') {
-      exec(`start "" "${adminUrl}"`, { cwd: SPAWN_CWD });
-    }
-  });
-
-  // Graceful shutdown
-  const shutdown = async () => {
+  const shutdown = (): void => {
     logger.info('Shutting down...');
-    updater.stopAutoCheck();
-    twitch.stop();
-    recovery.stop();
-    state.flush();
-    await mpv.stop();
-    obs.disconnect();
+    stopNode();
     server.close(() => {
       logger.info('Server closed');
       process.exit(0);
@@ -296,6 +134,67 @@ async function main() {
     // Force exit after 5s
     setTimeout(() => process.exit(1), 5000);
   };
+
+  app.use('/api', createApiRouter({
+    getConfig: () => config,
+    applyConfig,
+    client,
+    launcher,
+    eventLog,
+    root,
+    nodeLogsDir,
+    playlistCache,
+    ytdlpPath,
+    updater,
+    triggerRestart,
+    triggerShutdown: shutdown,
+    getDiscord: () => discord,
+    getTwitch: () => twitch,
+    getUptime,
+    apiToken,
+    testHooks: process.env.STREAMLOOP_TEST_HOOKS === '1',
+  }));
+
+  // 2.x binds the same port: while it runs, exit and let START.bat retry until it is stopped.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.fatal(`Port ${config.port} is in use. Is StreamLoop 2.x running? Stop it and 3.0 starts by itself.`);
+      process.exit(1);
+    }
+    logger.fatal({ err }, 'Server error');
+    process.exit(1);
+  });
+
+  // Nothing starts before the port is ours, so a running 2.x never gets a second stream beside it.
+  server.listen(config.port, '127.0.0.1', () => {
+    logger.info({ port: config.port }, 'Server listening');
+    logger.info(`Admin URL: ${adminUrl}`);
+
+    startServices();
+
+    if (config.autoUpdateCheck) {
+      updater.startAutoCheck(config.updateCheckIntervalMs);
+    }
+
+    // Keep yt-dlp current. An outdated yt-dlp silently truncates YouTube playlists
+    // (it stops after the first ~100-entry page), so refresh it in the background on
+    // startup. Fire-and-forget: it must never block server boot or playback.
+    if (config.autoUpdateYtdlp) {
+      void updateYtdlp(ytdlpPath).then((result) => {
+        if (result.ok) {
+          logger.info({ version: result.version }, 'yt-dlp auto-update complete');
+          playlistCache.clear();
+        } else {
+          logger.warn({ error: result.error }, 'yt-dlp auto-update skipped');
+        }
+      });
+    }
+
+    // Auto-open browser to admin dashboard
+    if (config.autoOpenAdmin && process.platform === 'win32') {
+      exec(`start "" "${adminUrl}"`, { cwd: SPAWN_CWD });
+    }
+  });
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

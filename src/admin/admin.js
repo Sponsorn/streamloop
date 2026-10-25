@@ -1,30 +1,20 @@
-// Admin Dashboard Client Logic
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 let apiToken = '';
-let currentView = 'loading'; // 'wizard' | 'dashboard'
 let pollTimer = null;
 let pollFailures = 0;
-let lastHeartbeatAt = 0;
-let heartbeatIntervalMs = 5000;
-let heartbeatCountdownTimer = null;
-let playerConnected = false;
-let videoListPage = 1;
 const VIDEO_LIST_PER_PAGE = 25;
-let seeking = false;
 
-// --- Initialization ---
+// Initialization
 
 async function init() {
   try {
     const status = await api('/api/status');
-    if (status.firstRun) {
-      showWizard();
-    } else {
-      showDashboard();
-    }
+    if (status.firstRun) showWizard();
+    else showDashboard();
   } catch (err) {
     console.error('Failed to init:', err);
     showWizard();
@@ -32,7 +22,6 @@ async function init() {
 }
 
 function showWizard() {
-  currentView = 'wizard';
   $('#view-wizard').classList.remove('hidden');
   $('#view-dashboard').classList.add('hidden');
   stopPolling();
@@ -40,17 +29,17 @@ function showWizard() {
 }
 
 function showDashboard() {
-  currentView = 'dashboard';
   $('#view-wizard').classList.add('hidden');
   $('#view-dashboard').classList.remove('hidden');
   startPolling();
   loadSettings();
   loadAutostart();
-  initPlaybackControls();
-  initMpvLogs();
+  loadPlaylistSelector();
+  loadVideoList(1);
+  loadLogList();
 }
 
-// --- API helper ---
+// API helper
 
 async function fetchApiToken() {
   try {
@@ -78,43 +67,44 @@ async function api(url, opts) {
   return res.json();
 }
 
-// --- Playlist row helpers ---
-
-function addSetPlaylist(id, name) {
-  addPlaylistRow('#set-playlists-list', id || '', name || '');
+function post(url, body) {
+  return api(url, body === undefined ? { method: 'POST' } : { method: 'POST', body: JSON.stringify(body) });
 }
 
+/** Saves a config patch; returns the response. Shows a reload error unless it only means the supervisor is down. */
+async function saveConfig(patch) {
+  const r = await post('/api/config', patch);
+  if (!isBenignReloadError(r)) showToast('Saved, but the supervisor could not reload: ' + r.reloadError);
+  return r;
+}
+
+// Playlist row helpers
+
 function addPlaylistRow(containerSel, id, name) {
-  const container = $(containerSel);
   const row = document.createElement('div');
   row.className = 'playlist-row';
   row.innerHTML =
-    `<input type="text" class="pl-id" placeholder="PLxxxxxxxxxxxxxxxx" value="${escapeHtml(id)}">` +
-    `<input type="text" class="pl-name" placeholder="Name (optional)" value="${escapeHtml(name)}">` +
-    `<button type="button" class="btn-remove" title="Remove">&times;</button>`;
-  row.querySelector('.btn-remove').addEventListener('click', () => {
-    row.remove();
-  });
-  container.appendChild(row);
+    `<input type="text" class="pl-id" placeholder="PLxxxxxxxxxxxxxxxx" aria-label="Playlist ID or URL" value="${escapeHtml(id || '')}">` +
+    `<input type="text" class="pl-name" placeholder="Name (optional)" aria-label="Playlist name" value="${escapeHtml(name || '')}">` +
+    `<button type="button" class="btn-remove" title="Remove" aria-label="Remove playlist">&times;</button>`;
+  row.querySelector('.btn-remove').addEventListener('click', () => row.remove());
+  $(containerSel).appendChild(row);
 }
 
 function extractPlaylistId(raw) {
   try {
     const url = new URL(raw);
     if (url.hostname.includes('youtube.com') || url.hostname.includes('youtu.be')) {
-      const list = url.searchParams.get('list');
-      if (list) return list;
-      return null; // YouTube URL without a playlist
+      return url.searchParams.get('list'); // null for a YouTube URL without a playlist
     }
   } catch { /* not a URL, treat as bare ID */ }
   return raw;
 }
 
 function collectPlaylists(containerSel) {
-  const rows = $$(containerSel + ' .playlist-row');
   const playlists = [];
   let hasError = false;
-  for (const row of rows) {
+  for (const row of $$(containerSel + ' .playlist-row')) {
     const input = row.querySelector('.pl-id');
     const raw = input.value.trim();
     if (!raw) continue;
@@ -129,78 +119,52 @@ function collectPlaylists(containerSel) {
     const name = row.querySelector('.pl-name').value.trim();
     playlists.push(name ? { id, name } : { id });
   }
-  if (hasError) return null;
-  return playlists;
+  return hasError ? null : playlists;
 }
 
-// --- Wizard (multi-step onboarding) ---
+// Wizard
 
-const WIZ_TOTAL_STEPS = 6;
+const WIZ_TOTAL_STEPS = 5;
 let wizStep = 1;
+let wizFinished = false;
 const wizState = {
-  obsWebsocketPassword: '',
   playlists: [],
+  ingestUrl: '',
   discordWebhookUrl: '',
   autostart: false,
 };
 
 function wizInitWizard() {
-  // Load defaults from server config if available
   api('/api/config').then(cfg => {
-    if (cfg.obsWebsocketPassword && cfg.obsWebsocketPassword !== '********') {
-      wizState.obsWebsocketPassword = cfg.obsWebsocketPassword;
-    }
     if (cfg.discord && cfg.discord.webhookUrl && cfg.discord.webhookUrl !== '********') {
       wizState.discordWebhookUrl = cfg.discord.webhookUrl;
     }
+    wizState.ingestUrl = (cfg.supervisor && cfg.supervisor.ingestUrl) || '';
     const playlists = cfg.playlists || [];
-    const hasReal = playlists.some(p => !p.id.includes('xxxxx'));
-    if (hasReal) {
-      wizState.playlists = playlists;
-    }
+    if (playlists.some(p => !p.id.includes('xxxxx'))) wizState.playlists = playlists;
   }).catch(() => {});
   wizGoTo(1);
 }
 
 function wizGoTo(step) {
-  // Collect data from current step before leaving
   if (wizStep !== step) wizCollectStepData();
   wizStep = step;
-  // Show/hide step panels
-  $$('.wiz-step').forEach(el => {
-    el.classList.toggle('hidden', Number(el.dataset.step) !== step);
-  });
-  // Update progress dots and lines
+  $$('.wiz-step').forEach(el => el.classList.toggle('hidden', Number(el.dataset.step) !== step));
   $$('.wiz-progress-dot').forEach(dot => {
     const s = Number(dot.dataset.step);
     dot.classList.remove('active', 'completed');
     if (s === step) dot.classList.add('active');
     else if (s < step) dot.classList.add('completed');
   });
-  $$('.wiz-progress-line').forEach(line => {
-    const after = Number(line.dataset.after);
-    line.classList.toggle('completed', after < step);
-  });
-  // Update nav buttons
-  const backBtn = $('#wiz-back');
-  const nextBtn = $('#wiz-next');
-  backBtn.classList.toggle('invisible', step === 1);
-  if (step === WIZ_TOTAL_STEPS) {
-    nextBtn.textContent = 'Finish';
-  } else if (step === 1) {
-    nextBtn.textContent = 'Get Started';
-  } else {
-    nextBtn.textContent = 'Continue';
-  }
-  // Init step-specific UI
+  $$('.wiz-progress-line').forEach(line => line.classList.toggle('completed', Number(line.dataset.after) < step));
+  $('#wiz-back').classList.toggle('invisible', step === 1);
+  $('#wiz-next').textContent = step === WIZ_TOTAL_STEPS ? 'Finish' : step === 1 ? 'Get Started' : 'Continue';
   wizInitStep(step);
 }
 
 function wizNext() {
-  if (wizStep === WIZ_TOTAL_STEPS) {
-    runVerification();
-    return;
-  }
+  if (wizFinished) { showDashboard(); return; }
+  if (wizStep === WIZ_TOTAL_STEPS) { runVerification(); return; }
   if (!wizValidateStep()) return;
   wizGoTo(wizStep + 1);
 }
@@ -211,18 +175,16 @@ function wizBack() {
 
 function wizCollectStepData() {
   switch (wizStep) {
-    case 2:
-      wizState.obsWebsocketPassword = $('#wiz-obs-pass').value;
-      break;
-    case 3:
-      // No data to collect from window capture step
-      break;
-    case 4: {
+    case 2: {
       const pl = collectPlaylists('#wiz-playlists-list');
       if (pl) wizState.playlists = pl;
       break;
     }
-    case 5:
+    case 3:
+      // The stream key stays in its input; it never goes into wizState.
+      wizState.ingestUrl = $('#wiz-ingest').value.trim();
+      break;
+    case 4:
       wizState.discordWebhookUrl = $('#wiz-discord').value.trim();
       wizState.autostart = $('#wiz-autostart').checked;
       break;
@@ -231,161 +193,42 @@ function wizCollectStepData() {
 
 function wizInitStep(step) {
   switch (step) {
-    case 2:
-      $('#wiz-obs-pass').value = wizState.obsWebsocketPassword;
-      $('#wiz-obs-result').textContent = '';
-      $('#wiz-obs-result').className = 'wiz-test-result';
-      break;
-    case 3: {
-      // Reset check results for window capture step
-      const mpvResult = document.getElementById('wiz-mpv-result');
-      const captureResult = document.getElementById('wiz-capture-result');
-      if (mpvResult) { mpvResult.textContent = ''; mpvResult.style.color = ''; }
-      if (captureResult) { captureResult.textContent = ''; captureResult.style.color = ''; }
-      // Set overlay URL
-      const overlayUrl = document.getElementById('wiz-overlay-url');
-      if (overlayUrl) overlayUrl.textContent = window.location.origin + '/overlay';
+    case 2: {
+      $('#wiz-playlists-list').innerHTML = '';
+      if (wizState.playlists.length > 0) wizState.playlists.forEach(p => addPlaylistRow('#wiz-playlists-list', p.id, p.name));
+      else addPlaylistRow('#wiz-playlists-list', '', '');
       break;
     }
-    case 4: {
-      const container = $('#wiz-playlists-list');
-      container.innerHTML = '';
-      if (wizState.playlists.length > 0) {
-        wizState.playlists.forEach(p => wizAddPlaylist(p.id, p.name || ''));
-      } else {
-        wizAddPlaylist('', '');
-      }
+    case 3:
+      $('#wiz-ingest').value = wizState.ingestUrl;
       break;
-    }
-    case 5:
+    case 4:
       $('#wiz-discord').value = wizState.discordWebhookUrl;
       $('#wiz-autostart').checked = wizState.autostart;
       break;
-    case 6:
-      // Reset verification icons
-      ['config', 'obs', 'player'].forEach(key => {
-        const icon = $(`#wiz-chk-${key}`);
-        icon.textContent = '\u25CF';
-        icon.className = 'wiz-verify-icon';
-      });
-      $('#wiz-verify-status').textContent = 'Click Finish to save your configuration and verify connections.';
-      $('#wiz-next').textContent = 'Finish';
+    case 5:
+      ['config', 'key', 'live'].forEach(key => setVerifyIcon(key, ''));
+      $('#wiz-verify-status').textContent = '';
       $('#wiz-next').disabled = false;
       break;
   }
 }
 
 function wizValidateStep() {
-  switch (wizStep) {
-    case 3:
-      // No validation needed for window capture step
-      return true;
-    case 4: {
-      const pl = collectPlaylists('#wiz-playlists-list');
-      if (pl === null) return false; // validation error already shown
-      wizState.playlists = pl;
-      if (wizState.playlists.length === 0) {
-        showToast('Add at least one playlist ID.');
-        return false;
-      }
-      return true;
+  if (wizStep === 2) {
+    const pl = collectPlaylists('#wiz-playlists-list');
+    if (pl === null) return false;
+    wizState.playlists = pl;
+    if (pl.length === 0) {
+      showToast('Add at least one playlist ID.');
+      return false;
     }
-    default:
-      return true;
   }
-}
-
-function wizAddPlaylist(id, name) {
-  addPlaylistRow('#wiz-playlists-list', id || '', name || '');
-}
-
-async function wizTestObs() {
-  const resultEl = $('#wiz-obs-result');
-  const btn = $('#wiz-test-obs');
-  resultEl.textContent = 'Testing...';
-  resultEl.className = 'wiz-test-result pending';
-  btn.disabled = true;
-
-  // Save just the OBS password to config (keeps placeholder playlist so isFirstRun stays true)
-  const password = $('#wiz-obs-pass').value;
-  try {
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ obsWebsocketPassword: password }),
-    });
-  } catch {
-    // Non-critical, continue with test
+  if (wizStep === 3 && !$('#wiz-stream-key').value.trim()) {
+    showToast('Enter your stream key. Twitch needs it to accept the stream.');
+    return false;
   }
-
-  // Wait a moment for server to reconnect, then poll status
-  await sleep(2000);
-  try {
-    const status = await api('/api/status');
-    if (status.obsConnected) {
-      resultEl.textContent = 'Connected to OBS!';
-      resultEl.className = 'wiz-test-result success';
-    } else {
-      resultEl.textContent = 'Could not connect. Check OBS is open and WebSocket is enabled.';
-      resultEl.className = 'wiz-test-result failure';
-    }
-  } catch {
-    resultEl.textContent = 'Could not reach server.';
-    resultEl.className = 'wiz-test-result failure';
-  }
-  btn.disabled = false;
-}
-
-async function wizCheckMpv() {
-  const result = document.getElementById('wiz-mpv-result');
-  result.textContent = 'Checking...';
-  result.style.color = '';
-  try {
-    const status = await api('/api/status');
-    if (status.mpvRunning) {
-      result.textContent = 'mpv is running!';
-      result.style.color = 'var(--success, #22c55e)';
-    } else {
-      result.textContent = 'mpv is not running. Check server logs.';
-      result.style.color = 'var(--error, #ef4444)';
-    }
-  } catch (err) {
-    result.textContent = 'Failed to check status';
-    result.style.color = 'var(--error, #ef4444)';
-  }
-}
-
-async function wizCheckCapture() {
-  const result = document.getElementById('wiz-capture-result');
-  result.textContent = 'Checking...';
-  result.style.color = '';
-  try {
-    const status = await api('/api/status');
-    if (status.obsConnected) {
-      result.textContent = 'OBS connected! Set up Window Capture in OBS.';
-      result.style.color = 'var(--success, #22c55e)';
-    } else {
-      result.textContent = 'OBS not connected. Make sure OBS is running with WebSocket enabled.';
-      result.style.color = 'var(--error, #ef4444)';
-    }
-  } catch (err) {
-    result.textContent = 'Failed to check OBS status';
-    result.style.color = 'var(--error, #ef4444)';
-  }
-}
-
-function copyRedirectUrl(btn) {
-  navigator.clipboard.writeText('https://localhost').then(() => {
-    const original = btn.textContent;
-    btn.textContent = 'Copied!';
-    btn.classList.add('btn-copied');
-    setTimeout(() => {
-      btn.textContent = original;
-      btn.classList.remove('btn-copied');
-    }, 2000);
-  }).catch(() => {
-    showToast('Press Ctrl+C to copy', 'success');
-  });
+  return true;
 }
 
 async function runVerification() {
@@ -393,289 +236,281 @@ async function runVerification() {
   const statusEl = $('#wiz-verify-status');
   nextBtn.disabled = true;
   nextBtn.textContent = 'Saving...';
-
-  // Collect final data
+  $('#wiz-back').classList.add('invisible');
   wizCollectStepData();
 
-  // Step 1: Save config
-  setVerifyIcon('config', 'spin');
-  statusEl.textContent = 'Saving configuration...';
+  setVerifyIcon('key', 'spin');
+  statusEl.textContent = 'Saving the stream key...';
+  const keyInput = $('#wiz-stream-key');
+  // The key goes first: the supervisor must never start on a first run without one.
+  let keyOk = false;
+  try {
+    await post('/api/stream-key', { key: keyInput.value });
+    keyOk = true;
+    setVerifyIcon('key', 'pass');
+  } catch (err) {
+    setVerifyIcon('key', 'fail');
+    statusEl.textContent = 'Could not save the stream key: ' + err.message;
+  }
 
+  setVerifyIcon('config', 'spin');
+  if (keyOk) statusEl.textContent = 'Saving settings...';
   const body = {
     playlists: wizState.playlists,
     discord: { webhookUrl: wizState.discordWebhookUrl },
   };
-  if (wizState.obsWebsocketPassword) {
-    body.obsWebsocketPassword = wizState.obsWebsocketPassword;
-  }
-
+  if (wizState.ingestUrl) body.supervisor = { ingestUrl: wizState.ingestUrl };
   try {
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    // The supervisor is not up yet on a first save, so a refused reload is expected here.
+    await saveConfig(body);
+    // cleared only now, so a Retry after a failed save sends the key again
+    if (keyOk) keyInput.value = '';
     setVerifyIcon('config', 'pass');
   } catch (err) {
     setVerifyIcon('config', 'fail');
-    statusEl.textContent = 'Failed to save: ' + err.message;
+    statusEl.textContent = 'Could not save: ' + err.message;
+    $('#wiz-back').classList.remove('invisible');
     nextBtn.disabled = false;
     nextBtn.textContent = 'Retry';
     return;
   }
 
-  // Set autostart if requested
   if (wizState.autostart) {
     try {
-      await api('/api/autostart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
-      });
-    } catch {
-      // Non-critical
+      await post('/api/autostart', { enabled: true });
+    } catch (err) {
+      showToast('Could not turn on autostart: ' + err.message);
     }
   }
 
-  // Step 2: Check connections (poll a few times)
-  setVerifyIcon('obs', 'spin');
-  setVerifyIcon('player', 'spin');
-  statusEl.textContent = 'Checking connections...';
-  nextBtn.textContent = 'Verifying...';
-
-  let obsOk = false;
-  let playerOk = false;
-  for (let i = 0; i < 5; i++) {
+  setVerifyIcon('live', 'spin');
+  nextBtn.textContent = 'Checking...';
+  const started = Date.now();
+  let verdict = 'wait';
+  let stream = null;
+  while (verdict === 'wait') {
     await sleep(2000);
     try {
-      const status = await api('/api/status');
-      if (status.obsConnected) { obsOk = true; setVerifyIcon('obs', 'pass'); }
-      if (status.mpvRunning) { playerOk = true; setVerifyIcon('player', 'pass'); }
-      if (obsOk && playerOk) break;
+      stream = (await api('/api/status')).stream;
+      if (keyOk) statusEl.textContent = streamLine(stream).word + (stream.reason ? ': ' + stream.reason : '');
     } catch {
-      // Ignore transient errors
+      // The server can drop a poll while it takes the new config in.
     }
+    verdict = wizardVerdict(stream, Date.now() - started);
   }
 
-  if (!obsOk) setVerifyIcon('obs', 'fail');
-  if (!playerOk) setVerifyIcon('player', 'fail');
-
-  if (obsOk && playerOk) {
-    statusEl.textContent = 'Everything looks good!';
+  if (verdict === 'live') {
+    setVerifyIcon('live', 'pass');
+    statusEl.textContent = 'The stream is live.';
   } else {
-    const issues = [];
-    if (!obsOk) issues.push('OBS WebSocket');
-    if (!playerOk) issues.push('mpv player');
-    statusEl.textContent = issues.join(' and ') + ' not connected. You can fix this later in Settings.';
+    setVerifyIcon('live', 'fail');
+    const why = (stream && stream.reason) || 'The server did not answer.';
+    statusEl.textContent = (keyOk ? '' : statusEl.textContent + ' ') + why + ' You can fix this later from the dashboard.';
   }
-
+  wizFinished = true;
   nextBtn.disabled = false;
   nextBtn.textContent = 'Go to Dashboard';
-  nextBtn.onclick = () => showDashboard();
 }
 
 function setVerifyIcon(key, state) {
   const icon = $(`#wiz-chk-${key}`);
   icon.className = 'wiz-verify-icon ' + state;
-  if (state === 'pass') icon.textContent = '\u2714';
-  else if (state === 'fail') icon.textContent = '\u2718';
-  else if (state === 'spin') icon.textContent = '\u25CF';
-  else icon.textContent = '\u25CF';
+  icon.textContent = state === 'pass' ? '✔' : state === 'fail' ? '✘' : '●';
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// --- Playback Controls ---
+// Monitor: stream line
+
+function renderStream(s) {
+  const line = streamLine(s.stream);
+  const word = $('#stream-word');
+  word.textContent = line.word;
+  word.className = 'stream-word ' + line.level;
+  const reason = $('#stream-reason');
+  reason.textContent = line.reason || '';
+  reason.classList.toggle('hidden', !line.reason);
+
+  const state = s.stream && s.stream.state;
+  $('#btn-stream-start').classList.toggle('hidden', state !== 'stopped' && state !== 'off-air');
+  $('#btn-stream-stop').classList.toggle('hidden', state === 'stopped');
+
+  const tw = twitchLine(s.twitch);
+  const twEl = $('#twitch-line');
+  twEl.textContent = tw.text;
+  twEl.className = 'stream-detail ' + tw.level;
+
+  const enc = s.supervisor && s.supervisor.encoder;
+  let encText = 'Encoder: not running';
+  if (enc && enc.alive) {
+    encText = 'Encoder: running';
+    if (typeof enc.speed === 'number') encText += `, ${enc.speed.toFixed(2)}x speed`;
+    if (enc.restarts) encText += `, ${enc.restarts} restart${enc.restarts === 1 ? '' : 's'}`;
+  }
+  $('#encoder-line').textContent = encText;
+
+  $('#uptime').textContent = 'Uptime: ' + formatDuration(s.uptimeMs);
+}
+
+function renderNowPlaying(s) {
+  const p = (s.supervisor && s.supervisor.playing) || {};
+  const count = s.supervisor && s.supervisor.playlistCount;
+  $('#np-title').textContent = p.title || '-';
+  $('#np-index').textContent = typeof p.index === 'number' ? (count ? `${p.index + 1} of ${count}` : String(p.index + 1)) : '-';
+  const vidEl = $('#np-videoid');
+  vidEl.textContent = '';
+  if (p.id) {
+    const a = document.createElement('a');
+    a.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(p.id);
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = p.id;
+    vidEl.appendChild(a);
+  } else {
+    vidEl.textContent = '-';
+  }
+  $('#np-time').textContent = typeof p.position === 'number'
+    ? `${formatTime(p.position)} / ${p.duration ? formatTime(p.duration) : '--:--:--'}`
+    : '-';
+  $('#np-source').textContent = sourceLabel(p.source);
+  updateVideoListHighlight(typeof p.index === 'number' ? p.index : -1);
+}
+
+// Monitor: stream and player controls
+
+async function runAction(btn, fn) {
+  btn.disabled = true;
+  try {
+    await fn();
+  } catch (err) {
+    showToast(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+  pollOnce();
+}
+
+async function restartStream() {
+  await post('/api/stream/stop');
+  await post('/api/stream/start');
+}
+
+function initMonitorControls() {
+  $('#btn-prev').addEventListener('click', (e) => runAction(e.currentTarget, () => post('/api/player/prev')));
+  $('#btn-next').addEventListener('click', (e) => runAction(e.currentTarget, () => post('/api/player/next')));
+  $('#btn-restart').addEventListener('click', (e) => runAction(e.currentTarget, () => post('/api/player/restart')));
+  $('#btn-stream-start').addEventListener('click', (e) => runAction(e.currentTarget, () => post('/api/stream/start')));
+  $('#btn-stream-stop').addEventListener('click', (e) => {
+    if (!confirm('Stop the stream? The channel goes offline until you start it again.')) return;
+    runAction(e.currentTarget, () => post('/api/stream/stop'));
+  });
+
+  $('#playlist-select').addEventListener('change', (e) => {
+    const playlistIndex = Number(e.target.value);
+    post('/api/playlist/switch', { playlistIndex })
+      .then((r) => {
+        if (!isBenignReloadError(r)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
+        settingsLoaded = false;
+        loadPlaylistSelector();
+        loadVideoList(1);
+      })
+      .catch((err) => showToast(err.message));
+  });
+
+  $('#video-list-body').addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-play');
+    if (btn) runAction(btn, () => post('/api/player/jump', { index: Number(btn.dataset.index) }));
+  });
+
+  $('#video-list-pagination').addEventListener('click', (e) => {
+    const page = e.target.dataset && e.target.dataset.page;
+    if (page) loadVideoList(Number(page));
+  });
+
+  $('#log-refresh').addEventListener('click', loadLogList);
+  $('#log-select').addEventListener('change', (e) => viewLog(e.target.value));
+}
+
+// Monitor: playlist and video list
+
+async function loadPlaylistSelector() {
+  const select = $('#playlist-select');
+  try {
+    const cfg = await api('/api/config');
+    select.innerHTML = '';
+    cfg.playlists.forEach((p, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = p.name || p.id;
+      select.appendChild(opt);
+    });
+    // The first playlist is the one playing; a switch moves the chosen one to the front.
+    select.value = '0';
+  } catch (err) {
+    console.error('Failed to load playlists:', err);
+  }
+}
+
+let lastHighlightedIndex = -1;
 
 async function loadVideoList(page) {
-  videoListPage = page || 1;
-  const loading = document.getElementById('video-list-loading');
-  if (loading) loading.style.display = 'block';
+  const status = $('#video-list-status');
+  status.textContent = 'Loading playlist...';
+  status.classList.remove('hidden');
   try {
-    const data = await api('/api/playlist/videos?page=' + videoListPage + '&perPage=' + VIDEO_LIST_PER_PAGE);
+    const data = await api('/api/playlist/videos?page=' + page + '&perPage=' + VIDEO_LIST_PER_PAGE);
     renderVideoList(data);
   } catch (err) {
-    console.error('Failed to load video list:', err);
-    if (loading) loading.style.display = 'none';
+    $('#video-list-body').innerHTML = '';
+    status.textContent = 'Could not load the playlist: ' + err.message;
   }
 }
 
 function renderVideoList(data) {
-  const tbody = document.getElementById('video-list-body');
-  const loading = document.getElementById('video-list-loading');
-  if (loading) loading.style.display = 'none';
-  if (!tbody) return;
-
+  const tbody = $('#video-list-body');
+  const status = $('#video-list-status');
   tbody.innerHTML = '';
-  data.videos.forEach(function(v) {
+  if (!data.videos.length) {
+    status.textContent = 'This playlist has no videos.';
+  } else {
+    status.classList.add('hidden');
+  }
+  for (const v of data.videos) {
     const tr = document.createElement('tr');
     if (v.index === data.currentIndex) tr.className = 'current';
-    const mins = Math.floor((v.duration || 0) / 60);
-    const secs = Math.floor((v.duration || 0) % 60);
-    const dur = mins + ':' + (secs < 10 ? '0' : '') + secs;
     tr.innerHTML = '<td>' + (v.index + 1) + '</td>' +
       '<td>' + escapeHtml(v.title || 'Untitled') + '</td>' +
-      '<td>' + dur + '</td>' +
-      '<td><button class="btn btn-secondary btn-play" data-index="' + v.index + '">&#9654;</button></td>';
+      '<td>' + (v.duration ? formatTime(v.duration).replace(/^0:/, '') : '-') + '</td>' +
+      '<td><button type="button" class="btn btn-secondary btn-play" data-index="' + v.index + '" aria-label="Play video ' + (v.index + 1) + '">&#9654;</button></td>';
     tbody.appendChild(tr);
-  });
-
-  // Pagination
-  const totalPages = Math.ceil(data.total / data.perPage);
-  const pag = document.getElementById('video-list-pagination');
-  if (!pag) return;
-  if (totalPages <= 1) { pag.innerHTML = ''; return; }
-  let html = '';
-  for (let i = 1; i <= totalPages; i++) {
-    if (i === data.page) {
-      html += '<strong style="margin: 0 4px;">[' + i + ']</strong>';
-    } else {
-      html += '<a href="#" style="margin: 0 4px;" data-page="' + i + '">' + i + '</a>';
-    }
   }
-  pag.innerHTML = html;
-}
+  lastHighlightedIndex = data.currentIndex ?? -1;
 
-var lastHighlightedIndex = -1;
+  const totalPages = Math.ceil(data.total / data.perPage);
+  const pag = $('#video-list-pagination');
+  pag.innerHTML = '';
+  if (totalPages <= 1) return;
+  for (let i = 1; i <= totalPages; i++) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'page-btn' + (i === data.page ? ' current' : '');
+    b.textContent = String(i);
+    b.dataset.page = String(i);
+    if (i === data.page) b.setAttribute('aria-current', 'page');
+    pag.appendChild(b);
+  }
+}
 
 function updateVideoListHighlight(currentIndex) {
   if (currentIndex === lastHighlightedIndex) return;
   lastHighlightedIndex = currentIndex;
-  var tbody = document.getElementById('video-list-body');
-  if (!tbody) return;
-  var rows = tbody.querySelectorAll('tr');
-  rows.forEach(function(tr) {
-    var playBtn = tr.querySelector('.btn-play');
-    if (playBtn && Number(playBtn.dataset.index) === currentIndex) {
-      tr.className = 'current';
-    } else {
-      tr.className = '';
-    }
+  $$('#video-list-body tr').forEach(tr => {
+    const btn = tr.querySelector('.btn-play');
+    tr.className = btn && Number(btn.dataset.index) === currentIndex ? 'current' : '';
   });
 }
 
-function updatePauseButton(status) {
-  var btn = document.getElementById('btn-pause');
-  if (!btn) return;
-  if (status.paused) {
-    btn.innerHTML = '&#9654;'; // play icon
-    btn.title = 'Resume';
-  } else {
-    btn.innerHTML = '&#9208;'; // pause icon
-    btn.title = 'Pause';
-  }
-  // Update stop button state
-  var btnStop = document.getElementById('btn-stop');
-  if (btnStop) {
-    if (status.intentionallyStopped) {
-      btnStop.classList.add('active');
-      btnStop.title = 'Resume playback';
-    } else {
-      btnStop.classList.remove('active');
-      btnStop.title = 'Stop (prevents auto-resume)';
-    }
-  }
-}
-
-function initPlaybackControls() {
-  const btnPrev = document.getElementById('btn-prev');
-  const btnNext = document.getElementById('btn-next');
-  const btnPause = document.getElementById('btn-pause');
-  const playlistSelect = document.getElementById('playlist-select');
-  const videoListBody = document.getElementById('video-list-body');
-  const pagination = document.getElementById('video-list-pagination');
-  const seekBar = document.getElementById('seek-bar');
-
-  const btnStop = document.getElementById('btn-stop');
-
-  if (btnPrev) btnPrev.addEventListener('click', function() { api('/api/player/prev', { method: 'POST' }); });
-  if (btnNext) btnNext.addEventListener('click', function() { api('/api/player/next', { method: 'POST' }); });
-  if (btnPause) btnPause.addEventListener('click', function() { api('/api/player/pause', { method: 'POST' }); });
-  if (btnStop) btnStop.addEventListener('click', function() {
-    var isStopped = btnStop.classList.contains('active');
-    if (isStopped) {
-      api('/api/player/resume', { method: 'POST' });
-      btnStop.classList.remove('active');
-      btnStop.title = 'Stop (prevents auto-resume)';
-    } else {
-      api('/api/player/stop', { method: 'POST' });
-      btnStop.classList.add('active');
-      btnStop.title = 'Resume playback';
-    }
-  });
-
-  const btnRestartMpv = document.getElementById('btn-restart-mpv');
-  if (btnRestartMpv) btnRestartMpv.addEventListener('click', function() {
-    btnRestartMpv.disabled = true;
-    btnRestartMpv.title = 'Restarting...';
-    api('/api/player/restart-mpv', { method: 'POST' }).finally(function() {
-      setTimeout(function() {
-        btnRestartMpv.disabled = false;
-        btnRestartMpv.title = 'Restart mpv';
-      }, 5000);
-    });
-  });
-
-  if (playlistSelect) {
-    playlistSelect.addEventListener('change', function() {
-      const idx = Number(this.value);
-      api('/api/playlist/switch', { method: 'POST', body: JSON.stringify({ playlistIndex: idx }) })
-        .then(function() { loadVideoList(1); });
-    });
-  }
-
-  if (videoListBody) {
-    videoListBody.addEventListener('click', function(e) {
-      const btn = e.target.closest('.btn-play');
-      if (btn) {
-        const index = Number(btn.dataset.index);
-        api('/api/player/jump', { method: 'POST', body: JSON.stringify({ index: index }) });
-      }
-    });
-  }
-
-  if (pagination) {
-    pagination.addEventListener('click', function(e) {
-      if (e.target.dataset && e.target.dataset.page) {
-        e.preventDefault();
-        loadVideoList(Number(e.target.dataset.page));
-      }
-    });
-  }
-
-  if (seekBar) {
-    seekBar.addEventListener('mousedown', function() { seeking = true; });
-    seekBar.addEventListener('mouseup', function() {
-      seeking = false;
-      const seconds = Number(seekBar.value);
-      api('/api/player/seek', { method: 'POST', body: JSON.stringify({ seconds: seconds }) });
-    });
-  }
-
-  loadPlaylistSelector();
-  loadVideoList(1);
-}
-
-async function loadPlaylistSelector() {
-  try {
-    const cfg = await api('/api/config');
-    const select = document.getElementById('playlist-select');
-    if (!select) return;
-    select.innerHTML = '';
-    cfg.playlists.forEach(function(p, i) {
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = p.name || p.id;
-      select.appendChild(opt);
-    });
-    const state = await api('/api/state');
-    select.value = state.playlistIndex || 0;
-  } catch (err) {
-    console.error('Failed to load playlist selector:', err);
-  }
-}
-
-// --- Dashboard polling ---
+// Monitor: polling
 
 function startPolling() {
   pollOnce();
@@ -684,232 +519,93 @@ function startPolling() {
 
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  if (heartbeatCountdownTimer) { clearInterval(heartbeatCountdownTimer); heartbeatCountdownTimer = null; }
 }
 
 async function pollOnce() {
   try {
-    const [status, state, events, updateStatus] = await Promise.all([
+    const [status, events, updateStatus] = await Promise.all([
       api('/api/status'),
-      api('/api/state'),
       api('/api/events'),
       api('/api/update/status').catch(() => null),
     ]);
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
-    renderStatus(status);
-    renderNowPlaying(state, status.totalVideos);
+    renderStream(status);
+    renderNowPlaying(status);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
-
-    // Update seek bar
-    const seekBar = document.getElementById('seek-bar');
-    const seekTime = document.getElementById('seek-time');
-    if (state && seekBar && !seeking) {
-      seekBar.max = Math.floor(state.videoDuration || 0);
-      seekBar.value = Math.floor(state.currentTime || 0);
-    }
-    if (state && seekTime) {
-      seekTime.textContent = formatTime(state.currentTime) + ' / ' + formatTime(state.videoDuration);
-    }
-
-    // Update highlighted row in video list when video changes
-    if (state) {
-      updateVideoListHighlight(state.videoIndex);
-    }
-
-    // Update pause button icon based on mpv state
-    updatePauseButton(status);
   } catch (err) {
     console.error('Poll error:', err);
     pollFailures++;
-    if (pollFailures >= 2) {
-      $('#connection-lost').classList.remove('hidden');
-      const pill = $('#header-pill');
-      pill.textContent = 'Disconnected';
-      pill.className = 'status-pill pill-err';
-    }
+    if (pollFailures >= 2) $('#connection-lost').classList.remove('hidden');
   }
-}
-
-// --- Rendering ---
-
-const RECOVERY_LABELS = {
-  none: 'All Clear',
-  retryCurrent: 'Retrying Video',
-  refreshSource: 'Refreshing Source',
-  toggleVisibility: 'Toggling Source',
-  criticalAlert: 'Critical Alert',
-};
-
-function renderStatus(s) {
-  // Status cards
-  setCard('player-status', s.mpvConnected ? 'Connected' : 'Disconnected', s.mpvConnected ? 'ok' : 'err');
-  const obsLabel = !s.obsConnected ? 'Disconnected' : s.obsStreaming ? 'Streaming' : 'Not Live';
-  const obsLevel = !s.obsConnected ? 'err' : s.obsStreaming ? 'ok' : 'warn';
-  setCard('obs-status', obsLabel, obsLevel);
-  const recoveryLabel = RECOVERY_LABELS[s.recoveryStep] || s.recoveryStep;
-  const recoveryLevel = s.recoveryStep === 'none' ? 'ok' : s.recoveryStep === 'criticalAlert' ? 'err' : 'warn';
-  setCard('recovery-step', recoveryLabel, recoveryLevel);
-  setCard('errors', String(s.consecutiveErrors), s.consecutiveErrors === 0 ? 'ok' : 'warn');
-
-  // Twitch card
-  if (s.twitch && s.twitch.enabled) {
-    const tw = s.twitch;
-    let twitchLabel, twitchLevel;
-    if (tw.channelLive === null) {
-      twitchLabel = 'Checking...';
-      twitchLevel = 'warn';
-    } else if (tw.channelLive) {
-      twitchLabel = 'Live';
-      twitchLevel = 'ok';
-    } else {
-      twitchLabel = 'Offline';
-      twitchLevel = tw.consecutiveMismatches > 0 ? 'err' : 'warn';
-    }
-    if (tw.consecutiveMismatches > 0) {
-      twitchLabel += ` (${tw.consecutiveMismatches}/${tw.mismatchThreshold})`;
-    }
-    setCard('twitch-status', twitchLabel, twitchLevel);
-  } else {
-    setCard('twitch-status', 'Disabled', '');
-  }
-
-  // Header pill
-  const pill = $('#header-pill');
-  if (s.mpvConnected && s.recoveryStep === 'none') {
-    pill.textContent = 'Healthy';
-    pill.className = 'status-pill pill-ok';
-  } else if (s.recoveryStep !== 'none') {
-    pill.textContent = 'Recovering';
-    pill.className = 'status-pill pill-warn';
-  } else {
-    pill.textContent = 'Offline';
-    pill.className = 'status-pill pill-err';
-  }
-
-  // Heartbeat countdown
-  lastHeartbeatAt = s.lastHeartbeatAt;
-  heartbeatIntervalMs = s.heartbeatIntervalMs || 5000;
-  playerConnected = s.mpvConnected;
-  updateHeartbeatPill();
-  if (!heartbeatCountdownTimer) {
-    heartbeatCountdownTimer = setInterval(updateHeartbeatPill, 1000);
-  }
-
-  // Uptime
-  $('#uptime').textContent = 'Uptime: ' + formatDuration(s.uptimeMs);
-
-  // Playlist info in Now Playing
-  if (s.totalPlaylists > 1) {
-    $('#np-playlist').textContent = `${s.playlistIndex + 1} of ${s.totalPlaylists}`;
-  } else {
-    $('#np-playlist').textContent = '1 of 1';
-  }
-}
-
-function updateHeartbeatPill() {
-  const pill = $('#heartbeat-pill');
-  if (!playerConnected) {
-    pill.style.display = 'none';
-    return;
-  }
-  pill.style.display = '';
-  const elapsed = Date.now() - lastHeartbeatAt;
-  const remaining = Math.max(0, heartbeatIntervalMs - elapsed);
-  const seconds = Math.ceil(remaining / 1000);
-  if (remaining > 0) {
-    pill.textContent = `Heartbeat: ${seconds}s`;
-    pill.className = 'status-pill pill-ok';
-  } else {
-    const overdue = Math.round(elapsed / 1000);
-    pill.textContent = `Heartbeat: ${overdue}s ago`;
-    pill.className = elapsed > heartbeatIntervalMs * 3 ? 'status-pill pill-err' : 'status-pill pill-warn';
-  }
-}
-
-function setCard(id, text, cls) {
-  const el = $(`#${id}`);
-  el.textContent = text;
-  el.className = 'card-value ' + cls;
-}
-
-function renderNowPlaying(s, totalVideos) {
-  $('#np-title').textContent = s.videoTitle || '-';
-  $('#np-index').textContent = totalVideos ? `${s.videoIndex + 1} / ${totalVideos}` : `${s.videoIndex + 1}`;
-  const vidEl = $('#np-videoid');
-  if (s.videoId) {
-    vidEl.innerHTML = `<a href="https://www.youtube.com/watch?v=${escapeHtml(s.videoId)}" target="_blank" rel="noopener">${escapeHtml(s.videoId)}</a>`;
-  } else {
-    vidEl.textContent = '-';
-  }
-  const timeStr = formatTime(s.currentTime);
-  const durationStr = s.videoDuration ? formatTime(s.videoDuration) : '--:--:--';
-  $('#np-time').textContent = `${timeStr} / ${durationStr}`;
-  $('#np-updated').textContent = s.updatedAt ? new Date(s.updatedAt).toLocaleTimeString() : '-';
 }
 
 function renderEvents(events) {
   const container = $('#event-log');
+  container.innerHTML = '';
   if (!events.length) {
     container.innerHTML = '<div class="event-empty">No events yet</div>';
     return;
   }
-  // Show newest first
-  const reversed = [...events].reverse();
-  container.innerHTML = reversed.map(e =>
-    `<div class="event-entry"><span class="event-time">${new Date(e.timestamp).toLocaleTimeString()}</span>${escapeHtml(e.message)}</div>`
-  ).join('');
-}
-
-// --- mpv diagnostic logs ---
-
-let mpvLogsInitialized = false;
-
-async function loadMpvLogList() {
-  const select = $('#mpv-log-select');
-  if (!select) return;
-  try {
-    const { files, current } = await api('/api/mpv-logs');
-    if (!files.length) {
-      select.innerHTML = '<option value="">(no mpv log files yet)</option>';
-      $('#mpv-log-view').textContent = 'No mpv log files yet. Wait for mpv to spawn at least once.';
-      return;
-    }
-    const prevSelected = select.value;
-    select.innerHTML = files.map(f => {
-      const label = `${f.name}${f.name === current ? ' (current)' : ''} — ${formatBytes(f.size)} — ${new Date(f.mtime).toLocaleString()}`;
-      return `<option value="${escapeHtml(f.name)}">${escapeHtml(label)}</option>`;
-    }).join('');
-    // Preserve selection if possible; otherwise default to current.
-    const target = files.find(f => f.name === prevSelected) ? prevSelected
-      : (current && files.find(f => f.name === current) ? current : files[0].name);
-    select.value = target;
-    await viewMpvLog(target);
-  } catch (err) {
-    select.innerHTML = '<option value="">(failed to load)</option>';
-    $('#mpv-log-view').textContent = `Failed to list mpv logs: ${err.message}`;
+  for (const e of [...events].reverse()) {
+    const row = document.createElement('div');
+    row.className = 'event-entry';
+    const time = document.createElement('span');
+    time.className = 'event-time';
+    time.textContent = new Date(e.timestamp).toLocaleTimeString();
+    row.append(time, document.createTextNode(e.message));
+    container.appendChild(row);
   }
 }
 
-async function viewMpvLog(filename) {
-  const view = $('#mpv-log-view');
-  if (!filename) {
+// Monitor: logs
+
+async function loadLogList() {
+  const select = $('#log-select');
+  const view = $('#log-view');
+  try {
+    const files = await api('/api/logs');
+    if (!files.length) {
+      select.innerHTML = '<option value="">(no log files yet)</option>';
+      view.textContent = 'No log files yet.';
+      return;
+    }
+    const prev = select.value;
+    select.innerHTML = '';
+    for (const f of files) {
+      const opt = document.createElement('option');
+      opt.value = f.source + '/' + f.name;
+      opt.textContent = `${f.source}: ${f.name} (${formatBytes(f.size)}, ${new Date(f.mtime).toLocaleString()})`;
+      select.appendChild(opt);
+    }
+    select.value = files.some(f => f.source + '/' + f.name === prev) ? prev : select.options[0].value;
+    await viewLog(select.value);
+  } catch (err) {
+    select.innerHTML = '<option value="">(could not load)</option>';
+    view.textContent = 'Could not list the log files: ' + err.message;
+  }
+}
+
+async function viewLog(value) {
+  const view = $('#log-view');
+  if (!value) {
     view.textContent = 'Select a log file to view.';
     return;
   }
-  view.textContent = 'Loading…';
+  const [source, name] = value.split('/');
+  view.textContent = 'Loading...';
   try {
-    const res = await fetch(`/api/mpv-logs/${encodeURIComponent(filename)}`, {
-      headers: apiToken ? { 'X-API-Token': apiToken } : {},
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    view.textContent = text || '(empty)';
-    // Scroll to bottom — yt-dlp errors are usually at the tail.
+    const res = await fetch(`/api/logs/${encodeURIComponent(source)}/${encodeURIComponent(name)}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    view.textContent = (await res.text()) || '(empty)';
+    // Errors are usually at the end.
     view.scrollTop = view.scrollHeight;
   } catch (err) {
-    view.textContent = `Failed to load log: ${err.message}`;
+    view.textContent = 'Could not load the log: ' + err.message;
   }
 }
 
@@ -919,15 +615,7 @@ function formatBytes(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function initMpvLogs() {
-  if (mpvLogsInitialized) return;
-  mpvLogsInitialized = true;
-  $('#mpv-log-refresh').addEventListener('click', loadMpvLogList);
-  $('#mpv-log-select').addEventListener('change', (e) => viewMpvLog(e.target.value));
-  loadMpvLogList();
-}
-
-// --- Settings tab ---
+// Settings tab
 
 let settingsLoaded = false;
 
@@ -935,250 +623,285 @@ async function loadSettings() {
   if (settingsLoaded) return;
   try {
     const cfg = await api('/api/config');
-    const container = $('#set-playlists-list');
-    container.innerHTML = '';
-    (cfg.playlists || []).forEach(p => addSetPlaylist(p.id, p.name || ''));
-    $('#set-source').value = cfg.obsBrowserSourceName;
-    $('#set-obs-pass').value = cfg.obsWebsocketPassword;
-    $('#obs-restart-toggle').checked = cfg.obsAutoRestart || false;
-    $('#obs-stream-toggle').checked = cfg.obsAutoStream || false;
-    $('#set-obs-path').value = cfg.obsPath || '';
+    $('#set-playlists-list').innerHTML = '';
+    (cfg.playlists || []).forEach(p => addPlaylistRow('#set-playlists-list', p.id, p.name));
+    $('#set-ingest').value = cfg.supervisor.ingestUrl || '';
+    renderStreamKeyState(cfg.supervisor.streamKeySet === true);
     $('#twitch-enabled-toggle').checked = cfg.twitchLivenessEnabled || false;
     $('#set-twitch-client-id').value = cfg.twitchClientId || '';
     $('#set-twitch-client-secret').value = cfg.twitchClientSecret || '';
     $('#set-twitch-channel').value = cfg.twitchChannel || '';
+    $('#auto-open-toggle').checked = cfg.autoOpenAdmin !== false;
     settingsLoaded = true;
   } catch (err) {
-    console.error('Failed to load settings:', err);
+    showToast('Could not load settings: ' + err.message);
+  }
+}
+
+function renderStreamKeyState(isSet) {
+  $('#set-stream-key-state').textContent = isSet ? 'A stream key is set.' : 'No stream key is set. The stream cannot start without one.';
+  $('#set-stream-key-btn').textContent = isSet ? 'Replace' : 'Set';
+  $('#set-stream-key').placeholder = isSet ? 'Paste a new key to replace it' : 'Paste your Twitch stream key';
+}
+
+async function handleStreamKeySet() {
+  const input = $('#set-stream-key');
+  const btn = $('#set-stream-key-btn');
+  if (!input.value.trim()) {
+    showToast('Paste the stream key first.');
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await post('/api/stream-key', { key: input.value });
+    input.value = '';
+    renderStreamKeyState(true);
+    showToast('Stream key saved.', 'success');
+  } catch (err) {
+    showToast('Could not save the stream key: ' + err.message);
+  } finally {
+    btn.disabled = false;
   }
 }
 
 async function handleSettingsSave() {
   const playlists = collectPlaylists('#set-playlists-list');
-  if (playlists === null) return; // validation error already shown
+  if (playlists === null) return;
   if (playlists.length === 0) {
     showToast('Add at least one playlist.');
     return;
   }
+  const btn = $('#set-btn');
   const body = {
     playlists,
-    obsBrowserSourceName: $('#set-source').value.trim(),
-    obsWebsocketPassword: $('#set-obs-pass').value,
-    obsAutoRestart: $('#obs-restart-toggle').checked,
-    obsAutoStream: $('#obs-stream-toggle').checked,
-    obsPath: $('#set-obs-path').value.trim(),
+    supervisor: withoutBlanks({ ingestUrl: $('#set-ingest').value.trim() }),
     twitchLivenessEnabled: $('#twitch-enabled-toggle').checked,
     twitchClientId: $('#set-twitch-client-id').value.trim(),
     twitchClientSecret: $('#set-twitch-client-secret').value,
     twitchChannel: $('#set-twitch-channel').value.trim(),
   };
-
   try {
-    $('#set-btn').disabled = true;
-    $('#set-btn').textContent = 'Saving...';
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    $('#set-btn').textContent = 'Saved!';
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    const r = await saveConfig(body);
+    btn.textContent = 'Saved';
+    if (r.restartRequired) $('#set-restart-note').classList.remove('hidden');
     settingsLoaded = false;
-    setTimeout(() => { $('#set-btn').textContent = 'Save Settings'; $('#set-btn').disabled = false; }, 1500);
+    loadSettings();
+    loadPlaylistSelector();
+    loadVideoList(1);
   } catch (err) {
-    showToast('Failed to save: ' + err.message);
-    $('#set-btn').textContent = 'Save Settings';
-    $('#set-btn').disabled = false;
+    showToast('Could not save: ' + err.message);
   }
+  setTimeout(() => { btn.textContent = 'Save Settings'; btn.disabled = false; }, 1500);
 }
 
-// --- OBS path helpers ---
-
-async function detectObsPath() {
-  const resultEl = $('#obs-path-result');
-  resultEl.textContent = 'Searching...';
-  resultEl.className = 'obs-path-result';
-  try {
-    const res = await api('/api/obs-path/detect', { method: 'POST' });
-    if (res.found) {
-      $('#set-obs-path').value = res.path;
-      resultEl.textContent = 'Found: ' + res.path;
-      resultEl.className = 'obs-path-result valid';
-    } else {
-      resultEl.textContent = 'OBS not found in default locations. Enter the path manually.';
-      resultEl.className = 'obs-path-result invalid';
-    }
-  } catch {
-    resultEl.textContent = 'Detection failed.';
-    resultEl.className = 'obs-path-result invalid';
-  }
+function copyRedirectUrl(btn) {
+  navigator.clipboard.writeText('https://localhost').then(() => {
+    const original = btn.textContent;
+    btn.textContent = 'Copied';
+    btn.classList.add('btn-copied');
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove('btn-copied');
+    }, 2000);
+  }).catch(() => showToast('Copy failed. Select the text and press Ctrl+C.'));
 }
 
-async function validateObsPath() {
-  const path = $('#set-obs-path').value.trim();
-  const resultEl = $('#obs-path-result');
-  if (!path) {
-    resultEl.textContent = 'No path entered. Auto-detect will be used.';
-    resultEl.className = 'obs-path-result';
-    return;
-  }
-  resultEl.textContent = 'Checking...';
-  resultEl.className = 'obs-path-result';
-  try {
-    const res = await api('/api/obs-path/validate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    });
-    if (res.valid) {
-      resultEl.textContent = 'Path is valid!';
-      resultEl.className = 'obs-path-result valid';
-      $('#set-obs-path').classList.remove('invalid');
-    } else {
-      resultEl.textContent = res.error;
-      resultEl.className = 'obs-path-result invalid';
-      $('#set-obs-path').classList.add('invalid');
-    }
-  } catch {
-    resultEl.textContent = 'Validation failed.';
-    resultEl.className = 'obs-path-result invalid';
-  }
-}
-
-// --- Autostart ---
+// Autostart
 
 async function loadAutostart() {
   try {
     const { enabled } = await api('/api/autostart');
     $('#autostart-toggle').checked = enabled;
   } catch {
-    // ignore
+    // Leaves the toggle off; changing it reports any error.
   }
 }
 
 async function handleAutostartToggle() {
   const enabled = $('#autostart-toggle').checked;
   try {
-    await api('/api/autostart', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
+    await post('/api/autostart', { enabled });
   } catch (err) {
-    showToast('Failed to set autostart: ' + err.message);
+    showToast('Could not change autostart: ' + err.message);
     $('#autostart-toggle').checked = !enabled;
   }
 }
 
-// --- Webhooks tab ---
+async function handleAutoOpenToggle() {
+  const input = $('#auto-open-toggle');
+  try {
+    await saveConfig({ autoOpenAdmin: input.checked });
+  } catch (err) {
+    showToast('Could not change the setting: ' + err.message);
+    input.checked = !input.checked;
+  }
+}
+
+// Playback tab
+
+let playbackSettingsLoaded = false;
+
+const PLAYBACK_FIELDS = [
+  { id: '#pb-read-ahead', key: 'readAheadSeconds', min: 2, label: 'Read-ahead' },
+  { id: '#pb-cache', key: 'cacheBudgetMb', min: 50, label: 'Download cache', integer: true },
+  { id: '#pb-freeze', key: 'freezeSeconds', min: 5, label: 'Frozen picture' },
+  { id: '#pb-silence', key: 'silenceSeconds', min: 5, label: 'Silence' },
+];
+
+async function loadPlaybackSettings() {
+  if (playbackSettingsLoaded) return;
+  try {
+    const { supervisor, ytdlCookiesFromBrowser } = await api('/api/config');
+    $('#pb-encoder').value = supervisor.encoder;
+    $('#pb-ytdl-cookies').value = ytdlCookiesFromBrowser || '';
+    $('#pb-overlay').checked = supervisor.overlay !== false;
+    $('#pb-player-client').value = supervisor.playerClient || '';
+    for (const f of PLAYBACK_FIELDS) $(f.id).value = String(supervisor[f.key]);
+    playbackSettingsLoaded = true;
+  } catch (err) {
+    showToast('Could not load playback settings: ' + err.message);
+  }
+}
+
+async function handlePlaybackSave() {
+  const btn = $('#pb-save-btn');
+  const supervisor = withoutBlanks({
+    encoder: $('#pb-encoder').value,
+    overlay: $('#pb-overlay').checked,
+    playerClient: $('#pb-player-client').value.trim(),
+  });
+  for (const f of PLAYBACK_FIELDS) {
+    const input = $(f.id);
+    const n = Number(input.value);
+    if (input.value === '' || !Number.isFinite(n) || n < f.min || (f.integer && !Number.isInteger(n))) {
+      input.classList.add('invalid');
+      showToast(`${f.label} must be ${f.integer ? 'a whole number, ' : ''}at least ${f.min}.`);
+      return;
+    }
+    input.classList.remove('invalid');
+    supervisor[f.key] = n;
+  }
+  try {
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    // Blank cookies is a real value (none), so it is sent as is.
+    const r = await saveConfig({ supervisor, ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim() });
+    btn.textContent = 'Saved';
+    if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
+    playbackSettingsLoaded = false;
+    loadPlaybackSettings();
+  } catch (err) {
+    showToast('Could not save: ' + err.message);
+  }
+  setTimeout(() => { btn.textContent = 'Save Playback Settings'; btn.disabled = false; }, 1500);
+}
+
+// Webhooks tab
 
 let webhookDefaults = null;
 let webhookSettingsLoaded = false;
 
-const EVENT_LABELS = {
-  error: 'Playback Error',
-  skip: 'Video Skip',
-  recovery: 'Recovery Action',
-  critical: 'Critical Alert',
-  resume: 'Playback Resumed',
-  obsDisconnect: 'OBS Disconnected',
-  obsReconnect: 'OBS Reconnected',
-  streamDrop: 'Stream Dropped',
-  streamRestart: 'Stream Restarted',
-  twitchMismatch: 'Twitch Mismatch',
-  twitchRestart: 'Twitch Restarted',
+// Labels for the known events; an event the server adds later shows under its key.
+const EVENT_INFO = {
+  error: ['Video Errors', 'A video failed and is being retried', 'warn'],
+  skip: ['Video Skips', 'A video was skipped after repeated failures', 'warn'],
+  recovery: ['Recovery', 'The supervisor is answering again after being down', 'info'],
+  critical: ['Critical Alerts', 'The stream cannot recover by itself and needs you', 'error'],
+  resume: ['Playback Resumed', 'The stream resumed a video after a restart', 'info'],
+  streamDrop: ['Encoder Stopped', 'The encoder stopped and is restarting', 'warn'],
+  streamRestart: ['Encoder Restarted', 'The encoder is running again after stopping', 'info'],
+  outputFrozen: ['Frozen or Silent Output', 'The picture froze or the audio went silent', 'warn'],
+  twitchMismatch: ['Twitch Mismatch', 'The encoder runs but the channel is offline or frozen on Twitch', 'warn'],
+  twitchRestart: ['Twitch Restarted', 'The stream restarted after a Twitch mismatch', 'info'],
 };
 
-const EVENT_LEVELS = {
-  error: 'warn',
-  skip: 'warn',
-  recovery: 'warn',
-  critical: 'error',
-  resume: 'info',
-  obsDisconnect: 'warn',
-  obsReconnect: 'info',
-  streamDrop: 'warn',
-  streamRestart: 'info',
-  twitchMismatch: 'warn',
-  twitchRestart: 'info',
+const SAMPLE_VARS = {
+  videoIndex: 3, videoId: 'dQw4w9WgXcQ', errorCode: 'early-eof', attempt: 2, reason: 'unavailable: Video unavailable',
+  step: 'Supervisor answering again', message: 'The encoder has stopped 3 times in a row.', maxAttempts: 3, attempts: 1,
+  kind: 'freeze', channel: 'mychannel',
 };
 
-const PREVIEW_SAMPLE_VARS = {
-  error: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', errorCode: 'HTTP error 403', attempt: 2 },
-  skip: { videoIndex: 3, videoId: 'dQw4w9WgXcQ', reason: 'Error 150 (unavailable/not embeddable)' },
-  recovery: { step: 'refreshSource' },
-  critical: { message: 'All recovery steps exhausted. Player may be unresponsive.' },
-  resume: { videoIndex: 4, videoId: 'abc123def' },
-  obsDisconnect: {},
-  obsReconnect: {},
-  streamDrop: { attempt: 1, maxAttempts: 5 },
-  streamRestart: { attempts: 2 },
-  twitchMismatch: { channel: 'mychannel' },
-  twitchRestart: { channel: 'mychannel' },
-};
+function eventInfo(key) {
+  return EVENT_INFO[key] || [key, '', 'info'];
+}
 
 async function loadWebhookSettings() {
   if (webhookSettingsLoaded) return;
   try {
-    const [cfg, defaults] = await Promise.all([
-      api('/api/config'),
-      api('/api/discord/defaults'),
-    ]);
+    const [cfg, defaults] = await Promise.all([api('/api/config'), api('/api/discord/defaults')]);
     webhookDefaults = defaults;
     const discord = cfg.discord || {};
+    const keys = Object.keys(defaults.templates);
 
-    // Identity
     $('#wh-url').value = discord.webhookUrl === '********' ? '' : (discord.webhookUrl || '');
-    if (discord.webhookUrl === '********') {
-      $('#wh-url').placeholder = 'Webhook configured (leave blank to keep)';
-    }
+    $('#wh-url').placeholder = discord.webhookUrl === '********' ? 'Webhook set (leave blank to keep it)' : 'https://discord.com/api/webhooks/...';
     $('#wh-bot-name').value = discord.botName || '';
     $('#wh-avatar-url').value = discord.avatarUrl || '';
     $('#wh-role-ping').value = discord.rolePing || '';
 
-    // Events
-    const events = discord.events || {};
-    for (const key of Object.keys(EVENT_LABELS)) {
-      const el = $(`#wh-evt-${key}`);
-      if (el) el.checked = events[key] !== false;
+    buildEventToggles(keys, discord.events || {});
+    buildTemplateEditors(keys, defaults, discord.templates || {});
+    const select = $('#wh-preview-select');
+    const prev = select.value;
+    select.innerHTML = '';
+    for (const key of keys) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = eventInfo(key)[0];
+      select.appendChild(opt);
     }
-
-    // Templates
-    const templates = discord.templates || {};
-    buildTemplateEditors(defaults.templates, defaults.variables, templates);
-
-    // Preview
+    if (keys.includes(prev)) select.value = prev;
     updatePreview();
     webhookSettingsLoaded = true;
   } catch (err) {
-    console.error('Failed to load webhook settings:', err);
+    $('#wh-events-container').textContent = 'Could not load webhook settings: ' + err.message;
   }
 }
 
-function buildTemplateEditors(defaults, variables, current) {
+function buildEventToggles(keys, events) {
+  const container = $('#wh-events-container');
+  container.innerHTML = '';
+  for (const key of keys) {
+    const [label, desc] = eventInfo(key);
+    const row = document.createElement('div');
+    row.className = 'wh-toggle';
+    row.innerHTML =
+      `<div><div class="toggle-label">${escapeHtml(label)}</div><div class="toggle-desc">${escapeHtml(desc)}</div></div>` +
+      `<label class="toggle"><input type="checkbox" id="wh-evt-${escapeHtml(key)}" aria-label="${escapeHtml(label)}"><span class="toggle-slider"></span></label>`;
+    row.querySelector('input').checked = events[key] !== false;
+    container.appendChild(row);
+  }
+}
+
+function buildTemplateEditors(keys, defaults, current) {
   const container = $('#wh-templates-container');
   container.innerHTML = '';
-  for (const [key, label] of Object.entries(EVENT_LABELS)) {
+  for (const key of keys) {
     const group = document.createElement('div');
     group.className = 'wh-template-group';
 
     const header = document.createElement('div');
     header.className = 'wh-template-header';
-    header.innerHTML = `<span class="wh-template-label">${escapeHtml(label)}</span>`;
+    const label = document.createElement('span');
+    label.className = 'wh-template-label';
+    label.textContent = eventInfo(key)[0];
     const resetBtn = document.createElement('button');
     resetBtn.type = 'button';
     resetBtn.className = 'btn-reset';
     resetBtn.textContent = 'Reset';
     resetBtn.addEventListener('click', () => resetTemplate(key));
-    header.appendChild(resetBtn);
+    header.append(label, resetBtn);
     group.appendChild(header);
 
-    // Variable chips
-    const vars = variables[key] || [];
+    const vars = defaults.variables[key] || [];
     if (vars.length > 0) {
       const chipsRow = document.createElement('div');
       chipsRow.className = 'wh-chips';
       for (const v of vars) {
-        const chip = document.createElement('span');
+        const chip = document.createElement('button');
+        chip.type = 'button';
         chip.className = 'wh-chip';
         chip.textContent = `{${v}}`;
         chip.addEventListener('click', () => insertVariable(key, v));
@@ -1187,13 +910,13 @@ function buildTemplateEditors(defaults, variables, current) {
       group.appendChild(chipsRow);
     }
 
-    // Textarea
     const textarea = document.createElement('textarea');
     textarea.className = 'wh-template-input';
     textarea.id = `wh-tpl-${key}`;
-    textarea.value = current[key] || defaults[key] || '';
+    textarea.setAttribute('aria-label', eventInfo(key)[0] + ' template');
+    textarea.value = current[key] || defaults.templates[key] || '';
     textarea.rows = 2;
-    textarea.addEventListener('input', () => updatePreview());
+    textarea.addEventListener('input', updatePreview);
     group.appendChild(textarea);
 
     container.appendChild(group);
@@ -1201,77 +924,37 @@ function buildTemplateEditors(defaults, variables, current) {
 }
 
 function insertVariable(eventType, varName) {
-  const textarea = $(`#wh-tpl-${eventType}`);
+  const textarea = document.getElementById(`wh-tpl-${eventType}`);
   if (!textarea) return;
   const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  const text = textarea.value;
   const insert = `{${varName}}`;
-  textarea.value = text.substring(0, start) + insert + text.substring(end);
+  textarea.value = textarea.value.substring(0, start) + insert + textarea.value.substring(textarea.selectionEnd);
   textarea.selectionStart = textarea.selectionEnd = start + insert.length;
   textarea.focus();
   updatePreview();
 }
 
 function resetTemplate(eventType) {
-  if (!webhookDefaults) return;
-  const textarea = $(`#wh-tpl-${eventType}`);
-  if (textarea) {
-    textarea.value = webhookDefaults.templates[eventType] || '';
-    updatePreview();
-  }
+  const textarea = document.getElementById(`wh-tpl-${eventType}`);
+  if (!webhookDefaults || !textarea) return;
+  textarea.value = webhookDefaults.templates[eventType] || '';
+  updatePreview();
 }
 
 function updatePreview() {
-  const selectEl = $('#wh-preview-select');
-  if (!selectEl) return;
-  const eventType = selectEl.value;
-  const level = EVENT_LEVELS[eventType] || 'info';
-  const emoji = { info: '\u2139\uFE0F', warn: '\u26A0\uFE0F', error: '\uD83D\uDEA8' };
+  const eventType = $('#wh-preview-select').value;
+  if (!eventType) return;
+  const level = eventInfo(eventType)[2];
+  const emoji = { info: 'ℹ️', warn: '⚠️', error: '🚨' };
   const colors = { info: '#3498db', warn: '#f1c40f', error: '#e74c3c' };
-
-  // Get template
-  const textarea = $(`#wh-tpl-${eventType}`);
+  const textarea = document.getElementById(`wh-tpl-${eventType}`);
   const template = textarea ? textarea.value : '';
-  const vars = PREVIEW_SAMPLE_VARS[eventType] || {};
+  const rendered = template.replace(/\{(\w+)\}/g, (match, key) => (key in SAMPLE_VARS ? String(SAMPLE_VARS[key]) : match));
 
-  // Render template
-  const rendered = template.replace(/\{(\w+)\}/g, (match, key) => {
-    return key in vars ? String(vars[key]) : match;
-  });
-
-  // Bot name
-  const botName = $('#wh-bot-name') ? $('#wh-bot-name').value.trim() : '';
-  const titleName = botName || 'StreamLoop';
-
-  // Update preview elements
+  // Discord's embed title is always StreamLoop; the bot name sets the sender, and notifyEvent sends no fields.
   $('#wh-preview-bar').style.background = colors[level];
-  $('#wh-preview-title').textContent = `${emoji[level]} ${titleName}`;
+  $('#wh-preview-title').textContent = `${emoji[level]} StreamLoop`;
   $('#wh-preview-desc').textContent = rendered;
-
-  // Fields for error/critical
-  const fieldsContainer = $('#wh-preview-fields');
-  fieldsContainer.innerHTML = '';
-  if (eventType === 'error') {
-    const fieldData = [
-      { name: 'Reason', value: String(vars.errorCode || '') },
-      { name: 'Video', value: `#${vars.videoIndex} (${vars.videoId})` },
-      { name: 'Attempt', value: String(vars.attempt || '') },
-    ];
-    for (const f of fieldData) {
-      const fieldEl = document.createElement('div');
-      fieldEl.innerHTML = `<div class="wh-preview-field-name">${escapeHtml(f.name)}</div><div class="wh-preview-field-value">${escapeHtml(f.value)}</div>`;
-      fieldsContainer.appendChild(fieldEl);
-    }
-  } else if (eventType === 'critical') {
-    const fieldEl = document.createElement('div');
-    fieldEl.style.gridColumn = '1 / -1';
-    fieldEl.innerHTML = `<div class="wh-preview-field-name">Status</div><div class="wh-preview-field-value">${escapeHtml(String(vars.message || ''))}</div>`;
-    fieldsContainer.appendChild(fieldEl);
-  }
-
-  // Footer
-  $('#wh-preview-footer').textContent = `Dashboard: http://localhost:7654/admin | Uptime: 2h 15m | v1.0.0`;
 }
 
 async function handleWebhookSave() {
@@ -1284,101 +967,39 @@ async function handleWebhookSave() {
     events: {},
     templates: {},
   };
-
-  for (const key of Object.keys(EVENT_LABELS)) {
-    const el = $(`#wh-evt-${key}`);
+  for (const key of Object.keys((webhookDefaults && webhookDefaults.templates) || {})) {
+    const el = document.getElementById(`wh-evt-${key}`);
     if (el) discord.events[key] = el.checked;
-    const tpl = $(`#wh-tpl-${key}`);
+    const tpl = document.getElementById(`wh-tpl-${key}`);
     if (tpl) discord.templates[key] = tpl.value;
   }
-
   try {
     btn.disabled = true;
     btn.textContent = 'Saving...';
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ discord }),
-    });
-    btn.textContent = 'Saved!';
+    await saveConfig({ discord });
+    btn.textContent = 'Saved';
     webhookSettingsLoaded = false;
-    setTimeout(() => { btn.textContent = 'Save Webhook Settings'; btn.disabled = false; }, 1500);
   } catch (err) {
-    showToast('Failed to save: ' + err.message);
-    btn.textContent = 'Save Webhook Settings';
-    btn.disabled = false;
+    showToast('Could not save: ' + err.message);
   }
+  setTimeout(() => { btn.textContent = 'Save Webhook Settings'; btn.disabled = false; }, 1500);
 }
 
 async function testDiscordWebhook() {
   const resultEl = $('#wh-test-result');
-  resultEl.style.display = 'block';
-  resultEl.textContent = 'Sending test message...';
-  resultEl.className = 'obs-path-result';
+  resultEl.classList.remove('hidden', 'valid', 'invalid');
+  resultEl.textContent = 'Sending a test message...';
   try {
-    await api('/api/discord/test', { method: 'POST' });
-    resultEl.textContent = 'Test message sent! Check your Discord channel.';
-    resultEl.className = 'obs-path-result valid';
+    await post('/api/discord/test');
+    resultEl.textContent = 'Test message sent. Check your Discord channel.';
+    resultEl.classList.add('valid');
   } catch (err) {
-    resultEl.textContent = err.message || 'Failed to send test message.';
-    resultEl.className = 'obs-path-result invalid';
+    resultEl.textContent = err.message || 'Could not send the test message.';
+    resultEl.classList.add('invalid');
   }
 }
 
-// --- Playback tab ---
-
-let playbackSettingsLoaded = false;
-
-async function loadPlaybackSettings() {
-  if (playbackSettingsLoaded) return;
-  try {
-    const cfg = await api('/api/config');
-    $('#pb-recovery-delay').value = String(cfg.recoveryDelayMs || 5000);
-    $('#pb-max-errors').value = String(cfg.maxConsecutiveErrors || 3);
-    $('#pb-output-toggle').checked = cfg.outputCheckEnabled !== false;
-    $('#pb-output-window').value = String(cfg.outputFreezeWindowMs || 30000);
-    // ?? not ||: 0 (disabled) is a valid value that must not fall back to the default.
-    $('#pb-url-refresh').value = String(cfg.proactiveUrlRefreshMs ?? 19800000);
-    $('#pb-refresh-interval').value = String(cfg.sourceRefreshIntervalMs || 0);
-    $('#pb-ytdl-cookies').value = cfg.ytdlCookiesFromBrowser || '';
-    $('#pb-ytdl-player-client').value = cfg.ytdlPlayerClient ?? '';
-    playbackSettingsLoaded = true;
-  } catch (err) {
-    console.error('Failed to load playback settings:', err);
-  }
-}
-
-async function handlePlaybackSave() {
-  const btn = $('#pb-save-btn');
-  const body = {
-    recoveryDelayMs: Number($('#pb-recovery-delay').value),
-    maxConsecutiveErrors: Number($('#pb-max-errors').value),
-    outputCheckEnabled: $('#pb-output-toggle').checked,
-    outputFreezeWindowMs: Number($('#pb-output-window').value),
-    proactiveUrlRefreshMs: Number($('#pb-url-refresh').value),
-    sourceRefreshIntervalMs: Number($('#pb-refresh-interval').value),
-    ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim(),
-    ytdlPlayerClient: $('#pb-ytdl-player-client').value.trim(),
-  };
-  try {
-    btn.disabled = true;
-    btn.textContent = 'Saving...';
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    btn.textContent = 'Saved!';
-    playbackSettingsLoaded = false;
-    setTimeout(() => { btn.textContent = 'Save Playback Settings'; btn.disabled = false; }, 1500);
-  } catch (err) {
-    showToast('Failed to save: ' + err.message);
-    btn.textContent = 'Save Playback Settings';
-    btn.disabled = false;
-  }
-}
-
-// --- Tab switching ---
+// Tab switching
 
 function switchTab(tabName) {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
@@ -1388,7 +1009,7 @@ function switchTab(tabName) {
   if (tabName === 'playback') loadPlaybackSettings();
 }
 
-// --- Helpers ---
+// Helpers
 
 function formatDuration(ms) {
   const s = Math.floor(ms / 1000);
@@ -1399,46 +1020,39 @@ function formatDuration(ms) {
   return `${s}s`;
 }
 
-function formatTime(seconds) {
-  if (!seconds) return '0:00:00';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+/** Drops blank strings, so the server keeps the saved value instead of storing ''. */
+function withoutBlanks(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== ''));
 }
 
 function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str;
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 
 function showToast(message, type = 'error') {
-  const container = $('#toast-container');
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
   toast.textContent = message;
-  container.appendChild(toast);
+  $('#toast-container').appendChild(toast);
   setTimeout(() => {
     toast.style.opacity = '0';
     setTimeout(() => toast.remove(), 200);
   }, 4000);
 }
 
-// --- Update banner ---
+// Updates
 
 function renderUpdateBanner(status) {
   const banner = $('#update-banner');
   const text = $('#update-banner-text');
   const btn = $('#update-btn');
-
   if (!status.updateAvailable) {
     banner.classList.add('hidden');
     return;
   }
-
   banner.classList.remove('hidden');
-
   if (status.status === 'downloading') {
     text.textContent = `Downloading v${status.latestVersion}...`;
     btn.disabled = true;
@@ -1448,7 +1062,7 @@ function renderUpdateBanner(status) {
     btn.disabled = true;
     btn.textContent = 'Installing...';
   } else if (status.status === 'ready') {
-    text.textContent = 'Update installed, restarting...';
+    text.textContent = 'Update installed. Restarting...';
     btn.disabled = true;
     btn.textContent = 'Restarting...';
   } else if (status.status === 'error') {
@@ -1457,9 +1071,8 @@ function renderUpdateBanner(status) {
     btn.textContent = 'Retry';
   } else {
     text.textContent = `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
-    btn.disabled = false;
     btn.textContent = status.isDevMode ? 'Dev Mode' : 'Update Now';
-    if (status.isDevMode) btn.disabled = true;
+    btn.disabled = !!status.isDevMode;
   }
 }
 
@@ -1467,10 +1080,8 @@ async function handleUpdate() {
   const btn = $('#update-btn');
   btn.disabled = true;
   btn.textContent = 'Starting...';
-
   try {
-    await api('/api/update/apply', { method: 'POST' });
-    // Server responds immediately; poll status for progress
+    await post('/api/update/apply');
     pollUpdateProgress();
   } catch (err) {
     showToast('Update failed: ' + err.message);
@@ -1484,18 +1095,13 @@ async function pollUpdateProgress() {
     const status = await api('/api/update/status');
     renderUpdateBanner(status);
     if (status.status === 'ready') {
-      // Server is about to restart — wait for it to come back
       setTimeout(waitForRestart, 3000);
       return;
     }
-    if (status.status === 'error') {
-      // renderUpdateBanner already shows the error and Retry button
-      return;
-    }
-    // Still downloading/extracting — keep polling
+    if (status.status === 'error') return;
     setTimeout(pollUpdateProgress, 1500);
   } catch {
-    // Server went down (restarting) — switch to restart polling
+    // The server went down to restart.
     setTimeout(waitForRestart, 2000);
   }
 }
@@ -1504,20 +1110,18 @@ let restartAttempts = 0;
 async function waitForRestart() {
   restartAttempts++;
   if (restartAttempts > 30) {
-    // 60 seconds of retries — give up
-    showToast('Server did not come back after update. Check the console window for errors.');
+    showToast('The server did not come back after the update. Check the StreamLoop window for errors.');
     const btn = $('#update-btn');
-    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    btn.disabled = false;
+    btn.textContent = 'Retry';
     restartAttempts = 0;
     return;
   }
   try {
     await api('/api/status');
-    // Server is back, reload page
     restartAttempts = 0;
     window.location.reload();
   } catch {
-    // Server still restarting, try again
     setTimeout(waitForRestart, 2000);
   }
 }
@@ -1528,23 +1132,19 @@ async function handleCheckUpdate() {
   btn.disabled = true;
   btn.textContent = 'Checking...';
   result.textContent = '';
-
   try {
-    const status = await api('/api/update/check', { method: 'POST' });
+    const status = await post('/api/update/check');
     const settingsBtn = $('#settings-update-btn');
     if (status.updateAvailable) {
-      result.textContent = `v${status.latestVersion} available!`;
-      result.style.color = 'var(--accent)';
-      if (settingsBtn && !status.isDevMode) settingsBtn.classList.remove('hidden');
+      result.textContent = `v${status.latestVersion} is available`;
+      settingsBtn.classList.toggle('hidden', !!status.isDevMode);
       renderUpdateBanner(status);
     } else {
       result.textContent = `Up to date (v${status.currentVersion})`;
-      result.style.color = 'var(--text-muted)';
-      if (settingsBtn) settingsBtn.classList.add('hidden');
+      settingsBtn.classList.add('hidden');
     }
   } catch (err) {
     result.textContent = 'Check failed: ' + err.message;
-    result.style.color = 'var(--red)';
   }
   btn.textContent = 'Check for Updates';
   btn.disabled = false;
@@ -1556,71 +1156,61 @@ async function handleYtdlpUpdate() {
   btn.disabled = true;
   btn.textContent = 'Updating...';
   result.textContent = '';
-
   try {
-    const res = await api('/api/yt-dlp/update', { method: 'POST' });
-    result.textContent = `Updated — yt-dlp ${res.version}`;
-    result.style.color = 'var(--accent)';
+    const res = await post('/api/yt-dlp/update');
+    result.textContent = `Updated to yt-dlp ${res.version}`;
   } catch (err) {
     result.textContent = 'Update failed: ' + err.message;
-    result.style.color = 'var(--red)';
   }
   btn.textContent = 'Update yt-dlp';
   btn.disabled = false;
 }
 
-// --- Boot ---
+function handleShutdown(e) {
+  const btn = e.currentTarget;
+  if (!confirm('Shut down the dashboard server? The stream keeps running, but this page stops working until StreamLoop starts again.')) return;
+  post('/api/shutdown').catch((err) => showToast(err.message));
+  btn.textContent = 'Shutting down...';
+  btn.disabled = true;
+}
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // Fetch API token before any API calls (CSRF protection)
+// Boot
+
+async function boot() {
+  // Every POST needs the token.
   await fetchApiToken();
 
-  // Settings form
-  $('#settings-form').addEventListener('submit', (e) => e.preventDefault());
-  $('#set-btn').addEventListener('click', handleSettingsSave);
+  $('#wiz-back').addEventListener('click', wizBack);
+  $('#wiz-next').addEventListener('click', wizNext);
+  $('#wiz-add-playlist').addEventListener('click', () => addPlaylistRow('#wiz-playlists-list', '', ''));
 
-  // Tabs
   $$('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  initMonitorControls();
 
-  // Playback tab
   $('#pb-save-btn').addEventListener('click', handlePlaybackSave);
+  $$('.restart-stream-btn').forEach(b => b.addEventListener('click', (e) => runAction(e.currentTarget, async () => {
+    await restartStream();
+    $$('.restart-note').forEach(n => n.classList.add('hidden'));
+  })));
 
-  // Autostart
+  $('#wh-test-btn').addEventListener('click', testDiscordWebhook);
+  $('#wh-save-btn').addEventListener('click', handleWebhookSave);
+  $('#wh-preview-select').addEventListener('change', updatePreview);
+
+  $('#set-add-playlist').addEventListener('click', () => addPlaylistRow('#set-playlists-list', '', ''));
+  $('#set-stream-key-btn').addEventListener('click', handleStreamKeySet);
+  $('#set-btn').addEventListener('click', handleSettingsSave);
+  $('#copy-redirect-btn').addEventListener('click', (e) => copyRedirectUrl(e.currentTarget));
   $('#autostart-toggle').addEventListener('change', handleAutostartToggle);
-
-  // Check for updates button
+  $('#auto-open-toggle').addEventListener('change', handleAutoOpenToggle);
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
-
-  // Update yt-dlp button
+  $('#settings-update-btn').addEventListener('click', handleUpdate);
+  $('#update-btn').addEventListener('click', handleUpdate);
   $('#update-ytdlp-btn').addEventListener('click', handleYtdlpUpdate);
-
-  // Shutdown button
-  const shutdownBtn = document.getElementById('shutdown-btn');
-  if (shutdownBtn) {
-    shutdownBtn.addEventListener('click', function() {
-      if (confirm('Are you sure you want to shut down StreamLoop? This will stop playback and the server.')) {
-        api('/api/shutdown', { method: 'POST' });
-        shutdownBtn.textContent = 'Shutting down...';
-        shutdownBtn.disabled = true;
-      }
-    });
-  }
-
-  // Wizard step 3 buttons
-  const wizCheckMpvBtn = document.getElementById('wiz-check-mpv');
-  if (wizCheckMpvBtn) wizCheckMpvBtn.addEventListener('click', wizCheckMpv);
-  const wizCheckCaptureBtn = document.getElementById('wiz-check-capture');
-  if (wizCheckCaptureBtn) wizCheckCaptureBtn.addEventListener('click', wizCheckCapture);
-
-  // Webhook preview updates
-  const previewSelect = $('#wh-preview-select');
-  if (previewSelect) {
-    previewSelect.addEventListener('change', () => updatePreview());
-  }
-  const botNameInput = $('#wh-bot-name');
-  if (botNameInput) {
-    botNameInput.addEventListener('input', () => updatePreview());
-  }
+  $('#shutdown-btn').addEventListener('click', handleShutdown);
 
   init();
-});
+}
+
+// A module runs after parsing, so the DOM is ready.
+boot();

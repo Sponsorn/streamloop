@@ -43,6 +43,8 @@ export function parsePlaylistOutput(output: string): PlaylistVideo[] {
 }
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+/** A failed fetch is not retried for 5 min, so the dashboard cannot hammer YouTube outside the supervisor's gate. */
+const FAILURE_TTL_MS = 5 * 60 * 1000;
 
 interface CacheEntry {
   metadata: PlaylistMetadata;
@@ -53,6 +55,7 @@ export class PlaylistMetadataCache {
   private readonly ytdlpPath: string;
   private readonly cookiesFromBrowser: string;
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly failures = new Map<string, { error: unknown; at: number }>();
   private readonly inFlight = new Map<string, Promise<PlaylistMetadata>>();
 
   constructor(ytdlpPath: string, cookiesFromBrowser: string = '') {
@@ -77,32 +80,32 @@ export class PlaylistMetadataCache {
       return cached.metadata;
     }
 
+    const failed = this.failures.get(playlistId);
+    if (failed && Date.now() - failed.at < FAILURE_TTL_MS) {
+      throw failed.error;
+    }
+
     const inflight = this.inFlight.get(playlistId);
     if (inflight) {
       return inflight;
     }
 
-    const promise = this._doFetch(playlistId).finally(() => {
-      this.inFlight.delete(playlistId);
-    });
+    const promise = this._doFetch(playlistId)
+      .catch((error: unknown) => {
+        this.failures.set(playlistId, { error, at: Date.now() });
+        throw error;
+      })
+      .finally(() => {
+        this.inFlight.delete(playlistId);
+      });
 
     this.inFlight.set(playlistId, promise);
     return promise;
   }
 
-  getCached(playlistId: string): PlaylistMetadata | undefined {
-    const entry = this.cache.get(playlistId);
-    if (!entry) return undefined;
-    if (Date.now() - entry.fetchedAt >= CACHE_TTL_MS) return undefined;
-    return entry.metadata;
-  }
-
-  invalidate(playlistId: string): void {
-    this.cache.delete(playlistId);
-  }
-
   clear(): void {
     this.cache.clear();
+    this.failures.clear();
   }
 
   private async _doFetch(playlistId: string): Promise<PlaylistMetadata> {

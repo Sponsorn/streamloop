@@ -1,66 +1,48 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TwitchLivenessChecker } from '../twitch.js';
 import type { AppConfig } from '../types.js';
-import type { OBSClient } from '../obs-client.js';
+import type { SupervisorClient } from '../supervisor-client.js';
 import type { DiscordNotifier } from '../discord.js';
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return {
     port: 7654,
-    obsWebsocketUrl: '',
-    obsWebsocketPassword: '',
-    obsBrowserSourceName: 'Source',
     playlists: [{ id: 'PL123' }],
     discord: {
       webhookUrl: '',
       botName: '',
       avatarUrl: '',
       rolePing: '',
-      events: { error: true, skip: true, recovery: true, critical: true, resume: true, obsDisconnect: true, obsReconnect: true, streamDrop: true, streamRestart: true, twitchMismatch: true, twitchRestart: true },
+      events: { error: true, skip: true, recovery: true, critical: true, resume: true, streamDrop: true, streamRestart: true, outputFrozen: true, twitchMismatch: true, twitchRestart: true },
       templates: {
         error: '', skip: '', recovery: '', critical: '', resume: '',
-        obsDisconnect: '', obsReconnect: '', streamDrop: '', streamRestart: '',
+        streamDrop: '', streamRestart: '', outputFrozen: '',
         twitchMismatch: '', twitchRestart: '',
       },
     },
-    heartbeatIntervalMs: 5000,
-    heartbeatTimeoutMs: 15000,
-    maxConsecutiveErrors: 3,
-    stateFilePath: './state.json',
-    recoveryDelayMs: 5000,
-    initialLoadGraceMs: 90000,
-    outputCheckEnabled: true,
-    outputFreezeWindowMs: 30000,
-    proactiveUrlRefreshMs: 19800000,
-    obsAutoRestart: false,
-    obsAutoStream: false,
-    obsPath: '',
+    supervisor: {
+      ingestUrl: 'rtmp://live.twitch.tv/app', streamKeyProtected: '', encoder: 'h264_nvenc', cacheBudgetMb: 300,
+      readAheadSeconds: 20, playerClient: 'mweb,web_embedded', overlay: true, freezeSeconds: 20, silenceSeconds: 30,
+    },
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
     autoOpenAdmin: true,
     updateCheckIntervalMs: 21600000,
-    sourceRefreshIntervalMs: 0,
     twitchClientId: 'test-client-id',
     twitchClientSecret: 'test-client-secret',
     twitchChannel: 'testchannel',
     twitchLivenessEnabled: true,
     twitchPollIntervalMs: 60000,
-    mpvGeometry: '1920x1080+0+0',
-    mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
-    mpvExtraArgs: [],
     ytdlCookiesFromBrowser: '',
-    ytdlPlayerClient: '',
     ...overrides,
   };
 }
 
-function mockObs() {
+function mockClient(alive = false) {
   return {
-    isStreaming: vi.fn(() => Promise.resolve(false)),
-    stopStream: vi.fn(() => Promise.resolve(true)),
-    startStreaming: vi.fn(() => Promise.resolve(true)),
-    isConnected: vi.fn(() => true),
-  } as unknown as OBSClient;
+    status: vi.fn(() => Promise.resolve({ state: 'playing', encoder: { alive } })),
+    control: vi.fn(() => Promise.resolve({ ok: true })),
+  } as unknown as SupervisorClient & { status: ReturnType<typeof vi.fn>; control: ReturnType<typeof vi.fn> };
 }
 
 function mockDiscord() {
@@ -88,7 +70,7 @@ describe('TwitchLivenessChecker', () => {
     it('returns false when toggle is off', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig({ twitchLivenessEnabled: false }),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
       );
       expect(checker.enabled).toBe(false);
@@ -97,7 +79,7 @@ describe('TwitchLivenessChecker', () => {
     it('returns false when clientId is empty', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig({ twitchClientId: '' }),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
       );
       expect(checker.enabled).toBe(false);
@@ -106,7 +88,7 @@ describe('TwitchLivenessChecker', () => {
     it('returns false when clientSecret is empty', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig({ twitchClientSecret: '' }),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
       );
       expect(checker.enabled).toBe(false);
@@ -115,8 +97,39 @@ describe('TwitchLivenessChecker', () => {
     it('returns false when channel is empty', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig({ twitchChannel: '' }),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
+      );
+      expect(checker.enabled).toBe(false);
+    });
+
+    it('needs no Helix credentials with a test HLS URL, and never asks Twitch', async () => {
+      // Arrange
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const client = mockClient(true);
+      const checker = new TwitchLivenessChecker(
+        makeConfig({ twitchClientId: '', twitchClientSecret: '' }),
+        client,
+        mockDiscord(),
+        { testHlsUrl: 'http://127.0.0.1:8899/index.m3u8' },
+      );
+
+      // Act
+      await checker.check();
+
+      // Assert
+      expect(checker.enabled).toBe(true);
+      expect(checker.getStatus().channelLive).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('stays off without credentials when no test HLS URL is set', () => {
+      const checker = new TwitchLivenessChecker(
+        makeConfig({ twitchClientId: '', twitchClientSecret: '' }),
+        mockClient(),
+        mockDiscord(),
+        { testHlsUrl: '' },
       );
       expect(checker.enabled).toBe(false);
     });
@@ -124,7 +137,7 @@ describe('TwitchLivenessChecker', () => {
     it('returns true when all credentials are present and toggle is on', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig(),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
       );
       expect(checker.enabled).toBe(true);
@@ -133,24 +146,25 @@ describe('TwitchLivenessChecker', () => {
 
   describe('getStatus()', () => {
     it('returns correct initial structure', () => {
-      const checker = new TwitchLivenessChecker(makeConfig(), mockObs(), mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), mockClient(), mockDiscord());
       const status = checker.getStatus();
       expect(status).toEqual({
         enabled: true,
         channelLive: null,
-        obsStreaming: null,
+        encoderAlive: null,
         consecutiveMismatches: 0,
         mismatchThreshold: 3,
         lastCheckAt: null,
         lastRestartAt: null,
         restartCount: 0,
+        readback: { lastCheckAt: null, lastDiff: null, state: 'off' },
       });
     });
 
     it('reports enabled false when disabled', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig({ twitchLivenessEnabled: false }),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
       );
       expect(checker.getStatus().enabled).toBe(false);
@@ -159,7 +173,7 @@ describe('TwitchLivenessChecker', () => {
 
   describe('start() / stop()', () => {
     it('start sets up timers and stop clears them', () => {
-      const checker = new TwitchLivenessChecker(makeConfig(), mockObs(), mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), mockClient(), mockDiscord());
       checker.start();
       // Timer should be scheduled
       checker.stop();
@@ -169,7 +183,7 @@ describe('TwitchLivenessChecker', () => {
     it('start does nothing when disabled', () => {
       const checker = new TwitchLivenessChecker(
         makeConfig({ twitchLivenessEnabled: false }),
-        mockObs(),
+        mockClient(),
         mockDiscord(),
       );
       checker.start();
@@ -199,20 +213,18 @@ describe('TwitchLivenessChecker', () => {
       return fetchMock;
     }
 
-    it('increments on mismatch (OBS streaming, Twitch offline)', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(true);
+    it('increments on mismatch (encoder up, Twitch offline)', async () => {
+      const client = mockClient(true);
       setupFetch({ data: [] }); // channel not live
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
 
       expect(checker.getStatus().consecutiveMismatches).toBe(1);
     });
 
     it('resets on non-mismatch (both streaming)', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(true);
+      const client = mockClient(true);
       const fetchMock = vi.fn();
 
       // First check: mismatch (channel offline)
@@ -227,7 +239,7 @@ describe('TwitchLivenessChecker', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
       expect(checker.getStatus().consecutiveMismatches).toBe(1);
 
@@ -242,20 +254,18 @@ describe('TwitchLivenessChecker', () => {
       expect(checker.getStatus().consecutiveMismatches).toBe(0);
     });
 
-    it('resets on non-mismatch (OBS not streaming)', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(false);
+    it('resets on non-mismatch (encoder down)', async () => {
+      const client = mockClient(false);
       setupFetch({ data: [] });
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
 
       expect(checker.getStatus().consecutiveMismatches).toBe(0);
     });
 
     it('triggers restart at threshold (3 mismatches)', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(true);
+      const client = mockClient(true);
       const discord = mockDiscord();
 
       const fetchMock = vi.fn();
@@ -274,36 +284,59 @@ describe('TwitchLivenessChecker', () => {
       }
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, discord);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord);
 
       await checker.check();
       expect(checker.getStatus().consecutiveMismatches).toBe(1);
-      expect(obs.stopStream).not.toHaveBeenCalled();
-
       await checker.check();
       expect(checker.getStatus().consecutiveMismatches).toBe(2);
-      expect(obs.stopStream).not.toHaveBeenCalled();
+      expect(client.control).not.toHaveBeenCalled();
 
-      // Third check triggers restart which has a 5s delay inside
-      const checkPromise = checker.check();
-      // Advance past the restart delay
-      await vi.advanceTimersByTimeAsync(6000);
-      await checkPromise;
+      await checker.check();
 
-      // After restart, counter resets to 0
       expect(checker.getStatus().consecutiveMismatches).toBe(0);
-      expect(obs.stopStream).toHaveBeenCalledOnce();
-      expect(obs.startStreaming).toHaveBeenCalledOnce();
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(client.control).toHaveBeenCalledWith('restart-encoder', undefined, expect.any(String));
       expect(discord.notifyTwitchMismatch).toHaveBeenCalled();
       expect(discord.notifyTwitchRestart).toHaveBeenCalled();
       expect(checker.getStatus().restartCount).toBe(1);
     });
   });
 
+  it('names a missing stream key in plain words when the encoder cannot restart', async () => {
+    const client = mockClient(true);
+    client.control.mockResolvedValue({ ok: false, error: 'needs-stream-key: no encoder runs until a reload brings a working key' });
+    const discord = mockDiscord();
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ access_token: 'tok123', expires_in: 3600 }) });
+    for (let i = 0; i < 3; i++) fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const checker = new TwitchLivenessChecker(makeConfig(), client, discord);
+
+    for (let i = 0; i < 3; i++) await checker.check();
+
+    expect(discord.notifyTwitchRestart).not.toHaveBeenCalled();
+    expect(discord.notifyCritical).toHaveBeenCalledWith(expect.stringContaining('no stream key is set'));
+    expect(checker.getStatus().restartCount).toBe(0);
+  });
+
+  it('treats the supervisor not answering as encoder down', async () => {
+    const client = mockClient(true);
+    client.status.mockResolvedValue(null);
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ access_token: 'tok123', expires_in: 3600 }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) }));
+    const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
+
+    await checker.check();
+
+    expect(checker.getStatus().encoderAlive).toBe(false);
+    expect(checker.getStatus().consecutiveMismatches).toBe(0);
+  });
+
   describe('API errors', () => {
     it('does not increment counter on API error', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(true);
+      const client = mockClient(true);
 
       // Token succeeds
       const fetchMock = vi.fn();
@@ -318,15 +351,14 @@ describe('TwitchLivenessChecker', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
 
       expect(checker.getStatus().consecutiveMismatches).toBe(0);
     });
 
     it('does not increment counter on fetch exception', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(true);
+      const client = mockClient(true);
 
       // Token succeeds
       const fetchMock = vi.fn();
@@ -338,7 +370,7 @@ describe('TwitchLivenessChecker', () => {
       fetchMock.mockRejectedValueOnce(new Error('network error'));
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
 
       expect(checker.getStatus().consecutiveMismatches).toBe(0);
@@ -347,8 +379,7 @@ describe('TwitchLivenessChecker', () => {
 
   describe('token management', () => {
     it('fetches a token on first check', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(false);
+      const client = mockClient(false);
 
       const fetchMock = vi.fn();
       fetchMock.mockResolvedValueOnce({
@@ -362,7 +393,7 @@ describe('TwitchLivenessChecker', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
 
       // First call should be token request
@@ -372,8 +403,7 @@ describe('TwitchLivenessChecker', () => {
     });
 
     it('reuses cached token for subsequent checks', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(false);
+      const client = mockClient(false);
 
       const fetchMock = vi.fn();
       // First check: token + streams
@@ -394,7 +424,7 @@ describe('TwitchLivenessChecker', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
       await checker.check();
 
@@ -405,8 +435,7 @@ describe('TwitchLivenessChecker', () => {
     });
 
     it('refreshes token on 401 response', async () => {
-      const obs = mockObs();
-      (obs.isStreaming as any).mockResolvedValue(false);
+      const client = mockClient(false);
 
       const fetchMock = vi.fn();
       // Initial token
@@ -432,11 +461,156 @@ describe('TwitchLivenessChecker', () => {
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      const checker = new TwitchLivenessChecker(makeConfig(), obs, mockDiscord());
+      const checker = new TwitchLivenessChecker(makeConfig(), client, mockDiscord());
       await checker.check();
 
       expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(checker.getStatus().channelLive).toBe(true);
+    });
+  });
+
+  describe('encoder restarts from Twitch checks', () => {
+    function offlineFetch(checks: number) {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ access_token: 'tok123', expires_in: 3600 }) });
+      for (let i = 0; i < checks; i++) fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+      vi.stubGlobal('fetch', fetchMock);
+    }
+
+    it('restarts at most once per 30 min and only alerts in between', async () => {
+      // Arrange
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      offlineFetch(9);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord);
+
+      // Act: a restart, then a second mismatch streak inside 30 min
+      for (let i = 0; i < 6; i++) await checker.check();
+
+      // Assert
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+
+      // Act: a third streak after 30 min
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      for (let i = 0; i < 3; i++) await checker.check();
+
+      // Assert
+      expect(client.control).toHaveBeenCalledTimes(2);
+    });
+
+    it('a third streak inside the window sends no Discord call and goes to the timeline', async () => {
+      // Arrange
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      offlineFetch(9);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+      for (let i = 0; i < 6; i++) await checker.check();
+      const criticalsAfterSecond = vi.mocked(discord.notifyCritical).mock.calls.length;
+
+      // Act
+      for (let i = 0; i < 3; i++) await checker.check();
+
+      // Assert
+      expect(criticalsAfterSecond).toBe(1);
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(addEvent).toHaveBeenCalledWith(expect.stringContaining('already restarted'));
+    });
+
+    it('sends exactly one critical per 30 min window across Helix and read-back triggers', async () => {
+      // Arrange
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      offlineFetch(12);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+      const discordCalls = (): number =>
+        vi.mocked(discord.notifyCritical).mock.calls.length +
+        vi.mocked(discord.notifyTwitchMismatch).mock.calls.length +
+        vi.mocked(discord.notifyTwitchRestart).mock.calls.length;
+
+      // Act: window 1 opens with a Helix restart, then four more triggers inside it
+      for (let i = 0; i < 3; i++) await checker.check(); // restart: mismatch + restart notices
+      await checker.handleFrozen(); // first cap hit: one critical
+      for (let i = 0; i < 3; i++) await checker.check(); // timeline only
+      await checker.handleFrozen(); // timeline only
+      const inFirstWindow = discordCalls();
+      // window 2 opens with a read-back restart, then one Helix streak inside it
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      await checker.handleFrozen(); // restart, no Discord notice
+      for (let i = 0; i < 3; i++) await checker.check(); // first cap hit: one critical
+      await checker.handleFrozen(); // timeline only
+
+      // Assert
+      expect(inFirstWindow).toBe(3);
+      expect(discordCalls()).toBe(4);
+      expect(discord.notifyCritical).toHaveBeenCalledTimes(2);
+      expect(client.control).toHaveBeenCalledTimes(2);
+    });
+
+    it('a frozen read-back restarts the encoder and shares the 30 min limit', async () => {
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+
+      await checker.handleFrozen();
+      await checker.handleFrozen();
+
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(client.control).toHaveBeenCalledWith('restart-encoder', undefined, expect.stringContaining('frozen'));
+      expect(addEvent).toHaveBeenCalledWith(expect.stringContaining('frozen'));
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+    });
+
+    it('an unavailable read-back only records a timeline event', () => {
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+
+      checker.handleUnavailable('the channel playlist could not be fetched');
+
+      expect(addEvent).toHaveBeenCalledOnce();
+      expect(addEvent.mock.calls[0][0]).toContain('the channel playlist could not be fetched');
+      expect(client.control).not.toHaveBeenCalled();
+      expect(discord.notifyCritical).not.toHaveBeenCalled();
+    });
+
+    it('keeps the 30 min limit across a config reload', async () => {
+      // Arrange: index.ts passes the same options object to every new checker
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const opts = { restartClock: { lastAttemptAt: null, alertedAt: null } };
+      await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
+
+      // Act: the cap hit and its critical, then a later hit after another reload
+      await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
+      await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
+
+      // Assert
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+    });
+
+    it('a still whole frame only records a timeline event', () => {
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+
+      checker.handleStill();
+
+      expect(addEvent).toHaveBeenCalledOnce();
+      expect(client.control).not.toHaveBeenCalled();
+      expect(discord.notifyCritical).not.toHaveBeenCalled();
+    });
+
+    it('runs no read-back without an ffmpeg path', () => {
+      const checker = new TwitchLivenessChecker(makeConfig(), mockClient(true), mockDiscord(), { ffmpegPath: null });
+      expect(checker.getStatus().readback.state).toBe('off');
     });
   });
 });

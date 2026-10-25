@@ -66,7 +66,7 @@ if %ERRORLEVEL% equ 75 (
         echo Applying update...
         if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
         rem Retry rename up to 5 times: Windows may still hold file locks
-        rem from the just-killed mpv process
+        rem from the Node process that just exited
         set "RENAME_OK=0"
         for /L %%i in (1,1,5) do (
             if "!RENAME_OK!"=="0" (

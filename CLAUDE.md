@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-StreamLoop is a Node.js/TypeScript application that plays YouTube playlists via mpv (controlled over Windows named pipe IPC) and automatically recovers from playback freezes, errors, and failures. OBS captures the mpv window via Window Capture. The server connects to OBS via obs-websocket-js and optionally sends alerts to Discord webhooks.
+StreamLoop restreams a YouTube playlist to Twitch around the clock from one Windows box. This branch holds 3.0: a Node.js/TypeScript backend (`src/server/`) drives a Rust supervisor (`supervisor/`), which plays the playlist through ffmpeg and pushes RTMP itself. There is no mpv or OBS. Node owns the config, the dashboard, Discord alerts, the Twitch checks and the updater. 2.x (mpv + OBS) lives on the `2.x` branch.
 
 ## Setup
 
@@ -23,6 +23,19 @@ cp config.example.json config.json   # Then edit config.json with your settings
 
 `config.json` is gitignored to prevent committing credentials. `config.example.json` is the tracked template.
 
+**Dev setup with the supervisor.** In dev, Node reads `config.json` from its working directory, and the supervisor reads `ROOT\app\config.json`. They must be the same file, so run Node from `ROOT\app`:
+
+1. `cargo build --release` in `supervisor/`.
+2. `node supervisor/scripts/dev-root.mjs` builds a dev root in the install layout (default `%TEMP%\streamloop-devroot`); put `supervisor\target\release\streamloop-supervisor.exe` in `ROOT\supervisor\`.
+3. Start Node with cwd `ROOT\app` and `STREAMLOOP_ROOT=ROOT`, running the repo's tsx on the repo's `src/server/index.ts` by absolute path. `installRoot()` uses `STREAMLOOP_ROOT` when there is no `node\` folder next to the app.
+
+Node's own logs and timeline still go to the repo's `logs/` in dev, since `logger.ts` and `index.ts` resolve them from the source folder. `supervisor/scripts/node-session.mjs` does all of this for the end-to-end runs.
+
+Test-only environment variables, never set by `config.json` or a release:
+- `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`). The flag belongs to the supervisor process, not to Node: a Node restarted without the variable attaches to the running supervisor, and `/debug/fault` stays open until that supervisor is restarted.
+- `STREAMLOOP_TEST_HOOKS=1`: adds `POST /api/test/exit-75`, the update restart without an update.
+- `STREAMLOOP_TEST_HLS_URL`: the Twitch read-back reads this HLS instead of the channel's, and the channel counts as live, so no request reaches Twitch and Helix credentials are not needed.
+
 ## Commands
 
 ```bash
@@ -30,13 +43,17 @@ npm start            # Run server (tsx)
 npm run dev          # Run with file watching (tsx watch)
 npm test             # Run tests once (vitest run)
 npm run test:watch   # Run tests in watch mode (vitest)
-npm run build:release       # Full Windows distributable ZIP (portable Node.js + mpv + yt-dlp/deno + app)
-npm run build:release:slim  # Update-only ZIP: app + yt-dlp only, no node/ or mpv/ (streamloop-vX.Y.Z-update.zip)
+npm run build:release       # 2.x-layout ZIP (portable Node.js + mpv + yt-dlp/deno + app); no 3.0 packaging yet
+npm run build:release:slim  # 2.x-layout update ZIP: app + yt-dlp only (streamloop-vX.Y.Z-update.zip)
+cargo build --release       # in supervisor/: the supervisor binary
+node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 ```
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
 ## Release Checklist
+
+Packaging for 3.0 is not done yet. The build scripts still produce the 2.x layout (`node\`, `mpv\`, `yt-dlp\`, `app\`, `START.bat`), with no `supervisor\`, `ffmpeg\` or `pot\`, so this branch cannot build a 3.0 release yet. The checklist below describes the scripts as they are.
 
 Before pushing and building a release:
 
@@ -49,53 +66,31 @@ Before pushing and building a release:
 
 ## Architecture
 
-**Server + mpv player + admin dashboard:**
+**Node backend + supervisor + admin dashboard.** `ARCHITECTURE.md` has the diagram, the supervisor's interface and the main flows.
 
-- **Server** (`src/server/`): Express.js app that orchestrates everything. Entry point is `index.ts`, which wires components together via dependency injection.
-- **mpv Player**: Spawned as a child process, controlled via Windows named pipe IPC (`\\.\pipe\mpv-streamloop`). Uses yt-dlp for YouTube playlist/video resolution.
-- **Admin Dashboard** (`src/admin/admin.js`): Browser UI for monitoring status, viewing recovery events, playback controls (playlist selector, transport, seek, video list), and editing config via REST API.
+- **Server** (`src/server/`): Express app on 127.0.0.1:7654. `index.ts` wires the components by dependency injection.
+- **Supervisor** (`supervisor/`, Rust): launched by Node through `streamloop-supervisor.exe launch`, a short-lived intermediate, so it is a sibling with a dead parent: a Node crash, restart, update or tree kill leaves the stream up. Node talks to it over HTTP on 127.0.0.1:4417 and reads its events from `ROOT\data\logs\events-DATE.jsonl`.
+- **Admin Dashboard** (`src/admin/`): first-run wizard, status, timeline, transport (next, previous, restart, jump), Stop and Start stream, settings, webhooks, logs, update button.
 
-**Key server modules:**
+**Server modules:**
 
 | Module | Responsibility |
 |--------|---------------|
-| `config.ts` | Loads/saves `config.json` with Zod schema validation and defaults |
-| `state.ts` | Persists playback position (`state.json`) with debounced 2s writes |
-| `mpv-client.ts` | Spawns mpv process, connects via named pipe IPC, sends commands, receives events |
-| `recovery.ts` | Core heartbeat monitor + layered freeze/stall detectors with in-place URL retry before escalating to RetryCurrent → RestartMpv → CriticalAlert |
-| `frame-monitor.ts` | Output-freeze detector: hashes periodic OBS screenshots to catch a frozen streamed picture mpv reports as healthy |
-| `event-store.ts` | Persists the recovery-event timeline to daily-rotated JSONL in `logs/` (reloaded on startup) |
-| `playlist-metadata.ts` | Fetches playlist video metadata via yt-dlp, caches in memory |
-| `obs-client.ts` | OBS WebSocket client for streaming control |
-| `discord.ts` | Discord webhook notifications |
-| `api.ts` | REST endpoints (`/api/status`, `/api/state`, `/api/config`, `/api/events`, `/api/playlist/*`, `/api/player/*`, `/api/autostart`, `/api/update/*`) |
-| `updater.ts` | GitHub Releases auto-updater: checks for new versions, downloads ZIP, swaps app directory |
+| `config.ts` / `types.ts` | Loads and saves `config.json` with Zod validation and defaults, including the `supervisor` section the supervisor reads |
+| `supervisor-client.ts` | HTTP client for the supervisor (`/status`, `/control`, `/reload`, `/shutdown`); `protectStreamKey` runs `streamloop-supervisor.exe protect` so the key is stored only as a DPAPI blob |
+| `supervisor-launcher.ts` | `installRoot()`; polls `/status` every 2 s, launches the supervisor after 3 misses (backoff 10 s, 30 s, 60 s, 5 min), stays down after Stop stream until Start, across Node restarts (`ROOT\data\stopped-by-user`) |
+| `supervisor-events.ts` | Tails the supervisor's events file; `describe()` maps each event to timeline text and an optional Discord alert, `AlertGate` sends one alert per outage |
+| `event-log.ts` / `event-store.ts` | The 100-entry dashboard timeline, persisted as daily JSONL in `logs/` |
+| `twitch.ts` | Helix check that the channel is live while the encoder runs; restarts the encoder at most once per 30 min, then only alerts |
+| `twitch-readback.ts` | Every 5 min, two frames of the channel's own HLS 5 s apart; an overlay clock that stands still twice asks for `restart-encoder` |
+| `discord.ts` | Webhook notifications with templates, batched over 5 s, criticals sent at once |
+| `playlist-metadata.ts` | Playlist video list for the dashboard, fetched with Node's own yt-dlp and cached |
+| `api.ts` | REST endpoints (`/api/status`, `/api/state`, `/api/events`, `/api/config`, `/api/stream-key`, `/api/player/*`, `/api/stream/stop`, `/api/stream/start`, `/api/playlist/*`, `/api/logs`, `/api/update/*`, `/api/autostart`, `/api/discord/*`) |
+| `updater.ts` / `ytdlp-updater.ts` | GitHub Releases updater; yt-dlp self-update |
+| `spawn-cwd.ts` | The temp folder every child process starts in |
 | `logger.ts` | Pino structured logging |
 
-**Detection layers (recovery.ts).** The server polls mpv every 5s and runs several independent detectors, most of which try an **in-place URL retry** (re-resolve the googlevideo URL at the current position via `reloadIndex` — no mpv restart, so OBS never captures a black screen) before falling back to the full restart sequence:
-
-- **Premature EOF / network error** (`onFileEnded`): a signed-URL expiry or HTTP/TLS error mid-playback retries in place (up to 2× per video) instead of counting as a real error.
-- **Stall**: mpv claims to be playing but `time-pos` isn't advancing for 3 consecutive polls.
-- **Video freeze (audio alive)**: `estimated-vf-fps < 1` or `video-bitrate ≈ 0` while audio keeps flowing — YouTube serves video/audio as separate DASH streams, so mpv never fires `end-file`. Up to 3 in-place retries, then escalate.
-- **Output freeze**: `frame-monitor.ts` hashes OBS screenshots and confirms with a second frame; catches a frozen streamed picture mpv reports as healthy. Shares the video-freeze retry budget.
-- **Proactive URL refresh** (`proactiveUrlRefreshMs`, default 5.5h): reload in place before YouTube's ~6h signed-URL expiry, turning an unplanned freeze into a planned rebuffer.
-- **Non-playing**: mpv connected but stuck idle/buffering. Escalates after 6 polls — **except** during the post-connect **startup grace** (`initialLoadGraceMs`, default 90s), which suppresses escalation until playback is confirmed once or the window elapses. This stops a slow cold yt-dlp resume from being mistaken for a fault and restarted on every server start. The grace re-applies on every mpv connect (incl. periodic restarts) and logs a one-shot event so the hold-off is visible in the dashboard.
-
-**Escalation sequence:** When a detector escalates, recovery runs RetryCurrent (in-place reload) → RestartMpv (kill + restart process) → CriticalAlert (Discord, wait 60s, restart the sequence). State writes are suppressed during active recovery so a transient `playlist-pos=0` can't overwrite the resume position.
-
-**Periodic mpv restart:** Configurable via `sourceRefreshIntervalMs` (default 30 min). Proactively restarts mpv to prevent memory growth during long sessions. Skips if recovery is in progress or mpv is disconnected.
-
-**Configuration hot-reload:** POST to `/api/config` updates `config.json` and triggers component reloading (OBS reconnect, recovery engine restart) without server restart.
-
-## mpv IPC Protocol (Server ↔ mpv)
-
-Communication via Windows named pipe (`\\.\pipe\mpv-streamloop`) using newline-delimited JSON.
-
-Server sends commands: `loadlist` (playlist URL), `set_property playlist-pos` (jump to video), `seek` (position), `set_property pause` (toggle), `playlist-next`, `playlist-prev`, `get_property` (poll state)
-
-Server polls: `time-pos`, `duration`, `pause`, `idle-active`, `playlist-pos`, `playlist-count`, `media-title`, `filename`, `video-params`, `estimated-vf-fps`, `video-bitrate`, `audio-bitrate` (the last four drive video-freeze detection)
-
-mpv sends events: `start-file`, `end-file` (with reason: eof/error/stop), `file-loaded`, `shutdown`
+**Configuration hot-reload:** `POST /api/config` saves `config.json`, rebuilds Discord and the Twitch checks, and asks the supervisor to `POST /reload`. The reply says when a change (ingest, key, encoder, freeze or silence duration) needs a supervisor restart.
 
 ## Testing
 
@@ -103,7 +98,7 @@ Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` dire
 
 ## Platform Notes
 
-Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) bundles portable Node.js v22.23.4 win-x64, mpv, and yt-dlp + deno (deno solves YouTube's n-param JS challenge) into a standalone ZIP. mpv.exe must be placed in `build/mpv/` before running the full build. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
+Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) has not been changed for 3.0 yet: it still bundles portable Node.js v22.23.4 win-x64, mpv (from `build/mpv/`) and yt-dlp + deno into the 2.x layout, and nothing from `supervisor/`, ffmpeg or the token server. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
 
 ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` in tsconfig).
 
@@ -116,9 +111,9 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - `POST /api/update/check` — manually trigger a version check (60s cooldown)
 - `POST /api/update/apply` — download, extract, swap, and restart
 
-**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` (app + yt-dlp, no node/mpv) over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. The updater only ever reads `app/`, `yt-dlp/`, and `START.bat` out of the ZIP — `node/` and `mpv/` are ignored even if present.
+**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` (app + yt-dlp) over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. The updater only ever reads `app/`, `yt-dlp/`, and `START.bat` out of the ZIP — `node/` and `mpv/` are ignored even if present.
 
-**Restart mechanism:** After applying an update, the server exits with **code 75** (`process.exit(75)` in `index.ts` after a graceful shutdown — flush state, stop mpv/recovery/twitch, disconnect OBS, close the HTTP server). 75 is a sentinel, not a failure: `START.bat` reads `%ERRORLEVEL%` after the server process ends and branches on it — `75` = "exited on purpose to apply a staged update", `0` = clean shutdown (stay down), anything else = crash (auto-restart after 10s). The number is arbitrary-but-conventional (75 = `EX_TEMPFAIL` in BSD sysexits.h); what matters is node never emits it on a normal or crashing exit, so it can't be confused with either. On code 75, `START.bat` swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, also swaps `yt-dlp/` if the update bundled new binaries (retry-and-rollback, like the app swap), copies `config.json`, `state.json`, and `logs/` from the old app, verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`.
+**Restart mechanism:** After applying an update, the server exits with **code 75** (`process.exit(75)` in `index.ts` after a graceful shutdown — stop the update check, the Twitch checks, the launcher and the event tail, close the HTTP server; the supervisor and the stream keep running). 75 is a sentinel, not a failure: `START.bat` reads `%ERRORLEVEL%` after the server process ends and branches on it — `75` = "exited on purpose to apply a staged update", `0` = clean shutdown (stay down), anything else = crash (auto-restart after 10s). The number is arbitrary-but-conventional (75 = `EX_TEMPFAIL` in BSD sysexits.h); what matters is node never emits it on a normal or crashing exit, so it can't be confused with either. On code 75, `START.bat` swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, also swaps `yt-dlp/` if the update bundled new binaries (retry-and-rollback, like the app swap), copies `config.json`, `state.json`, and `logs/` from the old app, verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`.
 
 **Launcher self-update (trampoline).** `START.bat` must never overwrite itself in place: cmd.exe reads a running batch file from disk by byte offset, so replacing it mid-run desyncs the read position and usually closes the window before the relaunch (the classic "update applied, terminal never reappears" hang). Instead, when the update ships a `START.bat` that differs from the running one (`fc /b` compare), the new launcher is staged to `START.bat.new`. At the end of the code-75 block, if `START.bat.new` exists, `START.bat` writes a detached one-shot `_apply_launcher.bat`, `start`s it in a **separate** process, and `exit /b 0`s. That trampoline waits ~2s for the original window to close, `move`s `START.bat.new` over `START.bat` while nothing holds it, relaunches in a fresh "StreamLoop" window (so preflight re-runs), then self-deletes. Updates that don't change the launcher take the plain `goto loop` in-place restart. Note the release build ships `START.bat` in **every** ZIP (full and slim), so the `fc /b` content check — not "did the ZIP include a launcher" — is what gates the trampoline.
 

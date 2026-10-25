@@ -1,9 +1,6 @@
 {
   "playlists": [{ "id": "PLxxxxxxxxxxxxxxxx" }],
-  "obsBrowserSourceName": "Playlist Player",
   "port": 7654,
-  "obsWebsocketUrl": "ws://127.0.0.1:4455",
-  "obsWebsocketPassword": "",
   "discord": {
     "webhookUrl": "",
     "botName": "",
@@ -15,10 +12,9 @@
       "recovery": true,
       "critical": true,
       "resume": true,
-      "obsDisconnect": true,
-      "obsReconnect": true,
       "streamDrop": true,
       "streamRestart": true,
+      "outputFrozen": true,
       "twitchMismatch": true,
       "twitchRestart": true
     },
@@ -28,26 +24,24 @@
       "recovery": "Recovery action: **{step}**",
       "critical": "**CRITICAL:** {message}",
       "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
-      "obsDisconnect": "OBS disconnected — attempting to reconnect",
-      "obsReconnect": "OBS reconnected",
-      "streamDrop": "OBS stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
-      "streamRestart": "OBS stream restarted successfully after {attempts} attempt(s)",
-      "twitchMismatch": "Twitch liveness mismatch — OBS reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+      "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+      "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+      "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+      "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
       "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
     }
   },
-  "heartbeatIntervalMs": 5000,
-  "heartbeatTimeoutMs": 15000,
-  "maxConsecutiveErrors": 3,
-  "stateFilePath": "./state.json",
-  "recoveryDelayMs": 5000,
-  "initialLoadGraceMs": 90000,
-  "outputCheckEnabled": true,
-  "outputFreezeWindowMs": 30000,
-  "proactiveUrlRefreshMs": 19800000,
-  "obsAutoRestart": false,
-  "obsAutoStream": false,
-  "sourceRefreshIntervalMs": 0,
+  "supervisor": {
+    "ingestUrl": "rtmp://live.twitch.tv/app",
+    "streamKeyProtected": "",
+    "encoder": "h264_nvenc",
+    "cacheBudgetMb": 300,
+    "readAheadSeconds": 20,
+    "playerClient": "mweb,web_embedded",
+    "overlay": true,
+    "freezeSeconds": 20,
+    "silenceSeconds": 30
+  },
   "autoUpdateCheck": true,
   "updateCheckIntervalMs": 21600000,
   "autoUpdateYtdlp": true,
@@ -57,6 +51,5 @@
   "twitchChannel": "",
   "twitchLivenessEnabled": false,
   "twitchPollIntervalMs": 60000,
-  "ytdlCookiesFromBrowser": "",
-  "ytdlPlayerClient": "tv,web_safari"
+  "ytdlCookiesFromBrowser": ""
 }

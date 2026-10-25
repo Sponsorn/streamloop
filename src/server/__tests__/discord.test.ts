@@ -13,10 +13,8 @@ const defaultDiscord: DiscordConfig = {
     recovery: true,
     critical: true,
     resume: true,
-    obsDisconnect: true,
-    obsReconnect: true,
     streamDrop: true,
-    streamRestart: true, twitchMismatch: true, twitchRestart: true,
+    streamRestart: true, outputFrozen: true, twitchMismatch: true, twitchRestart: true,
   },
   templates: {
     error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
@@ -24,10 +22,9 @@ const defaultDiscord: DiscordConfig = {
     recovery: 'Recovery action: **{step}**',
     critical: '**CRITICAL:** {message}',
     resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
-    obsDisconnect: 'OBS disconnected — attempting to reconnect',
-    obsReconnect: 'OBS reconnected',
     streamDrop: 'Stream dropped (attempt {attempt}/{maxAttempts})',
     streamRestart: 'Stream restarted after {attempts} attempt(s)',
+    outputFrozen: 'Frozen ({kind}) on #{videoIndex}',
     twitchMismatch: 'Twitch mismatch on {channel}',
     twitchRestart: 'Stream restarted after Twitch mismatch on {channel}',
   },
@@ -36,9 +33,6 @@ const defaultDiscord: DiscordConfig = {
 function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partial<DiscordConfig> = {}): AppConfig {
   return {
     port: 7654,
-    obsWebsocketUrl: '',
-    obsWebsocketPassword: '',
-    obsBrowserSourceName: 'Source',
     playlists: [{ id: 'PL123' }],
     discord: {
       ...defaultDiscord,
@@ -46,33 +40,17 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
       events: { ...defaultDiscord.events, ...discordOverrides.events },
       templates: { ...defaultDiscord.templates, ...discordOverrides.templates },
     },
-    heartbeatIntervalMs: 5000,
-    heartbeatTimeoutMs: 15000,
-    maxConsecutiveErrors: 3,
-    stateFilePath: './state.json',
-    recoveryDelayMs: 5000,
-    initialLoadGraceMs: 90000,
-    outputCheckEnabled: true,
-    outputFreezeWindowMs: 30000,
-    proactiveUrlRefreshMs: 19800000,
-    obsAutoRestart: false,
-    obsAutoStream: false,
-    obsPath: '',
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
     autoOpenAdmin: true,
     updateCheckIntervalMs: 21600000,
-    sourceRefreshIntervalMs: 0,
     twitchClientId: '',
     twitchClientSecret: '',
     twitchChannel: '',
     twitchLivenessEnabled: false,
     twitchPollIntervalMs: 60000,
-    mpvGeometry: '1920x1080+0+0',
-    mpvYtdlFormat: 'bestvideo[height<=?1080]+bestaudio/best',
-    mpvExtraArgs: [],
     ytdlCookiesFromBrowser: '',
-    ytdlPlayerClient: '',
+    supervisor: { ingestUrl: '', streamKeyProtected: '', encoder: 'libx264', cacheBudgetMb: 300, readAheadSeconds: 20, playerClient: '', overlay: true, freezeSeconds: 20, silenceSeconds: 30 },
     ...overrides,
   };
 }
@@ -187,45 +165,6 @@ describe('DiscordNotifier', () => {
     expect(result).toBe('Hello world, {unknown}');
   });
 
-  it('respects event toggle - disabled event does not send', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, error: false },
-    });
-    await notifier.notifyError(1, 'abc', 'loading failed', 1);
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('respects event toggle - disabled skip does not send', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, skip: false },
-    });
-    await notifier.notifySkip(1, 'abc', 'test');
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('respects event toggle - disabled obsDisconnect does not send', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({
-      webhookUrl: 'https://discord.com/api/webhooks/test',
-      events: { ...defaultDiscord.events, obsDisconnect: false },
-    });
-    await notifier.notifyObsDisconnect();
-    await vi.advanceTimersByTimeAsync(60000);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it('includes bot identity in payload when set', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(null, { status: 200 }),
@@ -263,21 +202,6 @@ describe('DiscordNotifier', () => {
     expect(footer).toContain('Dashboard: http://localhost:7654/admin');
     expect(footer).toContain('Uptime:');
     expect(footer).toContain('v1.0.0');
-  });
-
-  it('includes structured fields on error notification', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
-    const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
-    // notifyError uses warn level, need to flush manually
-    await notifier.notifyError(3, 'abc123', 'HTTP error 403', 2);
-    await vi.advanceTimersByTimeAsync(30000);
-    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
-    expect(body.embeds[0].fields).toBeDefined();
-    expect(body.embeds[0].fields).toHaveLength(3);
-    expect(body.embeds[0].fields[0].name).toBe('Reason');
-    expect(body.embeds[0].fields[0].value).toBe('HTTP error 403');
   });
 
   it('includes structured fields on critical notification', async () => {
@@ -318,20 +242,23 @@ describe('DiscordNotifier', () => {
     expect(body.content).toBeUndefined();
   });
 
-  it('uses custom template for notifications', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 200 }),
-    );
+  it('sends a described supervisor event with its template and level', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+    const notifier = makeNotifier({ webhookUrl: 'https://discord.com/api/webhooks/test' });
+    await notifier.notifyEvent({ kind: 'critical', vars: { message: 'All videos failed' }, level: 'error' });
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
+    expect(body.embeds[0].description).toBe('**CRITICAL:** All videos failed');
+    expect(body.embeds[0].color).toBe(15158332);
+  });
+
+  it('skips a described event whose toggle is off', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
     const notifier = makeNotifier({
       webhookUrl: 'https://discord.com/api/webhooks/test',
-      templates: {
-        ...defaultDiscord.templates,
-        recovery: 'Custom recovery: {step} happened!',
-      },
+      events: { ...defaultDiscord.events, skip: false },
     });
-    await notifier.notifyRecovery('refreshSource');
+    await notifier.notifyEvent({ kind: 'skip', vars: { videoIndex: 1, videoId: 'x', reason: 'r' }, level: 'warn' });
     await vi.advanceTimersByTimeAsync(30000);
-    const body = JSON.parse((fetchSpy.mock.calls[0][1] as any).body);
-    expect(body.embeds[0].description).toBe('Custom recovery: refreshSource happened!');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
