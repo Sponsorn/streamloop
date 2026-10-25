@@ -1,5 +1,5 @@
 import express, { Router, type Response, type NextFunction, type Request } from 'express';
-import { existsSync, writeFileSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
+import { existsSync, writeFileSync, renameSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename, resolve } from 'path';
 import { freemem, totalmem } from 'os';
 import { ZodError } from 'zod';
@@ -50,18 +50,21 @@ const STARTUP_FOLDER = join(
   process.env.APPDATA ?? '',
   'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
 );
-const AUTOSTART_VBS = join(STARTUP_FOLDER, 'StreamLoop.vbs');
 
-/** UTF-16LE or UTF-8 with a BOM; else ANSI, which is how WScript reads the BOM-less UTF-8 that 2.x writes. */
+/** UTF-16LE or UTF-8 with a BOM; else BOM-less UTF-8 as 2.x writes it, else ANSI (cp1252). */
 function decodeVbs(raw: Buffer): string {
   if (raw[0] === 0xff && raw[1] === 0xfe) return raw.subarray(2).toString('utf16le');
   if (raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) return raw.subarray(3).toString('utf8');
-  return raw.toString('latin1');
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  } catch {
+    return raw.toString('latin1');
+  }
 }
 
 const sameBat = (a: string, b: string): boolean => resolve(a).toLowerCase() === resolve(b).toLowerCase();
 
-const LOG_NAME =/^[A-Za-z0-9_.-]+\.(log|jsonl|csv)$/;
+const LOG_NAME = /^[A-Za-z0-9_.-]+\.(log|jsonl|csv)$/;
 const LOG_TAIL_BYTES = 1024 * 1024;
 const GiB = 1024 ** 3;
 
@@ -269,8 +272,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
   };
 
   router.get('/autostart', (_req, res) => {
-    const target = autostartTarget();
-    res.json({ enabled: existsSync(autostartVbs()), target, thisInstall: target !== null && sameBat(target, thisBat()) });
+    try {
+      const target = autostartTarget();
+      res.json({ enabled: existsSync(autostartVbs()), target, thisInstall: target !== null && sameBat(target, thisBat()) });
+    } catch (err) {
+      logger.error({ err }, 'Failed to read autostart');
+      res.status(500).json({ error: errorText(err) });
+    }
   });
 
   router.post('/autostart', (req, res) => {
@@ -282,12 +290,17 @@ export function createApiRouter(deps: ApiDependencies): Router {
           `WshShell.Run """${thisBat()}""", 1, False`,
         ].join('\r\n');
         // UTF-16LE with a BOM: WScript reads a BOM-less UTF-8 file as ANSI and misses non-ASCII paths.
-        writeFileSync(autostartVbs(), '﻿' +vbsContent, 'utf16le');
+        const tmpFile = autostartVbs() + '.tmp';
+        writeFileSync(tmpFile, '\ufeff' + vbsContent, 'utf16le');
+        renameSync(tmpFile, autostartVbs());
         logger.info('Autostart shortcut created');
       } else if (existsSync(autostartVbs())) {
         const target = autostartTarget();
-        if (target === null || !sameBat(target, thisBat())) {
-          return res.status(409).json({ error: `Autostart points to another StreamLoop install: ${target ?? 'unknown'}.` });
+        if (target === null) {
+          return res.status(409).json({ error: 'StreamLoop.vbs in the Startup folder was not written by StreamLoop. Remove it from the Startup folder by hand.' });
+        }
+        if (!sameBat(target, thisBat())) {
+          return res.status(409).json({ error: `Autostart points to another StreamLoop install: ${target}.` });
         }
         unlinkSync(autostartVbs());
         logger.info('Autostart shortcut removed');
@@ -295,7 +308,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       res.json({ ok: true, enabled });
     } catch (err) {
       logger.error({ err }, 'Failed to set autostart');
-      res.status(500).json({ error: String(err) });
+      res.status(500).json({ error: errorText(err) });
     }
   });
 

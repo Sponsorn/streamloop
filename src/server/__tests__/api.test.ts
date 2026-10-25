@@ -158,9 +158,38 @@ WshShell.Run """${bat}""", 1, False`;
 
     it('reads a 2.x UTF-8 VBS without a BOM as another install', async () => {
       const other = String.raw`C:\Users\Emma Ö\StreamLoop 2\START.bat`;
-      writeFileSync(vbsPath, Buffer.from(vbsFor(other), 'latin1'));
+      writeFileSync(vbsPath, Buffer.from(vbsFor(other), 'utf8'));
       const g = await (await get('/autostart')).json();
       expect(g).toEqual({ enabled: true, target: other, thisInstall: false });
+    });
+
+    it('reads true cp1252 bytes through the ANSI fallback', async () => {
+      const other = String.raw`C:UsersEmma ÖStreamLoop 2START.bat`;
+      writeFileSync(vbsPath, Buffer.from(vbsFor(other), 'latin1'));
+      const g = await (await get('/autostart')).json();
+      expect(g.target).toBe(other);
+    });
+
+    it('leaves no temp file behind after enabling', async () => {
+      await post('/autostart', { enabled: true });
+      expect(existsSync(vbsPath + '.tmp')).toBe(false);
+      expect(existsSync(vbsPath)).toBe(true);
+    });
+
+    it('disabling a VBS without a readable target answers 409 with its own reason', async () => {
+      writeFileSync(vbsPath, 'MsgBox "hi"');
+      const r = await post('/autostart', { enabled: false });
+      expect(r.status).toBe(409);
+      expect((await r.json()).error).toBe('StreamLoop.vbs in the Startup folder was not written by StreamLoop. Remove it from the Startup folder by hand.');
+      expect(existsSync(vbsPath)).toBe(true);
+    });
+
+    it('answers 500 JSON when the VBS cannot be read', async () => {
+      mkdirSync(vbsPath);
+      const r = await get('/autostart');
+      expect(r.status).toBe(500);
+      expect(r.headers.get('content-type')).toMatch(/json/);
+      expect(typeof (await r.json()).error).toBe('string');
     });
 
     it('reads a UTF-8 VBS with a BOM and ignores path case', async () => {
