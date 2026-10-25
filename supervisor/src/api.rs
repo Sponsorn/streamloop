@@ -40,10 +40,12 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
                         Ok(v) => {
                             let cmd = v["cmd"].as_str().unwrap_or("").to_string();
                             let index = v["index"].as_i64();
+                            // restart-encoder's note for the event log, capped at 200 characters
+                            let reason = v["reason"].as_str().map(|r| r.chars().take(200).collect());
                             if !v["index"].is_null() && index.is_none() {
                                 Some(Err("index must be an integer".into()))
                             } else {
-                                ask(&tx, |reply| Msg::Control { cmd, index, reply })
+                                ask(&tx, |reply| Msg::Control { cmd, index, reason, reply })
                             }
                         }
                     },

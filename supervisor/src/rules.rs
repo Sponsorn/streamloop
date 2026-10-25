@@ -223,6 +223,27 @@ pub fn after_failure(retries_so_far: u32) -> Ladder {
     if retries_so_far < MAX_RETRIES { Ladder::Retry } else { Ladder::Skip }
 }
 
+/// A video YouTube will not serve does not come back in seconds: it is skipped at once.
+pub fn ladder_for(why: &str, retries_so_far: u32) -> Ladder {
+    if why == "unavailable" { Ladder::Skip } else { after_failure(retries_so_far) }
+}
+
+/// From this many distinct "unavailable" videos in a row, each one counts toward the breaker:
+/// a client that answers "unavailable" for every video would otherwise resolve the whole list.
+pub const UNAVAILABLE_COUNTS_FROM: usize = 3;
+
+/// Tracks `streak` (distinct indexes answered "unavailable" since the last successful resolve)
+/// and returns the breaker's `counts` for this resolve outcome.
+pub fn unavailable_counts(streak: &mut std::collections::HashSet<usize>, ok: bool, per_video: bool, index: usize) -> bool {
+    if ok {
+        streak.clear();
+    } else if per_video {
+        streak.insert(index);
+        return streak.len() >= UNAVAILABLE_COUNTS_FROM;
+    }
+    true
+}
+
 /// 2.x shouldRetryUrl's premature EOF: a clean exit well short of the duration.
 pub fn ended_early(code_ok: bool, fed: f64, duration: Option<f64>) -> bool {
     !code_ok || matches!(duration, Some(d) if d > 0.0 && fed < d - 5.0)
@@ -561,6 +582,55 @@ mod tests {
         ] {
             assert!(!is_video_unavailable(r), "{r}");
         }
+    }
+
+    const GONE: &str = "ERROR: [youtube] x: Video unavailable. This video has been removed by the uploader";
+
+    /// Feeds one resolve outcome through the streak and the breaker, as `on_resolved` does.
+    fn resolve(b: &mut Breaker, streak: &mut std::collections::HashSet<usize>, index: usize, ok: bool) -> BreakerChange {
+        let counts = unavailable_counts(streak, ok, !ok && is_video_unavailable(GONE), index);
+        b.result(ok, false, counts, false, 0.0)
+    }
+
+    #[test]
+    fn three_distinct_unavailable_videos_in_a_row_count_toward_the_breaker() {
+        let (mut b, mut streak) = (Breaker::default(), Default::default());
+
+        let failures: Vec<u32> = [1, 1, 2, 3, 4].iter().map(|&i| {
+            resolve(&mut b, &mut streak, i, false);
+            b.failures
+        }).collect();
+        let change = resolve(&mut b, &mut streak, 5, false);
+
+        assert_eq!(failures, [0, 0, 0, 1, 2], "the same video twice is one entry; counting starts at the third");
+        assert_eq!(change, BreakerChange::Opened);
+    }
+
+    #[test]
+    fn a_successful_resolve_resets_the_unavailable_streak() {
+        let (mut b, mut streak) = (Breaker::default(), Default::default());
+        resolve(&mut b, &mut streak, 1, false);
+        resolve(&mut b, &mut streak, 2, false);
+
+        resolve(&mut b, &mut streak, 7, true);
+        resolve(&mut b, &mut streak, 3, false);
+        resolve(&mut b, &mut streak, 4, false);
+
+        assert_eq!(b.failures, 0);
+        resolve(&mut b, &mut streak, 5, false);
+        assert_eq!(b.failures, 1);
+    }
+
+    #[test]
+    fn one_unavailable_video_still_skips_without_touching_the_breaker() {
+        let (mut b, mut streak) = (Breaker::default(), Default::default());
+
+        resolve(&mut b, &mut streak, 4, false);
+
+        assert_eq!((b.open, b.failures), (false, 0));
+        assert_eq!(ladder_for("unavailable", 0), Ladder::Skip, "a removed video does not come back in 10 s");
+        assert_eq!(ladder_for("stall", 0), Ladder::Retry, "other failures keep the ladder");
+        assert_eq!(ladder_for("stall", MAX_RETRIES), Ladder::Skip);
     }
 
     #[test]
