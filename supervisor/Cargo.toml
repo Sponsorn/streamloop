@@ -1,6 +1,6 @@
 [package]
 name = "streamloop-supervisor"
-version = "3.0.0-dev"
+version = "3.0.0"
 edition = "2021"
 publish = false
 

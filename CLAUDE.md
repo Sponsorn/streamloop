@@ -48,13 +48,14 @@ npm run build:release:slim  # update ZIP: app + START.bat only (streamloop-vX.Y.
 node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout.js (both builds run it)
 cargo build --release       # in supervisor/: the supervisor binary
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
+node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
 ```
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
-## Release Checklist
+## Release Checklist (3.x)
 
-Before pushing and building a release:
+Before pushing and building a 3.x release (2.x releases come from the `2.x` branch and follow its own CLAUDE.md):
 
 1. Bump the version in `package.json`. The version is read at startup and used by the updater to compare against GitHub Releases.
 2. Update `RELEASE_NOTES.md` with the new version's changelog. This file is used when creating GitHub Releases.
@@ -62,6 +63,18 @@ Before pushing and building a release:
 4. The full ZIP is the install: `node\`, `app\`, `supervisor\` (exe + `slate.mp4`), `ffmpeg\ffmpeg.exe`, `yt-dlp\` (yt-dlp, deno, `plugins\bgutil-ytdlp-pot-provider.zip`), `pot\` (the token server, built under the bundled Node so `canvas` matches its ABI), `data\` and `START.bat`. Neither ZIP holds `app\config.json`: `loadConfig` creates it from `app\config.example.json` on first start, so a full-ZIP reinstall keeps the config and the protected stream key. The update ZIP is `app\` + `START.bat` only, all the updater swaps. A new Node, supervisor, ffmpeg or token server means installing the full ZIP, so every release ships both; the update ZIP is never a standalone release.
 5. Create the GitHub release with `gh release create` and upload **both ZIPs, both `.sha256` files and `node-version.txt`**. The updater matches each checksum to its ZIP by name, and reads `node-version.txt` to tell an install its Node is out of date.
 6. **3.x releases are never marked latest.** Create them with `gh release create ... --latest=false`, and also `--prerelease` while 3.0 is on trial. 2.x installs older than 2.3.7 still read GitHub's "latest release" and would otherwise swap 3.0 into a 2.x folder; 2.3.7 and later only take releases with their own major version.
+7. **Full ZIP or update ZIP for existing installs.** The updater delivers `app\` and `START.bat` only. yt-dlp keeps itself current through Node's `yt-dlp -U` on start (`autoUpdateYtdlp`). A release that changes Node, the supervisor, ffmpeg or the token server says in `RELEASE_NOTES.md` that existing installs need the full ZIP (Stop, close the window, extract over the folder, start). Node changes are also flagged in the dashboard through `node-version.txt`.
+8. Prove a release candidate with `node supervisor/scripts/install-session.mjs`: it installs the full ZIP into a temp folder, updates it with the update ZIP through an exit-75 swap, switches to v2.3.8 and back, and removes both installs.
+
+## Switching back to 2.x
+
+3.0 installs beside 2.x in its own folder. Both use port 7654, so one Node runs at a time; 3.0 also refuses to launch its supervisor while `obs64.exe` runs, and 2.x (from 2.3.7) refuses to start its OBS stream while `127.0.0.1:4417/status` reports `encoder.alive: true`.
+
+1. In the 3.0 dashboard press Stop and wait for Stopped (the supervisor exits; `data\stopped-by-user` is written).
+2. Close the 3.0 `START.bat` window.
+3. Start 2.x's `START.bat` and OBS.
+
+Back to 3.0: close 2.x and OBS, start 3.0's `START.bat`, press Start. Until Start, the stopped-by-user marker keeps the supervisor down, also across restarts. Autostart points at one install; turning it on in one moves it there.
 
 ## Architecture
 

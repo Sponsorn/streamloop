@@ -1,3 +1,15 @@
+## v3.0.0
+
+A prerelease for trial, not marked latest. 2.x installs do not update to it.
+
+- **StreamLoop 3 streams without OBS or mpv.** A supervisor program plays the YouTube playlist through ffmpeg and sends it straight to Twitch. It downloads the next videos ahead, keeps one connection to Twitch across every video change, and retries or skips a video that fails. A frozen picture gets retries before a skip, and a long silence gets one retry. The dashboard, Discord alerts and the Twitch liveness check stay, now driving the supervisor.
+- **It installs beside 2.x.** Extract the ZIP to a new folder and run `START.bat`; it does not touch a 2.x folder. The first run opens a setup wizard: playlist, Twitch stream key (stored encrypted for your Windows user), optional Discord webhook and autostart, and a system check that picks the hardware encoder that works on this PC and a download cache size for the free disk space.
+- **One stream at a time.** Both versions use port 7654, so only one runs. 3 does not start its stream while OBS is running, and 2.x (from 2.3.7) does not start its OBS stream while 3 is streaming.
+- **Switching back to 2.x.** In the 3 dashboard press Stop and close its window, then start 2.x and OBS. To return, close 2.x and OBS, start 3 and press Start. Stop holds until you press Start, even across restarts. Autostart points at one install; turning it on in one moves it there.
+- **What updates deliver.** The dashboard's update replaces `app\` and `START.bat` only, and the stream stays up while it installs. Settings, the stream key and the resume point are kept. yt-dlp updates itself each time StreamLoop starts. Node.js, the supervisor, ffmpeg and the token server only change with the full ZIP: press Stop, close the window, extract the full ZIP over the folder and start it again. Your settings survive that, because no ZIP holds a `config.json`. The dashboard says when a release bundles a newer Node.js.
+
+---
+
 ## v2.3.7
 
 - **Updates now stay on 2.x.** StreamLoop 3.0 is coming and installs in its own folder next to 2.x, so you can switch back. The updater used to take whatever GitHub listed as the newest release, which would have pulled 3.0 into a 2.x folder. It now looks through the releases and only installs the newest 2.x one.
