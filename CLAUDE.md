@@ -43,8 +43,9 @@ npm start            # Run server (tsx)
 npm run dev          # Run with file watching (tsx watch)
 npm test             # Run tests once (vitest run)
 npm run test:watch   # Run tests in watch mode (vitest)
-npm run build:release       # 2.x-layout ZIP (portable Node.js + mpv + yt-dlp/deno + app); no 3.0 packaging yet
-npm run build:release:slim  # 2.x-layout update ZIP: app + yt-dlp only (streamloop-vX.Y.Z-update.zip)
+npm run build:release       # full ZIP in the install layout (node, app, supervisor, ffmpeg, yt-dlp, pot, data, START.bat)
+npm run build:release:slim  # update ZIP: app + START.bat only (streamloop-vX.Y.Z-update.zip)
+node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout.js (both builds run it)
 cargo build --release       # in supervisor/: the supervisor binary
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 ```
@@ -53,15 +54,13 @@ No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
 ## Release Checklist
 
-Packaging for 3.0 is not done yet. The build scripts still produce the 2.x layout (`node\`, `mpv\`, `yt-dlp\`, `app\`, `START.bat`), with no `supervisor\`, `ffmpeg\` or `pot\`, so this branch cannot build a 3.0 release yet. The checklist below describes the scripts as they are.
-
 Before pushing and building a release:
 
 1. Bump the version in `package.json`. The version is read at startup and used by the updater to compare against GitHub Releases.
 2. Update `RELEASE_NOTES.md` with the new version's changelog. This file is used when creating GitHub Releases.
-3. After pushing, run `npm run build:release` to create the distributable ZIP in `dist/`. Both build modes also emit a matching `.sha256` (format: `<hash>  <filename>`), so the manual `certutil` step is optional.
-4. **Build both bundles.** Run `npm run build:release` (full: `streamloop-vX.Y.Z.zip`) **and** `npm run build:release:slim` (`streamloop-vX.Y.Z-update.zip`, app + yt-dlp only). Always ship the full ZIP — first-time installs and reinstalls need `node/` + `mpv/`, which the updater never delivers, so a release whose only download can't be installed fresh is a footgun. The slim ZIP is an **update-only supplement, not a standalone release**: the updater prefers it so existing installs get a much smaller download. (Slim-only is acceptable solely for a throwaway hotfix where every target already has a working full install at a compatible base and the release touches neither Node nor mpv.)
-5. Create the GitHub release with `gh release create` and upload **both ZIPs plus their matching `.sha256`**. The updater matches each checksum to its ZIP by name and verifies integrity against the chosen `.sha256` asset.
+3. **Build both ZIPs** after pushing: `npm run build:release` (full, `streamloop-vX.Y.Z.zip`) and `npm run build:release:slim` (update, `streamloop-vX.Y.Z-update.zip`). Each writes a matching `.sha256` (`<hash>  <filename>`) and `dist/node-version.txt`, and fails if `verify-release.mjs` finds a layout path missing. The full build needs `cargo` and `spikes/buffer/media/slate.mp4`.
+4. The full ZIP is the install: `node\`, `app\`, `supervisor\` (exe + `slate.mp4`), `ffmpeg\ffmpeg.exe`, `yt-dlp\` (yt-dlp, deno, `plugins\bgutil-ytdlp-pot-provider.zip`), `pot\` (the token server, built under the bundled Node so `canvas` matches its ABI), `data\` and `START.bat`. The update ZIP is `app\` + `START.bat` only, all the updater swaps. A new Node, supervisor, ffmpeg or token server means installing the full ZIP, so every release ships both; the update ZIP is never a standalone release.
+5. Create the GitHub release with `gh release create` and upload **both ZIPs, both `.sha256` files and `node-version.txt`**. The updater matches each checksum to its ZIP by name, and reads `node-version.txt` to tell an install its Node is out of date.
 6. **3.x releases are never marked latest.** Create them with `gh release create ... --latest=false`, and also `--prerelease` while 3.0 is on trial. 2.x installs older than 2.3.7 still read GitHub's "latest release" and would otherwise swap 3.0 into a 2.x folder; 2.3.7 and later only take releases with their own major version.
 
 ## Architecture
@@ -98,7 +97,7 @@ Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` dire
 
 ## Platform Notes
 
-Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) has not been changed for 3.0 yet: it still bundles portable Node.js v22.23.4 win-x64, mpv (from `build/mpv/`) and yt-dlp + deno into the 2.x layout, and nothing from `supervisor/`, ffmpeg or the token server. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
+Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) lays out the install that `supervisor/src/paths.rs` expects; `build/release-layout.js` lists the required paths and `release-layout.test.ts` reads `paths.rs` so the two cannot drift. It bundles portable Node.js v22.23.4 win-x64, yt-dlp nightly and deno (latest), and three pinned inputs whose SHA-256 must match: ffmpeg 8.0 essentials (gyan.dev, only `ffmpeg.exe`), and bgutil-ytdlp-pot-provider 2.0.0 (server source and yt-dlp plugin). The full build runs npm under the bundled Node; `--slim` uses the build machine's `npm`, since nothing in `app\` is compiled against a Node ABI.
 
 ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` in tsconfig).
 
@@ -113,7 +112,7 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 
 **Release selection:** `pickRelease()` takes only releases with the running major version. 2.x takes stable releases; 3.x also takes prereleases, since 3.x ships as `--prerelease` while on trial. A release without both the full and the `-update.zip` is skipped, so one still uploading never wins. `compareVersions()` sorts a suffixed version such as `3.0.0-dev` below its release.
 
-**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. `stageUpdate()` stages only `app/` and `START.bat`; `yt-dlp/`, `node/` and `mpv/` in the ZIP are ignored, because the 3.0 supervisor holds `yt-dlp\` and its token server holds `node\`. When the release's `node-version.txt` names another Node than the running one, the status carries `nodeNotice`, which points at the full ZIP.
+**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. `stageUpdate()` stages only `app/` and `START.bat`; `yt-dlp/` and `node/` in a ZIP are ignored, because the 3.0 supervisor holds `yt-dlp\` and its token server holds `node\`. When the release's `node-version.txt` names another Node than the running one, the status carries `nodeNotice`, which points at the full ZIP.
 
 **Restart mechanism:** After applying an update, the server exits with **code 75** (`process.exit(75)` in `index.ts` after a graceful shutdown — stop the update check, the Twitch checks, the launcher and the event tail, close the HTTP server; the supervisor and the stream keep running). 75 is a sentinel, not a failure: `START.bat` reads `%ERRORLEVEL%` after the server process ends and branches on it — `75` = "exited on purpose to apply a staged update", `0` = clean shutdown (stay down), anything else = crash (auto-restart after 10s). The number is arbitrary-but-conventional (75 = `EX_TEMPFAIL` in BSD sysexits.h); what matters is node never emits it on a normal or crashing exit, so it can't be confused with either. On code 75, `START.bat` swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, copies `config.json`, `state.json`, and `logs/` from the old app, verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`.
 

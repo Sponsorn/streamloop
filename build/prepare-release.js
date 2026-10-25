@@ -1,31 +1,26 @@
 /**
  * prepare-release.js
  *
- * Assembles a distributable ZIP for Windows:
- *   1. Downloads portable Node.js (win-x64)
- *   2. Downloads yt-dlp.exe
- *   3. Bundles mpv.exe (must be pre-placed in build/mpv/mpv.exe)
- *   4. Copies application source files
- *   5. Installs production dependencies
- *   6. Packages everything into a ZIP
+ * Builds the 3.x release ZIPs in the install layout of supervisor/src/paths.rs
+ * (listed in build/release-layout.js):
  *
- * Usage:
- *   node build/prepare-release.js          full bundle (node + mpv + yt-dlp + app)
- *   node build/prepare-release.js --slim   update-only bundle: app + yt-dlp only,
- *                                          no node/ or mpv/ (the auto-updater never
- *                                          swaps those). Produces streamloop-vX.Y.Z-
- *                                          update.zip — much smaller, and the updater
- *                                          prefers it over the full ZIP. Use the full
- *                                          bundle for first-time installs.
+ *   node build/prepare-release.js          full ZIP for installs: node\, app\, supervisor\,
+ *                                          ffmpeg\, yt-dlp\ (with deno and the PO-token
+ *                                          plugin), pot\ (the token server), data\, START.bat
+ *   node build/prepare-release.js --slim   update ZIP (streamloop-vX.Y.Z-update.zip): app\ and
+ *                                          START.bat only, the parts the updater swaps
  *
- * Note: mpv.exe must be manually placed in build/mpv/mpv.exe before building (full only).
- * Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases
- * (mpv releases use .7z archives which are complex to extract in a build script)
+ * Both write NODE_VERSION to app\node-version.txt and dist\node-version.txt (a release
+ * asset), a .sha256 per ZIP, and run verify-release.mjs on the ZIP.
+ *
+ * The full build needs cargo (it builds the supervisor) and spikes/buffer/media/slate.mp4.
+ * ffmpeg, the token server source and the yt-dlp plugin are pinned by SHA-256; a mismatch
+ * fails the build.
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, createWriteStream } from 'fs';
+import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, createReadStream, createWriteStream } from 'fs';
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 
@@ -35,160 +30,160 @@ const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}
 const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe';
 const DENO_URL = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip';
 
+const FFMPEG = {
+  url: 'https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-essentials_build.zip',
+  sha256: '647e467caf82b9fa200a562769b5ff4d736aaf725804ed2c64ea9752106fa569',
+  exe: 'ffmpeg-8.0-essentials_build/bin/ffmpeg.exe',
+};
+const POT_TAG = '2.0.0';
+const POT_SERVER = {
+  url: `https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/${POT_TAG}.tar.gz`,
+  sha256: '47038f7e0556a3d689044460f1b6d78381212e1bd04723a27358e1a42279f866',
+  dir: `bgutil-ytdlp-pot-provider-${POT_TAG}/server`,
+};
+const POT_PLUGIN = {
+  url: `https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/${POT_TAG}/bgutil-ytdlp-pot-provider.zip`,
+  sha256: 'bce874dfa25896c2798e0f4f8147b7b22e785479eb1e459ab232bf2506c95016',
+};
+
+const TAR = 'C:\\Windows\\System32\\tar.exe';
 const ROOT = resolve(import.meta.dirname, '..');
 const DIST = join(ROOT, 'dist');
 const RELEASE = join(DIST, 'streamloop');
+const WORK = join(DIST, 'work');
 
 async function main() {
   const SLIM = process.argv.includes('--slim');
-  console.log(`=== StreamLoop Release Builder ${SLIM ? '(slim / update-only)' : '(full)'} ===\n`);
+  console.log(`=== StreamLoop Release Builder ${SLIM ? '(update ZIP)' : '(full)'} ===\n`);
 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const suffix = SLIM ? '-update' : '';
   const zipFilename = `streamloop-v${pkg.version}${suffix}.zip`;
   const checksumFilename = `streamloop-v${pkg.version}${suffix}.sha256`;
 
-  // Clean only this build's staging dir, temp downloads, and its own previous
-  // outputs — NOT the whole dist/ — so the full and slim bundles can be built
-  // back-to-back without wiping each other's ZIP.
-  console.log('Cleaning previous build artifacts for this mode...');
+  // Only this mode's outputs go, so the full and update builds can run back to back.
   mkdirSync(DIST, { recursive: true });
-  rmSync(RELEASE, { recursive: true, force: true });
-  rmSync(join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`), { recursive: true, force: true });
-  for (const f of ['node.zip', 'deno.zip', zipFilename, checksumFilename]) {
-    rmSync(join(DIST, f), { force: true });
+  for (const p of [RELEASE, WORK, join(DIST, zipFilename), join(DIST, checksumFilename), join(DIST, 'node-version.txt')]) {
+    rmSync(p, { recursive: true, force: true });
   }
+  mkdirSync(WORK, { recursive: true });
 
-  // Create release directory structure
-  mkdirSync(join(RELEASE, 'app', 'src'), { recursive: true });
-  if (!SLIM) mkdirSync(join(RELEASE, 'node'), { recursive: true });
-
-  // Step 1: Download portable Node.js (full bundle only — the auto-updater never
-  // delivers node/, so a slim update relies on the existing install's runtime).
+  // The full build runs npm under the bundled Node, first on PATH, so canvas installs for its ABI.
+  let npm = { cmd: 'npm', env: process.env };
   if (!SLIM) {
-    console.log(`Downloading Node.js v${NODE_VERSION} (${NODE_ARCH})...`);
-    const nodeZip = join(DIST, 'node.zip');
+    console.log(`Node.js v${NODE_VERSION}...`);
+    const nodeZip = join(WORK, 'node.zip');
     await downloadFile(NODE_URL, nodeZip);
-
-    console.log('Extracting Node.js...');
-    execSync(`C:\\Windows\\System32\\tar.exe -xf "${nodeZip}" -C "${DIST}"`, { stdio: 'inherit' });
-
-    // Move node files to release/node/
-    const extractedNodeDir = join(DIST, `node-v${NODE_VERSION}-${NODE_ARCH}`);
-    cpSync(extractedNodeDir, join(RELEASE, 'node'), { recursive: true });
+    execFileSync(TAR, ['-xf', nodeZip, '-C', WORK], { stdio: 'inherit', windowsHide: true });
+    cpSync(join(WORK, `node-v${NODE_VERSION}-${NODE_ARCH}`), join(RELEASE, 'node'), { recursive: true });
+    const nodeDir = join(RELEASE, 'node');
+    npm = { cmd: `"${join(nodeDir, 'npm.cmd')}"`, env: { ...process.env, PATH: `${nodeDir};${process.env.PATH}` } };
   }
 
-  // Step 2: Download yt-dlp (nightly — YouTube rotates challenge shapes faster
-  // than stable releases; nightly tracks them) and deno (required to solve the
-  // n-param JS challenge; yt-dlp's EJS subsystem picks it up automatically
-  // when placed alongside yt-dlp.exe).
-  console.log('Downloading yt-dlp (nightly)...');
-  mkdirSync(join(RELEASE, 'yt-dlp'), { recursive: true });
-  await downloadFile(YTDLP_URL, join(RELEASE, 'yt-dlp', 'yt-dlp.exe'));
-
-  console.log('Downloading deno...');
-  const denoZip = join(DIST, 'deno.zip');
-  await downloadFile(DENO_URL, denoZip);
-  execSync(`C:\\Windows\\System32\\tar.exe -xf "${denoZip}" -C "${join(RELEASE, 'yt-dlp')}"`, { stdio: 'inherit' });
-
-  // Step 3: Bundle mpv (full bundle only — the auto-updater never delivers mpv/).
-  if (!SLIM) {
-    console.log('Bundling mpv...');
-    mkdirSync(join(RELEASE, 'mpv'), { recursive: true });
-    const localMpv = join(ROOT, 'build', 'mpv', 'mpv.exe');
-    if (existsSync(localMpv)) {
-      cpSync(localMpv, join(RELEASE, 'mpv', 'mpv.exe'));
-      console.log('  Copied mpv.exe from build/mpv/');
-    } else {
-      console.warn('  WARNING: mpv.exe not found at build/mpv/mpv.exe');
-      console.warn('  Download from: https://github.com/shinchiro/mpv-winbuild-cmake/releases');
-      console.warn('  Place mpv.exe in build/mpv/ and re-run this script');
-    }
-
-    // Write default mpv.conf
-    writeFileSync(join(RELEASE, 'mpv', 'mpv.conf'), [
-      'no-border',
-      'no-osc',
-      'osd-level=0',
-      'hwdec=auto',
-      'ytdl-format=bestvideo[height<=?1080]+bestaudio/best',
-      'ytdl-raw-options=yes-playlist=',
-      'loop-playlist=inf',
-      'keep-open=yes',
-    ].join('\n'));
-    console.log('  Wrote default mpv.conf');
-  }
-
-  // Step 4: Copy application files
-  console.log('Copying application files...');
+  console.log('app\\...');
   const appDir = join(RELEASE, 'app');
-
-  // Copy source directories (exclude test files)
-  cpSync(join(ROOT, 'src'), join(appDir, 'src'), {
-    recursive: true,
-    filter: (src) => !src.includes('__tests__'),
-  });
-
-  // Copy package files (never copy config.json — use the example template instead)
+  cpSync(join(ROOT, 'src'), join(appDir, 'src'), { recursive: true, filter: (src) => !src.includes('__tests__') });
   for (const file of ['package.json', 'package-lock.json', 'tsconfig.json']) {
-    const src = join(ROOT, file);
-    if (existsSync(src)) {
-      cpSync(src, join(appDir, file));
-    }
+    if (existsSync(join(ROOT, file))) cpSync(join(ROOT, file), join(appDir, file));
   }
+  // never the real config.json; START.bat carries the installed one across updates
   cpSync(join(ROOT, 'config.example.json'), join(appDir, 'config.json'));
+  writeFileSync(join(appDir, 'node-version.txt'), `${NODE_VERSION}\n`);
+  writeFileSync(join(DIST, 'node-version.txt'), `${NODE_VERSION}\n`);
+  execSync(`${npm.cmd} install --omit=dev`, { cwd: appDir, env: npm.env, stdio: 'inherit', windowsHide: true });
+  // tsx is a devDependency, but START.bat runs the server through it
+  execSync(`${npm.cmd} install tsx@4`, { cwd: appDir, env: npm.env, stdio: 'inherit', windowsHide: true });
 
-  // Step 5: Install production dependencies. The full bundle uses its own
-  // bundled npm (pinned Node version); the slim bundle skips node/, so it falls
-  // back to the build machine's npm — the installed packages are platform-neutral
-  // JS either way.
-  console.log('Installing production dependencies...');
-  const npmCmd = SLIM ? 'npm' : `"${join(RELEASE, 'node', 'npm.cmd')}"`;
-  execSync(`${npmCmd} install --omit=dev`, { cwd: appDir, stdio: 'inherit' });
+  if (!SLIM) {
+    console.log('supervisor\\...');
+    execSync('cargo build --release', { cwd: join(ROOT, 'supervisor'), stdio: 'inherit', windowsHide: true });
+    mkdirSync(join(RELEASE, 'supervisor'));
+    cpSync(join(ROOT, 'supervisor', 'target', 'release', 'streamloop-supervisor.exe'), join(RELEASE, 'supervisor', 'streamloop-supervisor.exe'));
+    cpSync(join(ROOT, 'spikes', 'buffer', 'media', 'slate.mp4'), join(RELEASE, 'supervisor', 'slate.mp4'));
 
-  // tsx is a devDependency but needed at runtime for the portable bundle
-  execSync(`${npmCmd} install tsx@4`, { cwd: appDir, stdio: 'inherit' });
+    console.log('ffmpeg\\...');
+    const ffmpegZip = join(WORK, 'ffmpeg.zip');
+    await downloadPinned(FFMPEG, ffmpegZip);
+    execFileSync(TAR, ['-xf', ffmpegZip, '-C', WORK, FFMPEG.exe], { stdio: 'inherit', windowsHide: true });
+    mkdirSync(join(RELEASE, 'ffmpeg'));
+    cpSync(join(WORK, FFMPEG.exe), join(RELEASE, 'ffmpeg', 'ffmpeg.exe'));
 
-  // Step 6: Copy scripts
-  console.log('Copying scripts...');
+    // yt-dlp nightly tracks YouTube's challenge changes faster than stable; deno solves
+    // the n-param challenge; the plugin fetches PO tokens from pot\.
+    console.log('yt-dlp\\...');
+    const ytdlpDir = join(RELEASE, 'yt-dlp');
+    mkdirSync(join(ytdlpDir, 'plugins'), { recursive: true });
+    await downloadFile(YTDLP_URL, join(ytdlpDir, 'yt-dlp.exe'));
+    const denoZip = join(WORK, 'deno.zip');
+    await downloadFile(DENO_URL, denoZip);
+    execFileSync(TAR, ['-xf', denoZip, '-C', ytdlpDir], { stdio: 'inherit', windowsHide: true });
+    await downloadPinned(POT_PLUGIN, join(ytdlpDir, 'plugins', 'bgutil-ytdlp-pot-provider.zip'));
+
+    // upstream has no build script; its Dockerfile and README build with tsc
+    console.log('pot\\...');
+    const potTar = join(WORK, 'pot.tar.gz');
+    await downloadPinned(POT_SERVER, potTar);
+    execFileSync(TAR, ['-xzf', potTar, '-C', WORK, POT_SERVER.dir], { stdio: 'inherit', windowsHide: true });
+    const potSrc = join(WORK, POT_SERVER.dir);
+    execSync(`${npm.cmd} ci --no-audit --no-fund`, { cwd: potSrc, env: npm.env, stdio: 'inherit', windowsHide: true });
+    execFileSync(join(RELEASE, 'node', 'node.exe'), [join('node_modules', 'typescript', 'bin', 'tsc')], { cwd: potSrc, stdio: 'inherit', windowsHide: true });
+    execSync(`${npm.cmd} prune --omit=dev --no-audit --no-fund`, { cwd: potSrc, env: npm.env, stdio: 'inherit', windowsHide: true });
+    for (const part of ['build', 'node_modules', 'package.json']) {
+      cpSync(join(potSrc, part), join(RELEASE, 'pot', part), { recursive: true });
+    }
+
+    mkdirSync(join(RELEASE, 'data'));
+    cpSync(join(ROOT, 'scripts', 'README.txt'), join(RELEASE, 'README.txt'));
+  }
+
   cpSync(join(ROOT, 'scripts', 'START.bat'), join(RELEASE, 'START.bat'));
-  cpSync(join(ROOT, 'scripts', 'README.txt'), join(RELEASE, 'README.txt'));
 
-  // Step 7: Create ZIP (retry up to 3 times — antivirus may lock newly created files)
-  console.log('Creating ZIP archive...');
+  // antivirus may still hold freshly written files, so the ZIP is retried
+  console.log('Creating ZIP...');
   const zipPath = join(DIST, zipFilename);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      // Wait for antivirus to finish scanning new files
-      if (attempt > 1) console.log(`  Retry ${attempt}/3 after 10s delay...`);
-      await new Promise(r => setTimeout(r, attempt === 1 ? 5000 : 10000));
-      execSync(`C:\\Windows\\System32\\tar.exe -acf "${zipPath}" -C "${DIST}" streamloop`, { stdio: 'inherit' });
+      await new Promise((r) => setTimeout(r, attempt === 1 ? 5000 : 10000));
+      execFileSync(TAR, ['-acf', zipPath, '-C', DIST, 'streamloop'], { stdio: 'inherit', windowsHide: true });
       if (existsSync(zipPath)) break;
     } catch (err) {
       if (attempt === 3) throw err;
       console.warn(`  ZIP attempt ${attempt} failed, retrying...`);
-      if (existsSync(zipPath)) rmSync(zipPath, { force: true });
+      rmSync(zipPath, { force: true });
     }
   }
 
-  // Step 8: Generate SHA-256 checksum
-  console.log('Generating SHA-256 checksum...');
-  const zipData = readFileSync(zipPath);
-  const hash = createHash('sha256').update(zipData).digest('hex');
   const checksumPath = join(DIST, checksumFilename);
-  writeFileSync(checksumPath, `${hash}  ${zipFilename}\n`);
+  writeFileSync(checksumPath, `${await sha256File(zipPath)}  ${zipFilename}\n`);
+  rmSync(WORK, { recursive: true, force: true });
 
-  console.log(`\nRelease built successfully!`);
+  execFileSync(process.execPath, [join(ROOT, 'build', 'verify-release.mjs'), zipPath], { stdio: 'inherit', windowsHide: true });
+
+  console.log('\nRelease built:');
   console.log(`  ZIP: ${zipPath}`);
   console.log(`  SHA-256: ${checksumPath}`);
-  console.log(`  Dir: ${RELEASE}`);
+  console.log(`  Node version asset: ${join(DIST, 'node-version.txt')}`);
 }
 
 async function downloadFile(url, dest) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to download: ${res.status} ${res.statusText}`);
-  const fileStream = createWriteStream(dest);
-  await pipeline(res.body, fileStream);
+  if (!res.ok) throw new Error(`Failed to download ${url}: ${res.status} ${res.statusText}`);
+  await pipeline(res.body, createWriteStream(dest));
+}
+
+async function downloadPinned({ url, sha256 }, dest) {
+  await downloadFile(url, dest);
+  const actual = await sha256File(dest);
+  if (actual !== sha256) {
+    rmSync(dest, { force: true });
+    throw new Error(`Checksum mismatch for ${url}\n  expected ${sha256}\n  actual   ${actual}`);
+  }
+}
+
+async function sha256File(path) {
+  const hash = createHash('sha256');
+  await pipeline(createReadStream(path), hash);
+  return hash.digest('hex');
 }
 
 main().catch((err) => {
