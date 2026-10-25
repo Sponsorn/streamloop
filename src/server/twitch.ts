@@ -177,12 +177,12 @@ export class TwitchLivenessChecker {
     await this.restartEncoder('Twitch shows a frozen picture');
   }
 
-  /** The read-back itself could not run: recorded only, never acted on. */
   /** The whole picture stood still with no overlay clock to tell a stale stream from still content. */
   handleStill(): void {
     this.addEvent('The picture on Twitch is not changing (no overlay clock to check, so no restart)');
   }
 
+  /** The read-back itself could not run: recorded only, never acted on. */
   handleUnavailable(why: string): void {
     this.addEvent(`Could not check the picture on Twitch: ${why}`);
   }

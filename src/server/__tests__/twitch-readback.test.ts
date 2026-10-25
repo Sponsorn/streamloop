@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
-  DEFAULT_THRESHOLD, TwitchReadback, grabGrayRegion, liveRendition, meanAbsDiff, timerRegion, type GrabRun,
+  DEFAULT_THRESHOLD, TwitchReadback, grabGrayRegion, isAdPlaylist, liveRendition, meanAbsDiff, timerRegion, type GrabRun,
 } from '../twitch-readback.js';
 import type { SupervisorClient, SupervisorStatus } from '../supervisor-client.js';
 
@@ -439,4 +439,10 @@ describe('the overlay clock as the movement signal (renders with ffmpeg)', () =>
     expect(clockDiff).toBeGreaterThan(2 * threshold);
     expect(stillDiff).toBeLessThan(threshold);
   }, 60_000);
+});
+
+describe('isAdPlaylist', () => {
+  it('treats an untitled segment as live, so the read-back is never silently skipped', () => {
+    expect(isAdPlaylist(LIVE_MEDIA.replaceAll('#EXTINF:2.000,live', '#EXTINF:2.000,'))).toBe(false);
+  });
 });

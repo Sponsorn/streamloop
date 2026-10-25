@@ -108,7 +108,7 @@ export async function grabGrayRegion(ffmpegPath: string, hlsUrl: string, region:
 /** A stitched ad (preroll or break) shows a still placeholder; streamlink's twitch plugin tests the same two marks. */
 export function isAdPlaylist(media: string): boolean {
   if (/^#EXT-X-DATERANGE:.*CLASS="twitch-stitched-ad"/m.test(media)) return true;
-  return [...media.matchAll(/^#EXTINF:[^,]*,(.*)$/gm)].some((m) => m[1].trim() !== 'live');
+  return [...media.matchAll(/^#EXTINF:[^,]*,(.*)$/gm)].some((m) => { const t = m[1].trim(); return t !== '' && t !== 'live'; });
 }
 
 async function fetchText(url: string, fetchImpl: typeof fetch): Promise<string | null> {
