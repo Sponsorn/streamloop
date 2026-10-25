@@ -2,11 +2,12 @@
 // MediaMTX. Node runs from a launcher console (a hidden cmd running launch.bat, like START.bat)
 // with cwd ROOT\app and STREAMLOOP_ROOT=ROOT, so Node and the supervisor read the same config.json.
 // Nothing opens a window: every process is spawned hidden, never through `start`.
-//   node node-session.mjs A|B|C|smoke
+//   node node-session.mjs A|B|C|treekill|smoke
 // A: 30 min through Node: the wizard's API calls, dashboard controls, freeze / feeder / encoder faults,
 //    Discord alerts caught by a local webhook.
 // B: Node lifecycle: crash, tree kill, exit 75, console closed, supervisor killed, Stop / Start.
 // C: the Twitch read-back against local HLS (STREAMLOOP_TEST_HLS_URL); nothing reaches Twitch.
+// treekill: the supervisor started through `launch` has a dead parent and outlives taskkill /T /F on Node.
 // Faults go to the supervisor's POST /debug/fault (Node starts it with STREAMLOOP_DEBUG_FAULTS=1).
 // The dummy key is never printed: the script's own notes go through redact(); what Node sends
 // (replies, alerts, read-back status, its console) is stored as received, so the key grep can catch a leak.
@@ -26,7 +27,7 @@ const run = (cmd, args, opts = {}) => new Promise((resolve) => {
   cp.execFile(cmd, args, { windowsHide: true, maxBuffer: 64 * 1024 * 1024, ...opts }, (err, stdout) => resolve({ status: err ? (err.code ?? 1) : 0, stdout }));
 });
 const RUN = process.argv[2];
-if (!['A', 'B', 'C', 'freeze', 'smoke'].includes(RUN)) { console.error('usage: node node-session.mjs A|B|C|freeze|smoke'); process.exit(2); }
+if (!['A', 'B', 'C', 'freeze', 'treekill', 'smoke'].includes(RUN)) { console.error('usage: node node-session.mjs A|B|C|freeze|treekill|smoke'); process.exit(2); }
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
 const BIN = join(REPO, 'supervisor', 'target', 'release', 'streamloop-supervisor.exe');
 const TOOLS = join(REPO, 'spikes', 'tools');
@@ -641,6 +642,42 @@ async function runFreeze() {
   await stopAll();
 }
 
+async function runTreeKill() {
+  await startNode('treekill');
+  results.wizard = await wizard();
+  runReader();
+  await sleep(60_000);
+  const all = await ps();
+  const sup = all.filter((p) => p.Name === 'streamloop-supervisor.exe');
+  const nodes = all.filter(isOurNode);
+  // the outermost Node: its parent is the launcher console, not another of our Node processes
+  const top = nodes.find((n) => !nodes.some((m) => m.ProcessId === n.ParentProcessId));
+  results.before = {
+    supervisors: sup.map((p) => ({ pid: p.ProcessId, parentPid: p.ParentProcessId, parentAlive: all.some((x) => x.ProcessId === p.ParentProcessId), cmd: (p.CommandLine ?? '').slice(0, 200) })),
+    nodes: nodes.map((n) => ({ pid: n.ProcessId, parentPid: n.ParentProcessId })),
+    launched: eventsSince(0, ['launched']).map((e) => ({ ts: e.ts, breakaway: e.breakaway, pid: e.pid })),
+  };
+  note('before the tree kill', results.before);
+  const tKill = Date.now();
+  const r = await run('taskkill', ['/F', '/T', '/PID', String(top?.ProcessId)], { encoding: 'utf8' });
+  results.taskkill = { pid: top?.ProcessId ?? null, output: r.stdout.trim().split(/\r?\n/) };
+  await waitFor('Node gone after the tree kill', async () => !(await ps()).some(isOurNode), 30_000, 500);
+  await sleep(30_000);
+  const supAfter = await supStatus();
+  results.after = {
+    supervisors: await tasklistSupervisors(), state: supAfter?.state ?? null, encoderAlive: supAfter?.encoder?.alive ?? null,
+    survived: sup.length === 1 && (await tasklistSupervisors()).includes(sup[0].ProcessId),
+    gap: gapStats(tKill - 5000, Date.now()),
+  };
+  note('after the tree kill', results.after);
+  // Node again, so stopAll can stop the stream through it
+  await startNode('reattach');
+  results.reattach = await waitFor('the launcher to attach', async () => (await nodeStatus())?.launcher === 'running', 30_000, 500);
+  results.reattach.supervisors = await tasklistSupervisors();
+  note('reattach', results.reattach);
+  await stopAll();
+}
+
 async function runSmoke() {
   await startProxy();
   await startNode('smoke');
@@ -660,7 +697,7 @@ async function runSmoke() {
 }
 
 try {
-  await { A: runA, B: runB, C: runC, freeze: runFreeze, smoke: runSmoke }[RUN]();
+  await { A: runA, B: runB, C: runC, freeze: runFreeze, treekill: runTreeKill, smoke: runSmoke }[RUN]();
 } catch (err) {
   note('run failed', { error: String(err?.stack ?? err) });
   readerStop = true; recStop = true;
