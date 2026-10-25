@@ -66,13 +66,13 @@ const supervisorSchema = z.object({
   ingestUrl: z.string().default('rtmp://live.twitch.tv/app'),
   streamKeyProtected: z.string().default(''),
   encoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).default('h264_nvenc'),
-  cacheBudgetMb: z.number().min(50).default(300),
+  cacheBudgetMb: z.number().int().min(50).default(300),
   readAheadSeconds: z.number().min(2).default(20),
   playerClient: z.string().default('mweb,web_embedded'),
   overlay: z.boolean().default(true),
   freezeSeconds: z.number().min(5).default(20),
   silenceSeconds: z.number().min(5).default(30),
-}).default({});
+}).passthrough().default({}); // passthrough: keys from a newer supervisor survive
 
 const configSchema = z.object({
   port: z.number().int().positive().default(7654),
@@ -153,9 +153,12 @@ export function saveConfig(config: Partial<AppConfig>, path?: string): AppConfig
     };
   }
 
-  // Same for supervisor, so a partial patch never wipes streamKeyProtected
-  if (incoming.supervisor && typeof incoming.supervisor === 'object' && existing.supervisor && typeof existing.supervisor === 'object') {
-    incoming.supervisor = { ...(existing.supervisor as object), ...(incoming.supervisor as object) };
+  // Same for supervisor. A save never clears the stream key: an empty
+  // streamKeyProtected is ignored, only the stream-key route writes a non-empty one.
+  if (incoming.supervisor && typeof incoming.supervisor === 'object') {
+    const patch = { ...(incoming.supervisor as Record<string, unknown>) };
+    if (!patch.streamKeyProtected) delete patch.streamKeyProtected;
+    incoming.supervisor = { ...((existing.supervisor as object) ?? {}), ...patch };
   }
 
   const merged = { ...existing, ...incoming } as Record<string, unknown>;

@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { readFileSync } from 'fs';
 import { loadConfig, saveConfig, isFirstRun } from '../config.js';
 
 const tmpDir = join(import.meta.dirname, '..', '..', '..', '.test-tmp');
@@ -265,5 +264,44 @@ describe('supervisor config', () => {
     expect(saved.supervisor.streamKeyProtected).toBe('blob');
     expect(saved.supervisor.encoder).toBe('h264_amf');
     expect(JSON.parse(readFileSync(tmpConfig, 'utf-8')).supervisor.streamKeyProtected).toBe('blob');
+  });
+
+  it('rejects a fractional cacheBudgetMb', () => {
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { cacheBudgetMb: 300.5 } }));
+    expect(() => loadConfig(tmpConfig)).toThrow(/cacheBudgetMb/);
+  });
+
+  it('keeps streamKeyProtected when a save carries an empty one', () => {
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { streamKeyProtected: 'blob' } }));
+    const saved = saveConfig({ supervisor: { streamKeyProtected: '', encoder: 'libx264' } } as any, tmpConfig);
+    expect(saved.supervisor.streamKeyProtected).toBe('blob');
+    expect(saved.supervisor.encoder).toBe('libx264');
+  });
+
+  it('replaces streamKeyProtected when a save carries a non-empty one', () => {
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { streamKeyProtected: 'blob' } }));
+    const saved = saveConfig({ supervisor: { streamKeyProtected: 'new' } } as any, tmpConfig);
+    expect(saved.supervisor.streamKeyProtected).toBe('new');
+    expect(JSON.parse(readFileSync(tmpConfig, 'utf-8')).supervisor.streamKeyProtected).toBe('new');
+  });
+
+  it('keeps unknown supervisor keys through load and save', () => {
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { futureKnob: 7 } }));
+    loadConfig(tmpConfig);
+    expect(JSON.parse(readFileSync(tmpConfig, 'utf-8')).supervisor.futureKnob).toBe(7);
+    saveConfig({ port: 7000 }, tmpConfig);
+    expect(JSON.parse(readFileSync(tmpConfig, 'utf-8')).supervisor.futureKnob).toBe(7);
+  });
+});
+
+describe('old discord keys', () => {
+  it('loads a config that still has obsDisconnect and obsReconnect', () => {
+    writeFileSync(tmpConfig, JSON.stringify({
+      playlists: [{ id: 'PLtest123' }],
+      discord: { events: { obsDisconnect: true }, templates: { obsReconnect: 'x' } },
+    }));
+    const cfg = loadConfig(tmpConfig);
+    expect((cfg.discord.events as any).obsDisconnect).toBeUndefined();
+    expect((cfg.discord.templates as any).obsReconnect).toBeUndefined();
   });
 });
