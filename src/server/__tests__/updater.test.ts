@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { compareVersions, selectReleaseAssets, pickRelease, type GithubRelease } from '../updater.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs';
+import { join } from 'path';
+import {
+  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, type GithubRelease,
+} from '../updater.js';
 
 function asset(name: string) {
   return { name, browser_download_url: `https://github.com/x/y/releases/download/v1/${name}` };
@@ -60,7 +64,7 @@ describe('selectReleaseAssets', () => {
   });
 
   it('returns nulls when there is no zip asset', () => {
-    expect(selectReleaseAssets([asset('notes.txt')])).toEqual({ zipUrl: null, checksumUrl: null });
+    expect(selectReleaseAssets([asset('notes.txt')])).toEqual({ zipUrl: null, checksumUrl: null, stageNode: false });
   });
 
   it('matches the checksum named <file>.zip.sha256', () => {
@@ -133,5 +137,100 @@ describe('pickRelease', () => {
   it('accepts tags with and without a leading v', () => {
     const releases = [release('2.3.8'), release('v2.3.7')];
     expect(pickRelease(releases, '2.3.6')?.tag_name).toBe('2.3.8');
+  });
+});
+
+describe('selectReleaseAssets with a Node version', () => {
+  const bothBundles = [
+    asset('streamloop-v2.3.8.zip'),
+    asset('streamloop-v2.3.8.sha256'),
+    asset('streamloop-v2.3.8-update.zip'),
+    asset('streamloop-v2.3.8-update.sha256'),
+  ];
+
+  it('chooses the full ZIP and stages node/ when the release bundles a different Node', () => {
+    // Act
+    const picked = selectReleaseAssets(bothBundles, '22.23.4', '22.12.0');
+
+    // Assert
+    expect(picked.zipUrl).toMatch(/streamloop-v2\.3\.8\.zip$/);
+    expect(picked.checksumUrl).toMatch(/streamloop-v2\.3\.8\.sha256$/);
+    expect(picked.stageNode).toBe(true);
+  });
+
+  it('keeps the slim ZIP and ignores node/ when the release bundles the running Node', () => {
+    const picked = selectReleaseAssets(bothBundles, '22.23.4', '22.23.4');
+    expect(picked.zipUrl).toContain('-update.zip');
+    expect(picked.checksumUrl).toContain('-update.sha256');
+    expect(picked.stageNode).toBe(false);
+  });
+
+  it('keeps the slim ZIP when the release does not name its Node', () => {
+    const picked = selectReleaseAssets(bothBundles, null, '22.12.0');
+    expect(picked.zipUrl).toContain('-update.zip');
+    expect(picked.stageNode).toBe(false);
+  });
+
+  it('falls back to the slim ZIP without node/ when the release has no full ZIP', () => {
+    const picked = selectReleaseAssets([asset('streamloop-v2.3.8-update.zip')], '22.23.4', '22.12.0');
+    expect(picked.zipUrl).toContain('-update.zip');
+    expect(picked.stageNode).toBe(false);
+  });
+});
+
+describe('parseNodeVersion', () => {
+  it('reads a bare or v-prefixed version with surrounding whitespace', () => {
+    expect(parseNodeVersion('22.23.4\n')).toBe('22.23.4');
+    expect(parseNodeVersion(' v22.23.4 ')).toBe('22.23.4');
+  });
+
+  it('rejects anything that is not X.Y.Z', () => {
+    expect(parseNodeVersion('<html>Not Found</html>')).toBeNull();
+    expect(parseNodeVersion('')).toBeNull();
+  });
+});
+
+describe('stageUpdate', () => {
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater');
+  const extractDir = join(root, 'extracted');
+  const tmpDir = join(root, 'tmp');
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    for (const dir of ['app/src', 'node', 'mpv', 'yt-dlp']) {
+      mkdirSync(join(extractDir, 'streamloop', dir), { recursive: true });
+    }
+    writeFileSync(join(extractDir, 'streamloop', 'node', 'node.exe'), '');
+    writeFileSync(join(extractDir, 'streamloop', 'mpv', 'mpv.exe'), '');
+    writeFileSync(join(extractDir, 'streamloop', 'START.bat'), '');
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('stages node/ next to app/ when asked to', () => {
+    // Act
+    stageUpdate(extractDir, tmpDir, true);
+
+    // Assert
+    expect(existsSync(join(tmpDir, 'app', 'src'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'node', 'node.exe'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'yt-dlp'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'START.bat'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'mpv'))).toBe(false);
+  });
+
+  it('leaves node/ out when the running Node already matches', () => {
+    stageUpdate(extractDir, tmpDir, false);
+    expect(existsSync(join(tmpDir, 'app', 'src'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'node'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'mpv'))).toBe(false);
+  });
+
+  it('throws when the archive has no app/', () => {
+    rmSync(join(extractDir, 'streamloop', 'app'), { recursive: true });
+    expect(() => stageUpdate(extractDir, tmpDir, true)).toThrow(/app\//);
   });
 });

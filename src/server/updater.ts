@@ -33,19 +33,25 @@ export interface UpdateInfo {
   isDevMode: boolean;
 }
 
-/** Pick the best ZIP asset and its matching checksum from a release's assets.
- *  Prefers a slim "-update.zip" (app + yt-dlp only, no node/mpv — for in-place
- *  updates, much smaller) over the full bundle, falling back to any ".zip". The
- *  checksum is matched to the *chosen* ZIP by name so a release carrying both
- *  bundles can't cross the wires. Accepts either "<file>.zip.sha256" or
- *  "<file>.sha256", since both naming conventions have shipped. */
+export interface SelectedAssets {
+  zipUrl: string | null;
+  checksumUrl: string | null;
+  /** Stage the ZIP's node/ for START.bat to swap in. */
+  stageNode: boolean;
+}
+
+/** Prefers the slim "-update.zip", or the full ZIP when the release bundles a different Node.
+ *  The checksum is matched to the chosen ZIP by name, as "<file>.zip.sha256" or "<file>.sha256". */
 export function selectReleaseAssets(
   assets: Array<{ name: string; browser_download_url: string }>,
-): { zipUrl: string | null; checksumUrl: string | null } {
-  const zipAsset =
-    assets.find((a) => a.name.endsWith('-update.zip')) ??
-    assets.find((a) => a.name.endsWith('.zip'));
-  if (!zipAsset) return { zipUrl: null, checksumUrl: null };
+  releaseNode: string | null = null,
+  runningNode: string = process.versions.node,
+): SelectedAssets {
+  const slim = assets.find((a) => a.name.endsWith('-update.zip'));
+  const full = assets.find((a) => a.name.endsWith('.zip') && !a.name.endsWith('-update.zip'));
+  const wantNode = releaseNode !== null && releaseNode !== runningNode;
+  const zipAsset = wantNode ? full ?? slim : slim ?? full;
+  if (!zipAsset) return { zipUrl: null, checksumUrl: null, stageNode: false };
 
   const zipName = zipAsset.name;
   const zipBase = zipName.replace(/\.zip$/, '');
@@ -55,7 +61,50 @@ export function selectReleaseAssets(
   return {
     zipUrl: zipAsset.browser_download_url,
     checksumUrl: checksumAsset?.browser_download_url ?? null,
+    stageNode: wantNode && zipAsset === full,
   };
+}
+
+/** The Node version a release names in its node-version.txt asset, or null. */
+export function parseNodeVersion(text: string): string | null {
+  const m = /^v?(\d+\.\d+\.\d+)$/.exec(text.trim());
+  return m ? m[1] : null;
+}
+
+/** Move what START.bat swaps out of an extracted release into _update_tmp:
+ *  app/, START.bat, yt-dlp/ and, with includeNode, node/. mpv/ is never staged. */
+export function stageUpdate(extractDir: string, tmpDir: string, includeNode: boolean): void {
+  // The ZIP holds streamloop/app/; older layouts may extract app/ directly.
+  let root = join(extractDir, 'streamloop');
+  if (!existsSync(join(root, 'app'))) root = extractDir;
+  if (!existsSync(join(root, 'app'))) {
+    throw new Error('Could not find app/ directory in update archive');
+  }
+
+  // config.json and state.json are copied by START.bat after the server exits,
+  // so late config changes and the final flushed state are preserved.
+
+  // START.bat never replaces itself in place; it stages this copy as START.bat.new.
+  const newStartBat = join(extractDir, 'streamloop', 'START.bat');
+  if (existsSync(newStartBat)) {
+    cpSync(newStartBat, join(tmpDir, 'START.bat'));
+  }
+
+  // The live app/ can't be renamed while the server runs (EBUSY on Windows),
+  // so START.bat swaps the staged copy in after the process exits.
+  renameSync(join(root, 'app'), join(tmpDir, 'app'));
+
+  // yt-dlp/ (yt-dlp.exe + deno.exe) rides along on every update: YouTube's
+  // challenge shape rotates faster than we cut releases.
+  const newYtdlpDir = join(extractDir, 'streamloop', 'yt-dlp');
+  if (existsSync(newYtdlpDir)) {
+    renameSync(newYtdlpDir, join(tmpDir, 'yt-dlp'));
+  }
+
+  const newNodeDir = join(extractDir, 'streamloop', 'node');
+  if (includeNode && existsSync(join(newNodeDir, 'node.exe'))) {
+    renameSync(newNodeDir, join(tmpDir, 'node'));
+  }
 }
 
 export function compareVersions(a: string, b: string): number {
@@ -105,6 +154,7 @@ export class Updater {
   private isDevMode: boolean;
   private releaseAssetUrl: string | null = null;
   private releaseChecksumUrl: string | null = null;
+  private stageNode = false;
 
   constructor() {
     // Read version from package.json
@@ -171,16 +221,21 @@ export class Updater {
       this.latestVersion = release.tag_name.replace(/^v/, '');
       this.updateAvailable = compareVersions(this.latestVersion, this.currentVersion) > 0;
 
-      // Pick the ZIP (slim -update.zip preferred) + its matching checksum,
-      // then validate URLs against allowed domains.
+      // Pick the ZIP (slim unless the release bundles a different Node) + its
+      // matching checksum, then validate URLs against allowed domains.
       if (this.updateAvailable) {
-        const { zipUrl, checksumUrl } = selectReleaseAssets(release.assets);
+        const releaseNode = await this.fetchReleaseNodeVersion(release);
+        const { zipUrl, checksumUrl, stageNode } = selectReleaseAssets(release.assets, releaseNode);
         if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
           throw new Error(`Untrusted download URL domain: ${zipUrl}`);
         }
         this.releaseAssetUrl = zipUrl;
         this.releaseChecksumUrl =
           checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
+        this.stageNode = stageNode;
+        if (stageNode) {
+          logger.info({ from: process.versions.node, to: releaseNode }, 'Update will also replace Node');
+        }
       }
 
       this.status = 'idle';
@@ -193,6 +248,20 @@ export class Updater {
     }
 
     return this.getStatus();
+  }
+
+  /** Reads the release's node-version.txt asset. Any failure means "unknown",
+   *  which keeps the slim update and the installed Node. */
+  private async fetchReleaseNodeVersion(release: GithubRelease): Promise<string | null> {
+    const url = release.assets.find((a) => a.name === 'node-version.txt')?.browser_download_url;
+    if (!url || !isAllowedDownloadUrl(url)) return null;
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': `streamloop/${this.currentVersion}` } });
+      return res.ok ? parseNodeVersion(await res.text()) : null;
+    } catch (err) {
+      logger.warn({ err }, 'Could not read the release Node version');
+      return null;
+    }
   }
 
   async downloadAndApply(): Promise<void> {
@@ -251,7 +320,7 @@ export class Updater {
         }
         logger.info('Update checksum verified');
       } else {
-        logger.warn('No checksum file in release — skipping integrity verification');
+        logger.warn('No checksum file in release â€” skipping integrity verification');
       }
 
       // Extract
@@ -261,41 +330,7 @@ export class Updater {
       mkdirSync(extractDir, { recursive: true });
       execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { timeout: 600_000 });
 
-      // Find the app directory inside the extracted zip
-      // The ZIP contains streamloop/app/ — we need the app folder
-      let newAppDir = join(extractDir, 'streamloop', 'app');
-      if (!existsSync(newAppDir)) {
-        // Maybe the zip extracts directly
-        newAppDir = join(extractDir, 'app');
-      }
-      if (!existsSync(newAppDir)) {
-        throw new Error('Could not find app/ directory in update archive');
-      }
-
-      // config.json and state.json are copied by START.bat after the server exits,
-      // so late config changes and the final flushed state are preserved.
-
-      // Copy new START.bat to tmp staging (START.bat swap also done by the batch file)
-      const newStartBat = join(extractDir, 'streamloop', 'START.bat');
-      if (existsSync(newStartBat)) {
-        cpSync(newStartBat, join(tmpDir, 'START.bat'));
-      }
-
-      // Stage the new app at _update_tmp/app/ for START.bat to swap after exit.
-      // We can't rename the live app/ directory while the server is running on Windows
-      // (EBUSY), so the batch file handles the swap after the process exits.
-      const stagedAppDir = join(tmpDir, 'app');
-      renameSync(newAppDir, stagedAppDir);
-
-      // Also stage yt-dlp/ (contains yt-dlp.exe + deno.exe) if the ZIP includes
-      // it. START.bat swaps it alongside app/ so new yt-dlp/deno binaries land
-      // on every update — YouTube's challenge shape rotates faster than we cut
-      // releases, and nightly yt-dlp helps track those rotations.
-      const newYtdlpDir = join(extractDir, 'streamloop', 'yt-dlp');
-      if (existsSync(newYtdlpDir)) {
-        const stagedYtdlpDir = join(tmpDir, 'yt-dlp');
-        renameSync(newYtdlpDir, stagedYtdlpDir);
-      }
+      stageUpdate(extractDir, tmpDir, this.stageNode);
 
       this.status = 'ready';
       logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');
