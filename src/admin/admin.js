@@ -1438,13 +1438,14 @@ function renderUpdateBanner(status) {
   }
 
   banner.classList.remove('hidden');
+  const target = status.nodeUpdate ? `Node.js ${status.nodeUpdate}` : `v${status.latestVersion}`;
 
   if (status.status === 'downloading') {
-    text.textContent = `Downloading v${status.latestVersion}...`;
+    text.textContent = `Downloading ${target}...`;
     btn.disabled = true;
     btn.textContent = 'Downloading...';
   } else if (status.status === 'extracting') {
-    text.textContent = `Installing v${status.latestVersion}...`;
+    text.textContent = `Installing ${target}...`;
     btn.disabled = true;
     btn.textContent = 'Installing...';
   } else if (status.status === 'ready') {
@@ -1455,6 +1456,10 @@ function renderUpdateBanner(status) {
     text.textContent = `Update failed: ${status.error}`;
     btn.disabled = false;
     btn.textContent = 'Retry';
+  } else if (status.nodeUpdate) {
+    text.textContent = `Node.js update: ${status.nodeUpdate} is available (current: ${status.nodeVersion})`;
+    btn.disabled = status.isDevMode;
+    btn.textContent = status.isDevMode ? 'Dev Mode' : 'Update Node.js';
   } else {
     text.textContent = `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
     btn.disabled = false;
@@ -1533,7 +1538,9 @@ async function handleCheckUpdate() {
     const status = await api('/api/update/check', { method: 'POST' });
     const settingsBtn = $('#settings-update-btn');
     if (status.updateAvailable) {
-      result.textContent = `v${status.latestVersion} available!`;
+      result.textContent = status.nodeUpdate
+        ? `Node.js update: ${status.nodeUpdate} available`
+        : `v${status.latestVersion} available!`;
       result.style.color = 'var(--accent)';
       if (settingsBtn && !status.isDevMode) settingsBtn.classList.remove('hidden');
       renderUpdateBanner(status);
