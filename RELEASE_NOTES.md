@@ -1,3 +1,13 @@
+## v2.3.8
+
+- **Node.js 22.23.4, a security fix.** The full ZIP now ships Node 22.23.4 instead of 22.12.0. 22.12.0 has a bug in its brotli decoder (CVE-2026-111497); 22.23.4 fixes it.
+- **Node updates now arrive with the normal update.** Until now the updater only replaced `app\` and `yt-dlp\`, so an install kept the Node it was first installed with. Each release now says which Node it bundles. When that differs from the Node an install runs, the updater downloads the full ZIP instead of the small update ZIP, and `START.bat` swaps in the new `node\` after the app. It checks that the new `node.exe` starts and puts the old one back if it does not. If `START.bat` is cut off halfway through the swap, the next start restores the old `node\` before anything else runs.
+  - **Installs on 2.3.7 or older need one reinstall from the full ZIP to get the new Node.** The update to 2.3.8 is applied by your current launcher, which does not know how to swap `node\`. It installs the new app but keeps Node 22.12.0. To get 22.23.4: let the update finish, stop StreamLoop, unzip `streamloop-v2.3.8.zip` into a separate folder, replace the `node` folder in your install with the one from the ZIP, then start `START.bat`. Do not unzip over the install: the ZIP's `app\config.json` is the blank template and would replace your settings. From 2.3.8 on, Node updates apply on their own.
+- **Dependency security fixes.** Express and its `proxy-addr`, `body-parser` and `path-to-regexp` dependencies are updated to fixed versions. Vitest moves to 4.x, which drops the vulnerable `tinypool`; that one only affects development, not the release ZIP.
+- **Internal:** both release builds write the bundled Node version to `app\node-version.txt` and `dist\node-version.txt`; the second goes up as a release asset for the updater to read. Tests cover the ZIP choice, the `node\` staging and the new `START.bat` lines.
+
+---
+
 ## v2.3.7
 
 - **Updates now stay on 2.x.** StreamLoop 3.0 is coming and installs in its own folder next to 2.x, so you can switch back. The updater used to take whatever GitHub listed as the newest release, which would have pulled 3.0 into a 2.x folder. It now looks through the releases and only installs the newest 2.x one.
