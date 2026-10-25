@@ -29,7 +29,7 @@ import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, cre
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 
-const NODE_VERSION = '22.12.0';
+const NODE_VERSION = '22.23.4';
 const NODE_ARCH = 'win-x64';
 const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`;
 const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe';
