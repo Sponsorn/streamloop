@@ -24,12 +24,18 @@ export interface TwitchLivenessStatus {
   readback: ReadbackStatus;
 }
 
+export interface RestartClock {
+  lastAttemptAt: number | null;
+  /** When the window's one critical went out. */
+  alertedAt: number | null;
+}
+
 export interface TwitchLivenessOptions {
   /** The install's ffmpeg under ROOT; without it the read-back is off. */
   ffmpegPath?: string | null;
   addEvent?: (message: string) => void;
   /** Shared by every checker a config reload builds, so a reload cannot lift the 30 min limit. */
-  restartClock?: { lastAttemptAt: number | null };
+  restartClock?: RestartClock;
   /** Test runs only (STREAMLOOP_TEST_HLS_URL): the read-back reads this HLS and the channel counts as
    *  live, so no request reaches Twitch and no Helix credentials are needed. */
   testHlsUrl?: string | null;
@@ -53,7 +59,7 @@ export class TwitchLivenessChecker {
   private lastCheckAt: number | null = null;
   private lastRestartAt: number | null = null;
   private restartCount = 0;
-  private readonly restartClock: { lastAttemptAt: number | null };
+  private readonly restartClock: RestartClock;
   private readonly addEvent: (message: string) => void;
   private readonly readback: TwitchReadback | null;
   private readonly testHlsUrl: string | null;
@@ -63,7 +69,7 @@ export class TwitchLivenessChecker {
     this.client = client;
     this.discord = discord;
     this.addEvent = opts.addEvent ?? (() => {});
-    this.restartClock = opts.restartClock ?? { lastAttemptAt: null };
+    this.restartClock = opts.restartClock ?? { lastAttemptAt: null, alertedAt: null };
     this.testHlsUrl = opts.testHlsUrl || null;
     this.readback = opts.ffmpegPath && this.enabled
       ? new TwitchReadback({
@@ -155,7 +161,7 @@ export class TwitchLivenessChecker {
       );
 
       if (live === null) {
-        // API error — don't change counter
+        // API error â€” don't change counter
         return;
       }
 
@@ -200,14 +206,23 @@ export class TwitchLivenessChecker {
   /** `reason` goes to the supervisor's log and into any alert. */
   private async restartEncoder(reason: string, offline = false): Promise<void> {
     if (this.restartInProgress) return;
-    const last = this.restartClock.lastAttemptAt;
+    const clock = this.restartClock;
+    const last = clock.lastAttemptAt;
     if (last !== null && Date.now() - last < RESTART_LIMIT_MS) {
+      const message = `${reason}, and the encoder was already restarted in the last 30 minutes. Check the stream.`;
+      // One critical per window; later hits in it go to the timeline only.
+      if (clock.alertedAt !== null && clock.alertedAt >= last) {
+        logger.warn({ reason }, 'Twitch liveness: still failing inside the 30 min window, already alerted');
+        this.addEvent(message);
+        return;
+      }
       logger.warn({ reason }, 'Twitch liveness: encoder restarted less than 30 min ago, alerting only');
-      await this.discord.notifyCritical(`${reason}, and the encoder was already restarted in the last 30 minutes. Check the stream.`);
+      clock.alertedAt = Date.now();
+      await this.discord.notifyCritical(message);
       return;
     }
     this.restartInProgress = true;
-    this.restartClock.lastAttemptAt = Date.now();
+    clock.lastAttemptAt = Date.now();
 
     logger.warn({ reason }, 'Twitch liveness: restarting the encoder');
     if (offline) await this.discord.notifyTwitchMismatch(this.config.twitchChannel);
@@ -244,7 +259,7 @@ export class TwitchLivenessChecker {
       });
 
       if (res.status === 401) {
-        // Token expired or revoked — invalidate and retry once
+        // Token expired or revoked â€” invalidate and retry once
         logger.warn('Twitch API returned 401, refreshing token');
         this.accessToken = null;
         this.tokenExpiresAt = 0;

@@ -62,7 +62,7 @@ async function main() {
   // STREAMLOOP_TEST_HLS_URL is for the end-to-end runs against local MediaMTX; config.json cannot set it.
   const testHlsUrl = process.env.STREAMLOOP_TEST_HLS_URL || null;
   if (testHlsUrl) logger.warn('STREAMLOOP_TEST_HLS_URL is set: the Twitch read-back reads a local test stream and Twitch is never asked');
-  const twitchOpts = { ffmpegPath: root ? join(root, 'ffmpeg', 'ffmpeg.exe') : null, addEvent: (m: string) => eventLog.addEvent(m), restartClock: { lastAttemptAt: null }, testHlsUrl };
+  const twitchOpts = { ffmpegPath: root ? join(root, 'ffmpeg', 'ffmpeg.exe') : null, addEvent: (m: string) => eventLog.addEvent(m), restartClock: { lastAttemptAt: null, alertedAt: null }, testHlsUrl };
   let twitch = new TwitchLivenessChecker(config, client, discord, twitchOpts);
 
   // One gate for the process lifetime, so supervisor and launcher alerts share its streaks.

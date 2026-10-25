@@ -499,6 +499,57 @@ describe('TwitchLivenessChecker', () => {
       expect(client.control).toHaveBeenCalledTimes(2);
     });
 
+    it('a third streak inside the window sends no Discord call and goes to the timeline', async () => {
+      // Arrange
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      offlineFetch(9);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+      for (let i = 0; i < 6; i++) await checker.check();
+      const criticalsAfterSecond = vi.mocked(discord.notifyCritical).mock.calls.length;
+
+      // Act
+      for (let i = 0; i < 3; i++) await checker.check();
+
+      // Assert
+      expect(criticalsAfterSecond).toBe(1);
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(addEvent).toHaveBeenCalledWith(expect.stringContaining('already restarted'));
+    });
+
+    it('sends exactly one critical per 30 min window across Helix and read-back triggers', async () => {
+      // Arrange
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      offlineFetch(12);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+      const discordCalls = (): number =>
+        vi.mocked(discord.notifyCritical).mock.calls.length +
+        vi.mocked(discord.notifyTwitchMismatch).mock.calls.length +
+        vi.mocked(discord.notifyTwitchRestart).mock.calls.length;
+
+      // Act: window 1 opens with a Helix restart, then four more triggers inside it
+      for (let i = 0; i < 3; i++) await checker.check(); // restart: mismatch + restart notices
+      await checker.handleFrozen(); // first cap hit: one critical
+      for (let i = 0; i < 3; i++) await checker.check(); // timeline only
+      await checker.handleFrozen(); // timeline only
+      const inFirstWindow = discordCalls();
+      // window 2 opens with a read-back restart, then one Helix streak inside it
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      await checker.handleFrozen(); // restart, no Discord notice
+      for (let i = 0; i < 3; i++) await checker.check(); // first cap hit: one critical
+      await checker.handleFrozen(); // timeline only
+
+      // Assert
+      expect(inFirstWindow).toBe(3);
+      expect(discordCalls()).toBe(4);
+      expect(discord.notifyCritical).toHaveBeenCalledTimes(2);
+      expect(client.control).toHaveBeenCalledTimes(2);
+    });
+
     it('a frozen read-back restarts the encoder and shares the 30 min limit', async () => {
       const client = mockClient(true);
       const discord = mockDiscord();
@@ -532,10 +583,11 @@ describe('TwitchLivenessChecker', () => {
       // Arrange: index.ts passes the same options object to every new checker
       const client = mockClient(true);
       const discord = mockDiscord();
-      const opts = { restartClock: { lastAttemptAt: null } };
+      const opts = { restartClock: { lastAttemptAt: null, alertedAt: null } };
       await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
 
-      // Act
+      // Act: the cap hit and its critical, then a later hit after another reload
+      await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
       await new TwitchLivenessChecker(makeConfig(), client, discord, opts).handleFrozen();
 
       // Assert
