@@ -292,6 +292,19 @@ describe('supervisor config', () => {
     expect(saved.supervisor.playerClient).toBe('mweb,web_embedded');
   });
 
+  it('leaves the object it was given unchanged', () => {
+    // Arrange
+    writeFileSync(tmpConfig, JSON.stringify({ ...base, discord: { botName: 'Old' }, supervisor: { streamKeyProtected: 'blob' } }));
+    const input = { discord: { webhookUrl: 'https://example.com/hook' }, supervisor: { encoder: 'libx264', streamKeyProtected: '' } };
+    const before = structuredClone(input);
+
+    // Act
+    saveConfig(input as any, tmpConfig);
+
+    // Assert
+    expect(input).toEqual(before);
+  });
+
   it('keeps unknown supervisor keys through load and save', () => {
     writeFileSync(tmpConfig, JSON.stringify({ ...base, supervisor: { futureKnob: 7 } }));
     loadConfig(tmpConfig);

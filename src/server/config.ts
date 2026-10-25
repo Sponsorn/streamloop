@@ -144,8 +144,8 @@ export function saveConfig(config: Partial<AppConfig>, path?: string): AppConfig
   }
   migrateJson(existing);
 
-  // Deep-merge discord object so partial saves don't clobber nested fields
-  const incoming = config as Record<string, unknown>;
+  // Deep-merge discord object so partial saves don't clobber nested fields. `config` is never mutated.
+  const incoming: Record<string, unknown> = { ...config };
   if (incoming.discord && typeof incoming.discord === 'object' && existing.discord && typeof existing.discord === 'object') {
     const existingDiscord = existing.discord as Record<string, unknown>;
     const incomingDiscord = incoming.discord as Record<string, unknown>;
