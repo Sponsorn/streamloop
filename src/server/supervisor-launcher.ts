@@ -206,9 +206,8 @@ export class SupervisorLauncher {
     }
     this.missingReported = false;
 
-    // `launch` is a short-lived intermediate: it starts the supervisor detached, outside our job
-    // when the job allows it, and exits. The supervisor's parent is then dead, so no Node exit,
-    // window close or tree kill reaches the stream. Its exit code is the relayed port-taken 2, or 0.
+    // `launch` starts the supervisor detached and exits, so no Node exit or tree kill reaches it.
+    // Its exit code is the supervisor's port-taken 2, relayed, or 0.
     const args = ['launch', '--root', this.root];
     if (this.debugFaults) args.push('--debug-faults');
     const child = this.spawnImpl(exe, args, {

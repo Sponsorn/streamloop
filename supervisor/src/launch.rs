@@ -1,7 +1,5 @@
-//! `streamloop-supervisor.exe launch ARGS`: start the supervisor through a short-lived
-//! intermediate. The supervisor's parent is then a dead process, so a tree kill of the caller
-//! (`taskkill /T`, "End process tree") cannot walk to it, and it leaves the caller's job when the
-//! job allows breakaway.
+//! `launch ARGS`: start the supervisor through a short-lived intermediate, so its parent is dead
+//! and a tree kill of the caller cannot reach it; it also leaves the caller's job when allowed.
 
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
