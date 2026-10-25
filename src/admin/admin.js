@@ -1,4 +1,7 @@
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime } from './status-view.js';
+import {
+  streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
+  encoderLabel, autostartLabel, dependencyRows, changedFields,
+} from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -124,7 +127,8 @@ function collectPlaylists(containerSel) {
 
 // Wizard
 
-const WIZ_TOTAL_STEPS = 5;
+const WIZ_TOTAL_STEPS = 6;
+let wizSetupReport = null;
 let wizStep = 1;
 let wizFinished = false;
 const wizState = {
@@ -207,6 +211,9 @@ function wizInitStep(step) {
       $('#wiz-autostart').checked = wizState.autostart;
       break;
     case 5:
+      if (!wizSetupReport) wizRunSetupCheck();
+      break;
+    case 6:
       ['config', 'key', 'live'].forEach(key => setVerifyIcon(key, ''));
       $('#wiz-verify-status').textContent = '';
       $('#wiz-next').disabled = false;
@@ -310,6 +317,104 @@ async function runVerification() {
   wizFinished = true;
   nextBtn.disabled = false;
   nextBtn.textContent = 'Go to Dashboard';
+}
+
+async function wizRunSetupCheck() {
+  $('#wiz-setup-apply').classList.add('hidden');
+  $('#wiz-setup-use').classList.add('hidden');
+  wizSetupReport = await runSetupCheck($('#wiz-setup-run'), $('#wiz-setup-report'));
+  if (!wizSetupReport) return;
+  const { encoder, cache } = wizSetupReport;
+  $('#wiz-encoder').innerHTML = $('#pb-encoder').innerHTML;
+  $('#wiz-encoder').value = encoder.chosen;
+  // With no working encoder there is nothing to pick.
+  $('#wiz-encoder').closest('.form-group').classList.toggle('hidden', !encoder.works);
+  $('#wiz-cache').value = String(cache.recommendedMb);
+  $('#wiz-setup-apply').classList.remove('hidden');
+  $('#wiz-setup-use').classList.remove('hidden');
+}
+
+async function wizUseSetup(e) {
+  const input = $('#wiz-cache');
+  const cacheBudgetMb = Number(input.value);
+  if (!Number.isInteger(cacheBudgetMb) || cacheBudgetMb < 50) {
+    input.classList.add('invalid');
+    showToast('Download cache must be a whole number, at least 50.');
+    return;
+  }
+  input.classList.remove('invalid');
+  const picked = { cacheBudgetMb };
+  if (wizSetupReport.encoder.works) picked.encoder = $('#wiz-encoder').value;
+  await applySetup(e.currentTarget, picked);
+}
+
+/** Saves the picked encoder and cache size, only where they differ from the saved config. */
+async function applySetup(btn, picked) {
+  btn.disabled = true;
+  try {
+    const cfg = await api('/api/config');
+    const patch = changedFields({ supervisor: cfg.supervisor }, { supervisor: picked });
+    if (!patch.supervisor) {
+      showToast('These settings are already in use.', 'success');
+      return null;
+    }
+    const r = await saveConfig(patch);
+    showToast('Settings saved.', 'success');
+    return r;
+  } catch (err) {
+    showToast('Could not save: ' + err.message);
+    return null;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Runs POST /api/setup-check/run with a busy button; returns the report, or null after showing why not. */
+async function runSetupCheck(btn, container) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  container.textContent = 'Checking this PC. This takes about 10 seconds.';
+  container.className = 'setup-report muted';
+  try {
+    const report = await post('/api/setup-check/run');
+    renderSetupReport(container, report);
+    return report;
+  } catch (err) {
+    container.textContent = 'The check could not run: ' + err.message;
+    container.className = 'setup-report err';
+    return null;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+function renderSetupReport(container, report) {
+  container.textContent = '';
+  container.className = 'setup-report';
+  const line = (text, level) => {
+    const el = document.createElement('div');
+    el.className = 'setup-line ' + level;
+    el.textContent = text;
+    container.appendChild(el);
+  };
+  const enc = encoderLabel(report);
+  line('Encoder: ' + enc.text, enc.level);
+  const { cache } = report;
+  line(`Download cache: ${cache.recommendedMb} MB recommended (${cache.freeMb} MB free on the drive)`, cache.warning ? 'warn' : 'ok');
+  if (cache.warning) line(cache.warning, 'warn');
+
+  const list = document.createElement('ul');
+  list.className = 'setup-deps';
+  for (const d of dependencyRows(report)) {
+    const li = document.createElement('li');
+    li.className = d.ok ? 'ok' : 'err';
+    li.textContent = d.ok ? `✔ ${d.name}` : `✘ ${d.name} is missing: ${d.path}`;
+    if (d.ok) li.title = d.path;
+    list.appendChild(li);
+  }
+  container.appendChild(list);
 }
 
 function setVerifyIcon(key, state) {
@@ -618,11 +723,14 @@ function formatBytes(n) {
 // Settings tab
 
 let settingsLoaded = false;
+/** The config as the Settings form was filled from; a save sends only what differs from it. */
+let settingsConfig = null;
 
 async function loadSettings() {
   if (settingsLoaded) return;
   try {
     const cfg = await api('/api/config');
+    settingsConfig = cfg;
     $('#set-playlists-list').innerHTML = '';
     (cfg.playlists || []).forEach(p => addPlaylistRow('#set-playlists-list', p.id, p.name));
     $('#set-ingest').value = cfg.supervisor.ingestUrl || '';
@@ -672,24 +780,28 @@ async function handleSettingsSave() {
     return;
   }
   const btn = $('#set-btn');
-  const body = {
+  const body = changedFields(settingsConfig, {
     playlists,
     supervisor: withoutBlanks({ ingestUrl: $('#set-ingest').value.trim() }),
     twitchLivenessEnabled: $('#twitch-enabled-toggle').checked,
     twitchClientId: $('#set-twitch-client-id').value.trim(),
     twitchClientSecret: $('#set-twitch-client-secret').value,
     twitchChannel: $('#set-twitch-channel').value.trim(),
-  };
+  });
   try {
     btn.disabled = true;
-    btn.textContent = 'Saving...';
-    const r = await saveConfig(body);
-    btn.textContent = 'Saved';
-    if (r.restartRequired) $('#set-restart-note').classList.remove('hidden');
-    settingsLoaded = false;
-    loadSettings();
-    loadPlaylistSelector();
-    loadVideoList(1);
+    if (Object.keys(body).length === 0) {
+      btn.textContent = 'No changes';
+    } else {
+      btn.textContent = 'Saving...';
+      const r = await saveConfig(body);
+      btn.textContent = 'Saved';
+      if (r.restartRequired) $('#set-restart-note').classList.remove('hidden');
+      settingsLoaded = false;
+      loadSettings();
+      loadPlaylistSelector();
+      loadVideoList(1);
+    }
   } catch (err) {
     showToast('Could not save: ' + err.message);
   }
@@ -712,10 +824,12 @@ function copyRedirectUrl(btn) {
 
 async function loadAutostart() {
   try {
-    const { enabled } = await api('/api/autostart');
-    $('#autostart-toggle').checked = enabled;
+    const status = await api('/api/autostart');
+    $('#autostart-toggle').checked = status.enabled;
+    $('#autostart-target').textContent = autostartLabel(status);
   } catch {
     // Leaves the toggle off; changing it reports any error.
+    $('#autostart-target').textContent = '-';
   }
 }
 
@@ -725,8 +839,8 @@ async function handleAutostartToggle() {
     await post('/api/autostart', { enabled });
   } catch (err) {
     showToast('Could not change autostart: ' + err.message);
-    $('#autostart-toggle').checked = !enabled;
   }
+  loadAutostart();
 }
 
 async function handleAutoOpenToggle() {
@@ -742,6 +856,10 @@ async function handleAutoOpenToggle() {
 // Playback tab
 
 let playbackSettingsLoaded = false;
+/** The config as the Playback form was filled from. After a fallback its encoder is the fallback,
+ *  and a save must not send that back as if the user had picked it. */
+let playbackConfig = null;
+let playbackReport = null;
 
 const PLAYBACK_FIELDS = [
   { id: '#pb-read-ahead', key: 'readAheadSeconds', min: 2, label: 'Read-ahead' },
@@ -753,7 +871,9 @@ const PLAYBACK_FIELDS = [
 async function loadPlaybackSettings() {
   if (playbackSettingsLoaded) return;
   try {
-    const { supervisor, ytdlCookiesFromBrowser } = await api('/api/config');
+    const cfg = await api('/api/config');
+    playbackConfig = cfg;
+    const { supervisor, ytdlCookiesFromBrowser } = cfg;
     $('#pb-encoder').value = supervisor.encoder;
     $('#pb-ytdl-cookies').value = ytdlCookiesFromBrowser || '';
     $('#pb-overlay').checked = supervisor.overlay !== false;
@@ -783,19 +903,66 @@ async function handlePlaybackSave() {
     input.classList.remove('invalid');
     supervisor[f.key] = n;
   }
+  // Blank cookies is a real value (none), so it is not dropped like the blanks above.
+  const patch = changedFields(playbackConfig, { supervisor, ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim() });
   try {
     btn.disabled = true;
-    btn.textContent = 'Saving...';
-    // Blank cookies is a real value (none), so it is sent as is.
-    const r = await saveConfig({ supervisor, ytdlCookiesFromBrowser: $('#pb-ytdl-cookies').value.trim() });
-    btn.textContent = 'Saved';
-    if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
-    playbackSettingsLoaded = false;
-    loadPlaybackSettings();
+    if (Object.keys(patch).length === 0) {
+      btn.textContent = 'No changes';
+    } else {
+      btn.textContent = 'Saving...';
+      const r = await saveConfig(patch);
+      btn.textContent = 'Saved';
+      if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
+      playbackSettingsLoaded = false;
+      loadPlaybackSettings();
+    }
   } catch (err) {
     showToast('Could not save: ' + err.message);
   }
   setTimeout(() => { btn.textContent = 'Save Playback Settings'; btn.disabled = false; }, 1500);
+}
+
+async function loadPlaybackSetupReport() {
+  const container = $('#pb-setup-report');
+  try {
+    showPlaybackReport(await api('/api/setup-check'));
+  } catch (err) {
+    playbackReport = null;
+    $('#pb-setup-when').textContent = '';
+    container.textContent = err.message;
+    container.className = 'setup-report err';
+    $('#pb-setup-use').classList.add('hidden');
+  }
+}
+
+function showPlaybackReport(report) {
+  playbackReport = report;
+  const container = $('#pb-setup-report');
+  $('#pb-setup-use').classList.toggle('hidden', !report);
+  if (!report) {
+    $('#pb-setup-when').textContent = 'No check has run on this PC yet.';
+    container.textContent = '';
+    return;
+  }
+  $('#pb-setup-when').textContent = 'Last check: ' + new Date(report.at).toLocaleString();
+  renderSetupReport(container, report);
+}
+
+async function handlePlaybackSetupRun(e) {
+  const report = await runSetupCheck(e.currentTarget, $('#pb-setup-report'));
+  if (report) showPlaybackReport(report);
+}
+
+async function handlePlaybackSetupUse(e) {
+  const { encoder, cache } = playbackReport;
+  const picked = { cacheBudgetMb: cache.recommendedMb };
+  if (encoder.works) picked.encoder = encoder.chosen;
+  const r = await applySetup(e.currentTarget, picked);
+  if (!r) return;
+  if (r.restartRequired) $('#pb-restart-note').classList.remove('hidden');
+  playbackSettingsLoaded = false;
+  loadPlaybackSettings();
 }
 
 // Webhooks tab
@@ -1006,7 +1173,10 @@ function switchTab(tabName) {
   $$('.tab-panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + tabName));
   if (tabName === 'settings') loadSettings();
   if (tabName === 'webhooks') loadWebhookSettings();
-  if (tabName === 'playback') loadPlaybackSettings();
+  if (tabName === 'playback') {
+    loadPlaybackSettings();
+    loadPlaybackSetupReport();
+  }
 }
 
 // Helpers
@@ -1048,6 +1218,9 @@ function renderUpdateBanner(status) {
   const banner = $('#update-banner');
   const text = $('#update-banner-text');
   const btn = $('#update-btn');
+  const notice = $('#update-node-notice');
+  notice.textContent = status.nodeNotice || '';
+  notice.classList.toggle('hidden', !status.nodeNotice);
   if (!status.updateAvailable) {
     banner.classList.add('hidden');
     return;
@@ -1136,7 +1309,7 @@ async function handleCheckUpdate() {
     const status = await post('/api/update/check');
     const settingsBtn = $('#settings-update-btn');
     if (status.updateAvailable) {
-      result.textContent = `v${status.latestVersion} is available`;
+      result.textContent = `v${status.latestVersion} is available.` + (status.nodeNotice ? ' ' + status.nodeNotice : '');
       settingsBtn.classList.toggle('hidden', !!status.isDevMode);
       renderUpdateBanner(status);
     } else {
@@ -1188,6 +1361,10 @@ async function boot() {
   initMonitorControls();
 
   $('#pb-save-btn').addEventListener('click', handlePlaybackSave);
+  $('#pb-setup-run').addEventListener('click', handlePlaybackSetupRun);
+  $('#pb-setup-use').addEventListener('click', handlePlaybackSetupUse);
+  $('#wiz-setup-run').addEventListener('click', wizRunSetupCheck);
+  $('#wiz-setup-use').addEventListener('click', wizUseSetup);
   $$('.restart-stream-btn').forEach(b => b.addEventListener('click', (e) => runAction(e.currentTarget, async () => {
     await restartStream();
     $$('.restart-note').forEach(n => n.classList.add('hidden'));

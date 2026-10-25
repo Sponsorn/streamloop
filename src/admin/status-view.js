@@ -76,3 +76,51 @@ export function formatTime(seconds) {
   const s = Math.floor(seconds % 60);
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
+
+/** Same names as the Playback encoder dropdown. */
+export const ENCODER_NAMES = {
+  h264_nvenc: 'NVIDIA (NVENC)',
+  h264_amf: 'AMD (AMF)',
+  h264_qsv: 'Intel (Quick Sync)',
+  libx264: 'Software (x264, uses the CPU)',
+};
+
+/** The setup check's encoder line. works false means nothing works, so libx264 there is not a pick. */
+export function encoderLabel(report) {
+  const { chosen, software, works } = report.encoder;
+  if (!works) return { text: 'No encoder works on this PC. Check the graphics driver.', level: 'err' };
+  const name = ENCODER_NAMES[chosen] || chosen;
+  if (software) return { text: `${name}. No graphics card encoder works on this PC.`, level: 'warn' };
+  return { text: name, level: 'ok' };
+}
+
+/** Where the Startup folder's StreamLoop.vbs points, from GET /api/autostart. */
+export function autostartLabel(status) {
+  if (!status.enabled) return 'Off';
+  if (status.thisInstall) return 'This install';
+  if (status.target) return `Another install: ${status.target}`;
+  return 'Unknown: StreamLoop.vbs in the Startup folder was not written by StreamLoop';
+}
+
+export function dependencyRows(report) {
+  const deps = report.dependencies || [];
+  return [...deps.filter((d) => !d.ok), ...deps.filter((d) => d.ok)];
+}
+
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** The part of edited that differs from original, as a POST /api/config patch: objects key by key, arrays whole.
+ *  A save then never resends a value the server set on its own, such as a fallback encoder. */
+export function changedFields(original, edited) {
+  const out = {};
+  for (const [key, value] of Object.entries(edited)) {
+    const before = original ? original[key] : undefined;
+    if (isPlainObject(value)) {
+      const inner = changedFields(isPlainObject(before) ? before : {}, value);
+      if (Object.keys(inner).length > 0) out[key] = inner;
+    } else if (JSON.stringify(value) !== JSON.stringify(before)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
