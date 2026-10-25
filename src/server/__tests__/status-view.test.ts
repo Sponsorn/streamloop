@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -218,5 +218,16 @@ describe('changedFields', () => {
 
   it('sends a field the loaded config did not have', () => {
     expect(changedFields({}, { supervisor: { cacheBudgetMb: 50 } })).toEqual({ supervisor: { cacheBudgetMb: 50 } });
+  });
+});
+
+describe('encoderOptionsHtml', () => {
+  it('builds one option per encoder, in order, with the config value and the shown name', () => {
+    expect(encoderOptionsHtml()).toBe(
+      '<option value="h264_nvenc">NVIDIA (NVENC)</option>'
+      + '<option value="h264_amf">AMD (AMF)</option>'
+      + '<option value="h264_qsv">Intel (Quick Sync)</option>'
+      + '<option value="libx264">Software (x264, uses the CPU)</option>',
+    );
   });
 });

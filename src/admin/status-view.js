@@ -77,13 +77,18 @@ export function formatTime(seconds) {
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-/** Same names as the Playback encoder dropdown. */
+/** The one list of encoder names: the Playback dropdown and the setup check both read it. */
 export const ENCODER_NAMES = {
   h264_nvenc: 'NVIDIA (NVENC)',
   h264_amf: 'AMD (AMF)',
   h264_qsv: 'Intel (Quick Sync)',
   libx264: 'Software (x264, uses the CPU)',
 };
+
+/** The Playback encoder dropdown's options; the wizard copies them from there. */
+export function encoderOptionsHtml() {
+  return Object.entries(ENCODER_NAMES).map(([value, name]) => `<option value="${value}">${name}</option>`).join('');
+}
 
 /** The setup check's encoder line. works false means nothing works, so libx264 there is not a pick. */
 export function encoderLabel(report) {

@@ -1,10 +1,12 @@
 import {
   streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
-  encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch,
+  encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml,
 } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+
+$('#pb-encoder').innerHTML = encoderOptionsHtml();
 
 let apiToken = '';
 let pollTimer = null;
