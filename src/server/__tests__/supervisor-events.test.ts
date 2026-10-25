@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import { SupervisorEvents, describe as describeEvent, launcherEvent, type SupervisorEvent } from '../supervisor-events.js';
+import { SupervisorEvents, AlertGate, describe as describeEvent, launcherEvent, type SupervisorEvent } from '../supervisor-events.js';
 
 const dir = join(process.cwd(), '.test-tmp', 'supervisor-events');
 const ev = (kind: string, extra: Record<string, unknown> = {}, level: SupervisorEvent['level'] = 'info'): SupervisorEvent =>
@@ -65,6 +65,60 @@ describe('SupervisorEvents', () => {
     bridge.stop();
 
     expect(seen).toEqual(['last-of-day', 'first-of-day']);
+  });
+
+  it('reads a file that does not exist yet from its start once it appears', async () => {
+    const bridge = make();
+    bridge.start();
+    await bridge.poll();
+
+    writeFileSync(join(dir, 'events-2026-10-25.jsonl'), line('born'));
+    await bridge.poll();
+    bridge.stop();
+
+    expect(seen).toEqual(['born']);
+  });
+
+  it('skips an unparseable line in the middle of a batch', async () => {
+    const f = join(dir, 'events-2026-10-25.jsonl');
+    writeFileSync(f, '');
+    const bridge = make();
+    bridge.start();
+
+    appendFileSync(f, line('a') + 'not json\n' + line('b'));
+    await bridge.poll();
+    bridge.stop();
+
+    expect(seen).toEqual(['a', 'b']);
+  });
+
+  it('keeps reading the rest of a batch when the callback throws', async () => {
+    const f = join(dir, 'events-2026-10-25.jsonl');
+    writeFileSync(f, '');
+    const got: string[] = [];
+    const bridge = new SupervisorEvents({ logsDir: dir, intervalMs: 3_600_000, now: () => now, onEvent: (e) => { if (e.kind === 'a') throw new Error('boom'); got.push(e.kind); } });
+    bridge.start();
+
+    appendFileSync(f, line('a') + line('b'));
+    await bridge.poll();
+    bridge.stop();
+
+    expect(got).toEqual(['b']);
+  });
+
+  it('does not replay yesterday or today when Node starts just after midnight', async () => {
+    writeFileSync(join(dir, 'events-2026-10-25.jsonl'), line('yesterday'));
+    writeFileSync(join(dir, 'events-2026-10-26.jsonl'), line('earlier-today'));
+    now = new Date(2026, 9, 26, 0, 0, 5);
+    const bridge = make();
+    bridge.start();
+
+    await bridge.poll();
+    appendFileSync(join(dir, 'events-2026-10-26.jsonl'), line('new'));
+    await bridge.poll();
+    bridge.stop();
+
+    expect(seen).toEqual(['new']);
   });
 
   it('rereads from 0 when the file shrank', async () => {
@@ -137,7 +191,7 @@ describe('describe', () => {
     expect(describeEvent(ev('supervisor-launched')).discord).toBeUndefined();
   });
 
-  it.each(['token-server-spawn', 'token-server-down', 'token-server-restart', 'token-server-adopt', 'token-server-spawn-failed', 'reload', 'start', 'control', 'playlist', 'youtube-probe-failed'])(
+  it.each(['token-server-spawn', 'token-server-down', 'token-server-restart', 'token-server-adopt', 'reload', 'start', 'control', 'playlist', 'youtube-probe-failed'])(
     'keeps %s off Discord', (kind) => {
       expect(describeEvent(ev(kind, { error: 'e', reason: 'r' })).discord).toBeUndefined();
     });
@@ -157,11 +211,102 @@ describe('describe', () => {
     const d = describeEvent(ev('skip', { index: 0, id: 'a', why: 'x', detail: 'first\n' + 'y'.repeat(500), consecutive: 1 }, 'warn'));
     const reason = String(d.discord?.vars.reason);
     expect(reason).not.toContain('\n');
-    expect(reason.length).toBeLessThanOrEqual(210);
+    expect(reason.length).toBeLessThanOrEqual(200);
   });
 
   it('builds launcher events with the right level', () => {
     expect(launcherEvent('supervisor-down').level).toBe('critical');
     expect(launcherEvent('supervisor-back').level).toBe('info');
+  });
+});
+
+describe('freeze pair', () => {
+  it('sends one alert for a watchdog freeze and keeps the ladder retry on the timeline only', () => {
+    const w = describeEvent(ev('watchdog-freeze', { index: 1, outcome: 'retry' }, 'warn'));
+    const r = describeEvent(ev('retry', { index: 1, id: 'x', why: 'freeze', retry: 1, pos: 3 }, 'warn'));
+
+    expect(w.discord?.kind).toBe('outputFrozen');
+    expect(r.discord).toBeUndefined();
+    expect(r.message).not.toBe('');
+  });
+
+  it('keeps the ladder skip after a freeze on the timeline only, but a critical streak still alerts', () => {
+    const s = describeEvent(ev('skip', { index: 1, id: 'x', why: 'freeze', consecutive: 1 }, 'warn'));
+    const c = describeEvent(ev('skip', { index: 1, id: 'x', why: 'freeze', consecutive: 3 }, 'critical'));
+
+    expect(s.discord).toBeUndefined();
+    expect(c.discord?.kind).toBe('critical');
+  });
+});
+
+describe('describe details', () => {
+  it('sends an unknown critical kind to Discord as critical', () => {
+    expect(describeEvent(ev('brand-new', {}, 'critical')).discord).toMatchObject({ kind: 'critical', level: 'error' });
+  });
+
+  it('uses only a string detail.reason, never a stringified object', () => {
+    const obj = describeEvent(ev('skip', { index: 0, id: 'a', why: 'other', detail: { since: 12.3, pos: 40 }, consecutive: 1 }, 'warn'));
+    const str = describeEvent(ev('skip', { index: 0, id: 'a', why: 'unavailable', detail: { reason: 'private video' }, consecutive: 1 }, 'warn'));
+
+    expect(obj.discord?.vars.reason).toBe('other');
+    expect(str.discord?.vars.reason).toBe('unavailable: private video');
+  });
+});
+
+describe('AlertGate', () => {
+  const kinds = (g: AlertGate, es: SupervisorEvent[]) => es.map((e) => g.describe(e).discord?.kind);
+
+  it('alerts once per outage: one drop, one critical, one restart, every cycle on the timeline', () => {
+    const gate = new AlertGate();
+    const out: Array<ReturnType<AlertGate['describe']>> = [];
+    for (let i = 1; i <= 20; i++) {
+      out.push(gate.describe(ev('encoder-exit', { why: 'ingest', failures: i, restartInS: 5 }, i >= 3 ? 'critical' : 'warn')));
+    }
+    out.push(gate.describe(ev('encoder-start', { generation: 21, restarts: 20 })));
+    const sent = out.map((d) => d.discord?.kind).filter(Boolean);
+
+    expect(sent).toEqual(['streamDrop', 'critical', 'streamRestart']);
+    expect(out.every((d) => d.message !== '')).toBe(true);
+    expect(out).toHaveLength(21);
+  });
+
+  it('starts a new streak after the restart', () => {
+    const got = kinds(new AlertGate(), [
+      ev('encoder-exit', { why: 'x', failures: 1, restartInS: 1 }, 'warn'),
+      ev('encoder-exit', { why: 'x', failures: 2, restartInS: 1 }, 'warn'),
+      ev('encoder-exit', { why: 'x', failures: 3, restartInS: 1 }, 'critical'),
+      ev('encoder-exit', { why: 'x', failures: 4, restartInS: 1 }, 'critical'),
+      ev('encoder-start', { restarts: 4 }),
+      ev('encoder-exit', { why: 'x', failures: 1, restartInS: 1 }, 'warn'),
+    ]);
+
+    expect(got).toEqual(['streamDrop', undefined, 'critical', undefined, 'streamRestart', 'streamDrop']);
+  });
+
+  it('alerts on the first encoder-spawn-failed since the last start only, then one restart', () => {
+    const got = kinds(new AlertGate(), [
+      ev('encoder-spawn-failed', { error: 'e' }, 'critical'),
+      ev('encoder-spawn-failed', { error: 'e' }, 'critical'),
+      ev('encoder-spawn-failed', { error: 'e' }, 'critical'),
+      ev('encoder-start', { restarts: 0 }),
+      ev('encoder-spawn-failed', { error: 'e' }, 'critical'),
+    ]);
+
+    expect(got).toEqual(['critical', undefined, undefined, 'streamRestart', 'critical']);
+  });
+
+  it('sends no restart for a start that follows no alert', () => {
+    expect(new AlertGate().describe(ev('encoder-start', { restarts: 2 })).discord).toBeUndefined();
+  });
+
+  it('alerts token-server-spawn-failed once until the next token-server-spawn', () => {
+    const got = kinds(new AlertGate(), [
+      ev('token-server-spawn-failed', { error: 'e' }, 'critical'),
+      ev('token-server-spawn-failed', { error: 'e' }, 'critical'),
+      ev('token-server-spawn', {}),
+      ev('token-server-spawn-failed', { error: 'e' }, 'critical'),
+    ]);
+
+    expect(got).toEqual(['critical', undefined, undefined, 'critical']);
   });
 });

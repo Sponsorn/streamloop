@@ -65,18 +65,25 @@ export function describe(e: SupervisorEvent): Described {
     case 'encoder-spawn-failed':
       return critical(`The encoder could not start: ${one(e.error)}`);
     case 'skip': {
-      const detail = e.detail && typeof e.detail === 'object' ? (e.detail as Record<string, unknown>).reason ?? e.detail : e.detail;
+      // detail is a string, or an object like {reason} or {since, pos}: only text reaches the message.
+      const d = e.detail && typeof e.detail === 'object' ? (e.detail as Record<string, unknown>).reason : e.detail;
       const why = one(e.why);
-      const reason = one(detail) ? `${why}: ${one(detail)}` : why;
+      const reason = one(typeof d === 'string' && d.trim() ? `${why}: ${one(d)}` : why);
       const msg = `Skipped video ${n} (${reason})`;
       if (e.level === 'critical') return critical(`${num(e, 'consecutive')} videos in a row were skipped. The last was video ${n} (${reason}).`, msg);
+      // After a watchdog freeze the supervisor's alert was already sent.
+      if (e.why === 'freeze') return { message: msg };
       return { message: msg, discord: { kind: 'skip', vars: { videoIndex: n, videoId: one(e.id), reason }, level: 'warn' } };
     }
-    case 'retry':
+    case 'retry': {
+      const msg = `Retrying video ${n} at ${Math.floor(num(e, 'pos'))}s (${one(e.why)}, attempt ${num(e, 'retry')})`;
+      // The watchdog-freeze event that led here already sent the alert.
+      if (e.why === 'freeze') return { message: msg };
       return {
-        message: `Retrying video ${n} at ${Math.floor(num(e, 'pos'))}s (${one(e.why)}, attempt ${num(e, 'retry')})`,
+        message: msg,
         discord: { kind: 'error', vars: { videoIndex: n, videoId: one(e.id), errorCode: one(e.why), attempt: num(e, 'retry') }, level: 'warn' },
       };
+    }
     case 'watchdog-freeze':
     case 'watchdog-silence': {
       const kind = e.kind === 'watchdog-freeze' ? 'freeze' : 'silence';
@@ -144,9 +151,57 @@ export function describe(e: SupervisorEvent): Described {
     case 'token-server-adopt': return { message: 'Token server already running' };
     case 'token-server-down': return { message: 'Token server stopped answering' };
     case 'token-server-restart': return { message: 'Token server restarted' };
-    case 'token-server-spawn-failed': return { message: `Token server could not start: ${one(e.error)}` };
+    case 'token-server-spawn-failed': return critical(`The token server could not start: ${one(e.error)}`, `Token server could not start: ${one(e.error)}`);
     default:
-      return { message: e.kind };
+      // A kind this table does not know still reaches Discord when the supervisor calls it critical.
+      return e.level === 'critical' ? critical(e.kind) : { message: e.kind };
+  }
+}
+
+/**
+ * describe() plus once-per-streak gating, so a long outage sends one alert, not one per retry.
+ * Every event still gets its timeline message; only the Discord part is dropped.
+ */
+export class AlertGate {
+  /** An encoder alert went out since the last encoder-start. */
+  private encoderAlerted = false;
+  private spawnAlerted = false;
+  private tokenAlerted = false;
+
+  describe(e: SupervisorEvent): Described {
+    const d = describe(e);
+    const drop = (): Described => ({ message: d.message });
+    switch (e.kind) {
+      case 'encoder-exit': {
+        const failures = num(e, 'failures');
+        // 1 is the drop, 3 the critical; 2 and everything past 3 are timeline only.
+        if (failures !== 1 && failures !== 3) return drop();
+        this.encoderAlerted = true;
+        return d;
+      }
+      case 'encoder-spawn-failed':
+        if (this.spawnAlerted) return drop();
+        this.spawnAlerted = true;
+        this.encoderAlerted = true;
+        return d;
+      case 'encoder-start': {
+        const alerted = this.encoderAlerted;
+        this.encoderAlerted = false;
+        this.spawnAlerted = false;
+        if (!alerted) return drop();
+        // A first start after failed spawns has restarts 0, which describe() treats as a plain start.
+        return d.discord ? d : { message: d.message, discord: { kind: 'streamRestart', vars: { attempts: 1 }, level: 'info' } };
+      }
+      case 'token-server-spawn-failed':
+        if (this.tokenAlerted) return drop();
+        this.tokenAlerted = true;
+        return d;
+      case 'token-server-spawn':
+        this.tokenAlerted = false;
+        return d;
+      default:
+        return d;
+    }
   }
 }
 
@@ -173,6 +228,7 @@ export class SupervisorEvents {
   private timer: ReturnType<typeof setInterval> | null = null;
   private date = '';
   private offset = 0;
+  private warnedFile = '';
   private readonly now: () => Date;
 
   constructor(private readonly opts: SupervisorEventsOptions) {
@@ -235,8 +291,18 @@ export class SupervisorEvents {
     for (const line of buf.subarray(0, end).toString('utf-8').split('\n')) {
       if (!line.trim()) continue;
       let e: SupervisorEvent;
-      try { e = JSON.parse(line) as SupervisorEvent; } catch { continue; }
-      if (e && typeof e.kind === 'string') this.opts.onEvent(e);
+      try {
+        e = JSON.parse(line) as SupervisorEvent;
+      } catch {
+        if (this.warnedFile !== this.date) {
+          this.warnedFile = this.date;
+          logger.warn({ file: this.file(this.date) }, 'Skipping an unparseable supervisor event line');
+        }
+        continue;
+      }
+      if (!e || typeof e.kind !== 'string') continue;
+      // One failing handler call must not lose the rest of the batch: the offset has already moved on.
+      try { this.opts.onEvent(e); } catch (err) { logger.warn({ err, kind: e.kind }, 'Supervisor event handler failed'); }
     }
   }
 }
