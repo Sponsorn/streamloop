@@ -58,7 +58,9 @@ async function main() {
 
   const adminUrl = `http://localhost:${config.port}/admin`;
   let discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
-  let twitch = new TwitchLivenessChecker(config, client, discord);
+  // The Twitch read-back pulls frames with the install's ffmpeg; without a ROOT it stays off.
+  const twitchOpts = { ffmpegPath: root ? join(root, 'ffmpeg', 'ffmpeg.exe') : null, addEvent: (m: string) => eventLog.addEvent(m) };
+  let twitch = new TwitchLivenessChecker(config, client, discord, twitchOpts);
 
   // One gate for the process lifetime, so supervisor and launcher alerts share its streaks.
   const gate = new AlertGate();
@@ -92,7 +94,7 @@ async function main() {
     config = next;
     discord = new DiscordNotifier(config, appVersion, getUptime, adminUrl);
     twitch.stop();
-    twitch = new TwitchLivenessChecker(config, client, discord);
+    twitch = new TwitchLivenessChecker(config, client, discord, twitchOpts);
     if (started) twitch.start();
     else startServices();
     logger.info('Components reloaded with new config');

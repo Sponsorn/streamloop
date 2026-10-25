@@ -126,6 +126,7 @@ describe('TwitchLivenessChecker', () => {
         lastCheckAt: null,
         lastRestartAt: null,
         restartCount: 0,
+        readback: { lastCheckAt: null, lastDiff: null, state: 'off' },
       });
     });
 
@@ -434,6 +435,71 @@ describe('TwitchLivenessChecker', () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(checker.getStatus().channelLive).toBe(true);
+    });
+  });
+
+  describe('encoder restarts from Twitch checks', () => {
+    function offlineFetch(checks: number) {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ access_token: 'tok123', expires_in: 3600 }) });
+      for (let i = 0; i < checks; i++) fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
+      vi.stubGlobal('fetch', fetchMock);
+    }
+
+    it('restarts at most once per 30 min and only alerts in between', async () => {
+      // Arrange
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      offlineFetch(9);
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord);
+
+      // Act: a restart, then a second mismatch streak inside 30 min
+      for (let i = 0; i < 6; i++) await checker.check();
+
+      // Assert
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+
+      // Act: a third streak after 30 min
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      for (let i = 0; i < 3; i++) await checker.check();
+
+      // Assert
+      expect(client.control).toHaveBeenCalledTimes(2);
+    });
+
+    it('a frozen read-back restarts the encoder and shares the 30 min limit', async () => {
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+
+      await checker.handleFrozen();
+      await checker.handleFrozen();
+
+      expect(client.control).toHaveBeenCalledOnce();
+      expect(client.control).toHaveBeenCalledWith('restart-encoder', undefined, expect.stringContaining('frozen'));
+      expect(addEvent).toHaveBeenCalledWith(expect.stringContaining('frozen'));
+      expect(discord.notifyCritical).toHaveBeenCalledOnce();
+    });
+
+    it('an unavailable read-back only records a timeline event', () => {
+      const client = mockClient(true);
+      const discord = mockDiscord();
+      const addEvent = vi.fn();
+      const checker = new TwitchLivenessChecker(makeConfig(), client, discord, { addEvent });
+
+      checker.handleUnavailable('the channel playlist could not be fetched');
+
+      expect(addEvent).toHaveBeenCalledOnce();
+      expect(addEvent.mock.calls[0][0]).toContain('the channel playlist could not be fetched');
+      expect(client.control).not.toHaveBeenCalled();
+      expect(discord.notifyCritical).not.toHaveBeenCalled();
+    });
+
+    it('runs no read-back without an ffmpeg path', () => {
+      const checker = new TwitchLivenessChecker(makeConfig(), mockClient(true), mockDiscord(), { ffmpegPath: null });
+      expect(checker.getStatus().readback.state).toBe('off');
     });
   });
 });

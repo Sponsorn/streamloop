@@ -2,12 +2,15 @@ import type { AppConfig } from './types.js';
 import type { SupervisorClient } from './supervisor-client.js';
 import type { DiscordNotifier } from './discord.js';
 import { logger } from './logger.js';
+import { TwitchReadback, type ReadbackStatus } from './twitch-readback.js';
 
 const TWITCH_TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
 const TWITCH_STREAMS_URL = 'https://api.twitch.tv/helix/streams';
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // Refresh 5 min before expiry
 const MISMATCH_THRESHOLD = 3;
 const INITIAL_CHECK_DELAY_MS = 15000;
+/** Between encoder restarts from Twitch checks; a problem inside it only alerts. */
+const RESTART_LIMIT_MS = 30 * 60 * 1000;
 
 export interface TwitchLivenessStatus {
   enabled: boolean;
@@ -18,6 +21,13 @@ export interface TwitchLivenessStatus {
   lastCheckAt: number | null;
   lastRestartAt: number | null;
   restartCount: number;
+  readback: ReadbackStatus;
+}
+
+export interface TwitchLivenessOptions {
+  /** The install's ffmpeg under ROOT; without it the read-back is off. */
+  ffmpegPath?: string | null;
+  addEvent?: (message: string) => void;
 }
 
 export class TwitchLivenessChecker {
@@ -38,11 +48,26 @@ export class TwitchLivenessChecker {
   private lastCheckAt: number | null = null;
   private lastRestartAt: number | null = null;
   private restartCount = 0;
+  private lastAttemptAt: number | null = null;
+  private readonly addEvent: (message: string) => void;
+  private readonly readback: TwitchReadback | null;
 
-  constructor(config: AppConfig, client: SupervisorClient, discord: DiscordNotifier) {
+  constructor(config: AppConfig, client: SupervisorClient, discord: DiscordNotifier, opts: TwitchLivenessOptions = {}) {
     this.config = config;
     this.client = client;
     this.discord = discord;
+    this.addEvent = opts.addEvent ?? (() => {});
+    this.readback = opts.ffmpegPath && this.enabled
+      ? new TwitchReadback({
+        channel: config.twitchChannel,
+        ffmpegPath: opts.ffmpegPath,
+        client,
+        overlay: config.supervisor.overlay,
+        isChannelLive: () => this.isChannelLive(),
+        onFrozen: () => { void this.handleFrozen(); },
+        onUnavailable: (why) => this.handleUnavailable(why),
+      })
+      : null;
   }
 
   get enabled(): boolean {
@@ -72,6 +97,7 @@ export class TwitchLivenessChecker {
       this.check();
       this.pollTimer = setInterval(() => this.check(), this.config.twitchPollIntervalMs);
     }, INITIAL_CHECK_DELAY_MS);
+    this.readback?.start();
   }
 
   stop(): void {
@@ -83,6 +109,7 @@ export class TwitchLivenessChecker {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    this.readback?.stop();
   }
 
   getStatus(): TwitchLivenessStatus {
@@ -95,6 +122,7 @@ export class TwitchLivenessChecker {
       lastCheckAt: this.lastCheckAt,
       lastRestartAt: this.lastRestartAt,
       restartCount: this.restartCount,
+      readback: this.readback?.status() ?? { lastCheckAt: null, lastDiff: null, state: 'off' },
     };
   }
 
@@ -139,26 +167,48 @@ export class TwitchLivenessChecker {
     }
   }
 
-  private async restartStream(): Promise<void> {
-    if (this.restartInProgress) return;
-    this.restartInProgress = true;
-    this.consecutiveMismatches = 0;
+  /** The read-back saw the overlay clock stand still twice while Twitch calls the channel live. */
+  async handleFrozen(): Promise<void> {
+    this.addEvent('Twitch is showing a frozen picture');
+    await this.restartEncoder('Twitch shows a frozen picture');
+  }
 
-    logger.warn('Twitch liveness: restarting the encoder (encoder running, Twitch says offline)');
-    await this.discord.notifyTwitchMismatch(this.config.twitchChannel);
+  /** The read-back itself could not run: recorded only, never acted on. */
+  handleUnavailable(why: string): void {
+    this.addEvent(`Could not check the picture on Twitch: ${why}`);
+  }
+
+  private async restartStream(): Promise<void> {
+    this.consecutiveMismatches = 0;
+    await this.restartEncoder('Twitch shows the channel offline', true);
+  }
+
+  /** `reason` goes to the supervisor's log and into any alert. */
+  private async restartEncoder(reason: string, offline = false): Promise<void> {
+    if (this.restartInProgress) return;
+    if (this.lastAttemptAt !== null && Date.now() - this.lastAttemptAt < RESTART_LIMIT_MS) {
+      logger.warn({ reason }, 'Twitch liveness: encoder restarted less than 30 min ago, alerting only');
+      await this.discord.notifyCritical(`${reason}, and the encoder was already restarted in the last 30 minutes. Check the stream.`);
+      return;
+    }
+    this.restartInProgress = true;
+    this.lastAttemptAt = Date.now();
+
+    logger.warn({ reason }, 'Twitch liveness: restarting the encoder');
+    if (offline) await this.discord.notifyTwitchMismatch(this.config.twitchChannel);
 
     try {
-      const r = await this.client.control('restart-encoder', undefined, 'Twitch shows the channel offline');
+      const r = await this.client.control('restart-encoder', undefined, reason);
       if (!r.ok) {
         const why = r.error?.startsWith('needs-stream-key') ? 'no stream key is set, so no encoder is running' : r.error ?? 'unknown error';
         logger.error({ error: why }, 'Twitch liveness: encoder restart refused');
-        await this.discord.notifyCritical(`Could not restart the encoder after Twitch showed the channel offline: ${why}.`);
+        await this.discord.notifyCritical(`Could not restart the encoder (${reason}): ${why}.`);
         return;
       }
       this.lastRestartAt = Date.now();
       this.restartCount++;
       logger.info({ alreadyRestarting: r.alreadyRestarting === true }, 'Twitch liveness: encoder restart requested');
-      await this.discord.notifyTwitchRestart(this.config.twitchChannel);
+      if (offline) await this.discord.notifyTwitchRestart(this.config.twitchChannel);
     } finally {
       this.restartInProgress = false;
     }
