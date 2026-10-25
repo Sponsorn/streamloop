@@ -29,6 +29,34 @@ describe('START.bat', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('swaps a staged node/ in with a rename, and checks the new node.exe runs', () => {
+    // Arrange
+    const text = lines.join('\n');
+
+    // Assert
+    expect(text).toContain('if exist "%ROOT%_update_tmp\\node\\node.exe" (');
+    expect(text).toContain('rename "%ROOT%node" _update_old_node');
+    expect(text).toContain('move "%ROOT%_update_tmp\\node" "%ROOT%node"');
+    expect(text).toContain('"%ROOT%node\\node.exe" --version');
+  });
+
+  it('rolls node/ back from _update_old_node when the new node.exe fails', () => {
+    const text = lines.join('\n');
+    expect(text).toMatch(/--version[^\n]*\n\s+if errorlevel 1 \(/);
+    expect(text).toContain('rename "%ROOT%_update_old_node" node');
+  });
+
+  it('restores a half-swapped node/ before the preflight check', () => {
+    // Arrange
+    const selfHeal = lines.findIndex((l) => l.includes('if exist "%ROOT%_update_old_node\\node.exe" ('));
+    const preflight = lines.findIndex((l) => l.startsWith('if not exist "%NODE%" ('));
+
+    // Assert
+    expect(lines.some((l) => l.startsWith('if not exist "%ROOT%node\\node.exe" ('))).toBe(true);
+    expect(selfHeal).toBeGreaterThan(-1);
+    expect(selfHeal).toBeLessThan(preflight);
+  });
+
   it('uses CRLF line endings, which cmd needs for labels and goto', () => {
     // Arrange
     const raw = readFileSync(launcherPath, 'utf-8');

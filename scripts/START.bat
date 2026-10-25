@@ -26,6 +26,16 @@ if not exist "%APP%\src\server\index.ts" (
     )
 )
 
+:: Same for node/: a Node swap cut short after the old runtime was renamed
+:: leaves no node.exe, so put the old one back before preflight.
+if not exist "%ROOT%node\node.exe" (
+    if exist "%ROOT%_update_old_node\node.exe" (
+        echo [RECOVER] node missing - restoring from _update_old_node ...
+        if exist "%ROOT%node" rmdir /s /q "%ROOT%node" 2>nul
+        rename "%ROOT%_update_old_node" node
+    )
+)
+
 :: Pre-flight checks
 if not exist "%NODE%" (
     echo [ERROR] Portable Node.js not found at: %NODE%
@@ -125,6 +135,38 @@ if %ERRORLEVEL% equ 75 (
                         )
                     ) else (
                         echo [WARNING] Could not rename old yt-dlp directory, keeping existing.
+                    )
+                )
+
+                rem Swap node/ if the update staged a new Node runtime. The server
+                rem has exited and this script runs in cmd, so nothing holds node.exe.
+                if exist "%ROOT%_update_tmp\node\node.exe" (
+                    if exist "%ROOT%_update_old_node" rmdir /s /q "%ROOT%_update_old_node" 2>nul
+                    set "NODE_OK=0"
+                    for /L %%k in (1,1,5) do (
+                        if "!NODE_OK!"=="0" (
+                            rename "%ROOT%node" _update_old_node 2>nul
+                            if not exist "%ROOT%node" (
+                                set "NODE_OK=1"
+                            ) else (
+                                echo   Waiting for Node file locks (attempt %%k/5^)...
+                                timeout /t 3 /nobreak >nul
+                            )
+                        )
+                    )
+                    if not exist "%ROOT%node" (
+                        move "%ROOT%_update_tmp\node" "%ROOT%node"
+                        "%ROOT%node\node.exe" --version >nul 2>&1
+                        if errorlevel 1 (
+                            echo [WARNING] New Node does not run, rolling back Node.
+                            if exist "%ROOT%node" rmdir /s /q "%ROOT%node" 2>nul
+                            rename "%ROOT%_update_old_node" node
+                        ) else (
+                            echo Node updated.
+                            if exist "%ROOT%_update_old_node" rmdir /s /q "%ROOT%_update_old_node" 2>nul
+                        )
+                    ) else (
+                        echo [WARNING] Could not rename old node directory, keeping existing.
                     )
                 )
 
