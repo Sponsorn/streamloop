@@ -3,6 +3,7 @@
 
 mod api;
 mod config;
+mod launch;
 mod logs;
 mod media;
 mod overlay;
@@ -2045,6 +2046,17 @@ fn main() {
             }
         }
         return;
+    }
+    if argv.first().is_some_and(|a| a == "launch") {
+        let rest = &argv[1..];
+        let logs = parse_args(rest).ok().map(|a| a.paths.data.join("logs"));
+        let code = launch::run(rest, PORT, |breakaway, pid| {
+            if let Some(dir) = &logs {
+                let _ = std::fs::create_dir_all(dir);
+                Logs::new(dir.clone(), "").event("info", "launched", json!({"breakaway": breakaway, "pid": pid}));
+            }
+        });
+        std::process::exit(code);
     }
     let started = parse_args(&argv).and_then(|a| {
         let s = read_settings(&a)?;
