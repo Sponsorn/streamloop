@@ -11,6 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const GITHUB_REPO = 'Sponsorn/streamloop';
 const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=50`;
+const FETCH_TIMEOUT_MS = 10_000;
 const ALLOWED_DOWNLOAD_HOSTS = new Set(['github.com', 'objects.githubusercontent.com']);
 
 function isAllowedDownloadUrl(url: string): boolean {
@@ -31,11 +32,13 @@ export interface UpdateInfo {
   status: UpdateStatus;
   error: string | null;
   isDevMode: boolean;
+  /** Set when the release bundles another Node than the running one. Updates never deliver node/. */
+  nodeNotice: string | null;
 }
 
 /** Pick the best ZIP asset and its matching checksum from a release's assets.
- *  Prefers a slim "-update.zip" (app + yt-dlp only, no node/mpv — for in-place
- *  updates, much smaller) over the full bundle, falling back to any ".zip". The
+ *  Prefers the slim "-update.zip" (much smaller) over the full bundle, falling
+ *  back to any ".zip". The
  *  checksum is matched to the *chosen* ZIP by name so a release carrying both
  *  bundles can't cross the wires. Accepts either "<file>.zip.sha256" or
  *  "<file>.sha256", since both naming conventions have shipped. */
@@ -58,9 +61,42 @@ export function selectReleaseAssets(
   };
 }
 
+/** The Node version a release names in its node-version.txt asset, or null. */
+export function parseNodeVersion(text: string): string | null {
+  const m = /^v?(\d+\.\d+\.\d+)$/.exec(text.trim());
+  return m ? m[1] : null;
+}
+
+/** Stage only app/ and START.bat into _update_tmp. START.bat swaps whatever lands
+ *  there, and the supervisor holds yt-dlp/ and the token server holds node/. */
+export function stageUpdate(extractDir: string, tmpDir: string): void {
+  // The ZIP holds streamloop/app/; older layouts may extract app/ directly.
+  let root = join(extractDir, 'streamloop');
+  if (!existsSync(join(root, 'app'))) root = extractDir;
+  if (!existsSync(join(root, 'app'))) {
+    throw new Error('Could not find app/ directory in update archive');
+  }
+
+  // config.json and logs\ are copied by START.bat after the server exits,
+  // so late config changes are preserved.
+
+  // START.bat never replaces itself in place; it stages this copy as START.bat.new.
+  const newStartBat = join(root, 'START.bat');
+  if (existsSync(newStartBat)) {
+    cpSync(newStartBat, join(tmpDir, 'START.bat'));
+  }
+
+  // The live app/ can't be renamed while the server runs (EBUSY on Windows),
+  // so START.bat swaps the staged copy in after the process exits.
+  renameSync(join(root, 'app'), join(tmpDir, 'app'));
+}
+
+/** Numeric X.Y.Z compare. A suffixed version such as "3.0.0-dev" sorts below its release. */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/, '').split('.').map(Number);
-  const pb = b.replace(/^v/, '').split('.').map(Number);
+  const [ca, sa] = a.replace(/^v/, '').split('-', 2);
+  const [cb, sb] = b.replace(/^v/, '').split('-', 2);
+  const pa = ca.split('.').map(Number);
+  const pb = cb.split('.').map(Number);
   const len = Math.max(pa.length, pb.length);
   for (let i = 0; i < len; i++) {
     const na = pa[i] ?? 0;
@@ -68,6 +104,8 @@ export function compareVersions(a: string, b: string): number {
     if (na > nb) return 1;
     if (na < nb) return -1;
   }
+  if (sa === undefined && sb !== undefined) return 1;
+  if (sa !== undefined && sb === undefined) return -1;
   return 0;
 }
 
@@ -80,14 +118,19 @@ export interface GithubRelease {
 
 const VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
-/** Newest stable release with the running major version. 3.x installs beside 2.x
- *  in its own folder, so a 2.x install must never take a 3.x release as an update. */
+/** Newest release with the running major version; 3.x installs beside 2.x, so neither takes the other's.
+ *  3.x ships as prereleases while on trial, so only 3.x accepts them. */
 export function pickRelease(releases: GithubRelease[], currentVersion: string): GithubRelease | null {
   const major = currentVersion.replace(/^v/, '').split('.')[0];
+  const allowPrerelease = Number(major) >= 3;
   let best: GithubRelease | null = null;
   for (const r of releases) {
     const m = VERSION_TAG.exec(r.tag_name);
-    if (r.draft || r.prerelease || !m || m[1] !== major) continue;
+    if (r.draft || (r.prerelease && !allowPrerelease) || !m || m[1] !== major) continue;
+    // A release still uploading its assets must not beat a complete older one.
+    const hasUpdateZip = r.assets.some((a) => a.name.endsWith('-update.zip'));
+    const hasFullZip = r.assets.some((a) => a.name.endsWith('.zip') && !a.name.endsWith('-update.zip'));
+    if (!hasUpdateZip || !hasFullZip) continue;
     if (!best || compareVersions(r.tag_name, best.tag_name) > 0) best = r;
   }
   return best;
@@ -105,8 +148,9 @@ export class Updater {
   private isDevMode: boolean;
   private releaseAssetUrl: string | null = null;
   private releaseChecksumUrl: string | null = null;
+  private nodeNotice: string | null = null;
 
-  constructor() {
+  constructor(opts: { isDevMode?: boolean } = {}) {
     // Read version from package.json
     const require = createRequire(import.meta.url);
     const pkg = require('../../package.json');
@@ -115,7 +159,7 @@ export class Updater {
     // Dev mode: no sibling node/ directory means we're in dev
     const appDir = resolve(__dirname, '..', '..');
     const nodeDir = resolve(appDir, '..', 'node');
-    this.isDevMode = !existsSync(nodeDir);
+    this.isDevMode = opts.isDevMode ?? !existsSync(nodeDir);
   }
 
   getStatus(): UpdateInfo {
@@ -126,6 +170,7 @@ export class Updater {
       status: this.status,
       error: this.error,
       isDevMode: this.isDevMode,
+      nodeNotice: this.nodeNotice,
     };
   }
 
@@ -138,6 +183,7 @@ export class Updater {
 
     this.status = 'checking';
     this.error = null;
+    this.nodeNotice = null;
 
     try {
       const res = await fetch(GITHUB_API_URL, {
@@ -145,6 +191,7 @@ export class Updater {
           'Accept': 'application/vnd.github.v3+json',
           'User-Agent': `streamloop/${this.currentVersion}`,
         },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
 
       if (res.status === 404) {
@@ -181,6 +228,11 @@ export class Updater {
         this.releaseAssetUrl = zipUrl;
         this.releaseChecksumUrl =
           checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
+        // Dev mode runs the system Node, which no release bundles.
+        const releaseNode = this.isDevMode ? null : await this.fetchReleaseNodeVersion(release);
+        if (releaseNode && releaseNode !== process.versions.node) {
+          this.nodeNotice = `This release bundles Node ${releaseNode}. Install the full ZIP to get it.`;
+        }
       }
 
       this.status = 'idle';
@@ -188,11 +240,28 @@ export class Updater {
       logger.info({ currentVersion: this.currentVersion, latestVersion: this.latestVersion, updateAvailable: this.updateAvailable }, 'Update check complete');
     } catch (err) {
       this.status = 'error';
-      this.error = err instanceof Error ? err.message : String(err);
+      this.error = err instanceof Error && err.name === 'TimeoutError'
+        ? 'GitHub did not answer within 10 seconds.'
+        : err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'Update check failed');
     }
 
     return this.getStatus();
+  }
+
+  private async fetchReleaseNodeVersion(release: GithubRelease): Promise<string | null> {
+    const url = release.assets.find((a) => a.name === 'node-version.txt')?.browser_download_url;
+    if (!url || !isAllowedDownloadUrl(url)) return null;
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      return res.ok ? parseNodeVersion(await res.text()) : null;
+    } catch (err) {
+      logger.warn({ err }, 'Could not read the release Node version');
+      return null;
+    }
   }
 
   async downloadAndApply(): Promise<void> {
@@ -206,6 +275,13 @@ export class Updater {
 
     if (this.status === 'downloading' || this.status === 'extracting' || this.status === 'ready') {
       throw new Error('Update already in progress');
+    }
+
+    const checksumUrl = this.releaseChecksumUrl;
+    if (!checksumUrl) {
+      this.status = 'error';
+      this.error = 'This release has no checksum file, so it was not installed.';
+      throw new Error(this.error);
     }
 
     const appDir = resolve(__dirname, '..', '..');
@@ -234,25 +310,20 @@ export class Updater {
       const fileStream = createWriteStream(zipPath);
       await pipeline(res.body as unknown as NodeJS.ReadableStream, fileStream);
 
-      // Verify SHA-256 checksum if available
-      if (this.releaseChecksumUrl) {
-        logger.info('Verifying update checksum');
-        const checksumRes = await fetch(this.releaseChecksumUrl, {
-          headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
-        });
-        if (!checksumRes.ok) throw new Error(`Checksum download failed: ${checksumRes.status}`);
-        const checksumText = await checksumRes.text();
-        const expectedHash = checksumText.trim().split(/\s+/)[0].toLowerCase();
-        const hash = createHash('sha256');
-        await pipeline(createReadStream(zipPath), hash);
-        const actualHash = hash.digest('hex');
-        if (actualHash !== expectedHash) {
-          throw new Error(`Checksum mismatch: expected ${expectedHash}, got ${actualHash}`);
-        }
-        logger.info('Update checksum verified');
-      } else {
-        logger.warn('No checksum file in release — skipping integrity verification');
+      logger.info('Verifying update checksum');
+      const checksumRes = await fetch(checksumUrl, {
+        headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
+      });
+      if (!checksumRes.ok) throw new Error(`Checksum download failed: ${checksumRes.status}`);
+      const checksumText = await checksumRes.text();
+      const expectedHash = checksumText.trim().split(/\s+/)[0].toLowerCase();
+      const hash = createHash('sha256');
+      await pipeline(createReadStream(zipPath), hash);
+      const actualHash = hash.digest('hex');
+      if (actualHash !== expectedHash) {
+        throw new Error(`Checksum mismatch: expected ${expectedHash}, got ${actualHash}`);
       }
+      logger.info('Update checksum verified');
 
       // Extract
       this.status = 'extracting';
@@ -261,41 +332,7 @@ export class Updater {
       mkdirSync(extractDir, { recursive: true });
       execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { timeout: 600_000 });
 
-      // Find the app directory inside the extracted zip
-      // The ZIP contains streamloop/app/ — we need the app folder
-      let newAppDir = join(extractDir, 'streamloop', 'app');
-      if (!existsSync(newAppDir)) {
-        // Maybe the zip extracts directly
-        newAppDir = join(extractDir, 'app');
-      }
-      if (!existsSync(newAppDir)) {
-        throw new Error('Could not find app/ directory in update archive');
-      }
-
-      // config.json and state.json are copied by START.bat after the server exits,
-      // so late config changes and the final flushed state are preserved.
-
-      // Copy new START.bat to tmp staging (START.bat swap also done by the batch file)
-      const newStartBat = join(extractDir, 'streamloop', 'START.bat');
-      if (existsSync(newStartBat)) {
-        cpSync(newStartBat, join(tmpDir, 'START.bat'));
-      }
-
-      // Stage the new app at _update_tmp/app/ for START.bat to swap after exit.
-      // We can't rename the live app/ directory while the server is running on Windows
-      // (EBUSY), so the batch file handles the swap after the process exits.
-      const stagedAppDir = join(tmpDir, 'app');
-      renameSync(newAppDir, stagedAppDir);
-
-      // Also stage yt-dlp/ (contains yt-dlp.exe + deno.exe) if the ZIP includes
-      // it. START.bat swaps it alongside app/ so new yt-dlp/deno binaries land
-      // on every update — YouTube's challenge shape rotates faster than we cut
-      // releases, and nightly yt-dlp helps track those rotations.
-      const newYtdlpDir = join(extractDir, 'streamloop', 'yt-dlp');
-      if (existsSync(newYtdlpDir)) {
-        const stagedYtdlpDir = join(tmpDir, 'yt-dlp');
-        renameSync(newYtdlpDir, stagedYtdlpDir);
-      }
+      stageUpdate(extractDir, tmpDir);
 
       this.status = 'ready';
       logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');

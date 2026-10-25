@@ -1,6 +1,6 @@
 import express, { Router, type Response, type NextFunction, type Request } from 'express';
-import { existsSync, writeFileSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
-import { join, basename } from 'path';
+import { existsSync, writeFileSync, renameSync, unlinkSync, readdirSync, statSync, readFileSync, openSync, readSync, closeSync } from 'fs';
+import { join, basename, resolve } from 'path';
 import { freemem, totalmem } from 'os';
 import { ZodError } from 'zod';
 import { saveConfig as saveConfigFile, isFirstRun, getConfigPath, DEFAULT_DISCORD_TEMPLATES, DISCORD_TEMPLATE_VARIABLES } from './config.js';
@@ -14,6 +14,7 @@ import { protectStreamKey, type SupervisorClient, type SupervisorStatus } from '
 import type { LauncherState, SupervisorLauncher } from './supervisor-launcher.js';
 import type { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
+import { readSetupReport, runSetupCheck as runSetupCheckDefault, type SetupReport } from './setup-check.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
@@ -21,7 +22,7 @@ export interface ApiDependencies {
   applyConfig: (config: AppConfig) => void;
   saveConfig?: (patch: Partial<AppConfig>) => AppConfig;
   client: Pick<SupervisorClient, 'status' | 'control' | 'reload' | 'shutdown'>;
-  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow' | 'waitReason'>;
+  launcher: Pick<SupervisorLauncher, 'state' | 'isStoppedByUser' | 'markStoppedByUser' | 'launchNow' | 'waitReason' | 'blockReason'>;
   eventLog: Pick<EventLog, 'getEvents'>;
   /** The install root holding supervisor\ and data\; null when it is unknown. */
   root: string | null;
@@ -36,6 +37,9 @@ export interface ApiDependencies {
   getTwitch: () => TwitchLivenessChecker;
   getUptime: () => number;
   apiToken: string;
+  runSetupCheck?: (root: string) => Promise<SetupReport>;
+  /** The Windows Startup folder; tests point it at a temp dir. */
+  startupDir?: string;
   /** STREAMLOOP_TEST_HOOKS=1 only: adds POST /test/exit-75, the update restart without an update. */
   testHooks?: boolean;
 }
@@ -46,7 +50,19 @@ const STARTUP_FOLDER = join(
   process.env.APPDATA ?? '',
   'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
 );
-const AUTOSTART_VBS = join(STARTUP_FOLDER, 'StreamLoop.vbs');
+
+/** UTF-16LE or UTF-8 with a BOM; else BOM-less UTF-8 as 2.x writes it, else ANSI (cp1252). */
+function decodeVbs(raw: Buffer): string {
+  if (raw[0] === 0xff && raw[1] === 0xfe) return raw.subarray(2).toString('utf16le');
+  if (raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) return raw.subarray(3).toString('utf8');
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  } catch {
+    return raw.toString('latin1');
+  }
+}
+
+const sameBat = (a: string, b: string): boolean => resolve(a).toLowerCase() === resolve(b).toLowerCase();
 
 const LOG_NAME = /^[A-Za-z0-9_.-]+\.(log|jsonl|csv)$/;
 const LOG_TAIL_BYTES = 1024 * 1024;
@@ -70,12 +86,14 @@ export function streamState(
   launcher: LauncherState,
   stoppedByUser: boolean,
   waitReason: string | null = null,
+  blockReason: string | null = null,
 ): { state: StreamState; reason: string | null } {
   // The old supervisor can answer for a moment after Stop, so the user's stop wins.
   if (stoppedByUser) return { state: 'stopped', reason: 'The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start.' };
   // So does a Start that waits for that old supervisor to exit.
   if (waitReason) return { state: 'starting', reason: waitReason };
   if (!sup) {
+    if (blockReason) return { state: 'off-air', reason: blockReason };
     if (launcher === 'starting') return { state: 'starting', reason: 'The supervisor is starting.' };
     if (launcher === 'missing') return { state: 'off-air', reason: 'The supervisor program was not found in the install folder.' };
     return { state: 'off-air', reason: 'The supervisor is not answering.' };
@@ -102,6 +120,8 @@ export function streamState(
   }
 }
 
+const SUPERVISOR_EXE_MISSING = 'The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP.';
+
 function maskConfig(config: AppConfig): Record<string, unknown> {
   const { streamKeyProtected, ...supervisor } = config.supervisor;
   return {
@@ -123,6 +143,8 @@ function errorText(err: unknown): string {
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
   const save = deps.saveConfig ?? ((patch: Partial<AppConfig>) => saveConfigFile(patch));
+  const runSetupCheck = deps.runSetupCheck ?? ((root: string) => runSetupCheckDefault(root));
+  let setupRun: Promise<SetupReport> | null = null;
   const protect = deps.protect ?? ((exe: string, plain: string) => protectStreamKey(exe, plain));
   const logDirs: Record<string, string | null> = {
     supervisor: deps.root ? join(deps.root, 'data', 'logs') : null,
@@ -164,7 +186,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const sup = await deps.client.status();
     const launcher = deps.launcher.state();
     res.json({
-      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser(), deps.launcher.waitReason()),
+      stream: streamState(sup, launcher, deps.launcher.isStoppedByUser(), deps.launcher.waitReason(), deps.launcher.blockReason()),
       supervisor: sup,
       launcher,
       twitch: deps.getTwitch().getStatus(),
@@ -205,6 +227,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
       if (supervisor) {
         delete supervisor.streamKeyProtected;
         delete supervisor.streamKeySet;
+        // An explicit preferredEncoder is the user's pick. Without one, a changed encoder becomes the preference;
+        // resending the current one (any save after a fallback) must not make the fallback the preference.
+        if (typeof supervisor.preferredEncoder !== 'string' && typeof supervisor.encoder === 'string'
+          && supervisor.encoder !== deps.getConfig().supervisor.encoder) {
+          supervisor.preferredEncoder = supervisor.encoder;
+        }
       }
       const r = await saveAndReload(body as Partial<AppConfig>);
       logger.info({ restartRequired: r.restartRequired, reloadError: r.reloadError }, 'Config updated via API');
@@ -223,10 +251,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
     if (!deps.root) {
       return res.status(503).json({ error: 'The supervisor program was not found, so the key cannot be encrypted.' });
     }
+    const exe = join(deps.root, 'supervisor', 'streamloop-supervisor.exe');
+    if (!existsSync(exe)) return res.status(503).json({ error: SUPERVISOR_EXE_MISSING });
     // protectStreamKey already redacts; this guards any other error text too.
     const redact = (s: string): string => s.split(key.trim()).join('[redacted]');
     try {
-      const blob = await protect(join(deps.root, 'supervisor', 'streamloop-supervisor.exe'), key);
+      const blob = await protect(exe, key);
       const r = await saveAndReload({ supervisor: { streamKeyProtected: blob } } as Partial<AppConfig>);
       logger.info({ reloadError: r.reloadError }, 'Stream key replaced');
       res.json({ ok: true, streamKeySet: true });
@@ -237,32 +267,53 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
+  const autostartVbs = (): string => join(deps.startupDir ?? STARTUP_FOLDER, 'StreamLoop.vbs');
+  const thisBat = (): string =>
+    join(deps.root ?? join(getConfigPath().replace(/[/\\]config\.json$/, ''), '..'), 'START.bat');
+  const autostartTarget = (): string | null => {
+    if (!existsSync(autostartVbs())) return null;
+    const m = /WshShell\.Run\s+"""(.+?)"""/i.exec(decodeVbs(readFileSync(autostartVbs())));
+    return m ? m[1] : null;
+  };
+
   router.get('/autostart', (_req, res) => {
-    res.json({ enabled: existsSync(AUTOSTART_VBS) });
+    try {
+      const target = autostartTarget();
+      res.json({ enabled: existsSync(autostartVbs()), target, thisInstall: target !== null && sameBat(target, thisBat()) });
+    } catch (err) {
+      logger.error({ err }, 'Failed to read autostart');
+      res.status(500).json({ error: errorText(err) });
+    }
   });
 
   router.post('/autostart', (req, res) => {
     const { enabled } = req.body as { enabled: boolean };
     try {
       if (enabled) {
-        const appRoot = getConfigPath().replace(/[/\\]config\.json$/, '');
-        const batPath = join(appRoot, '..', 'START.bat');
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          `WshShell.Run """${batPath}""", 1, False`,
+          `WshShell.Run """${thisBat()}""", 1, False`,
         ].join('\r\n');
-        writeFileSync(AUTOSTART_VBS, vbsContent, 'utf-8');
+        // UTF-16LE with a BOM: WScript reads a BOM-less UTF-8 file as ANSI and misses non-ASCII paths.
+        const tmpFile = autostartVbs() + '.tmp';
+        writeFileSync(tmpFile, '\ufeff' + vbsContent, 'utf16le');
+        renameSync(tmpFile, autostartVbs());
         logger.info('Autostart shortcut created');
-      } else {
-        if (existsSync(AUTOSTART_VBS)) {
-          unlinkSync(AUTOSTART_VBS);
-          logger.info('Autostart shortcut removed');
+      } else if (existsSync(autostartVbs())) {
+        const target = autostartTarget();
+        if (target === null) {
+          return res.status(409).json({ error: 'StreamLoop.vbs in the Startup folder was not written by StreamLoop. Remove it from the Startup folder by hand.' });
         }
+        if (!sameBat(target, thisBat())) {
+          return res.status(409).json({ error: `Autostart points to another StreamLoop install: ${target}.` });
+        }
+        unlinkSync(autostartVbs());
+        logger.info('Autostart shortcut removed');
       }
       res.json({ ok: true, enabled });
     } catch (err) {
       logger.error({ err }, 'Failed to set autostart');
-      res.status(500).json({ error: String(err) });
+      res.status(500).json({ error: errorText(err) });
     }
   });
 
@@ -393,6 +444,29 @@ export function createApiRouter(deps: ApiDependencies): Router {
     deps.launcher.launchNow();
     logger.info('Stream started from the dashboard');
     res.json({ ok: true });
+  });
+
+  // --- Setup check ---
+
+  const NO_ROOT = 'The install folder is not known, so the setup check cannot run.';
+
+  router.get('/setup-check', (_req, res) => {
+    if (!deps.root) return res.status(503).json({ error: NO_ROOT });
+    res.json(readSetupReport(deps.root));
+  });
+
+  // Recommendations are not applied here; the dashboard saves them through POST /config.
+  router.post('/setup-check/run', async (_req, res) => {
+    const root = deps.root;
+    if (!root) return res.status(503).json({ error: NO_ROOT });
+    // A second click while the probes run gets the same result instead of a second set of probes.
+    setupRun ??= runSetupCheck(root).finally(() => { setupRun = null; });
+    try {
+      res.json(await setupRun);
+    } catch (err) {
+      logger.error({ err }, 'Setup check failed');
+      res.status(500).json({ error: errorText(err) });
+    }
   });
 
   // --- Log endpoints ---

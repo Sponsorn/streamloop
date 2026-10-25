@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'fs';
 import express from 'express';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { loadConfig, isFirstRun } from './config.js';
+import { loadConfig, isFirstRun, saveConfig } from './config.js';
 import { logger } from './logger.js';
 import { PlaylistMetadataCache } from './playlist-metadata.js';
 import { DiscordNotifier } from './discord.js';
@@ -19,6 +19,7 @@ import { SPAWN_CWD } from './spawn-cwd.js';
 import { SupervisorClient } from './supervisor-client.js';
 import { SupervisorLauncher, installRoot } from './supervisor-launcher.js';
 import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent } from './supervisor-events.js';
+import { launchGuard } from './setup-check.js';
 import type { AppConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,11 +81,23 @@ async function main() {
     client,
     debugFaults,
     onEvent: (kind, detail) => onEvent(launcherEvent(kind, detail)),
+    beforeLaunch: root
+      ? launchGuard({
+        root,
+        getSupervisor: () => config.supervisor,
+        saveEncoder: (patch) => {
+          config = saveConfig({ supervisor: patch } as Partial<AppConfig>);
+        },
+        onEvent: (kind, detail) => onEvent(launcherEvent(kind, detail)),
+      })
+      : undefined,
   });
   const supervisorEvents = root ? new SupervisorEvents({ logsDir: join(root, 'data', 'logs'), onEvent }) : null;
   if (!root) logger.warn('No install root (set STREAMLOOP_ROOT in dev): the supervisor cannot be launched');
 
   const updater = new Updater();
+  const testHooks = process.env.STREAMLOOP_TEST_HOOKS === '1';
+  if (testHooks) logger.warn('STREAMLOOP_TEST_HOOKS=1: POST /api/test/exit-75 is open');
 
   // A first run has only the placeholder playlist: nothing starts until the wizard saves a real one.
   let started = false;
@@ -152,7 +165,7 @@ async function main() {
     getTwitch: () => twitch,
     getUptime,
     apiToken,
-    testHooks: process.env.STREAMLOOP_TEST_HOOKS === '1',
+    testHooks,
   }));
 
   // 2.x binds the same port: while it runs, exit and let START.bat retry until it is stopped.

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
-import { mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createApiRouter, type ApiDependencies } from '../api.js';
 import { logger } from '../logger.js';
@@ -40,7 +40,8 @@ interface Harness {
   sup: { value: SupervisorStatus | null };
   launcherState: { value: LauncherState; stopped: boolean };
   client: { status: ReturnType<typeof vi.fn>; control: ReturnType<typeof vi.fn>; reload: ReturnType<typeof vi.fn>; shutdown: ReturnType<typeof vi.fn> };
-  launcher: { state: ReturnType<typeof vi.fn>; isStoppedByUser: ReturnType<typeof vi.fn>; markStoppedByUser: ReturnType<typeof vi.fn>; launchNow: ReturnType<typeof vi.fn>; waitReason: ReturnType<typeof vi.fn> };
+  launcher: { state: ReturnType<typeof vi.fn>; isStoppedByUser: ReturnType<typeof vi.fn>; markStoppedByUser: ReturnType<typeof vi.fn>; launchNow: ReturnType<typeof vi.fn>; waitReason: ReturnType<typeof vi.fn>; blockReason: ReturnType<typeof vi.fn> };
+  runSetupCheck: ReturnType<typeof vi.fn>;
   save: ReturnType<typeof vi.fn>;
   applyConfig: ReturnType<typeof vi.fn>;
   protect: ReturnType<typeof vi.fn>;
@@ -63,7 +64,9 @@ function harness(): Harness {
     markStoppedByUser: vi.fn(() => { launcherState.stopped = true; }),
     launchNow: vi.fn(() => { launcherState.stopped = false; }),
     waitReason: vi.fn((): string | null => null),
+    blockReason: vi.fn((): string | null => null),
   };
+  const runSetupCheck = vi.fn(async () => ({ at: 'now', encoder: { chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false }, cache: { freeMb: 1, recommendedMb: 50, warning: null }, dependencies: [] }));
   const save = vi.fn((patch: Partial<AppConfig>) => {
     config.value = { ...config.value, ...patch, supervisor: { ...config.value.supervisor, ...(patch.supervisor ?? {}) } };
     return config.value;
@@ -89,8 +92,9 @@ function harness(): Harness {
     getTwitch: () => ({ getStatus: () => ({ enabled: false }) }),
     getUptime: () => 1234,
     apiToken: TOKEN,
+    runSetupCheck,
   } as unknown as ApiDependencies;
-  return { deps, sup, launcherState, client, launcher, save, applyConfig, protect, config };
+  return { deps, sup, launcherState, client, launcher, save, applyConfig, protect, config, runSetupCheck };
 }
 
 let server: Server;
@@ -125,6 +129,100 @@ describe('API on the supervisor', () => {
     server.closeAllConnections(); // fetch keeps connections alive, which would hold close() open
     await new Promise((r) => server.close(r));
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  describe('autostart handover', () => {
+    const MINE = String.raw`C:\Users\Emma Ö\StreamLoop 3`;
+    const OLD = String.raw`D:\old\START.bat`;
+    const startup = join(tmp, 'startup');
+    const vbsPath = join(startup, 'StreamLoop.vbs');
+    const vbsFor = (bat: string) => `Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """${bat}""", 1, False`;
+
+    beforeEach(() => {
+      mkdirSync(startup, { recursive: true });
+      h.deps.startupDir = startup;
+      h.deps.root = MINE;
+    });
+
+    it('writes a UTF-16LE VBS with a BOM that targets this install START.bat', async () => {
+      const r = await post('/autostart', { enabled: true });
+      expect(r.status).toBe(200);
+      const raw = readFileSync(vbsPath);
+      expect([raw[0], raw[1]]).toEqual([0xff, 0xfe]);
+      const text = raw.subarray(2).toString('utf16le');
+      expect(text).toContain(`WshShell.Run """${MINE}\\START.bat""", 1, False`);
+      const g = await (await get('/autostart')).json();
+      expect(g).toEqual({ enabled: true, target: `${MINE}\\START.bat`, thisInstall: true });
+    });
+
+    it('reads a 2.x UTF-8 VBS without a BOM as another install', async () => {
+      const other = String.raw`C:\Users\Emma Ö\StreamLoop 2\START.bat`;
+      writeFileSync(vbsPath, Buffer.from(vbsFor(other), 'utf8'));
+      const g = await (await get('/autostart')).json();
+      expect(g).toEqual({ enabled: true, target: other, thisInstall: false });
+    });
+
+    it('reads true cp1252 bytes through the ANSI fallback', async () => {
+      const other = String.raw`C:UsersEmma ÖStreamLoop 2START.bat`;
+      writeFileSync(vbsPath, Buffer.from(vbsFor(other), 'latin1'));
+      const g = await (await get('/autostart')).json();
+      expect(g.target).toBe(other);
+    });
+
+    it('leaves no temp file behind after enabling', async () => {
+      await post('/autostart', { enabled: true });
+      expect(existsSync(vbsPath + '.tmp')).toBe(false);
+      expect(existsSync(vbsPath)).toBe(true);
+    });
+
+    it('disabling a VBS without a readable target answers 409 with its own reason', async () => {
+      writeFileSync(vbsPath, 'MsgBox "hi"');
+      const r = await post('/autostart', { enabled: false });
+      expect(r.status).toBe(409);
+      expect((await r.json()).error).toBe('StreamLoop.vbs in the Startup folder was not written by StreamLoop. Remove it from the Startup folder by hand.');
+      expect(existsSync(vbsPath)).toBe(true);
+    });
+
+    it('answers 500 JSON when the VBS cannot be read', async () => {
+      mkdirSync(vbsPath);
+      const r = await get('/autostart');
+      expect(r.status).toBe(500);
+      expect(r.headers.get('content-type')).toMatch(/json/);
+      expect(typeof (await r.json()).error).toBe('string');
+    });
+
+    it('reads a UTF-8 VBS with a BOM and ignores path case', async () => {
+      writeFileSync(vbsPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(vbsFor(`${MINE.toLowerCase()}\\start.bat`), 'utf8')]));
+      const g = await (await get('/autostart')).json();
+      expect(g.thisInstall).toBe(true);
+    });
+
+    it('reports disabled when there is no VBS', async () => {
+      expect(await (await get('/autostart')).json()).toEqual({ enabled: false, target: null, thisInstall: false });
+    });
+
+    it('enabling replaces another install VBS', async () => {
+      writeFileSync(vbsPath, vbsFor(OLD));
+      await post('/autostart', { enabled: true });
+      const g = await (await get('/autostart')).json();
+      expect(g.thisInstall).toBe(true);
+    });
+
+    it('disabling removes this install VBS', async () => {
+      await post('/autostart', { enabled: true });
+      const r = await post('/autostart', { enabled: false });
+      expect(r.status).toBe(200);
+      expect(existsSync(vbsPath)).toBe(false);
+    });
+
+    it('disabling leaves another install VBS and answers 409', async () => {
+      writeFileSync(vbsPath, vbsFor(OLD));
+      const r = await post('/autostart', { enabled: false });
+      expect(r.status).toBe(409);
+      expect((await r.json()).error).toBe(`Autostart points to another StreamLoop install: ${OLD}.`);
+      expect(existsSync(vbsPath)).toBe(true);
+    });
   });
 
   describe('GET /status stream.state', () => {
@@ -179,6 +277,15 @@ describe('API on the supervisor', () => {
       expect(body.stream).toEqual({ state: 'starting', reason: 'Waiting for the stopped supervisor to exit before starting it again.' });
     });
 
+    it('is off air with the launcher reason while the launch is held', async () => {
+      h.launcherState.value = 'starting';
+      h.launcher.blockReason.mockReturnValue('OBS is running.');
+
+      const body = await (await get('/status')).json();
+
+      expect(body.stream).toEqual({ state: 'off-air', reason: 'OBS is running.' });
+    });
+
     it('keeps firstRun, systemMemory, uptimeMs and twitch', async () => {
       const body = await (await get('/status')).json();
 
@@ -210,6 +317,12 @@ describe('API on the supervisor', () => {
   });
 
   describe('POST /stream-key', () => {
+    const exe = join(tmp, 'root', 'supervisor', 'streamloop-supervisor.exe');
+    beforeEach(() => {
+      mkdirSync(join(tmp, 'root', 'supervisor'), { recursive: true });
+      writeFileSync(exe, '');
+    });
+
     function spyLogs() {
       return (['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const).map((l) => vi.spyOn(logger, l));
     }
@@ -261,6 +374,16 @@ describe('API on the supervisor', () => {
       expect(h.protect).not.toHaveBeenCalled();
     });
 
+    it('answers 503 with only the plain sentence when the supervisor exe is missing', async () => {
+      rmSync(exe);
+
+      const res = await post('/stream-key', { key: KEY });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP.' });
+      expect(h.protect).not.toHaveBeenCalled();
+    });
+
     it('rejects an empty key', async () => {
       const res = await post('/stream-key', { key: '  ' });
 
@@ -288,7 +411,7 @@ describe('API on the supervisor', () => {
       const body = await res.json();
 
       expect(res.status).toBe(200);
-      expect(h.save).toHaveBeenCalledWith({ supervisor: { encoder: 'h264_amf' } });
+      expect(h.save).toHaveBeenCalledWith({ supervisor: { encoder: 'h264_amf', preferredEncoder: 'h264_amf' } });
       expect(h.applyConfig).toHaveBeenCalledOnce();
       expect(h.client.reload).toHaveBeenCalledOnce();
       expect(body).toMatchObject({ ok: true, restartRequired: true, reloadError: null });
@@ -370,6 +493,7 @@ describe('API on the supervisor', () => {
       expect(res.status).toBe(503);
       expect(typeof (await res.json()).error).toBe('string');
       expect(h.client.control).not.toHaveBeenCalled();
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
     });
 
     it('POST /player/jump returns 503 after Stop stream', async () => {
@@ -435,7 +559,58 @@ describe('API on the supervisor', () => {
     });
   });
 
-  it.each(['/stream/stop', '/stream/start', '/stream-key', '/playlist/switch', '/player/next', '/config'])(
+  describe('encoder preference', () => {
+    it('POST /config that changes the encoder also sets preferredEncoder', async () => {
+      await post('/config', { supervisor: { encoder: 'h264_amf' } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_amf', preferredEncoder: 'h264_amf' });
+    });
+
+    it('POST /config takes an explicit preferredEncoder, even for the encoder running now', async () => {
+      h.config.value = { ...h.config.value, supervisor: { ...h.config.value.supervisor, encoder: 'libx264', preferredEncoder: 'h264_nvenc' } };
+      await post('/config', { supervisor: { encoder: 'libx264', preferredEncoder: 'libx264' } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'libx264', preferredEncoder: 'libx264' });
+    });
+
+    it('POST /config keeps an explicit preferredEncoder over the changed-encoder rule', async () => {
+      await post('/config', { supervisor: { encoder: 'h264_amf', preferredEncoder: 'h264_qsv' } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_amf', preferredEncoder: 'h264_qsv' });
+    });
+
+    it('POST /config that resends the current encoder leaves the preference alone', async () => {
+      await post('/config', { supervisor: { encoder: 'h264_nvenc', overlay: false } });
+      expect(h.save.mock.calls[0][0].supervisor).toEqual({ encoder: 'h264_nvenc', overlay: false });
+    });
+  });
+
+  describe('setup check', () => {
+    it('GET /setup-check is null before the first run', async () => {
+      expect(await (await get('/setup-check')).json()).toBeNull();
+    });
+
+    it('POST /setup-check/run runs the check on the install root, then GET returns the stored report', async () => {
+      const report = await (await post('/setup-check/run')).json();
+      mkdirSync(join(tmp, 'root', 'data'), { recursive: true });
+      writeFileSync(join(tmp, 'root', 'data', 'setup-check.json'), JSON.stringify(report));
+
+      expect(h.runSetupCheck).toHaveBeenCalledWith(join(tmp, 'root'));
+      expect(report.encoder.chosen).toBe('h264_nvenc');
+      expect(await (await get('/setup-check')).json()).toEqual(report);
+    });
+
+    it('answers 503 with a reason when there is no install root', async () => {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+      await listen({ ...h.deps, root: null });
+
+      const [g, p] = await Promise.all([get('/setup-check'), post('/setup-check/run')]);
+
+      expect([g.status, p.status]).toEqual([503, 503]);
+      expect((await p.json()).error).toMatch(/install folder/);
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(['/stream/stop', '/stream/start', '/stream-key', '/playlist/switch', '/player/next', '/config', '/setup-check/run'])(
     'refuses POST %s without the API token', async (path) => {
       const res = await fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: KEY, playlistIndex: 1 }) });
 

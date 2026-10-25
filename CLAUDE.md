@@ -43,26 +43,38 @@ npm start            # Run server (tsx)
 npm run dev          # Run with file watching (tsx watch)
 npm test             # Run tests once (vitest run)
 npm run test:watch   # Run tests in watch mode (vitest)
-npm run build:release       # 2.x-layout ZIP (portable Node.js + mpv + yt-dlp/deno + app); no 3.0 packaging yet
-npm run build:release:slim  # 2.x-layout update ZIP: app + yt-dlp only (streamloop-vX.Y.Z-update.zip)
+npm run build:release       # full ZIP in the install layout (node, app, supervisor, ffmpeg, yt-dlp, pot, data, START.bat)
+npm run build:release:slim  # update ZIP: app + START.bat only (streamloop-vX.Y.Z-update.zip)
+node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout.js (both builds run it)
 cargo build --release       # in supervisor/: the supervisor binary
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
+node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
 ```
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
-## Release Checklist
+## Release Checklist (3.x)
 
-Packaging for 3.0 is not done yet. The build scripts still produce the 2.x layout (`node\`, `mpv\`, `yt-dlp\`, `app\`, `START.bat`), with no `supervisor\`, `ffmpeg\` or `pot\`, so this branch cannot build a 3.0 release yet. The checklist below describes the scripts as they are.
-
-Before pushing and building a release:
+Before pushing and building a 3.x release (2.x releases come from the `2.x` branch and follow its own CLAUDE.md):
 
 1. Bump the version in `package.json`. The version is read at startup and used by the updater to compare against GitHub Releases.
 2. Update `RELEASE_NOTES.md` with the new version's changelog. This file is used when creating GitHub Releases.
-3. After pushing, run `npm run build:release` to create the distributable ZIP in `dist/`. Both build modes also emit a matching `.sha256` (format: `<hash>  <filename>`), so the manual `certutil` step is optional.
-4. **Build both bundles.** Run `npm run build:release` (full: `streamloop-vX.Y.Z.zip`) **and** `npm run build:release:slim` (`streamloop-vX.Y.Z-update.zip`, app + yt-dlp only). Always ship the full ZIP — first-time installs and reinstalls need `node/` + `mpv/`, which the updater never delivers, so a release whose only download can't be installed fresh is a footgun. The slim ZIP is an **update-only supplement, not a standalone release**: the updater prefers it so existing installs get a much smaller download. (Slim-only is acceptable solely for a throwaway hotfix where every target already has a working full install at a compatible base and the release touches neither Node nor mpv.)
-5. Create the GitHub release with `gh release create` and upload **both ZIPs plus their matching `.sha256`**. The updater matches each checksum to its ZIP by name and verifies integrity against the chosen `.sha256` asset.
+3. **Build both ZIPs** after pushing: `npm run build:release` (full, `streamloop-vX.Y.Z.zip`) and `npm run build:release:slim` (update, `streamloop-vX.Y.Z-update.zip`). Each writes a matching `.sha256` (`<hash>  <filename>`) and `dist/node-version.txt`, and fails if `verify-release.mjs` finds a layout path missing. The full build needs `cargo` and `spikes/buffer/media/slate.mp4`.
+4. The full ZIP is the install: `node\`, `app\`, `supervisor\` (exe + `slate.mp4`), `ffmpeg\ffmpeg.exe`, `yt-dlp\` (yt-dlp, deno, `plugins\bgutil-ytdlp-pot-provider.zip`), `pot\` (the token server, built under the bundled Node so `canvas` matches its ABI), `data\` and `START.bat`. Neither ZIP holds `app\config.json`: `loadConfig` creates it from `app\config.example.json` on first start, so a full-ZIP reinstall keeps the config and the protected stream key. The update ZIP is `app\` + `START.bat` only, all the updater swaps. A new Node, supervisor, ffmpeg or token server means installing the full ZIP, so every release ships both; the update ZIP is never a standalone release.
+5. Create the GitHub release with `gh release create` and upload **both ZIPs, both `.sha256` files and `node-version.txt`**. The updater matches each checksum to its ZIP by name, and reads `node-version.txt` to tell an install its Node is out of date.
 6. **3.x releases are never marked latest.** Create them with `gh release create ... --latest=false`, and also `--prerelease` while 3.0 is on trial. 2.x installs older than 2.3.7 still read GitHub's "latest release" and would otherwise swap 3.0 into a 2.x folder; 2.3.7 and later only take releases with their own major version.
+7. **Full ZIP or update ZIP for existing installs.** The updater delivers `app\` and `START.bat` only. yt-dlp keeps itself current through Node's `yt-dlp -U` on start (`autoUpdateYtdlp`). A release that changes Node, the supervisor, ffmpeg or the token server says in `RELEASE_NOTES.md` that existing installs need the full ZIP: Stop, close the window, extract the ZIP into the folder it was first extracted into (`C:\StreamLoop3`, so its top folder `streamloop\` lands on `C:\StreamLoop3\streamloop`, never into the install itself, which would make `streamloop\streamloop\`), start, press Start. Config, key and `data\` survive because no ZIP ships `config.json`. Node changes are also flagged in the dashboard through `node-version.txt`.
+8. Prove a release candidate with `node supervisor/scripts/install-session.mjs`: it installs the full ZIP into a temp folder, updates it with the update ZIP through an exit-75 swap, switches to v2.3.8 and back, and removes both installs.
+
+## Switching back to 2.x
+
+3.0 installs beside 2.x in its own folder. Both use port 7654, so one Node runs at a time; 3.0 also refuses to launch its supervisor while `obs64.exe` runs, and 2.x (from 2.3.7) refuses to start its OBS stream while `127.0.0.1:4417/status` reports `encoder.alive: true`.
+
+1. In the 3.0 dashboard press Stop and wait for Stopped (the supervisor exits; `data\stopped-by-user` is written).
+2. Close the 3.0 `START.bat` window.
+3. Start 2.x's `START.bat` and OBS.
+
+Back to 3.0: close 2.x and OBS, start 3.0's `START.bat`, press Start. Until Start, the stopped-by-user marker keeps the supervisor down, also across restarts. Autostart points at one install; turning it on in one moves it there.
 
 ## Architecture
 
@@ -98,7 +110,7 @@ Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` dire
 
 ## Platform Notes
 
-Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) has not been changed for 3.0 yet: it still bundles portable Node.js v22.23.4 win-x64, mpv (from `build/mpv/`) and yt-dlp + deno into the 2.x layout, and nothing from `supervisor/`, ffmpeg or the token server. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
+Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) lays out the install that `supervisor/src/paths.rs` expects; `build/release-layout.js` lists the required paths and `release-layout.test.ts` reads `paths.rs` so the two cannot drift. It bundles portable Node.js v22.23.4 win-x64, yt-dlp nightly and deno (latest), and pinned inputs whose SHA-256 must match: the Node zip, ffmpeg 8.0 essentials (gyan.dev, only `ffmpeg.exe`), and bgutil-ytdlp-pot-provider 2.0.0 (server source and yt-dlp plugin). The full build runs npm under the bundled Node; `--slim` uses the build machine's `npm`, since nothing in `app\` is compiled against a Node ABI.
 
 ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` in tsconfig).
 
@@ -111,24 +123,27 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - `POST /api/update/check` — manually trigger a version check (60s cooldown)
 - `POST /api/update/apply` — download, extract, swap, and restart
 
-**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` (app + yt-dlp) over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. The updater only ever reads `app/`, `yt-dlp/`, and `START.bat` out of the ZIP — `node/` and `mpv/` are ignored even if present.
+**Release selection:** `pickRelease()` takes only releases with the running major version. 2.x takes stable releases; 3.x also takes prereleases, since 3.x ships as `--prerelease` while on trial. A release without both the full and the `-update.zip` is skipped, so one still uploading never wins. `compareVersions()` sorts a suffixed version such as `3.0.0-dev` below its release.
 
-**Restart mechanism:** After applying an update, the server exits with **code 75** (`process.exit(75)` in `index.ts` after a graceful shutdown — stop the update check, the Twitch checks, the launcher and the event tail, close the HTTP server; the supervisor and the stream keep running). 75 is a sentinel, not a failure: `START.bat` reads `%ERRORLEVEL%` after the server process ends and branches on it — `75` = "exited on purpose to apply a staged update", `0` = clean shutdown (stay down), anything else = crash (auto-restart after 10s). The number is arbitrary-but-conventional (75 = `EX_TEMPFAIL` in BSD sysexits.h); what matters is node never emits it on a normal or crashing exit, so it can't be confused with either. On code 75, `START.bat` swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, also swaps `yt-dlp/` if the update bundled new binaries (retry-and-rollback, like the app swap), copies `config.json`, `state.json`, and `logs/` from the old app, verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`.
+**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. `stageUpdate()` stages only `app/` and `START.bat`; `yt-dlp/` and `node/` in a ZIP are ignored, because the 3.0 supervisor holds `yt-dlp\` and its token server holds `node\`. When the release's `node-version.txt` names another Node than the running one, the status carries `nodeNotice`, which points at the full ZIP.
 
-**Launcher self-update (trampoline).** `START.bat` must never overwrite itself in place: cmd.exe reads a running batch file from disk by byte offset, so replacing it mid-run desyncs the read position and usually closes the window before the relaunch (the classic "update applied, terminal never reappears" hang). Instead, when the update ships a `START.bat` that differs from the running one (`fc /b` compare), the new launcher is staged to `START.bat.new`. At the end of the code-75 block, if `START.bat.new` exists, `START.bat` writes a detached one-shot `_apply_launcher.bat`, `start`s it in a **separate** process, and `exit /b 0`s. That trampoline waits ~2s for the original window to close, `move`s `START.bat.new` over `START.bat` while nothing holds it, relaunches in a fresh "StreamLoop" window (so preflight re-runs), then self-deletes. Updates that don't change the launcher take the plain `goto loop` in-place restart. Note the release build ships `START.bat` in **every** ZIP (full and slim), so the `fc /b` content check — not "did the ZIP include a launcher" — is what gates the trampoline.
+**Restart mechanism:** After applying an update, the server exits with **code 75** (`process.exit(75)` in `index.ts` after a graceful shutdown — stop the update check, the Twitch checks, the launcher and the event tail, close the HTTP server; the supervisor and the stream keep running). 75 is a sentinel, not a failure: `START.bat` reads `%ERRORLEVEL%` after the server process ends and branches on it — `75` = "exited on purpose to apply a staged update", `0` = clean shutdown (stay down), anything else = crash (auto-restart after 10s). The number is arbitrary-but-conventional (75 = `EX_TEMPFAIL` in BSD sysexits.h); what matters is node never emits it on a normal or crashing exit, so it can't be confused with either. On code 75, `START.bat` swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, copies `config.json` and `logs/` from the old app (playback state lives in `data\`, outside `app\`), verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`; if `app/` cannot be renamed at all, it deletes `_update_tmp/` so a later exit 75 cannot swap in that stale app.
 
-**Half-swap self-heal.** The `app/` swap is non-atomic (`rename app _update_old`, then `move _update_tmp\app app`). If the process dies between those steps there is no `app/` at all, which would brick every future launch at preflight. `START.bat` guards against this at the top (before preflight): if `app/src/server/index.ts` is missing, it restores `app/` from `_update_old/`, or promotes `_update_tmp\app` if that's all that survived.
+**Launcher self-update (trampoline).** `START.bat` must never overwrite itself in place: cmd.exe reads a running batch file from disk by byte offset, so replacing it mid-run desyncs the read position and usually closes the window before the relaunch (the classic "update applied, terminal never reappears" hang). Instead, when the update ships a `START.bat` that differs from the running one (`fc /b` compare), the new launcher is staged to `START.bat.new`. At the end of the code-75 block, if `START.bat.new` exists, `START.bat` writes a detached one-shot `_apply_launcher.bat`, `start`s it in a **separate** process, and `exit /b 0`s. That trampoline waits ~2s for the original window to close, `move`s `START.bat.new` over `START.bat` while nothing holds it, relaunches in a fresh "StreamLoop 3" window (so preflight re-runs), then self-deletes. It finds the root from its own path (`%~dp0`), never from a path echoed into it, because echo writes in the console codepage and a non-ASCII install path would miss. Updates that don't change the launcher take the plain `goto loop` in-place restart. Note the release build ships `START.bat` in **every** ZIP (full and slim), so the `fc /b` content check — not "did the ZIP include a launcher" — is what gates the trampoline.
+
+**Half-swap self-heal.** The `app/` swap is non-atomic (`rename app _update_old`, then `move _update_tmp\app app`). If the process dies between those steps there is no `app/` at all, which would brick every future launch at preflight. A `:heal` routine in `START.bat` runs before preflight and again before every start under `:loop`: if `app/src/server/index.ts` is missing, it restores `app/` from `_update_old/`, or promotes `_update_tmp\app` if that's all that survived.
 
 **Safety guards:**
 - Concurrent `downloadAndApply()` calls are rejected (prevents double-click corruption)
 - `_update_tmp/` is cleaned up on download/extraction failure
 - `START.bat` verifies swap success before cleanup; rolls back on failure
 - `START.bat` never replaces itself in place — launcher updates hand off to a detached trampoline (see above)
-- `START.bat` self-heals a half-swapped `app/` at startup before preflight
+- `START.bat` self-heals a half-swapped `app/` before preflight and before every restart
 - Inside `START.bat`'s parenthesized blocks, comments are `rem` without parentheses, never `::`. cmd parses the whole exit-code block on every server exit, and a `::` line in it aborts the launcher (window closes, no crash restart). `launcher.test.ts` enforces this.
 - Every process the server starts gets `cwd: SPAWN_CWD` (`spawn-cwd.ts`, the temp folder). A child that inherits `cwd=app\` and outlives the server (browser, yt-dlp) blocks the `rename app _update_old` step. `spawn-cwd.test.ts` fails when a spawn site lacks a `cwd`.
 - Dashboard `waitForRestart()` times out after 60s instead of looping forever
-- Checksum verification uses streaming hash (no full ZIP in memory)
+- Checksum verification uses streaming hash (no full ZIP in memory); a ZIP with no matching `.sha256` is refused before anything is downloaded
+- GitHub API and `node-version.txt` fetches time out after 10s
 
 **Dev mode:** When the `node/` sibling directory doesn't exist (i.e., running via `npm start`), the updater operates in check-only mode — it can detect available updates but won't download or apply them.
 

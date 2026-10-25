@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -109,5 +109,125 @@ describe('formatTime', () => {
   it('formats seconds as h:mm:ss', () => {
     expect(formatTime(3725.9)).toBe('1:02:05');
     expect(formatTime(null)).toBe('0:00:00');
+  });
+});
+
+const report = (encoder: Record<string, unknown> = {}, dependencies: { name: string; ok: boolean; path: string }[] = []) => ({
+  at: '2026-10-25T10:00:00.000Z',
+  encoder: { chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false, works: true, ...encoder },
+  cache: { freeMb: 100000, recommendedMb: 4096, warning: null },
+  dependencies,
+});
+
+describe('encoderLabel', () => {
+  it('names a working hardware encoder as ok', () => {
+    expect(encoderLabel(report())).toEqual({ text: 'NVIDIA (NVENC)', level: 'ok' });
+  });
+
+  it('warns when only the software encoder works', () => {
+    const label = encoderLabel(report({ chosen: 'libx264', tried: ['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264'], software: true }));
+    expect(label.level).toBe('warn');
+    expect(label.text).toContain('Software');
+  });
+
+  it('shows an error, not a software pick, when no encoder works', () => {
+    const label = encoderLabel(report({ chosen: 'libx264', software: true, works: false }));
+    expect(label).toEqual({ text: 'No encoder works on this PC. Check the graphics driver.', level: 'err' });
+  });
+});
+
+describe('autostartLabel', () => {
+  it('says Off when there is no autostart file', () => {
+    expect(autostartLabel({ enabled: false, target: null, thisInstall: false })).toBe('Off');
+  });
+
+  it('says This install when the file starts this install', () => {
+    expect(autostartLabel({ enabled: true, target: 'C:\SL\START.bat', thisInstall: true })).toBe('This install');
+  });
+
+  it('names the other install the file starts', () => {
+    expect(autostartLabel({ enabled: true, target: 'D:\Old\START.bat', thisInstall: false })).toBe('Another install: D:\Old\START.bat');
+  });
+
+  it('flags a StreamLoop.vbs that StreamLoop did not write', () => {
+    expect(autostartLabel({ enabled: true, target: null, thisInstall: false })).toBe('set by another program (StreamLoop.vbs in the Startup folder)');
+  });
+});
+
+describe('dependencyRows', () => {
+  it('lists failures first and keeps the order otherwise', () => {
+    const rows = dependencyRows(report({}, [
+      { name: 'Supervisor', ok: true, path: 'a' },
+      { name: 'ffmpeg', ok: false, path: 'b' },
+      { name: 'yt-dlp', ok: true, path: 'c' },
+      { name: 'Deno', ok: false, path: 'd' },
+    ]));
+    expect(rows.map((r: { name: string }) => r.name)).toEqual(['ffmpeg', 'Deno', 'Supervisor', 'yt-dlp']);
+  });
+
+  it('gives each row a line that reads as a sentence', () => {
+    const rows = dependencyRows(report({}, [
+      { name: 'Token server modules', ok: false, path: 'C:\\SL\\pot\\node_modules' },
+      { name: 'ffmpeg', ok: false, path: 'C:\\SL\\ffmpeg\\ffmpeg.exe' },
+      { name: 'Deno', ok: true, path: 'C:\\SL\\yt-dlp\\deno.exe' },
+    ]));
+    expect(rows.map((r: { text: string }) => r.text)).toEqual([
+      'Token server packages are missing: C:\\SL\\pot\\node_modules',
+      'ffmpeg is missing: C:\\SL\\ffmpeg\\ffmpeg.exe',
+      'Deno',
+    ]);
+  });
+});
+
+describe('savePatch', () => {
+  const loaded = { supervisor: { encoder: 'h264_nvenc', cacheBudgetMb: 300 } };
+
+  it('makes a picked encoder the preference', () => {
+    expect(savePatch(loaded, { supervisor: { encoder: 'libx264', cacheBudgetMb: 300 } }))
+      .toEqual({ supervisor: { encoder: 'libx264', preferredEncoder: 'libx264' } });
+  });
+
+  it('sends no preference when the encoder was not changed', () => {
+    expect(savePatch(loaded, { supervisor: { encoder: 'h264_nvenc', cacheBudgetMb: 500 } })).toEqual({ supervisor: { cacheBudgetMb: 500 } });
+  });
+});
+
+describe('changedFields', () => {
+  const loaded = {
+    playlists: [{ id: 'PL1' }],
+    twitchClientSecret: '********',
+    supervisor: { encoder: 'libx264', cacheBudgetMb: 300, overlay: true },
+  };
+
+  it('leaves out a fallback encoder the user did not pick', () => {
+    const edited = { supervisor: { encoder: 'libx264', cacheBudgetMb: 500, overlay: true } };
+    expect(changedFields(loaded, edited)).toEqual({ supervisor: { cacheBudgetMb: 500 } });
+  });
+
+  it('sends the encoder when the user picked another one', () => {
+    expect(changedFields(loaded, { supervisor: { encoder: 'h264_nvenc' } })).toEqual({ supervisor: { encoder: 'h264_nvenc' } });
+  });
+
+  it('returns nothing when nothing changed, including the masked secret', () => {
+    expect(changedFields(loaded, { playlists: [{ id: 'PL1' }], twitchClientSecret: '********', supervisor: { overlay: true } })).toEqual({});
+  });
+
+  it('sends a changed array whole', () => {
+    expect(changedFields(loaded, { playlists: [{ id: 'PL2' }, { id: 'PL1' }] })).toEqual({ playlists: [{ id: 'PL2' }, { id: 'PL1' }] });
+  });
+
+  it('sends a field the loaded config did not have', () => {
+    expect(changedFields({}, { supervisor: { cacheBudgetMb: 50 } })).toEqual({ supervisor: { cacheBudgetMb: 50 } });
+  });
+});
+
+describe('encoderOptionsHtml', () => {
+  it('builds one option per encoder, in order, with the config value and the shown name', () => {
+    expect(encoderOptionsHtml()).toBe(
+      '<option value="h264_nvenc">NVIDIA (NVENC)</option>'
+      + '<option value="h264_amf">AMD (AMF)</option>'
+      + '<option value="h264_qsv">Intel (Quick Sync)</option>'
+      + '<option value="libx264">Software (x264, uses the CPU)</option>',
+    );
   });
 });

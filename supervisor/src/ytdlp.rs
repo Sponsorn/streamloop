@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]";
+pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][dynamic_range=?SDR]+ba/b[height<=1080][dynamic_range=?SDR]/bv*[height<=1080]+ba";
 
 pub struct Ytdlp {
     exe: PathBuf,
@@ -331,5 +331,20 @@ mod tests {
         assert_eq!(parse_download_progress("[download] Destination: x"), None);
         assert_eq!(describe_error("x\nERROR: [youtube] abc: Video unavailable\n", Some(1)), "ERROR: [youtube] abc: Video unavailable");
         assert!(describe_error("ERROR: Sign in to confirm you’re not a bot", None).starts_with("YouTube bot check"));
+    }
+
+    #[test]
+    fn format_fallbacks_prefer_sdr_video() {
+        // yt-dlp puts the "allow unknown" ? after the operator; "=SDR?" is a syntax error it raises
+        // at selection time, which would fail every resolve that reaches the fallbacks.
+        let branches: Vec<&str> = FORMAT.split('/').collect();
+        assert!(branches[0].contains("vcodec^=avc1"));
+        let (sdr, last) = branches[1..].split_at(branches.len() - 2);
+        for b in sdr {
+            assert!(b.contains("[dynamic_range=?SDR]"), "{b}");
+        }
+        // an upload offered only in HDR still plays rather than failing the resolve
+        assert_eq!(last, ["bv*[height<=1080]+ba"]);
+        assert!(!FORMAT.contains("SDR?"));
     }
 }

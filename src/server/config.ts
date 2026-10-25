@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, renameSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'fs';
+import { resolve, dirname, join } from 'path';
 import { z } from 'zod';
 import type { AppConfig, DiscordTemplates } from './types.js';
 import { logger } from './logger.js';
@@ -70,6 +70,8 @@ const supervisorSchema = z.object({
   ingestUrl: blankIsDefault('rtmp://live.twitch.tv/app'),
   streamKeyProtected: z.string().default(''),
   encoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).default('h264_nvenc'),
+  /** The user's choice; encoder may hold a fallback. Node only, the supervisor reads encoder. */
+  preferredEncoder: z.enum(['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264']).optional(),
   cacheBudgetMb: z.number().int().min(50).default(300),
   readAheadSeconds: z.number().min(2).default(20),
   playerClient: blankIsDefault('mweb,web_embedded'),
@@ -112,6 +114,9 @@ function migrateJson(json: Record<string, unknown>): void {
 
 export function loadConfig(path?: string): AppConfig {
   resolvedConfigPath = resolve(path ?? 'config.json');
+  // Releases ship only the example, so a reinstall can never overwrite the user's config.
+  const example = join(dirname(resolvedConfigPath), 'config.example.json');
+  if (!existsSync(resolvedConfigPath) && existsSync(example)) copyFileSync(example, resolvedConfigPath);
   const raw = readFileSync(resolvedConfigPath, 'utf-8');
   const json = JSON.parse(raw);
   migrateJson(json);

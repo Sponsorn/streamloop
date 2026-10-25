@@ -76,3 +76,70 @@ export function formatTime(seconds) {
   const s = Math.floor(seconds % 60);
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
+
+/** The one list of encoder names: the Playback dropdown and the setup check both read it. */
+export const ENCODER_NAMES = {
+  h264_nvenc: 'NVIDIA (NVENC)',
+  h264_amf: 'AMD (AMF)',
+  h264_qsv: 'Intel (Quick Sync)',
+  libx264: 'Software (x264, uses the CPU)',
+};
+
+/** The Playback encoder dropdown's options; the wizard copies them from there. */
+export function encoderOptionsHtml() {
+  return Object.entries(ENCODER_NAMES).map(([value, name]) => `<option value="${value}">${name}</option>`).join('');
+}
+
+/** The setup check's encoder line. works false means nothing works, so libx264 there is not a pick. */
+export function encoderLabel(report) {
+  const { chosen, software, works } = report.encoder;
+  if (!works) return { text: 'No encoder works on this PC. Check the graphics driver.', level: 'err' };
+  const name = ENCODER_NAMES[chosen] || chosen;
+  if (software) return { text: `${name}. No graphics card encoder works on this PC.`, level: 'warn' };
+  return { text: name, level: 'ok' };
+}
+
+/** Where the Startup folder's StreamLoop.vbs points, from GET /api/autostart. */
+export function autostartLabel(status) {
+  if (!status.enabled) return 'Off';
+  if (status.thisInstall) return 'This install';
+  if (status.target) return `Another install: ${status.target}`;
+  return 'set by another program (StreamLoop.vbs in the Startup folder)';
+}
+
+/** Names that read better in the missing line than the server's label. */
+const MISSING_TEXT = { 'Token server modules': 'Token server packages are missing' };
+
+/** The dependency list with failures first, each with its display line. */
+export function dependencyRows(report) {
+  const deps = report.dependencies || [];
+  return [...deps.filter((d) => !d.ok), ...deps.filter((d) => d.ok)].map((d) => ({
+    ...d,
+    text: d.ok ? d.name : `${MISSING_TEXT[d.name] || d.name + ' is missing'}: ${d.path}`,
+  }));
+}
+
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** The part of edited that differs from original, as a POST /api/config patch: objects key by key, arrays whole.
+ *  A save then never resends a value the server set on its own, such as a fallback encoder. */
+export function changedFields(original, edited) {
+  const out = {};
+  for (const [key, value] of Object.entries(edited)) {
+    const before = original ? original[key] : undefined;
+    if (isPlainObject(value)) {
+      const inner = changedFields(isPlainObject(before) ? before : {}, value);
+      if (Object.keys(inner).length > 0) out[key] = inner;
+    } else if (JSON.stringify(value) !== JSON.stringify(before)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** changedFields plus the user's encoder pick as the preference, which a fallback then returns to. */
+export function savePatch(original, edited) {
+  const patch = changedFields(original, edited);
+  if (patch.supervisor && patch.supervisor.encoder) patch.supervisor.preferredEncoder = patch.supervisor.encoder;
+  return patch;
+}

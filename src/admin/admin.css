@@ -652,6 +652,15 @@ header h1 { font-size: 20px; font-weight: 600; }
   font-weight: 500;
   color: #fff;
 }
+.update-banner-text { display: flex; flex-direction: column; gap: 2px; }
+.update-banner-content .update-node-notice { font-weight: 400; font-size: 13px; }
+
+/* System check */
+.setup-report { margin: 8px 0 12px; font-size: 13px; }
+.setup-line { margin-bottom: 4px; }
+.setup-deps { list-style: none; margin-top: 8px; }
+.setup-deps li { margin-bottom: 2px; overflow-wrap: anywhere; }
+
 .btn-update {
   background: rgba(255,255,255,.2);
   color: #fff;

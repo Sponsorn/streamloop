@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { logger } from './logger.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import type { SupervisorClient } from './supervisor-client.js';
 
@@ -16,6 +17,8 @@ export interface SupervisorLauncherOptions {
   onEvent?: (kind: LauncherEvent, detail?: Record<string, unknown>) => void;
   /** Dev and test runs only (STREAMLOOP_DEBUG_FAULTS=1): adds --debug-faults, which opens POST /debug/fault. */
   debugFaults?: boolean;
+  /** Runs right before a spawn, never on attach. A string holds the launch with that reason until a later poll. */
+  beforeLaunch?: () => Promise<string | null>;
 }
 
 const MISSES_BEFORE_LAUNCH = 3;
@@ -42,6 +45,7 @@ export class SupervisorLauncher {
   private readonly intervalMs: number;
   private readonly onEvent: (kind: LauncherEvent, detail?: Record<string, unknown>) => void;
   private readonly debugFaults: boolean;
+  private readonly beforeLaunch: (() => Promise<string | null>) | null;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
@@ -59,6 +63,7 @@ export class SupervisorLauncher {
   private spawnSeq = 0;
   private lastSpawnAt = 0;
   private lastExit: { code: number | null; at: number; spawnedAt: number } | null = null;
+  private held: string | null = null;
 
   constructor(opts: SupervisorLauncherOptions) {
     this.root = opts.root;
@@ -68,6 +73,7 @@ export class SupervisorLauncher {
     this.intervalMs = opts.intervalMs ?? 2000;
     this.onEvent = opts.onEvent ?? (() => {});
     this.debugFaults = opts.debugFaults ?? false;
+    this.beforeLaunch = opts.beforeLaunch ?? null;
     // A Stop survives a Node restart: the marker keeps the supervisor down until Start.
     const marker = this.marker();
     this.stoppedByUser = marker !== null && existsSync(marker);
@@ -119,6 +125,11 @@ export class SupervisorLauncher {
       : 'Waiting for the stopped supervisor to exit before starting it again.';
   }
 
+  /** Why beforeLaunch is holding the launch, until a spawn or an answering supervisor clears it. */
+  blockReason(): string | null {
+    return this.held;
+  }
+
   /** An operator Start: no backoff, and the spawn still goes through the one guarded poll. */
   launchNow(): void {
     this.stoppedByUser = false;
@@ -147,23 +158,26 @@ export class SupervisorLauncher {
     this.polling = true;
     try {
       const answer = await this.client.status();
-      if (this.timer) this.onPoll(answer !== null);
+      if (this.timer) await this.onPoll(answer !== null);
     } finally {
       this.polling = false;
     }
   }
 
-  private onPoll(answered: boolean): void {
+  private async onPoll(answered: boolean): Promise<void> {
     const t = this.now();
     if (!answered) this.draining = false;
     if (this.startWaitSince !== null) {
       if (answered) return;
       this.startWaitSince = null;
-      this.launch();
+      // If beforeLaunch holds this launch, the next poll retries it instead of counting misses again.
+      this.misses = MISSES_BEFORE_LAUNCH;
+      await this.launch();
       return;
     }
     if (answered) {
       this.misses = 0;
+      this.held = null;
       const exit = this.lastExit;
       if (exit && exit.code === PORT_TAKEN_EXIT && exit.at - exit.spawnedAt < PORT_TAKEN_WINDOW_MS) {
         // Another supervisor held the port: we attached, the spawn did not fail.
@@ -192,10 +206,10 @@ export class SupervisorLauncher {
       if (!this.inOutage) this.onEvent('supervisor-down');
       this.inOutage = true;
     }
-    this.launch();
+    await this.launch();
   }
 
-  private launch(): void {
+  private async launch(): Promise<void> {
     const t = this.now();
     if (this.spawns > 0) {
       const wait = BACKOFF_MS[Math.min(this.spawns - 1, BACKOFF_MS.length - 1)];
@@ -210,6 +224,21 @@ export class SupervisorLauncher {
     }
     this.missingReported = false;
 
+    if (this.beforeLaunch) {
+      // The poll stays guarded while this runs, so no second launch can start beside it.
+      let held: string | null = null;
+      try {
+        held = await this.beforeLaunch();
+      } catch (err) {
+        logger.warn({ err }, 'The pre-launch check failed; launching anyway');
+      }
+      if (!this.timer || this.stoppedByUser) return;
+      this.held = held;
+      if (held) return;
+    }
+    // The guard can take seconds; the port-taken window and the backoff count from the real spawn.
+    const spawnedAt = this.now();
+
     // `launch` starts the supervisor detached and exits, so no Node exit or tree kill reaches it.
     // Its exit code is the supervisor's port-taken 2, relayed; 1 when the supervisor crashed
     // during the bind wait or could not spawn; otherwise 0.
@@ -220,7 +249,6 @@ export class SupervisorLauncher {
       stdio: 'ignore',
       windowsHide: true,
     });
-    const spawnedAt = t;
     const seq = ++this.spawnSeq;
     child.on('error', () => {
       if (seq === this.spawnSeq && this.phase === 'starting') this.phase = 'down';
@@ -234,7 +262,7 @@ export class SupervisorLauncher {
     child.unref();
 
     this.spawns++;
-    this.lastSpawnAt = t;
+    this.lastSpawnAt = spawnedAt;
     this.phase = 'starting';
     this.onEvent('supervisor-launched', { exe });
   }

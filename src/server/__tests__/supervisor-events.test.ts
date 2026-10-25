@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { SupervisorEvents, AlertGate, describe as describeEvent, launcherEvent, type SupervisorEvent } from '../supervisor-events.js';
+import { launchGuard, OBS_RUNNING, type RunFn } from '../setup-check.js';
 
 const dir = join(process.cwd(), '.test-tmp', 'supervisor-events');
 const ev = (kind: string, extra: Record<string, unknown> = {}, level: SupervisorEvent['level'] = 'info'): SupervisorEvent =>
@@ -191,6 +192,16 @@ describe('describe', () => {
     expect(describeEvent(ev('supervisor-launched')).discord).toBeUndefined();
   });
 
+  it('keeps a launch that broke away from the caller\'s job off the timeline', () => {
+    expect(describeEvent(ev('launched', { breakaway: true, pid: 1 }))).toEqual({ message: '' });
+  });
+
+  it('notes a launch that stayed inside the caller\'s job', () => {
+    const d = describeEvent(ev('launched', { breakaway: false, pid: 1 }));
+    expect(d.message).toContain("inside the caller's job");
+    expect(d.discord).toBeUndefined();
+  });
+
   it.each(['token-server-spawn', 'token-server-down', 'token-server-restart', 'token-server-adopt', 'reload', 'start', 'control', 'playlist', 'youtube-probe-failed'])(
     'keeps %s off Discord', (kind) => {
       expect(describeEvent(ev(kind, { error: 'e', reason: 'r' })).discord).toBeUndefined();
@@ -318,5 +329,82 @@ describe('AlertGate', () => {
     ]);
 
     expect(got).toEqual(['critical', undefined, 'critical']);
+  });
+});
+
+describe('launch guard events', () => {
+  it('sends the OBS block to Discord as critical', () => {
+    const e = launcherEvent('supervisor-blocked-by-obs');
+    expect(e.level).toBe('critical');
+    expect(describeEvent(e)).toEqual({ message: OBS_RUNNING, discord: { kind: 'critical', vars: { message: OBS_RUNNING }, level: 'error' } });
+  });
+
+  it('sends one critical per OBS block through the launch guard: one for a long block, two for two', async () => {
+    // Arrange
+    const gate = new AlertGate();
+    const sent: string[] = [];
+    let obs = true;
+    const guard = launchGuard({
+      root: dir,
+      getSupervisor: () => ({ encoder: 'libx264' }),
+      saveEncoder: () => {},
+      onEvent: (kind, detail) => { const d = gate.describe(launcherEvent(kind, detail)).discord; if (d) sent.push(d.kind); },
+      obsRunning: async () => obs,
+      run: (async () => true) as RunFn,
+      exists: () => true,
+    });
+    const checks = async (n: number) => { for (let i = 0; i < n; i++) await guard(); };
+
+    // Act: one long block
+    await checks(5);
+    const afterOneBlock = sent.length;
+    // OBS closes, opens, closes, opens again
+    obs = false; await checks(2);
+    obs = true; await checks(3);
+    obs = false; await checks(1);
+
+    // Assert
+    expect(afterOneBlock).toBe(1);
+    expect(sent).toEqual(['critical', 'critical']);
+  });
+
+  it('sends encoder-fallback as critical with both encoders named', () => {
+    const e = launcherEvent('encoder-fallback', { from: 'h264_nvenc', to: 'h264_amf' });
+    expect(e.level).toBe('critical');
+    expect(describeEvent(e)).toEqual({
+      message: 'The h264_nvenc encoder failed its test, so the stream uses h264_amf.',
+      discord: { kind: 'critical', vars: { message: 'The h264_nvenc encoder failed its test, so the stream uses h264_amf.' }, level: 'error' },
+    });
+  });
+
+  it('alerts encoder-fallback once per change', () => {
+    const gate = new AlertGate();
+    const fb = (from: string, to: string) => gate.describe(launcherEvent('encoder-fallback', { from, to })).discord?.kind;
+    expect([fb('h264_nvenc', 'h264_amf'), fb('h264_nvenc', 'h264_amf'), fb('h264_amf', 'libx264')]).toEqual(['critical', undefined, 'critical']);
+  });
+
+  it('alerts the same fallback again after the encoder was restored', () => {
+    const gate = new AlertGate();
+    const fallback = () => gate.describe(launcherEvent('encoder-fallback', { from: 'h264_nvenc', to: 'h264_amf' })).discord?.kind;
+    const restored = () => gate.describe(launcherEvent('encoder-restored', { from: 'h264_amf', to: 'h264_nvenc' })).discord?.kind;
+    expect([fallback(), restored(), fallback()]).toEqual(['critical', 'recovery', 'critical']);
+  });
+
+  it('sends encoder-restored as an info all-clear through the recovery toggle', () => {
+    const e = launcherEvent('encoder-restored', { from: 'h264_amf', to: 'h264_nvenc' });
+    expect(e.level).toBe('info');
+    expect(describeEvent(e)).toEqual({
+      message: 'The h264_nvenc encoder works again, so the stream uses it.',
+      discord: { kind: 'recovery', vars: { step: 'Back on the h264_nvenc encoder' }, level: 'info' },
+    });
+  });
+
+  it('sends ffmpeg-missing as critical', () => {
+    expect(describeEvent(launcherEvent('ffmpeg-missing')).discord?.vars.message).toBe('ffmpeg is missing from the install. Reinstall StreamLoop from the full ZIP.');
+  });
+
+  it('sends no-encoder as critical', () => {
+    const e = launcherEvent('no-encoder');
+    expect(describeEvent(e).discord?.vars.message).toBe('No encoder works on this PC. Check the graphics driver.');
   });
 });

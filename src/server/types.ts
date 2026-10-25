@@ -48,6 +48,8 @@ export interface SupervisorConfig {
   /** DPAPI blob; the plain stream key is never stored. */
   streamKeyProtected: string;
   encoder: SupervisorEncoder;
+  /** What the user chose; encoder may hold a fallback until this works again. */
+  preferredEncoder?: SupervisorEncoder;
   cacheBudgetMb: number;
   readAheadSeconds: number;
   playerClient: string;
