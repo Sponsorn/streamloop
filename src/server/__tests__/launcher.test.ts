@@ -99,6 +99,26 @@ describe('START.bat', () => {
     expect(text).toContain('start "" cmd /c "!TRAMP!"');
   });
 
+  it('writes no root path into the trampoline, which finds the root from its own location', () => {
+    // Arrange
+    const generated = lines.filter((l) => /^\s+>>? "!TRAMP!" echo /.test(l));
+
+    // Assert
+    expect(generated.length).toBeGreaterThan(0);
+    expect(generated.filter((l) => /%ROOT%|!ROOT!/.test(l))).toEqual([]);
+    expect(generated.join('\n')).toContain('move /y "%%~dp0START.bat.new" "%%~dp0START.bat"');
+    expect(generated.join('\n')).toContain('start "StreamLoop 3" "%%~dp0START.bat"');
+  });
+
+  it('waits with ping, not timeout, which returns at once when stdin is redirected', () => {
+    // Arrange
+    const text = lines.join('\n');
+
+    // Assert
+    expect(text).not.toMatch(/timeout \/t/i);
+    expect(text).toContain('ping -n 11 127.0.0.1 >nul');
+  });
+
   it('uses CRLF line endings, which cmd needs for labels and goto', () => {
     // Arrange
     const raw = readFileSync(launcherPath, 'utf-8');

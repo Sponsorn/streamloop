@@ -82,7 +82,7 @@ if %ERRORLEVEL% equ 75 (
                     set "RENAME_OK=1"
                 ) else (
                     echo   Waiting for file locks to release (attempt %%i/5^)...
-                    timeout /t 3 /nobreak >nul
+                    ping -n 4 127.0.0.1 >nul
                 )
             )
         )
@@ -119,22 +119,23 @@ if %ERRORLEVEL% equ 75 (
     rem If a new launcher was staged, hand off to a detached one-shot script that
     rem swaps START.bat and relaunches in a fresh window. The swapping script and
     rem the swapped script must never be the same file: a self-replacing .bat
-    rem desyncs cmd and closes the window before it can relaunch.
+    rem desyncs cmd and closes the window before it can relaunch. The trampoline
+    rem finds the root from its own path, since an echoed path follows the console codepage.
     if exist "%ROOT%START.bat.new" (
         echo Applying new launcher and restarting...
         set "TRAMP=%ROOT%_apply_launcher.bat"
         > "!TRAMP!" echo @echo off
-        >> "!TRAMP!" echo timeout /t 2 /nobreak ^>nul
-        >> "!TRAMP!" echo move /y "%ROOT%START.bat.new" "%ROOT%START.bat" ^>nul
-        >> "!TRAMP!" echo cd /d "%ROOT%"
-        >> "!TRAMP!" echo start "StreamLoop 3" "%ROOT%START.bat"
+        >> "!TRAMP!" echo ping -n 3 127.0.0.1 ^>nul
+        >> "!TRAMP!" echo move /y "%%~dp0START.bat.new" "%%~dp0START.bat" ^>nul
+        >> "!TRAMP!" echo cd /d "%%~dp0"
+        >> "!TRAMP!" echo start "StreamLoop 3" "%%~dp0START.bat"
         >> "!TRAMP!" echo del "%%~f0"
         start "" cmd /c "!TRAMP!"
         exit /b 0
     )
 
     echo Restarting server...
-    timeout /t 2 /nobreak >nul
+    ping -n 3 127.0.0.1 >nul
     goto loop
 )
 
@@ -149,7 +150,7 @@ if %ERRORLEVEL% equ 0 (
 :: Any other exit code = crash, auto-restart after delay
 echo.
 echo Server crashed (exit code %ERRORLEVEL%). Restarting in 10 seconds...
-timeout /t 10 /nobreak >nul
+ping -n 11 127.0.0.1 >nul
 goto loop
 
 :: Self-heal: an interrupted swap or a failed rollback can leave app\ missing,
