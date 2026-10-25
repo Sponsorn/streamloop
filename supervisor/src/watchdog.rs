@@ -77,16 +77,26 @@ pub fn moves_cut(reason: &str) -> bool {
 pub enum Heal {
     /// Restart the video in place at the cut.
     Retry,
-    /// The stillness is in the video ("brb" stretches): report it, play on, never skip.
+    Skip,
+    /// The silence is in the video ("brb" stretches): report it, play on, never skip.
     Content,
 }
 
-/// One retry per stretch. `retried` = (video, when that retry went on air); a stretch on that video
-/// starting before the retry played `SETTLE_S + need` was not cleared by it: content.
-pub fn heal(v: &Verdict, since: f64, retried: Option<(usize, f64)>, need: f64) -> Option<Heal> {
-    let (Verdict::Freeze { index, .. } | Verdict::Silence { index, .. }) = v else { return None };
-    let same_stretch = retried.is_some_and(|(i, aired)| i == *index && since < aired + SETTLE_S + need);
-    Some(if same_stretch { Heal::Content } else { Heal::Retry })
+/// A freeze is a fault: the stall ladder (`retries`), then a skip. A silence gets one retry per
+/// stretch; `retried` = (video, when that retry went on air), and a silence on that video that
+/// began within `SETTLE_S` of it re-began with the restart: content.
+pub fn heal(v: &Verdict, since: f64, retried: Option<(usize, f64)>, retries: u32) -> Option<Heal> {
+    match v {
+        Verdict::Ignore => None,
+        Verdict::Freeze { .. } => Some(match rules::after_failure(retries) {
+            rules::Ladder::Retry => Heal::Retry,
+            rules::Ladder::Skip => Heal::Skip,
+        }),
+        Verdict::Silence { index, .. } => {
+            let same_stretch = retried.is_some_and(|(i, aired)| i == *index && since < aired + SETTLE_S);
+            Some(if same_stretch { Heal::Content } else { Heal::Retry })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,72 +221,79 @@ mod tests {
         Cleared,
     }
 
-    /// Ten minutes of a video still from 0 s, judged and healed as `watchdog_work` does.
-    fn ten_still_minutes(freeze: bool, after: After) -> Vec<Heal> {
+    /// Ten minutes of a video still from 0 s, judged and healed as `watchdog_work` does; a new
+    /// stretch opens at `reopen_at` if nothing is open then.
+    fn ten_still_minutes(freeze: bool, after: After, reopen_at: Option<f64>) -> Vec<Heal> {
         let mut s = vec![seam(0.0, 2, Source::File, 0.0)];
-        let (mut open, mut retried, mut heals, mut now) = (Some(0.0), None, vec![], 0.0);
+        let (mut open, mut reopen, mut retried, mut retries, mut heals, mut now) = (Some(0.0), reopen_at, None, 0, vec![], 0.0);
         while now < 600.0 {
             now += 0.1;
+            if open.is_none() && reopen.is_some_and(|t| now >= t) {
+                open = reopen.take();
+            }
             let Some(since) = open else { continue };
             let Some(start) = due(since, &s, now, NEED) else { continue };
             let d = if freeze { Detect::FreezeStart(start) } else { Detect::SilenceStart(start) };
-            let h = heal(&judge(&d, &s, now), since, retried, NEED).unwrap();
+            let h = heal(&judge(&d, &s, now), since, retried, retries).unwrap();
             heals.push(h);
-            if h == Heal::Retry {
-                // the retry restarts the same video one second on: a new seam
-                retried = Some((2, now + 1.0));
-                crate::rules::push_seam(&mut s, seam(now + 1.0, 2, Source::File, now + 1.0));
-                open = match after {
-                    After::Continues => open,
-                    After::BeginsAgainAtTheSeam => Some(now + 1.5),
-                    After::Cleared => None,
-                };
-            } else {
+            if h != Heal::Retry {
                 open = None;
+                continue;
             }
+            // the retry restarts the same video one second on: a new seam
+            (retries, retried) = (retries + 1, Some((2, now + 1.0)));
+            crate::rules::push_seam(&mut s, seam(now + 1.0, 2, Source::File, now + 1.0));
+            open = match after {
+                After::Continues => open,
+                After::BeginsAgainAtTheSeam => Some(now + 1.5),
+                After::Cleared => None,
+            };
         }
         heals
     }
 
     #[test]
-    fn a_freeze_that_returns_after_its_retry_is_content_not_skipped() {
+    fn a_freeze_that_returns_after_its_retry_escalates_to_a_skip() {
         let v = Verdict::Freeze { index: 3, pos: 125.0 };
-        assert_eq!(heal(&v, 15.0, None, NEED), Some(Heal::Retry));
-        // the retry aired at 40 s and did not clear the stretch
-        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), NEED), Some(Heal::Content));
-        assert_eq!(heal(&v, 41.0, Some((3, 40.0)), NEED), Some(Heal::Content));
+        assert_eq!(heal(&v, 15.0, None, 0), Some(Heal::Retry));
+        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 1), Some(Heal::Retry), "a freeze is never content");
+        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 2), Some(Heal::Skip));
 
-        assert_eq!(ten_still_minutes(true, After::BeginsAgainAtTheSeam), [Heal::Retry, Heal::Content]);
-        assert_eq!(ten_still_minutes(true, After::Continues), [Heal::Retry, Heal::Content]);
+        assert_eq!(ten_still_minutes(true, After::Continues, None), [Heal::Retry, Heal::Retry, Heal::Skip]);
+        assert_eq!(ten_still_minutes(true, After::BeginsAgainAtTheSeam, None), [Heal::Retry, Heal::Retry, Heal::Skip]);
     }
 
     /// Ten minutes of "brb" silence that belongs to the video: one retry, then content, never a skip.
     #[test]
     fn a_silence_that_returns_after_its_retry_is_content() {
         let v = Verdict::Silence { index: 3, pos: 125.0 };
-        assert_eq!(heal(&v, 15.0, None, 30.0), Some(Heal::Retry));
-        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 30.0), Some(Heal::Content));
+        assert_eq!(heal(&v, 15.0, None, 0), Some(Heal::Retry));
+        assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 5), Some(Heal::Content));
+        assert_eq!(heal(&v, 41.0, Some((3, 40.0)), 5), Some(Heal::Content), "re-began at the seam");
 
-        assert_eq!(ten_still_minutes(false, After::Continues), [Heal::Retry, Heal::Content]);
-        assert_eq!(ten_still_minutes(false, After::BeginsAgainAtTheSeam), [Heal::Retry, Heal::Content]);
+        assert_eq!(ten_still_minutes(false, After::Continues, None), [Heal::Retry, Heal::Content]);
+        assert_eq!(ten_still_minutes(false, After::BeginsAgainAtTheSeam, None), [Heal::Retry, Heal::Content]);
+    }
+
+    #[test]
+    fn a_silence_starting_10s_after_the_retry_gets_a_retry() {
+        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 80.0 }, 50.0, Some((3, 40.0)), 0), Some(Heal::Retry));
     }
 
     #[test]
     fn a_later_separate_stretch_gets_one_retry_again() {
-        // retried at 40 s; the picture and sound moved again, and a new stretch began at 200 s
-        assert_eq!(heal(&Verdict::Freeze { index: 3, pos: 300.0 }, 200.0, Some((3, 40.0)), NEED), Some(Heal::Retry));
-        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 300.0 }, 200.0, Some((3, 40.0)), 30.0), Some(Heal::Retry));
-        // a stretch that began once the retry had played clean for its settle and window is a new one
-        assert_eq!(heal(&Verdict::Freeze { index: 3, pos: 300.0 }, 65.0, Some((3, 40.0)), NEED), Some(Heal::Retry));
+        // retried at 40 s; the sound came back, and a new silence began at 200 s
+        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 300.0 }, 200.0, Some((3, 40.0)), 0), Some(Heal::Retry));
         // another video's retry never makes this one content
-        assert_eq!(heal(&Verdict::Freeze { index: 4, pos: 5.0 }, 41.0, Some((3, 40.0)), NEED), Some(Heal::Retry));
-        assert_eq!(heal(&Verdict::Ignore, 41.0, Some((3, 40.0)), NEED), None);
+        assert_eq!(heal(&Verdict::Silence { index: 4, pos: 5.0 }, 41.0, Some((3, 40.0)), 0), Some(Heal::Retry));
+        assert_eq!(heal(&Verdict::Ignore, 41.0, Some((3, 40.0)), 0), None);
     }
 
     #[test]
     fn a_freeze_cleared_by_its_retry_stays_healed() {
-        assert_eq!(ten_still_minutes(true, After::Cleared), [Heal::Retry]);
-        assert_eq!(ten_still_minutes(false, After::Cleared), [Heal::Retry]);
+        // cleared, then a new stretch on the same video long after: a retry again, not content or a skip
+        assert_eq!(ten_still_minutes(true, After::Cleared, Some(200.0)), [Heal::Retry, Heal::Retry]);
+        assert_eq!(ten_still_minutes(false, After::Cleared, Some(200.0)), [Heal::Retry, Heal::Retry]);
     }
 
     #[test]
