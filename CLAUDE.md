@@ -32,7 +32,7 @@ cp config.example.json config.json   # Then edit config.json with your settings
 Node's own logs and timeline still go to the repo's `logs/` in dev, since `logger.ts` and `index.ts` resolve them from the source folder. `supervisor/scripts/node-session.mjs` does all of this for the end-to-end runs.
 
 Test-only environment variables, never set by `config.json` or a release:
-- `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`).
+- `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`). The flag belongs to the supervisor process, not to Node: a Node restarted without the variable attaches to the running supervisor, and `/debug/fault` stays open until that supervisor is restarted.
 - `STREAMLOOP_TEST_HOOKS=1`: adds `POST /api/test/exit-75`, the update restart without an update.
 - `STREAMLOOP_TEST_HLS_URL`: the Twitch read-back reads this HLS instead of the channel's, and the channel counts as live, so no request reaches Twitch and Helix credentials are not needed.
 
@@ -43,15 +43,17 @@ npm start            # Run server (tsx)
 npm run dev          # Run with file watching (tsx watch)
 npm test             # Run tests once (vitest run)
 npm run test:watch   # Run tests in watch mode (vitest)
-npm run build:release       # Full Windows distributable ZIP (portable Node.js + mpv + yt-dlp/deno + app)
-npm run build:release:slim  # Update-only ZIP: app + yt-dlp only, no node/ or mpv/ (streamloop-vX.Y.Z-update.zip)
+npm run build:release       # 2.x-layout ZIP (portable Node.js + mpv + yt-dlp/deno + app); no 3.0 packaging yet
+npm run build:release:slim  # 2.x-layout update ZIP: app + yt-dlp only (streamloop-vX.Y.Z-update.zip)
 cargo build --release       # in supervisor/: the supervisor binary
-node supervisor/scripts/node-session.mjs A|B|C   # end-to-end runs of Node + supervisor against local MediaMTX
+node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 ```
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.
 
 ## Release Checklist
+
+Packaging for 3.0 is not done yet. The build scripts still produce the 2.x layout (`node\`, `mpv\`, `yt-dlp\`, `app\`, `START.bat`), with no `supervisor\`, `ffmpeg\` or `pot\`, so this branch cannot build a 3.0 release yet. The checklist below describes the scripts as they are.
 
 Before pushing and building a release:
 
@@ -67,7 +69,7 @@ Before pushing and building a release:
 **Node backend + supervisor + admin dashboard.** `ARCHITECTURE.md` has the diagram, the supervisor's interface and the main flows.
 
 - **Server** (`src/server/`): Express app on 127.0.0.1:7654. `index.ts` wires the components by dependency injection.
-- **Supervisor** (`supervisor/`, Rust): launched by Node as a detached sibling, so a Node crash, restart or update leaves the stream up. Node talks to it over HTTP on 127.0.0.1:4417 and reads its events from `ROOT\data\logs\events-DATE.jsonl`.
+- **Supervisor** (`supervisor/`, Rust): launched by Node through `streamloop-supervisor.exe launch`, a short-lived intermediate, so it is a sibling with a dead parent: a Node crash, restart, update or tree kill leaves the stream up. Node talks to it over HTTP on 127.0.0.1:4417 and reads its events from `ROOT\data\logs\events-DATE.jsonl`.
 - **Admin Dashboard** (`src/admin/`): first-run wizard, status, timeline, transport (next, previous, restart, jump), Stop and Start stream, settings, webhooks, logs, update button.
 
 **Server modules:**
@@ -76,7 +78,7 @@ Before pushing and building a release:
 |--------|---------------|
 | `config.ts` / `types.ts` | Loads and saves `config.json` with Zod validation and defaults, including the `supervisor` section the supervisor reads |
 | `supervisor-client.ts` | HTTP client for the supervisor (`/status`, `/control`, `/reload`, `/shutdown`); `protectStreamKey` runs `streamloop-supervisor.exe protect` so the key is stored only as a DPAPI blob |
-| `supervisor-launcher.ts` | `installRoot()`; polls `/status` every 2 s, launches the supervisor after 3 misses (backoff 10 s, 30 s, 60 s, 5 min), stays down after Stop stream until Start |
+| `supervisor-launcher.ts` | `installRoot()`; polls `/status` every 2 s, launches the supervisor after 3 misses (backoff 10 s, 30 s, 60 s, 5 min), stays down after Stop stream until Start, across Node restarts (`ROOT\data\stopped-by-user`) |
 | `supervisor-events.ts` | Tails the supervisor's events file; `describe()` maps each event to timeline text and an optional Discord alert, `AlertGate` sends one alert per outage |
 | `event-log.ts` / `event-store.ts` | The 100-entry dashboard timeline, persisted as daily JSONL in `logs/` |
 | `twitch.ts` | Helix check that the channel is live while the encoder runs; restarts the encoder at most once per 30 min, then only alerts |
@@ -96,7 +98,7 @@ Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` dire
 
 ## Platform Notes
 
-Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) bundles portable Node.js v22.23.4 win-x64, mpv, and yt-dlp + deno (deno solves YouTube's n-param JS challenge) into a standalone ZIP. mpv.exe must be placed in `build/mpv/` before running the full build. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
+Windows-specific: The `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) has not been changed for 3.0 yet: it still bundles portable Node.js v22.23.4 win-x64, mpv (from `build/mpv/`) and yt-dlp + deno into the 2.x layout, and nothing from `supervisor/`, ffmpeg or the token server. The `--slim` flag (`npm run build:release:slim`) skips node/ and mpv/ and uses the build machine's own `npm` for the dependency install.
 
 ES modules throughout (`"type": "module"` in package.json, `"module": "ES2022"` in tsconfig).
 
@@ -109,7 +111,7 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 - `POST /api/update/check` — manually trigger a version check (60s cooldown)
 - `POST /api/update/apply` — download, extract, swap, and restart
 
-**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` (app + yt-dlp, no node/mpv) over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. The updater only ever reads `app/`, `yt-dlp/`, and `START.bat` out of the ZIP — `node/` and `mpv/` are ignored even if present.
+**Asset selection:** `selectReleaseAssets()` picks the release ZIP, preferring a slim `-update.zip` (app + yt-dlp) over the full bundle so updates download less. The matching `.sha256` is resolved by name (accepts `<file>.zip.sha256` or `<file>.sha256`) so a release carrying both bundles can't cross checksums. The updater only ever reads `app/`, `yt-dlp/`, and `START.bat` out of the ZIP — `node/` and `mpv/` are ignored even if present.
 
 **Restart mechanism:** After applying an update, the server exits with **code 75** (`process.exit(75)` in `index.ts` after a graceful shutdown — stop the update check, the Twitch checks, the launcher and the event tail, close the HTTP server; the supervisor and the stream keep running). 75 is a sentinel, not a failure: `START.bat` reads `%ERRORLEVEL%` after the server process ends and branches on it — `75` = "exited on purpose to apply a staged update", `0` = clean shutdown (stay down), anything else = crash (auto-restart after 10s). The number is arbitrary-but-conventional (75 = `EX_TEMPFAIL` in BSD sysexits.h); what matters is node never emits it on a normal or crashing exit, so it can't be confused with either. On code 75, `START.bat` swaps `app/` → `_update_old/` and `_update_tmp/app/` → `app/`, also swaps `yt-dlp/` if the update bundled new binaries (retry-and-rollback, like the app swap), copies `config.json`, `state.json`, and `logs/` from the old app, verifies the new app is valid, and re-launches the server. On swap failure, it rolls back by renaming `_update_old` back to `app`.
 
