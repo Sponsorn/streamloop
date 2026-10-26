@@ -2425,26 +2425,15 @@ mod tests {
     }
 
     #[test]
-    fn a_silence_still_there_after_its_retry_is_reported_as_content_and_plays_on() {
+    fn a_silence_is_reported_as_content_and_never_cuts_the_stream() {
         let mut ctl = watchdog_ctl("wd-silence", false, 40.0);
         ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(50.0));
 
         ctl.watchdog_work();
 
-        let t = ctl.target.clone().expect("no retry");
-        assert_eq!((t.index, t.reason), (1, "watchdog"));
-        // the retry's feeder starts (no ffmpeg in the test root, so the spawn fails after the offset is taken)
-        ctl.start_feeder(1, Source::File, t.pos, "watchdog", false);
-        let aired = secs(BASE + ticks(50.0) + FRAME - BASE);
-        assert_eq!(ctl.watch.retried, Some((1, aired)), "retried is not in encoder media seconds");
-        retry_aired(&mut ctl);
-        ctl.enc.media = aired + 5.0 + 30.0 + 1.0;
-
-        ctl.watchdog_work();
-
         assert_eq!((ctl.watch.last["outcome"].as_str(), ctl.watch.last["verdict"].as_str()), (Some("content"), Some("silence")), "{}", ctl.watch.last);
         assert_eq!(events(&ctl).last(), Some(&("info".into(), "watchdog-silence".into())));
-        assert!(ctl.target.is_none(), "content changed the target");
+        assert!(ctl.target.is_none(), "a silence changed the target");
         assert!(!ctl.videos[1].skipped);
     }
 

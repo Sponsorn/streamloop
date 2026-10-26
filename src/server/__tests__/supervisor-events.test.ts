@@ -173,6 +173,12 @@ describe('describe', () => {
     expect(w('watchdog-silence', 'content').message).not.toBe('');
   });
 
+  it('describes a silence as the video playing on, never as a fault', () => {
+    const d = describeEvent(ev('watchdog-silence', { index: 1, outcome: 'content' }, 'info'));
+    expect(d.message).toBe('Silence on video 2. Silence alone never restarts a video.');
+    expect(d.discord).toBeUndefined();
+  });
+
   it.each([
     ['all-skipped', {}], ['stream-key-unreadable', { reason: 'r' }], ['stream-key-missing', {}],
     ['youtube-breaker-open', { reason: 'bot' }], ['downloads-failing', { inARow: 3 }],

@@ -89,6 +89,9 @@ export function describe(e: SupervisorEvent): Described {
     case 'watchdog-silence': {
       const kind = e.kind === 'watchdog-freeze' ? 'freeze' : 'silence';
       const outcome = one(e.outcome);
+      if (kind === 'silence' && outcome === 'content') {
+        return { message: `Silence on video ${n}. Silence alone never restarts a video.` };
+      }
       const msg = `Output ${kind} on video ${n} (${outcome})`;
       if (outcome === 'retry' || outcome === 'skip') {
         return { message: msg, discord: { kind: 'outputFrozen', vars: { kind, videoIndex: n }, level: 'warn' } };

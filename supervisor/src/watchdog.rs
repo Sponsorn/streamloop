@@ -90,20 +90,17 @@ pub enum Heal {
     Content,
 }
 
-/// A freeze is a fault: the stall ladder (`retries`), then a skip. A silence gets one retry per
-/// stretch; `retried` = (video, when that retry went on air), and a silence on that video that
-/// began within `SETTLE_S` of it re-began with the restart: content.
-pub fn heal(v: &Verdict, since: f64, retried: Option<(usize, f64)>, retries: u32) -> Option<Heal> {
+/// A freeze is a fault: the stall ladder (`retries`), then a skip. A silence is always content:
+/// the feeder carries audio and video as one stream, so a broken audio stream stalls or ends it
+/// and the stall and early-end checks act, while silence with a moving picture is the video's own.
+pub fn heal(v: &Verdict, _since: f64, _retried: Option<(usize, f64)>, retries: u32) -> Option<Heal> {
     match v {
         Verdict::Ignore => None,
         Verdict::Freeze { .. } => Some(match rules::after_failure(retries) {
             rules::Ladder::Retry => Heal::Retry,
             rules::Ladder::Skip => Heal::Skip,
         }),
-        Verdict::Silence { index, .. } => {
-            let same_stretch = retried.is_some_and(|(i, aired)| i == *index && since < aired + SETTLE_S);
-            Some(if same_stretch { Heal::Content } else { Heal::Retry })
-        }
+        Verdict::Silence { .. } => Some(Heal::Content),
     }
 }
 
@@ -280,29 +277,17 @@ mod tests {
         assert_eq!(ten_still_minutes(true, After::BeginsAgainAtTheSeam, None), [Heal::Retry, Heal::Retry, Heal::Skip]);
     }
 
-    /// Ten minutes of "brb" silence that belongs to the video: one retry, then content, never a skip.
+    /// A silence with a moving picture is the video's own ("brb" stretches): a broken audio
+    /// stream stalls or ends the feeder, which the stall and early-end checks catch, so a
+    /// silence alone is reported and never cuts the stream.
     #[test]
-    fn a_silence_that_returns_after_its_retry_is_content() {
+    fn a_silence_never_interrupts_the_stream() {
         let v = Verdict::Silence { index: 3, pos: 125.0 };
-        assert_eq!(heal(&v, 15.0, None, 0), Some(Heal::Retry));
+        assert_eq!(heal(&v, 15.0, None, 0), Some(Heal::Content));
         assert_eq!(heal(&v, 15.0, Some((3, 40.0)), 5), Some(Heal::Content));
-        assert_eq!(heal(&v, 41.0, Some((3, 40.0)), 5), Some(Heal::Content), "re-began at the seam");
-
-        assert_eq!(ten_still_minutes(false, After::Continues, None), [Heal::Retry, Heal::Content]);
-        assert_eq!(ten_still_minutes(false, After::BeginsAgainAtTheSeam, None), [Heal::Retry, Heal::Content]);
-    }
-
-    #[test]
-    fn a_silence_starting_10s_after_the_retry_gets_a_retry() {
-        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 80.0 }, 50.0, Some((3, 40.0)), 0), Some(Heal::Retry));
-    }
-
-    #[test]
-    fn a_later_separate_stretch_gets_one_retry_again() {
-        // retried at 40 s; the sound came back, and a new silence began at 200 s
-        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 300.0 }, 200.0, Some((3, 40.0)), 0), Some(Heal::Retry));
-        // another video's retry never makes this one content
-        assert_eq!(heal(&Verdict::Silence { index: 4, pos: 5.0 }, 41.0, Some((3, 40.0)), 0), Some(Heal::Retry));
+        assert_eq!(heal(&Verdict::Silence { index: 3, pos: 300.0 }, 200.0, Some((3, 40.0)), 0), Some(Heal::Content));
+        assert_eq!(heal(&Verdict::Silence { index: 4, pos: 5.0 }, 41.0, Some((3, 40.0)), 0), Some(Heal::Content));
+        assert_eq!(ten_still_minutes(false, After::Continues, None), [Heal::Content]);
         assert_eq!(heal(&Verdict::Ignore, 41.0, Some((3, 40.0)), 0), None);
     }
 
@@ -310,7 +295,8 @@ mod tests {
     fn a_freeze_cleared_by_its_retry_stays_healed() {
         // cleared, then a new stretch on the same video long after: a retry again, not content or a skip
         assert_eq!(ten_still_minutes(true, After::Cleared, Some(200.0)), [Heal::Retry, Heal::Retry]);
-        assert_eq!(ten_still_minutes(false, After::Cleared, Some(200.0)), [Heal::Retry, Heal::Retry]);
+        // a silence is reported each time it opens and never retried
+        assert_eq!(ten_still_minutes(false, After::Cleared, Some(200.0)), [Heal::Content, Heal::Content]);
     }
 
     #[test]
