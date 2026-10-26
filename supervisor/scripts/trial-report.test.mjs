@@ -84,6 +84,18 @@ describe('trialReport', () => {
     expect(r.offAir.gaps.every((g) => g.seconds >= 0)).toBe(true);
   });
 
+  it('measures a crashed supervisor from the encoder\'s last progress row, since a crash writes no event', () => {
+    // Arrange: the encoder reports progress until 495 s, the supervisor is killed, Node relaunches it at 504
+    const events = [jsonl(ev(0, 'start'), ev(2, 'encoder-start'), ev(504, 'start'), ev(506, 'encoder-start'))];
+    const csv = [progressRow(400), progressRow(495)].join('\n');
+
+    // Act
+    const r = trialReport({ events, encoderCsv: [csv] }, T0, T0 + 1000 * 1000);
+
+    // Assert
+    expect(r.offAir.gaps).toEqual([{ from: at(495), to: at(506), seconds: 11, why: 'crash' }]);
+  });
+
   it('counts only events inside the window', () => {
     // Arrange
     const events = [jsonl(ev(0, 'retry', 'warn'), ev(100, 'retry', 'warn'), ev(300, 'retry', 'warn'))];

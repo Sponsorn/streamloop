@@ -24,8 +24,19 @@ export function trialReport(files, from, to) {
     .map((e) => ({ ...e, ms: Date.parse(e.ts) }))
     .sort((a, b) => a.ms - b.ms);
 
+  const encoderRows = files.encoderCsv.flatMap((text) => parseCsv(text, ENCODER_COLUMNS));
   // Off air: an exit, a failed spawn or a shutdown, until the next encoder-start. A supervisor
-  // start with no shutdown before it is a relaunch after a crash. The run's first start is not.
+  // start with no shutdown before it is a relaunch after a crash, which writes no event of its
+  // own: it began at the encoder's last progress row. The run's first start is not an outage.
+  const progressMs = encoderRows.map((r) => Number(r.wallMs)).filter(Number.isFinite).sort((a, b) => a - b);
+  const lastProgressBefore = (ms) => {
+    let last = null;
+    for (const t of progressMs) {
+      if (t >= ms) break;
+      last = t;
+    }
+    return last;
+  };
   const gaps = [];
   let down = null;
   let encoderEverStarted = false;
@@ -34,8 +45,10 @@ export function trialReport(files, from, to) {
       if (down) gaps.push({ ...down, to: e.ms });
       down = null;
       encoderEverStarted = true;
-    } else if (!down && (DOWN.has(e.kind) || (e.kind === 'start' && encoderEverStarted))) {
+    } else if (!down && DOWN.has(e.kind)) {
       down = { from: e.ms, why: e.kind };
+    } else if (!down && e.kind === 'start' && encoderEverStarted) {
+      down = { from: lastProgressBefore(e.ms) ?? e.ms, why: 'crash' };
     }
   }
   if (down) gaps.push({ ...down, to });
@@ -67,7 +80,7 @@ export function trialReport(files, from, to) {
     }
   }
 
-  const cpu = cpuRows(files.encoderCsv.flatMap((text) => parseCsv(text, ENCODER_COLUMNS)))
+  const cpu = cpuRows(encoderRows)
     .filter((c) => c.wallMs >= from && c.wallMs <= to);
 
   return {
