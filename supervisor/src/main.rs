@@ -127,7 +127,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     })
 }
 
-/// Startup and POST /reload read the config the same way.
 /// Exit code for a config.json the supervisor will not run with; 2 is only ever "port taken".
 const CONFIG_REFUSED_EXIT: i32 = 3;
 
@@ -148,6 +147,7 @@ fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Sn
     })
 }
 
+/// Startup and POST /reload read the config the same way.
 fn read_settings(args: &Args) -> Result<Settings, String> {
     let json = std::fs::read_to_string(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
     // --target brings its own key; the protected one is not needed.
