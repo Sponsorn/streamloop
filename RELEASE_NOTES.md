@@ -3,7 +3,8 @@
 A prerelease for trial, not marked latest. 2.x installs do not update to it.
 
 - **Choosing a playlist on the Monitor tab no longer changes the stream.** In 3.0.0 the dropdown switched the stream to that playlist's first video at once. It now only shows that playlist's videos, with a note that it is not playing. Press ▶ on one of them to switch the stream to that playlist, starting at that video. In the playlist that is playing, ▶ jumps to the video as before.
-- **This release changes the supervisor, so install the full ZIP.** The dashboard's update replaces `app\` and `START.bat` only. With the update alone the dropdown fix works, but ▶ on another playlist's video starts that playlist at its first video: the 3.0.0 supervisor ignores the start video it is sent and switches as before. To install the full ZIP, press Stop, close the window, extract it into the same folder as the first time (`C:\StreamLoop3`, not `C:\StreamLoop3\streamloop`), start it again and press Start. Settings, the stream key and `data\` are kept.
+- **▶ now starts the video you pressed.** The dashboard's list counted private and deleted videos that the supervisor leaves out, so ▶ could start the next video instead. The list now leaves them out too, and ▶ also sends the video's id, so the right video plays even when the playlist changed on YouTube after the dashboard loaded it.
+- **This release changes the supervisor, so install the full ZIP.** The dashboard's update replaces `app\` and `START.bat` only. With the update alone the dropdown fix works, but ▶ on another playlist's video starts that playlist at its first video: the 3.0.0 supervisor ignores the start video and the video id it is sent. To install the full ZIP, press Stop, close the window, extract it into the same folder as the first time (`C:\StreamLoop3`, not `C:\StreamLoop3\streamloop`), start it again and press Start. Settings, the stream key and `data\` are kept.
 
 ---
 
