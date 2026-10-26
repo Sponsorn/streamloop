@@ -1882,8 +1882,9 @@ impl Ctl {
         }
         let ok = code == Some(0);
         if rules::ended_early(ok, fed, self.duration(index)) {
-            if source == Source::File {
-                // A power cut can leave a zero-filled file under the finished name: the retry plays the URL.
+            if source == Source::File && frames == 0 {
+                // A zero-filled or truncated file (a power cut) fails before its first frame: the retry plays the URL.
+                // A failure after frames keeps the file, so a crash mid-video never re-downloads it.
                 let file = self.file_of(index);
                 let _ = std::fs::remove_file(&file);
                 (self.videos[index].on_disk, self.videos[index].disk_bytes) = (false, 0);
@@ -3168,7 +3169,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_feeder_that_fails_drops_the_cached_file_and_retries_from_the_url() {
+    fn a_file_feeder_that_fails_before_any_frame_drops_the_file_and_retries_from_the_url() {
         let mut ctl = test_ctl("bad-file", &["a", "b"]);
         std::fs::create_dir_all(&ctl.cache).unwrap();
         std::fs::write(ctl.cache.join("b.mp4"), [0u8; 64]).unwrap();
@@ -3180,6 +3181,22 @@ mod tests {
 
         assert!(!ctl.videos[1].on_disk && ctl.videos[1].disk_bytes == 0);
         assert!(!ctl.cache.join("b.mp4").exists(), "the broken file is still there");
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 30.0, "retry")));
+    }
+
+    #[test]
+    fn a_file_feeder_that_fails_after_frames_keeps_the_file_and_retries_from_it() {
+        let mut ctl = test_ctl("crash-mid-file", &["a", "b"]);
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("b.mp4"), [0u8; 64]).unwrap();
+        (ctl.videos[1].on_disk, ctl.videos[1].disk_bytes) = (true, 64);
+        ctl.feeder_seq = 7;
+        ctl.live = Some(Feeder { seq: 7, child: Arc::new(Mutex::new(exited_child())), index: 1, source: Source::File, start_pos: 30.0, offset: BASE, started: Instant::now(), filler: false, expire: None });
+
+        ctl.on_feeder_exit(7, Some(1), 500);
+
+        assert!(ctl.videos[1].on_disk && ctl.videos[1].disk_bytes == 64, "a crash mid-file threw away the download");
+        assert!(ctl.cache.join("b.mp4").exists());
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 30.0, "retry")));
     }
 
