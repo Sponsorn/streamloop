@@ -90,6 +90,12 @@ describe('SupervisorClient.control', () => {
     expect(JSON.parse(calls[0].init.body as string)).toEqual({ cmd: 'jump', index: 7 });
   });
 
+  it('sends the video id with a jump', async () => {
+    const { calls, f } = recorder(jsonResponse({ accepted: true }));
+    await client(f).control('jump', 7, undefined, 'abc');
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ cmd: 'jump', index: 7, id: 'abc' });
+  });
+
   it('omits index when none is given', async () => {
     const { calls, f } = recorder(jsonResponse({ accepted: true }));
     await client(f).control('next');
@@ -131,7 +137,8 @@ describe('SupervisorClient.reload and shutdown', () => {
     const f = (async (_url: string, init: RequestInit) => { calls.push(init); return jsonResponse({ applied: true }); }) as unknown as typeof fetch;
     await client(f).reload();
     await client(f).reload({ index: 3 });
-    expect(calls.map((c) => [c.method, c.body])).toEqual([['POST', '{}'], ['POST', '{"index":3}']]);
+    await client(f).reload({ index: 3, id: 'abc' });
+    expect(calls.map((c) => [c.method, c.body])).toEqual([['POST', '{}'], ['POST', '{"index":3}'], ['POST', '{"index":3,"id":"abc"}']]);
   });
 
   it('returns the error from a rejected reload', async () => {

@@ -506,7 +506,24 @@ WshShell.Run """${bat}""", 1, False`;
       const res = await post('/player/jump', { index: 2 });
 
       expect(res.status).toBe(200);
-      expect(h.client.control).toHaveBeenCalledWith('jump', 2);
+      expect(h.client.control).toHaveBeenCalledWith('jump', 2, undefined, undefined);
+    });
+
+    it('POST /player/jump sends the video id with the index', async () => {
+      const res = await post('/player/jump', { index: 2, id: 'dQw4w9WgXc_-' });
+
+      expect(res.status).toBe(200);
+      expect(h.client.control).toHaveBeenCalledWith('jump', 2, undefined, 'dQw4w9WgXc_-');
+    });
+
+    it.each([1_000_000, -1])('POST /player/jump rejects index %j', async (index) => {
+      expect((await post('/player/jump', { index })).status).toBe(400);
+      expect(h.client.control).not.toHaveBeenCalled();
+    });
+
+    it.each(['', 'a b', 'x'.repeat(65), 7])('POST /player/jump rejects id %j', async (id) => {
+      expect((await post('/player/jump', { index: 1, id })).status).toBe(400);
+      expect(h.client.control).not.toHaveBeenCalled();
     });
 
     it('POST /player/next passes on a refusal as a reason', async () => {
@@ -551,14 +568,19 @@ WshShell.Run """${bat}""", 1, False`;
     });
 
     it('POST /playlist/switch passes the start video to the reload', async () => {
-      const res = await post('/playlist/switch', { playlistIndex: 1, videoIndex: 4 });
+      const res = await post('/playlist/switch', { playlistIndex: 1, videoIndex: 4, videoId: 'abc_DEF-123' });
 
       expect(res.status).toBe(200);
       expect(h.save).toHaveBeenCalledWith({ playlists: [{ id: 'PLbbb', name: 'B' }, { id: 'PLaaa', name: 'A' }, { id: 'PLccc', name: 'C' }] });
-      expect(h.client.reload).toHaveBeenCalledWith({ index: 4 });
+      expect(h.client.reload).toHaveBeenCalledWith({ index: 4, id: 'abc_DEF-123' });
     });
 
-    it.each([-1, 1.5, '2', null])('POST /playlist/switch rejects videoIndex %j', async (videoIndex) => {
+    it.each(['', 'a/b', 'x'.repeat(65), 7, null])('POST /playlist/switch rejects videoId %j before saving', async (videoId) => {
+      expect((await post('/playlist/switch', { playlistIndex: 1, videoIndex: 0, videoId })).status).toBe(400);
+      expect(h.save).not.toHaveBeenCalled();
+    });
+
+    it.each([-1, 1.5, '2', null, 1_000_000])('POST /playlist/switch rejects videoIndex %j', async (videoIndex) => {
       expect((await post('/playlist/switch', { playlistIndex: 1, videoIndex })).status).toBe(400);
       expect(h.save).not.toHaveBeenCalled();
       expect(h.client.reload).not.toHaveBeenCalled();

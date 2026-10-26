@@ -83,10 +83,11 @@ export class SupervisorClient {
     }
   }
 
-  /** `reason` is a note for `restart-encoder`, which the supervisor logs; other commands ignore it. */
-  async control(cmd: ControlCmd, index?: number, reason?: string): Promise<ControlResult> {
+  /** `reason` is a note for `restart-encoder`, which the supervisor logs; other commands ignore it.
+   *  `id` names a jump's video; the supervisor prefers it to `index` when its list has it. */
+  async control(cmd: ControlCmd, index?: number, reason?: string, id?: string): Promise<ControlResult> {
     try {
-      const r = await this.call('/control', { cmd, index, reason });
+      const r = await this.call('/control', { cmd, index, reason, id });
       if (r.status !== 200) return { ok: false, error: String(r.json?.error ?? `HTTP ${r.status}`) };
       return r.json?.alreadyRestarting ? { ok: true, alreadyRestarting: true } : { ok: true };
     } catch (e) {
@@ -94,11 +95,11 @@ export class SupervisorClient {
     }
   }
 
-  /** `index` is where a switch to a new playlists[0] starts; a supervisor before 3.0.1 ignores it. */
-  async reload(opts: { index?: number } = {}): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
+  /** `index` and `id` say where a switch to a new playlists[0] starts; a supervisor before 3.0.1 ignores them. */
+  async reload(opts: { index?: number; id?: string } = {}): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
     try {
-      // JSON.stringify drops an undefined index, so the body is {} without one.
-      const r = await this.call('/reload', { index: opts.index });
+      // JSON.stringify drops undefined fields, so the body is {} without them.
+      const r = await this.call('/reload', { index: opts.index, id: opts.id });
       if (r.status !== 200) return { ok: false, error: String(r.json?.error ?? `HTTP ${r.status}`) };
       return { ok: true, restartRequired: r.json?.restartRequired === true };
     } catch (e) {

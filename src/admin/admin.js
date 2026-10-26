@@ -561,12 +561,14 @@ function initMonitorControls() {
     const btn = e.target.closest('.btn-play');
     if (!btn) return;
     const index = Number(btn.dataset.index);
+    // The id lets the supervisor find the video even if its list numbers it differently.
+    const id = btn.dataset.id || undefined;
     if (browsedPlaylist === 0) {
-      runAction(btn, () => post('/api/player/jump', { index }));
+      runAction(btn, () => post('/api/player/jump', { index, id }));
       return;
     }
     runAction(btn, async () => {
-      const r = await post('/api/playlist/switch', { playlistIndex: browsedPlaylist, videoIndex: index });
+      const r = await post('/api/playlist/switch', { playlistIndex: browsedPlaylist, videoIndex: index, videoId: id });
       if (!isBenignReloadError(r)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
       settingsLoaded = false;
       loadPlaylistSelector();
@@ -641,7 +643,7 @@ function renderVideoList(data) {
     tr.innerHTML = '<td>' + (v.index + 1) + '</td>' +
       '<td>' + escapeHtml(v.title || 'Untitled') + '</td>' +
       '<td>' + (v.duration ? formatTime(v.duration).replace(/^0:/, '') : '-') + '</td>' +
-      '<td><button type="button" class="btn btn-secondary btn-play" data-index="' + v.index + '" aria-label="Play video ' + (v.index + 1) + '">&#9654;</button></td>';
+      '<td><button type="button" class="btn btn-secondary btn-play" data-index="' + v.index + '" data-id="' + escapeHtml(v.id || '') + '" aria-label="Play video ' + (v.index + 1) + '">&#9654;</button></td>';
     tbody.appendChild(tr);
   }
   lastHighlightedIndex = data.currentIndex ?? -1;
