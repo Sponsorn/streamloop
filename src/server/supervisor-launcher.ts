@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { logger } from './logger.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
@@ -25,6 +25,7 @@ const MISSES_BEFORE_LAUNCH = 3;
 const BACKOFF_MS = [10_000, 30_000, 60_000, 300_000];
 const BACKOFF_RESET_MS = 60_000;
 const PORT_TAKEN_EXIT = 2;
+const CONFIG_REFUSED_EXIT = 3;
 const PORT_TAKEN_WINDOW_MS = 5_000;
 const DRAIN_LIMIT_MS = 20_000;
 
@@ -33,6 +34,26 @@ export function installRoot(appDir: string, env: NodeJS.ProcessEnv): string | nu
   const parent = dirname(appDir);
   if (existsSync(join(parent, 'node'))) return parent;
   return env.STREAMLOOP_ROOT || null;
+}
+
+/** The reason of the last config-refused event in today's supervisor events file, if any. */
+export function lastConfigRefusal(root: string, now: Date = new Date()): string | null {
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  let text: string;
+  try {
+    text = readFileSync(join(root, 'data', 'logs', `events-${date}.jsonl`), 'utf-8');
+  } catch {
+    return null;
+  }
+  for (const line of text.split('\n').reverse()) {
+    try {
+      const e = JSON.parse(line) as { kind?: unknown; reason?: unknown };
+      if (e.kind === 'config-refused') return typeof e.reason === 'string' ? e.reason : null;
+    } catch {
+      // a partial or blank line
+    }
+  }
+  return null;
 }
 
 /** Starts the supervisor as a sibling of Node and relaunches it when it stops answering.
@@ -64,6 +85,8 @@ export class SupervisorLauncher {
   private lastSpawnAt = 0;
   private lastExit: { code: number | null; at: number; spawnedAt: number } | null = null;
   private held: string | null = null;
+  /** Why the last supervisor refused config.json (exit 3), until one answers. */
+  private refused: string | null = null;
 
   constructor(opts: SupervisorLauncherOptions) {
     this.root = opts.root;
@@ -127,7 +150,7 @@ export class SupervisorLauncher {
 
   /** Why beforeLaunch is holding the launch, until a spawn or an answering supervisor clears it. */
   blockReason(): string | null {
-    return this.held;
+    return this.held ?? this.refused;
   }
 
   /** An operator Start: no backoff, and the spawn still goes through the one guarded poll. */
@@ -178,6 +201,7 @@ export class SupervisorLauncher {
     if (answered) {
       this.misses = 0;
       this.held = null;
+      this.refused = null;
       const exit = this.lastExit;
       if (exit && exit.code === PORT_TAKEN_EXIT && exit.at - exit.spawnedAt < PORT_TAKEN_WINDOW_MS) {
         // Another supervisor held the port: we attached, the spawn did not fail.
@@ -240,7 +264,7 @@ export class SupervisorLauncher {
     const spawnedAt = this.now();
 
     // `launch` starts the supervisor detached and exits, so no Node exit or tree kill reaches it.
-    // Its exit code is the supervisor's port-taken 2, relayed; 1 when the supervisor crashed
+    // Its exit code is the supervisor's port-taken 2 or refused-config 3, relayed; 1 when the supervisor crashed
     // during the bind wait or could not spawn; otherwise 0.
     const args = ['launch', '--root', this.root];
     if (this.debugFaults) args.push('--debug-faults');
@@ -256,6 +280,10 @@ export class SupervisorLauncher {
     child.on('exit', (code: number | null) => {
       if (seq !== this.spawnSeq) return;
       this.lastExit = { code, at: this.now(), spawnedAt };
+      if (code === CONFIG_REFUSED_EXIT && this.root) {
+        const why = lastConfigRefusal(this.root);
+        this.refused = `The supervisor refused config.json${why ? `: ${why}` : '.'}`;
+      }
       // 0 is the intermediate handing off to a running supervisor
       if (code !== 0 && this.phase === 'starting') this.phase = 'down';
     });

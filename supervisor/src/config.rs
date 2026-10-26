@@ -14,6 +14,8 @@ pub struct Settings {
     pub overlay: bool,
     pub freeze_seconds: f64,
     pub silence_seconds: f64,
+    /// yt-dlp's `--cookies-from-browser` value (top-level `ytdlCookiesFromBrowser`); empty means none.
+    pub cookies_from_browser: String,
     /// Why `streamKeyProtected` could not be decrypted (another PC or user, a damaged blob).
     pub key_error: Option<String>,
 }
@@ -51,6 +53,7 @@ pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> R
         overlay: field(s, "overlay", true, Value::as_bool)?,
         freeze_seconds: field(s, "freezeSeconds", 20.0, Value::as_f64)?,
         silence_seconds: field(s, "silenceSeconds", 30.0, Value::as_f64)?,
+        cookies_from_browser: cookies(&v)?,
         key_error,
     };
     // Values that load but would stall the stream: a starved encoder, a freeze or silence
@@ -66,6 +69,22 @@ pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> R
         }
     }
     Ok(out)
+}
+
+/// The dashboard's cookie setting, shared with Node's playlist fetch. It goes to yt-dlp as one argument.
+fn cookies(v: &Value) -> Result<String, String> {
+    let bad = |why: &str| format!("config.json: ytdlCookiesFromBrowser {why}");
+    let s = match v.get("ytdlCookiesFromBrowser") {
+        None | Some(Value::Null) => return Ok(String::new()),
+        Some(s) => s.as_str().ok_or_else(|| bad("has the wrong type"))?.trim(),
+    };
+    if s.chars().count() > 200 {
+        return Err(bad("is longer than 200 characters"));
+    }
+    if s.chars().any(char::is_control) {
+        return Err(bad("contains a control character"));
+    }
+    Ok(s.into())
 }
 
 pub fn target_url(s: &Settings) -> String {
@@ -101,6 +120,7 @@ impl std::fmt::Debug for Settings {
             .field("overlay", &self.overlay)
             .field("freeze_seconds", &self.freeze_seconds)
             .field("silence_seconds", &self.silence_seconds)
+            .field("cookies_from_browser", &self.cookies_from_browser)
             .field("key_error", &self.key_error)
             .finish()
     }
@@ -191,6 +211,26 @@ mod tests {
         }
         assert!(with("freezeSeconds", "-30").is_err());
         assert!(with("readAheadSeconds", "1e999").is_err(), "a number too big to be finite");
+    }
+
+    #[test]
+    fn load_reads_the_cookie_browser_trimmed_and_empty_as_none() {
+        let with = |v: &str| load(&format!(r#"{{"playlists":[{{"id":"P"}}],"supervisor":{{}},"ytdlCookiesFromBrowser":{v}}}"#), &no_key);
+        assert_eq!(load(r#"{"playlists":[{"id":"P"}],"supervisor":{}}"#, &no_key).unwrap().cookies_from_browser, "");
+        assert_eq!(with(r#""  firefox  ""#).unwrap().cookies_from_browser, "firefox");
+        assert_eq!(with(r#""   ""#).unwrap().cookies_from_browser, "");
+        assert_eq!(with(r#""brave:Profile 1""#).unwrap().cookies_from_browser, "brave:Profile 1");
+        for bad in [format!("\"{}\"", "x".repeat(201)), r#""fire\nfox""#.to_string(), "5".to_string()] {
+            let e = with(&bad).unwrap_err();
+            assert!(e.contains("ytdlCookiesFromBrowser"), "{bad}: {e}");
+        }
+        assert!(with(&format!("\"{}\"", "x".repeat(200))).is_ok());
+    }
+
+    #[test]
+    fn a_new_cookie_browser_applies_live() {
+        let old = load(r#"{"playlists":[{"id":"PLa"}],"supervisor":{}}"#, &no_key).unwrap();
+        assert_eq!(reload_plan(&old, &Settings { cookies_from_browser: "firefox".into(), ..old.clone() }), Reload::Live);
     }
 
     #[test]

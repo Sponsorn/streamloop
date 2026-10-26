@@ -273,6 +273,22 @@ pub fn is_bot_check(reason: &str) -> bool {
     r.contains("not a bot") || r.contains("bot check")
 }
 
+/// yt-dlp could not read the browser's cookie store (wrong browser name, no such profile, a
+/// database the browser holds locked, DPAPI): the PC's problem, not YouTube's answer.
+pub fn is_cookie_problem(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    if is_bot_check(&r) {
+        return false;
+    }
+    // yt-dlp also prints this one for a single cookie and then carries on to YouTube's own answer.
+    if r.contains("failed to decrypt with dpapi") {
+        return r.lines().filter(|l| l.contains("error")).count() == 1;
+    }
+    ["specified for cookies", "cookies database", "cookie database", "failed to load cookies", "invalid cookies from browser", "containers.json"]
+        .iter()
+        .any(|w| r.contains(w))
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Allow {
     Yes,
@@ -418,6 +434,31 @@ pub fn next_download(win: &[usize], on_disk: &[bool], failed: &[bool]) -> Option
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_store_failures_are_told_apart_from_youtube() {
+        // yt-dlp 2026.10.23's own wording, from its source and a run with a bogus profile
+        for r in [
+            r"ERROR: could not find firefox cookies database in 'C:\\nonexistent-profile'",
+            r#"ERROR: could not find chrome cookies database in "C:\nonexistent-profile""#,
+            "ERROR: Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info",
+            "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info",
+            "yt-dlp.exe: error: unsupported browser specified for cookies: \"nosuchbrowser\". Supported browsers are: brave, chrome",
+            "ERROR: failed to load cookies",
+        ] {
+            assert!(is_cookie_problem(r), "{r}");
+            assert!(!is_bot_check(r) && !is_video_unavailable(r), "{r}");
+        }
+        assert!(!is_cookie_problem("ERROR: [youtube] a: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies"));
+        assert!(!is_cookie_problem("ERROR: [youtube] a: Video unavailable"));
+        // A DPAPI line is the cookie problem only when it is the sole ERROR line.
+        let dpapi = "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info";
+        assert!(!is_cookie_problem(&format!("{dpapi}\nERROR: [youtube] a: Sign in to confirm you're not a bot")));
+        assert!(!is_cookie_problem(&format!("{dpapi}\nERROR: [youtube] a: Requested format is not available")));
+        assert!(is_cookie_problem(&format!("[youtube] a: Downloading webpage\n{dpapi}\n")));
+    }
+
     #[test]
     fn window_cpu_is_zero_when_the_process_changed_between_samples() {
         assert_eq!(window_cpu(Some(7), Some(7), 100, 150, 100), 50.0);
@@ -435,7 +476,6 @@ mod tests {
         assert_eq!(cpu_percent(300, 100), 100.0);
     }
 
-    use super::*;
 
     fn pes_packet(pid: u16, stream_id: u8, pts: i64, adaptation: bool) -> Vec<u8> {
         let mut p = vec![0xff; PKT];

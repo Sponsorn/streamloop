@@ -54,6 +54,31 @@ afterEach(() => {
 });
 
 describe('SupervisorLauncher', () => {
+  it('shows why the supervisor refused config.json when it exits 3', async () => {
+    // Arrange
+    const { launcher, children } = setup();
+    const d = new Date();
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    mkdirSync(join(root, 'data', 'logs'), { recursive: true });
+    writeFileSync(join(root, 'data', 'logs', `events-${date}.jsonl`),
+      [
+        { ts: 't', level: 'critical', kind: 'config-refused', reason: 'old' },
+        { ts: 't', level: 'info', kind: 'start' },
+        { ts: 't', level: 'critical', kind: 'config-refused', reason: 'config.json: ytdlCookiesFromBrowser is longer than 200 characters' },
+      ].map((e) => JSON.stringify(e) + '\n').join(''));
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    // Act
+    children[0].emit('exit', 3);
+    await vi.advanceTimersByTimeAsync(2_000);
+    launcher.stop();
+
+    // Assert
+    expect(launcher.state()).toBe('down');
+    expect(launcher.blockReason()).toBe('The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters');
+  });
+
   it('attaches without spawning when the supervisor already answers', async () => {
     // Arrange
     const { launcher, spawnImpl } = setup({ answering: true });

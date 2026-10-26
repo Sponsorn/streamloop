@@ -188,6 +188,18 @@ describe('describe', () => {
     expect(describeEvent(ev(kind, extra, 'critical')).discord).toMatchObject({ kind: 'critical', level: 'error' });
   });
 
+  it('names the browser and the reason when yt-dlp cannot read the cookies', () => {
+    const d = describeEvent(ev('cookies-unreadable', { browser: 'firefox', reason: 'could not find firefox cookies database' }, 'critical'));
+    expect(d.message).toBe('yt-dlp could not read the firefox cookies: could not find firefox cookies database');
+    expect(d.discord).toMatchObject({ kind: 'critical', level: 'error' });
+  });
+
+  it('says the saved playlist is used while YouTube does not answer', () => {
+    const d = describeEvent(ev('playlist-from-saved', { playlistId: 'PLx', count: 12 }, 'warn'));
+    expect(d.message).toBe('YouTube is not answering, so the saved playlist (12 videos) is used.');
+    expect(d.discord).toBeUndefined();
+  });
+
   it('sends playlist-failed as critical only for the first load', () => {
     expect(describeEvent(ev('playlist-failed', { reason: 'r' }, 'critical')).discord?.kind).toBe('critical');
     expect(describeEvent(ev('playlist-failed', { reason: 'r' }, 'warn')).discord).toBeUndefined();
@@ -272,6 +284,22 @@ describe('describe details', () => {
 
 describe('AlertGate', () => {
   const kinds = (g: AlertGate, es: SupervisorEvent[]) => es.map((e) => g.describe(e).discord?.kind);
+
+  it('alerts a refused config once per streak, again after a supervisor that started', () => {
+    const gate = new AlertGate();
+    const refused = ev('config-refused', { reason: 'config.json: ytdlCookiesFromBrowser is longer than 200 characters' }, 'critical');
+
+    const sent = kinds(gate, [refused, refused, refused, ev('start'), refused]);
+
+    expect(sent).toEqual(['critical', undefined, undefined, undefined, 'critical']);
+    expect(gate.describe(refused).message).toBe('The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters');
+  });
+
+  it('notes cookies yt-dlp went on without, as a warning off Discord', () => {
+    const d = describeEvent(ev('cookies-unreadable', { browser: 'chrome', reason: 'Failed to decrypt with DPAPI' }, 'warn'));
+    expect(d.message).toBe('yt-dlp could not read the chrome cookies and went on without them: Failed to decrypt with DPAPI');
+    expect(d.discord).toBeUndefined();
+  });
 
   it('alerts once per outage: one drop, one critical, one restart, every cycle on the timeline', () => {
     const gate = new AlertGate();

@@ -116,6 +116,12 @@ export function describe(e: SupervisorEvent): Described {
       return critical('No stream key is set. The stream cannot start.');
     case 'youtube-breaker-open':
       return critical(`YouTube is blocking requests (${one(e.reason)}). Downloads and lookups are paused.`);
+    case 'cookies-unreadable':
+      // warn: the call went on without the cookies; critical: the calls fail on them.
+      if (e.level !== 'critical') return { message: `yt-dlp could not read the ${one(e.browser)} cookies and went on without them: ${one(e.reason)}` };
+      return critical(`yt-dlp could not read the ${one(e.browser)} cookies: ${one(e.reason)}`);
+    case 'config-refused':
+      return critical(`The supervisor refused config.json: ${one(e.reason)}`);
     case 'youtube-breaker-closed':
       return { message: 'YouTube requests resumed' };
     case 'downloads-failing':
@@ -151,6 +157,7 @@ export function describe(e: SupervisorEvent): Described {
     case 'control': return { message: `Control: ${one(e.cmd)}` };
     case 'playlist': return { message: `Playlist loaded (${num(e, 'count')} videos)` };
     case 'playlist-recovered': return { message: 'Playlist loaded after an earlier failure' };
+    case 'playlist-from-saved': return { message: `YouTube is not answering, so the saved playlist (${num(e, 'count')} videos) is used.` };
     case 'playlist-switch-failed': return { message: `Playlist switch failed: ${one(e.reason)}` };
     case 'download-failed': return { message: `Download of video ${n} failed: ${one(e.reason)}` };
     case 'resolve-failed': return { message: `Lookup of video ${n} failed: ${one(e.reason)}` };
@@ -184,6 +191,8 @@ export class AlertGate {
   private encoderAlerted = false;
   private spawnAlerted = false;
   private tokenAlerted = false;
+  /** A config-refused alert went out since the last supervisor start. */
+  private configAlerted = false;
   /** from>to of the last encoder-fallback alert. */
   private lastFallback = '';
 
@@ -211,6 +220,13 @@ export class AlertGate {
         // A first start after failed spawns has restarts 0, which describe() treats as a plain start.
         return d.discord ? d : { message: d.message, discord: { kind: 'streamRestart', vars: { attempts: 1 }, level: 'info' } };
       }
+      case 'config-refused':
+        if (this.configAlerted) return drop();
+        this.configAlerted = true;
+        return d;
+      case 'start':
+        this.configAlerted = false;
+        return d;
       case 'token-server-spawn-failed':
         if (this.tokenAlerted) return drop();
         this.tokenAlerted = true;
