@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -229,5 +229,42 @@ describe('encoderOptionsHtml', () => {
       + '<option value="h264_qsv">Intel (Quick Sync)</option>'
       + '<option value="libx264">Software (x264, uses the CPU)</option>',
     );
+  });
+});
+
+describe('youtubeNote', () => {
+  it('gives the next try in local time while the breaker is open', () => {
+    const at = new Date(2026, 9, 26, 10, 41, 30).toISOString();
+    expect(youtubeNote({ breaker: 'open', retryAt: at })).toBe('YouTube is blocking requests. Next try at 10:41.');
+  });
+
+  it('pads single-digit hours and minutes', () => {
+    const at = new Date(2026, 9, 26, 7, 5).toISOString();
+    expect(youtubeNote({ breaker: 'open', retryAt: at })).toBe('YouTube is blocking requests. Next try at 07:05.');
+  });
+
+  it('leaves out the time when the supervisor gives none', () => {
+    expect(youtubeNote({ breaker: 'open', retryAt: null })).toBe('YouTube is blocking requests.');
+  });
+
+  it('says nothing while the breaker is closed or the status has no youtube part', () => {
+    expect(youtubeNote({ breaker: 'closed', retryAt: null })).toBeNull();
+    expect(youtubeNote(undefined)).toBeNull();
+  });
+
+  it('names the cookie problem, which is not YouTube blocking', () => {
+    expect(youtubeNote({ breaker: 'closed', cookieProblem: 'yt-dlp could not read the firefox cookies: locked' })).toBe('yt-dlp could not read the firefox cookies: locked');
+  });
+});
+
+describe('streamLine with a YouTube note', () => {
+  it('adds the note to the reason, even while live on the slate', () => {
+    expect(streamLine({ state: 'live', reason: null }, 'YouTube is blocking requests.').reason).toBe('YouTube is blocking requests.');
+    expect(streamLine({ state: 'recovering', reason: 'Recovering the current video.' }, 'YouTube is blocking requests.').reason)
+      .toBe('Recovering the current video. YouTube is blocking requests.');
+  });
+
+  it('shows no note while the stream is stopped', () => {
+    expect(streamLine({ state: 'stopped', reason: 'Stopped.' }, 'YouTube is blocking requests.').reason).toBe('Stopped.');
   });
 });

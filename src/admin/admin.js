@@ -1,5 +1,5 @@
 import {
-  streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
+  streamLine, youtubeNote, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
   encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml,
 } from './status-view.js';
 
@@ -469,7 +469,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Monitor: stream line
 
 function renderStream(s) {
-  const line = streamLine(s.stream);
+  const line = streamLine(s.stream, youtubeNote(s.supervisor && s.supervisor.youtube));
   const word = $('#stream-word');
   word.textContent = line.word;
   word.className = 'stream-word ' + line.level;

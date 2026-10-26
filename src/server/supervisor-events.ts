@@ -116,6 +116,8 @@ export function describe(e: SupervisorEvent): Described {
       return critical('No stream key is set. The stream cannot start.');
     case 'youtube-breaker-open':
       return critical(`YouTube is blocking requests (${one(e.reason)}). Downloads and lookups are paused.`);
+    case 'cookies-unreadable':
+      return critical(`yt-dlp could not read the ${one(e.browser)} cookies: ${one(e.reason)}`);
     case 'youtube-breaker-closed':
       return { message: 'YouTube requests resumed' };
     case 'downloads-failing':
@@ -151,6 +153,7 @@ export function describe(e: SupervisorEvent): Described {
     case 'control': return { message: `Control: ${one(e.cmd)}` };
     case 'playlist': return { message: `Playlist loaded (${num(e, 'count')} videos)` };
     case 'playlist-recovered': return { message: 'Playlist loaded after an earlier failure' };
+    case 'playlist-from-saved': return { message: `YouTube is not answering, so the saved playlist (${num(e, 'count')} videos) is used.` };
     case 'playlist-switch-failed': return { message: `Playlist switch failed: ${one(e.reason)}` };
     case 'download-failed': return { message: `Download of video ${n} failed: ${one(e.reason)}` };
     case 'resolve-failed': return { message: `Lookup of video ${n} failed: ${one(e.reason)}` };

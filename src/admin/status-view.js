@@ -8,13 +8,27 @@ const STREAM_WORDS = {
   stopped: { word: 'Stopped', level: 'muted' },
 };
 
-/** The stream line: word, colour level and the reason to show (null when Live). */
-export function streamLine(stream) {
+/** The stream line: word, colour level and the reason to show (null when Live and nothing to note).
+ *  `note` is youtubeNote's text: the slate can be live while YouTube blocks, so it shows then too. */
+export function streamLine(stream, note = null) {
   const known = stream && STREAM_WORDS[stream.state];
   const { word, level } = known || STREAM_WORDS['off-air'];
   const live = known && stream.state === 'live';
   const reason = live ? null : (stream && stream.reason) || (known ? null : 'The server sent no stream state.');
-  return { word, level, reason };
+  if (!note || (known && stream.state === 'stopped')) return { word, level, reason };
+  return { word, level, reason: reason ? `${reason} ${note}` : note };
+}
+
+/** Why YouTube is off limits, from the supervisor's /status youtube part; null when it is not.
+ *  The next try is in local time, HH:MM. */
+export function youtubeNote(youtube) {
+  if (!youtube) return null;
+  if (youtube.cookieProblem) return youtube.cookieProblem;
+  if (youtube.breaker !== 'open') return null;
+  const at = youtube.retryAt ? new Date(youtube.retryAt) : null;
+  if (!at || Number.isNaN(at.getTime())) return 'YouTube is blocking requests.';
+  const hhmm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  return `YouTube is blocking requests. Next try at ${hhmm}.`;
 }
 
 /** The Twitch live check and the read-back, as one line. */

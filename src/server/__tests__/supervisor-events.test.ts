@@ -188,6 +188,18 @@ describe('describe', () => {
     expect(describeEvent(ev(kind, extra, 'critical')).discord).toMatchObject({ kind: 'critical', level: 'error' });
   });
 
+  it('names the browser and the reason when yt-dlp cannot read the cookies', () => {
+    const d = describeEvent(ev('cookies-unreadable', { browser: 'firefox', reason: 'could not find firefox cookies database' }, 'critical'));
+    expect(d.message).toBe('yt-dlp could not read the firefox cookies: could not find firefox cookies database');
+    expect(d.discord).toMatchObject({ kind: 'critical', level: 'error' });
+  });
+
+  it('says the saved playlist is used while YouTube does not answer', () => {
+    const d = describeEvent(ev('playlist-from-saved', { playlistId: 'PLx', count: 12 }, 'warn'));
+    expect(d.message).toBe('YouTube is not answering, so the saved playlist (12 videos) is used.');
+    expect(d.discord).toBeUndefined();
+  });
+
   it('sends playlist-failed as critical only for the first load', () => {
     expect(describeEvent(ev('playlist-failed', { reason: 'r' }, 'critical')).discord?.kind).toBe('critical');
     expect(describeEvent(ev('playlist-failed', { reason: 'r' }, 'warn')).discord).toBeUndefined();

@@ -18,7 +18,7 @@ export interface SupervisorStatus {
   recovery?: { step?: string; retries?: number };
   watchdog?: { last?: unknown };
   hold?: { reason?: string; level?: number; until?: string } | null;
-  youtube?: { breaker?: string; retryAt?: string | null };
+  youtube?: { breaker?: string; retryAt?: string | null; cookieProblem?: string | null };
   playlistCount?: number;
   tokenServer?: { state?: string; restarts?: number };
 }
