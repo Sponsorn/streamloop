@@ -94,9 +94,11 @@ export class SupervisorClient {
     }
   }
 
-  async reload(): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
+  /** `index` is where a switch to a new playlists[0] starts; a supervisor before 3.0.1 ignores it. */
+  async reload(opts: { index?: number } = {}): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
     try {
-      const r = await this.call('/reload', {});
+      // JSON.stringify drops an undefined index, so the body is {} without one.
+      const r = await this.call('/reload', { index: opts.index });
       if (r.status !== 200) return { ok: false, error: String(r.json?.error ?? `HTTP ${r.status}`) };
       return { ok: true, restartRequired: r.json?.restartRequired === true };
     } catch (e) {

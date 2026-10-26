@@ -550,11 +550,42 @@ WshShell.Run """${bat}""", 1, False`;
       expect(h.save).not.toHaveBeenCalled();
     });
 
+    it('POST /playlist/switch passes the start video to the reload', async () => {
+      const res = await post('/playlist/switch', { playlistIndex: 1, videoIndex: 4 });
+
+      expect(res.status).toBe(200);
+      expect(h.save).toHaveBeenCalledWith({ playlists: [{ id: 'PLbbb', name: 'B' }, { id: 'PLaaa', name: 'A' }, { id: 'PLccc', name: 'C' }] });
+      expect(h.client.reload).toHaveBeenCalledWith({ index: 4 });
+    });
+
+    it.each([-1, 1.5, '2', null])('POST /playlist/switch rejects videoIndex %j', async (videoIndex) => {
+      expect((await post('/playlist/switch', { playlistIndex: 1, videoIndex })).status).toBe(400);
+      expect(h.save).not.toHaveBeenCalled();
+      expect(h.client.reload).not.toHaveBeenCalled();
+    });
+
+    it('GET /playlist/videos browses another playlist through the cache, with no current video', async () => {
+      h.sup.value = playing({ playing: { index: 1 } });
+
+      const body = await (await get('/playlist/videos?playlist=2&page=1&perPage=1')).json();
+
+      expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith('PLccc');
+      expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: null });
+    });
+
+    it.each(['3', '-1', 'x', '1.5'])('GET /playlist/videos rejects playlist=%s', async (playlist) => {
+      const res = await get('/playlist/videos?playlist=' + playlist);
+
+      expect(res.status).toBe(400);
+      expect(h.deps.playlistCache.fetch).not.toHaveBeenCalled();
+    });
+
     it('GET /playlist/videos takes currentIndex from the supervisor', async () => {
       h.sup.value = playing({ playing: { index: 1 } });
 
       const body = await (await get('/playlist/videos?page=1&perPage=1')).json();
 
+      expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith('PLaaa');
       expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: 1 });
     });
   });

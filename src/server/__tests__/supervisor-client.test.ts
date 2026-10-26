@@ -126,6 +126,14 @@ describe('SupervisorClient.reload and shutdown', () => {
     expect(await client(f).reload()).toEqual({ ok: true, restartRequired: true });
   });
 
+  it('sends an empty reload body unless a start index is given', async () => {
+    const calls: RequestInit[] = [];
+    const f = (async (_url: string, init: RequestInit) => { calls.push(init); return jsonResponse({ applied: true }); }) as unknown as typeof fetch;
+    await client(f).reload();
+    await client(f).reload({ index: 3 });
+    expect(calls.map((c) => [c.method, c.body])).toEqual([['POST', '{}'], ['POST', '{"index":3}']]);
+  });
+
   it('returns the error from a rejected reload', async () => {
     const f = (async () => jsonResponse({ error: 'bad config' }, 400)) as typeof fetch;
     expect(await client(f).reload()).toEqual({ ok: false, error: 'bad config' });

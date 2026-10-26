@@ -152,10 +152,10 @@ export function createApiRouter(deps: ApiDependencies): Router {
   };
 
   /** Saves, takes the new config in and asks the supervisor to read it. */
-  async function saveAndReload(patch: Partial<AppConfig>) {
+  async function saveAndReload(patch: Partial<AppConfig>, reloadOpts?: { index?: number }) {
     const config = save(patch);
     deps.applyConfig(config);
-    const reload = await deps.client.reload();
+    const reload = await (reloadOpts ? deps.client.reload(reloadOpts) : deps.client.reload());
     return {
       config,
       restartRequired: reload.restartRequired === true,
@@ -376,10 +376,18 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/playlist/videos', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const perPage = Math.min(100, Math.max(1, Number(req.query.perPage) || 25));
-    // The supervisor plays the first playlist.
-    const playlist = deps.getConfig().playlists[0];
+    const playlists = deps.getConfig().playlists;
+    const raw = req.query.playlist ?? '0';
+    const which = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : -1;
+    if (which < 0 || which >= playlists.length) {
+      return res.status(400).json({ error: 'Invalid playlist index' });
+    }
     try {
-      const [metadata, sup] = await Promise.all([deps.playlistCache.fetch(playlist.id), deps.client.status()]);
+      // The supervisor plays the first playlist; any other is only browsed.
+      const [metadata, sup] = await Promise.all([
+        deps.playlistCache.fetch(playlists[which].id),
+        which === 0 ? deps.client.status() : null,
+      ]);
       const start = (page - 1) * perPage;
       const videos = metadata.videos.slice(start, start + perPage);
       res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: sup?.playing?.index ?? null });
@@ -390,14 +398,17 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   router.post('/playlist/switch', async (req, res) => {
-    const { playlistIndex } = req.body as { playlistIndex: unknown };
+    const { playlistIndex, videoIndex } = req.body as { playlistIndex: unknown; videoIndex?: unknown };
     const playlists = [...deps.getConfig().playlists];
     if (typeof playlistIndex !== 'number' || !Number.isInteger(playlistIndex) || playlistIndex < 0 || playlistIndex >= playlists.length) {
       return res.status(400).json({ error: 'Invalid playlist index' });
     }
+    if (videoIndex !== undefined && (typeof videoIndex !== 'number' || !Number.isInteger(videoIndex) || videoIndex < 0)) {
+      return res.status(400).json({ error: 'Invalid video index' });
+    }
     const [chosen] = playlists.splice(playlistIndex, 1);
     try {
-      const r = await saveAndReload({ playlists: [chosen, ...playlists] });
+      const r = await saveAndReload({ playlists: [chosen, ...playlists] }, videoIndex === undefined ? undefined : { index: videoIndex });
       res.json({ ok: true, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
     } catch (err) {
       logger.error({ err }, 'Failed to switch playlist');
