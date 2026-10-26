@@ -247,6 +247,7 @@
             <button type="button" id="btn-restart" class="btn btn-secondary">Restart video</button>
             <button type="button" id="btn-next" class="btn btn-secondary">Next</button>
           </div>
+          <div id="video-list-browsing" class="hint video-list-browsing hidden">This playlist is not playing. Press &#9654; on a video to switch to this playlist.</div>
           <table class="video-table">
             <thead><tr><th class="col-num">#</th><th>Title</th><th class="col-dur">Duration</th><th class="col-play"></th></tr></thead>
             <tbody id="video-list-body"></tbody>
@@ -341,7 +342,7 @@
             <div class="form-group">
               <label for="pb-silence">Silence (seconds)</label>
               <input type="number" id="pb-silence" min="5" step="1">
-              <div class="hint">How long the audio must stay silent before the video is retried. Minimum 5.</div>
+              <div class="hint">How long the audio must stay silent before it is noted on the timeline. Silence never interrupts the stream. Minimum 5.</div>
             </div>
           </div>
         </div>

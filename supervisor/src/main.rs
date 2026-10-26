@@ -155,7 +155,7 @@ fn protect_stdin() -> Result<String, String> {
 enum PlaylistAction {
     /// The first list: load it and resume from state.json.
     Load,
-    /// Replace the playing list and jump to its video 0.
+    /// Replace the playing list and jump to the video the reload asked for (0 by default).
     Switch,
     /// Superseded by a later reload, or the list already playing.
     Drop,
@@ -267,10 +267,12 @@ pub enum Purpose {
 }
 
 pub enum Msg {
-    Control { cmd: String, index: Option<i64>, reason: Option<String>, reply: Sender<Result<Value, String>> },
+    /// `id` names the jump's video; when the list has it, it wins over `index`.
+    Control { cmd: String, index: Option<i64>, id: Option<String>, reason: Option<String>, reply: Sender<Result<Value, String>> },
     Fault { kind: String, count: Option<u32>, reply: Sender<Result<Value, String>> },
     Shutdown,
-    Reload(Sender<Result<Value, String>>),
+    /// `index` and `id`: where a switch to a new playlist starts.
+    Reload { index: Option<usize>, id: Option<String>, reply: Sender<Result<Value, String>> },
     /// The playlist id it was fetched for, so a superseded fetch is dropped.
     Playlist(String, Result<Vec<Entry>, String>),
     /// `id` guards against a playlist switch while the call ran: indexes then mean other videos.
@@ -458,6 +460,8 @@ struct Ctl {
     /// The playlist id `videos` came from.
     playlist: String,
     playlist_wanted: bool,
+    /// Where a pending playlist switch starts, from POST /reload: (index, id).
+    switch_to: Option<(usize, Option<String>)>,
     logs: Logs,
     tx: Sender<Msg>,
     shared: Arc<Shared>,
@@ -532,6 +536,7 @@ impl Ctl {
             args,
             playlist: String::new(),
             playlist_wanted: true,
+            switch_to: None,
             key_problem: config::stream_ready(&settings).err().map(|(_, reason)| reason),
             waiting_for_key: config::stream_ready(&settings).is_err(),
             playlist_problem: None,
@@ -1344,13 +1349,6 @@ impl Ctl {
             }
         }
 
-        // "prev" lands on a video that playout already deleted: keep its URL resolved and past
-        // available_at, so the cut does not wait for yt-dlp plus the site's delay.
-        let prev = (view + self.n() - 1) % self.n();
-        if !self.videos[prev].on_disk && !self.fresh_url(prev) && !self.videos[prev].skipped {
-            self.request_resolve(prev, Purpose::Play);
-        }
-
         // Dispatch one job when the downloader is idle.
         if self.downloading.is_some() || self.sizing || Instant::now() < self.dl_after || self.breaker.open {
             return;
@@ -1405,15 +1403,16 @@ impl Ctl {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Control { cmd, index, reason, reply } => {
+            Msg::Control { cmd, index, id, reason, reply } => {
+                let index = id.and_then(|id| self.position(&id)).map(|i| i as i64).or(index);
                 let _ = reply.send(self.control(&cmd, index, reason));
             }
             Msg::Fault { kind, count, reply } => {
                 let _ = reply.send(self.fault(&kind, count));
             }
             Msg::Shutdown => self.shutdown(),
-            Msg::Reload(reply) => {
-                let _ = reply.send(self.reload());
+            Msg::Reload { index, id, reply } => {
+                let _ = reply.send(self.reload(index, id));
             }
             Msg::Playlist(id, result) => self.on_playlist(id, result),
             Msg::Resolved { index, id, purpose, result } => self.on_resolved(index, &id, purpose, result),
@@ -1559,9 +1558,15 @@ impl Ctl {
             (self.spare, self.spare_due) = (None, None);
             (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
             self.unavailable_streak.clear();
-            if let Err(e) = self.control("jump", Some(0), None) {
+            let start = self.switch_start().unwrap_or(0);
+            if let Err(e) = self.control("jump", Some(start as i64), None) {
                 self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
             }
+            return;
+        }
+        // A switch asked for before any list loaded names its own start; state.json is the old list's.
+        if let Some(start) = self.switch_start() {
+            self.set_target(start, 0.0, "coldstart", false);
             return;
         }
         let resume = std::fs::read_to_string(self.state_file()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
@@ -1577,13 +1582,25 @@ impl Ctl {
         }
     }
 
+    fn position(&self, id: &str) -> Option<usize> {
+        self.videos.iter().position(|v| v.entry.id == id)
+    }
+
+    /// Takes the pending switch's start in the loaded list: the id's position when the list has
+    /// it (Node's index can count videos this list leaves out), else the index clamped to the list.
+    fn switch_start(&mut self) -> Option<usize> {
+        let (index, id) = self.switch_to.take()?;
+        Some(id.and_then(|id| self.position(&id)).unwrap_or(index.min(self.n().saturating_sub(1))))
+    }
+
     fn state_file(&self) -> PathBuf {
         self.args.paths.data.join("state.json")
     }
 
     /// POST /reload. Live fields apply now; ingest, key and encoder wait for a restart, except
-    /// in needs-stream-key, where nothing runs yet and a working key starts the encoder.
-    fn reload(&mut self) -> Result<Value, String> {
+    /// in needs-stream-key, where nothing runs yet and a working key starts the encoder. `index` and
+    /// `id` say where a switch to a new playlist starts; with the same playlist they are ignored.
+    fn reload(&mut self, index: Option<usize>, id: Option<String>) -> Result<Value, String> {
         let mut new = read_settings(&self.args)?;
         self.logs.add_key(&new.stream_key);
         let ready = config::stream_ready(&new);
@@ -1604,6 +1621,7 @@ impl Ctl {
         if switch {
             // Fetch unless the new id is the list already playing (A, B, back to A before B lands).
             self.playlist_wanted = self.videos.is_empty() || running.playlist_id != self.playlist;
+            self.switch_to = Some((index.unwrap_or(0), id));
         }
         self.settings = running;
         let restart = !waiting && plan == config::Reload::Restart;
@@ -2166,6 +2184,18 @@ mod tests {
         ctl
     }
 
+    /// Keeping the previous video's URL fresh asked YouTube every 10 minutes for the whole of a
+    /// long video and tripped the bot check on the box; a "prev" now resolves when pressed.
+    #[test]
+    fn the_cache_never_resolves_the_previous_video_ahead_of_a_prev() {
+        let mut ctl = test_ctl("no-prev-resolve", &["a", "b", "c"]);
+        let prev = (ctl.view().0 + 2) % 3;
+
+        ctl.cache_work();
+
+        assert!(!ctl.resolving.contains(&(prev, false)), "resolved the previous video ahead of time");
+    }
+
     #[test]
     fn an_unavailable_video_is_skipped_at_once_without_opening_the_breaker() {
         let mut ctl = test_ctl("unavailable", &["a", "b", "c"]);
@@ -2236,6 +2266,120 @@ mod tests {
         assert!(t.index < ctl.n(), "target {} on a list of {}", t.index, ctl.n());
     }
 
+    /// A control loop playing PLa whose config.json now names `next`; the fetch of `next` has not landed.
+    fn reload_ctl(name: &str, next: &str) -> Ctl {
+        let mut ctl = test_ctl(name, &["a", "b"]);
+        (ctl.playlist, ctl.settings.playlist_id) = ("PLa".into(), "PLa".into());
+        std::fs::create_dir_all(ctl.args.config.parent().unwrap()).unwrap();
+        std::fs::write(&ctl.args.config, json!({"playlists": [{"id": next}], "supervisor": {}}).to_string()).unwrap();
+        ctl
+    }
+
+    fn entries(ids: &[&str]) -> Result<Vec<Entry>, String> {
+        Ok(ids.iter().map(|id| Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }).collect())
+    }
+
+    #[test]
+    fn a_reload_to_another_playlist_with_an_index_starts_at_that_video() {
+        let mut ctl = reload_ctl("reload-index", "PLb");
+
+        ctl.reload(Some(3), None).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s", "t"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((3, "control")));
+    }
+
+    #[test]
+    fn a_reload_index_past_the_end_of_the_new_playlist_clamps_to_its_last_video() {
+        let mut ctl = reload_ctl("reload-clamp", "PLb");
+
+        ctl.reload(Some(9), None).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2));
+    }
+
+    #[test]
+    fn a_reload_to_another_playlist_without_an_index_starts_at_video_0() {
+        let mut ctl = reload_ctl("reload-no-index", "PLb");
+
+        ctl.reload(None, None).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(0));
+    }
+
+    #[test]
+    fn a_reload_of_the_same_playlist_ignores_the_index() {
+        let mut ctl = reload_ctl("reload-same", "PLa");
+        ctl.set_target(1, 4.0, "coldstart", false);
+
+        ctl.reload(Some(0), Some("b".into())).unwrap();
+
+        assert!(!ctl.playlist_wanted, "the same playlist was fetched again");
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((1, "coldstart")));
+        assert_eq!(ctl.control_seq, 0, "the index jumped");
+    }
+
+    #[test]
+    fn a_reload_id_found_in_the_new_playlist_wins_over_the_index() {
+        let mut ctl = reload_ctl("reload-id", "PLb");
+
+        // Node's row 3 counted a private video the supervisor's list leaves out
+        ctl.reload(Some(3), Some("s".into())).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "s", "t"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2));
+    }
+
+    #[test]
+    fn a_reload_id_missing_from_the_new_playlist_falls_back_to_the_index() {
+        let mut ctl = reload_ctl("reload-unknown-id", "PLb");
+
+        ctl.reload(Some(1), Some("gone".into())).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(1));
+    }
+
+    #[test]
+    fn a_switch_before_the_first_playlist_loads_starts_at_its_video_not_the_resume_point() {
+        let mut ctl = reload_ctl("reload-first", "PLb");
+        (ctl.videos, ctl.playlist) = (vec![], String::new());
+        std::fs::write(ctl.state_file(), json!({"id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        ctl.reload(Some(3), None).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s", "t"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos)), Some((3, 0.0)));
+    }
+
+    /// Sends a control through the loop's message handler, as the HTTP API does.
+    fn send_control(ctl: &mut Ctl, cmd: &str, index: Option<i64>, id: Option<&str>) -> Result<Value, String> {
+        let (reply, rx) = channel();
+        ctl.handle(Msg::Control { cmd: cmd.into(), index, id: id.map(String::from), reason: None, reply });
+        rx.recv().unwrap()
+    }
+
+    #[test]
+    fn a_jump_by_id_lands_on_that_video_when_the_index_counts_a_video_the_list_left_out() {
+        // Node's list had a private video at 1, so "c" is its row 3; here "c" is at 2
+        let mut ctl = test_ctl("jump-id", &["a", "b", "c"]);
+
+        let reply = send_control(&mut ctl, "jump", Some(3), Some("c")).unwrap();
+
+        assert_eq!((reply["targetIndex"].clone(), reply["targetId"].clone()), (json!(2), json!("c")));
+    }
+
+    #[test]
+    fn a_jump_with_an_unknown_id_falls_back_to_the_index() {
+        let mut ctl = test_ctl("jump-unknown-id", &["a", "b", "c"]);
+
+        assert_eq!(send_control(&mut ctl, "jump", Some(1), Some("gone")).unwrap()["targetIndex"], json!(1));
+        assert!(send_control(&mut ctl, "jump", Some(5), Some("gone")).is_err(), "an out-of-range index still errors");
+        assert_eq!(send_control(&mut ctl, "jump", Some(0), None).unwrap()["targetIndex"], json!(0));
+    }
+
     #[test]
     fn an_encoder_restart_keeps_a_pending_control_target() {
         let mut ctl = test_ctl("keep-control", &["a", "b", "c"]);
@@ -2286,26 +2430,15 @@ mod tests {
     }
 
     #[test]
-    fn a_silence_still_there_after_its_retry_is_reported_as_content_and_plays_on() {
+    fn a_silence_is_reported_as_content_and_never_cuts_the_stream() {
         let mut ctl = watchdog_ctl("wd-silence", false, 40.0);
         ctl.shared.q.lock().unwrap().written_pts = Some(BASE + ticks(50.0));
 
         ctl.watchdog_work();
 
-        let t = ctl.target.clone().expect("no retry");
-        assert_eq!((t.index, t.reason), (1, "watchdog"));
-        // the retry's feeder starts (no ffmpeg in the test root, so the spawn fails after the offset is taken)
-        ctl.start_feeder(1, Source::File, t.pos, "watchdog", false);
-        let aired = secs(BASE + ticks(50.0) + FRAME - BASE);
-        assert_eq!(ctl.watch.retried, Some((1, aired)), "retried is not in encoder media seconds");
-        retry_aired(&mut ctl);
-        ctl.enc.media = aired + 5.0 + 30.0 + 1.0;
-
-        ctl.watchdog_work();
-
         assert_eq!((ctl.watch.last["outcome"].as_str(), ctl.watch.last["verdict"].as_str()), (Some("content"), Some("silence")), "{}", ctl.watch.last);
         assert_eq!(events(&ctl).last(), Some(&("info".into(), "watchdog-silence".into())));
-        assert!(ctl.target.is_none(), "content changed the target");
+        assert!(ctl.target.is_none(), "a silence changed the target");
         assert!(!ctl.videos[1].skipped);
     }
 

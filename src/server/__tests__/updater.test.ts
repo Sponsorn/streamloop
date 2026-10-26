@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, type GithubRelease,
 } from '../updater.js';
@@ -274,14 +275,18 @@ describe('stageUpdate with a flat ZIP', () => {
   });
 });
 
+// One patch above the installed version, so the release below is always an update.
+const [major, minor, patch] = (JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version: string }).version.split('.').map(Number);
+const NEXT = `${major}.${minor}.${patch + 1}`;
+
 describe('Updater node notice', () => {
-  const zip = 'streamloop-v3.0.1-update.zip';
-  const assets = [asset(zip), asset(`${zip}.sha256`), asset('streamloop-v3.0.1.zip'), asset('node-version.txt')];
+  const zip = `streamloop-v${NEXT}-update.zip`;
+  const assets = [asset(zip), asset(`${zip}.sha256`), asset(`streamloop-v${NEXT}.zip`), asset('node-version.txt')];
 
   function stubFetch(nodeVersionText: string | null) {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.includes('api.github.com')) {
-        return new Response(JSON.stringify([{ tag_name: 'v3.0.1', draft: false, prerelease: true, assets }]));
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets }]));
       }
       if (url.endsWith('node-version.txt') && nodeVersionText !== null) return new Response(nodeVersionText);
       return new Response('', { status: 404 });
@@ -321,8 +326,8 @@ describe('Updater node notice', () => {
 });
 
 describe('Updater fetch timeouts', () => {
-  const zip = 'streamloop-v3.0.1-update.zip';
-  const assets = [asset(zip), asset(`${zip}.sha256`), asset('streamloop-v3.0.1.zip'), asset('node-version.txt')];
+  const zip = `streamloop-v${NEXT}-update.zip`;
+  const assets = [asset(zip), asset(`${zip}.sha256`), asset(`streamloop-v${NEXT}.zip`), asset('node-version.txt')];
 
   // Answers only when aborted, like a stalled CDN.
   function hang(init?: RequestInit): Promise<Response> {
@@ -349,7 +354,7 @@ describe('Updater fetch timeouts', () => {
     // Arrange
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes('api.github.com')) {
-        return new Response(JSON.stringify([{ tag_name: 'v3.0.1', draft: false, prerelease: true, assets }]));
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets }]));
       }
       return hang(init);
     }));
@@ -381,8 +386,8 @@ describe('Updater checksum', () => {
     const download = vi.fn();
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.includes('api.github.com')) {
-        return new Response(JSON.stringify([{ tag_name: 'v3.0.1', draft: false, prerelease: true, assets: [
-          asset('streamloop-v3.0.1-update.zip'), asset('streamloop-v3.0.1.zip'), asset('streamloop-v3.0.1.zip.sha256'),
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: [
+          asset(`streamloop-v${NEXT}-update.zip`), asset(`streamloop-v${NEXT}.zip`), asset(`streamloop-v${NEXT}.zip.sha256`),
         ] }]));
       }
       download(url);

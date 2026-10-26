@@ -551,21 +551,29 @@ function initMonitorControls() {
     runAction(e.currentTarget, () => post('/api/stream/stop'));
   });
 
+  // Choosing a playlist only browses it; nothing changes on stream until a video's play button.
   $('#playlist-select').addEventListener('change', (e) => {
-    const playlistIndex = Number(e.target.value);
-    post('/api/playlist/switch', { playlistIndex })
-      .then((r) => {
-        if (!isBenignReloadError(r)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
-        settingsLoaded = false;
-        loadPlaylistSelector();
-        loadVideoList(1);
-      })
-      .catch((err) => showToast(err.message));
+    browsedPlaylist = Number(e.target.value);
+    loadVideoList(1);
   });
 
   $('#video-list-body').addEventListener('click', (e) => {
     const btn = e.target.closest('.btn-play');
-    if (btn) runAction(btn, () => post('/api/player/jump', { index: Number(btn.dataset.index) }));
+    if (!btn) return;
+    const index = Number(btn.dataset.index);
+    // The id lets the supervisor find the video even if its list numbers it differently.
+    const id = btn.dataset.id || undefined;
+    if (browsedPlaylist === 0) {
+      runAction(btn, () => post('/api/player/jump', { index, id }));
+      return;
+    }
+    runAction(btn, async () => {
+      const r = await post('/api/playlist/switch', { playlistIndex: browsedPlaylist, videoIndex: index, videoId: id });
+      if (!isBenignReloadError(r)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
+      settingsLoaded = false;
+      loadPlaylistSelector();
+      loadVideoList(Math.floor(index / VIDEO_LIST_PER_PAGE) + 1);
+    });
   });
 
   $('#video-list-pagination').addEventListener('click', (e) => {
@@ -579,8 +587,12 @@ function initMonitorControls() {
 
 // Monitor: playlist and video list
 
+/** Index into config.playlists of the list shown below the dropdown; 0 is the one playing. */
+let browsedPlaylist = 0;
+
 async function loadPlaylistSelector() {
   const select = $('#playlist-select');
+  browsedPlaylist = 0;
   try {
     const cfg = await api('/api/config');
     select.innerHTML = '';
@@ -600,13 +612,17 @@ async function loadPlaylistSelector() {
 let lastHighlightedIndex = -1;
 
 async function loadVideoList(page) {
+  const which = browsedPlaylist;
   const status = $('#video-list-status');
   status.textContent = 'Loading playlist...';
   status.classList.remove('hidden');
+  $('#video-list-browsing').classList.toggle('hidden', which === 0);
   try {
-    const data = await api('/api/playlist/videos?page=' + page + '&perPage=' + VIDEO_LIST_PER_PAGE);
+    const data = await api('/api/playlist/videos?playlist=' + which + '&page=' + page + '&perPage=' + VIDEO_LIST_PER_PAGE);
+    if (which !== browsedPlaylist) return; // the dropdown moved on while this loaded
     renderVideoList(data);
   } catch (err) {
+    if (which !== browsedPlaylist) return;
     $('#video-list-body').innerHTML = '';
     status.textContent = 'Could not load the playlist: ' + err.message;
   }
@@ -627,7 +643,7 @@ function renderVideoList(data) {
     tr.innerHTML = '<td>' + (v.index + 1) + '</td>' +
       '<td>' + escapeHtml(v.title || 'Untitled') + '</td>' +
       '<td>' + (v.duration ? formatTime(v.duration).replace(/^0:/, '') : '-') + '</td>' +
-      '<td><button type="button" class="btn btn-secondary btn-play" data-index="' + v.index + '" aria-label="Play video ' + (v.index + 1) + '">&#9654;</button></td>';
+      '<td><button type="button" class="btn btn-secondary btn-play" data-index="' + v.index + '" data-id="' + escapeHtml(v.id || '') + '" aria-label="Play video ' + (v.index + 1) + '">&#9654;</button></td>';
     tbody.appendChild(tr);
   }
   lastHighlightedIndex = data.currentIndex ?? -1;
@@ -648,7 +664,8 @@ function renderVideoList(data) {
 }
 
 function updateVideoListHighlight(currentIndex) {
-  if (currentIndex === lastHighlightedIndex) return;
+  // The playing index means nothing in a browsed playlist.
+  if (browsedPlaylist !== 0 || currentIndex === lastHighlightedIndex) return;
   lastHighlightedIndex = currentIndex;
   $$('#video-list-body tr').forEach(tr => {
     const btn = tr.querySelector('.btn-play');

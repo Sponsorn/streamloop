@@ -140,6 +140,14 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function isVideoIndex(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 1_000_000;
+}
+
+function isVideoId(v: unknown): v is string {
+  return typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v);
+}
+
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
   const save = deps.saveConfig ?? ((patch: Partial<AppConfig>) => saveConfigFile(patch));
@@ -152,10 +160,10 @@ export function createApiRouter(deps: ApiDependencies): Router {
   };
 
   /** Saves, takes the new config in and asks the supervisor to read it. */
-  async function saveAndReload(patch: Partial<AppConfig>) {
+  async function saveAndReload(patch: Partial<AppConfig>, reloadOpts?: { index?: number; id?: string }) {
     const config = save(patch);
     deps.applyConfig(config);
-    const reload = await deps.client.reload();
+    const reload = await (reloadOpts ? deps.client.reload(reloadOpts) : deps.client.reload());
     return {
       config,
       restartRequired: reload.restartRequired === true,
@@ -376,10 +384,18 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/playlist/videos', async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const perPage = Math.min(100, Math.max(1, Number(req.query.perPage) || 25));
-    // The supervisor plays the first playlist.
-    const playlist = deps.getConfig().playlists[0];
+    const playlists = deps.getConfig().playlists;
+    const raw = req.query.playlist ?? '0';
+    const which = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : -1;
+    if (which < 0 || which >= playlists.length) {
+      return res.status(400).json({ error: 'Invalid playlist index' });
+    }
     try {
-      const [metadata, sup] = await Promise.all([deps.playlistCache.fetch(playlist.id), deps.client.status()]);
+      // The supervisor plays the first playlist; any other is only browsed.
+      const [metadata, sup] = await Promise.all([
+        deps.playlistCache.fetch(playlists[which].id),
+        which === 0 ? deps.client.status() : null,
+      ]);
       const start = (page - 1) * perPage;
       const videos = metadata.videos.slice(start, start + perPage);
       res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: sup?.playing?.index ?? null });
@@ -390,14 +406,21 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   router.post('/playlist/switch', async (req, res) => {
-    const { playlistIndex } = req.body as { playlistIndex: unknown };
+    const { playlistIndex, videoIndex, videoId } = req.body as { playlistIndex: unknown; videoIndex?: unknown; videoId?: unknown };
     const playlists = [...deps.getConfig().playlists];
     if (typeof playlistIndex !== 'number' || !Number.isInteger(playlistIndex) || playlistIndex < 0 || playlistIndex >= playlists.length) {
       return res.status(400).json({ error: 'Invalid playlist index' });
     }
+    if (videoIndex !== undefined && !isVideoIndex(videoIndex)) {
+      return res.status(400).json({ error: 'Invalid video index' });
+    }
+    if (videoId !== undefined && !isVideoId(videoId)) {
+      return res.status(400).json({ error: 'Invalid video id' });
+    }
     const [chosen] = playlists.splice(playlistIndex, 1);
     try {
-      const r = await saveAndReload({ playlists: [chosen, ...playlists] });
+      const start = videoIndex === undefined && videoId === undefined ? undefined : { index: videoIndex, id: videoId };
+      const r = await saveAndReload({ playlists: [chosen, ...playlists] }, start);
       res.json({ ok: true, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
     } catch (err) {
       logger.error({ err }, 'Failed to switch playlist');
@@ -407,14 +430,14 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   // --- Player control endpoints ---
 
-  async function control(res: Response, cmd: 'next' | 'prev' | 'restart' | 'jump', index?: number) {
+  async function control(res: Response, cmd: 'next' | 'prev' | 'restart' | 'jump', index?: number, id?: string) {
     if (deps.launcher.isStoppedByUser()) {
       return res.status(503).json({ error: 'The stream is stopped. Start it first.' });
     }
     if (deps.launcher.state() !== 'running') {
       return res.status(503).json({ error: 'The supervisor is not running.' });
     }
-    const r = await deps.client.control(cmd, index);
+    const r = await deps.client.control(cmd, index, undefined, id);
     if (!r.ok) return res.status(502).json({ error: `The supervisor refused: ${r.error ?? 'unknown error'}` });
     res.json({ ok: true });
   }
@@ -423,11 +446,14 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.post('/player/prev', (_req, res) => control(res, 'prev'));
   router.post('/player/restart', (_req, res) => control(res, 'restart'));
   router.post('/player/jump', (req, res) => {
-    const { index } = req.body as { index: unknown };
-    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+    const { index, id } = req.body as { index: unknown; id?: unknown };
+    if (!isVideoIndex(index)) {
       return res.status(400).json({ error: 'Invalid video index' });
     }
-    return control(res, 'jump', index);
+    if (id !== undefined && !isVideoId(id)) {
+      return res.status(400).json({ error: 'Invalid video id' });
+    }
+    return control(res, 'jump', index, id);
   });
 
   // --- Stream endpoints ---
