@@ -1349,13 +1349,6 @@ impl Ctl {
             }
         }
 
-        // "prev" lands on a video that playout already deleted: keep its URL resolved and past
-        // available_at, so the cut does not wait for yt-dlp plus the site's delay.
-        let prev = (view + self.n() - 1) % self.n();
-        if !self.videos[prev].on_disk && !self.fresh_url(prev) && !self.videos[prev].skipped {
-            self.request_resolve(prev, Purpose::Play);
-        }
-
         // Dispatch one job when the downloader is idle.
         if self.downloading.is_some() || self.sizing || Instant::now() < self.dl_after || self.breaker.open {
             return;
@@ -2189,6 +2182,18 @@ mod tests {
         ctl.playlist_wanted = false;
         ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
         ctl
+    }
+
+    /// Keeping the previous video's URL fresh asked YouTube every 10 minutes for the whole of a
+    /// long video and tripped the bot check on the box; a "prev" now resolves when pressed.
+    #[test]
+    fn the_cache_never_resolves_the_previous_video_ahead_of_a_prev() {
+        let mut ctl = test_ctl("no-prev-resolve", &["a", "b", "c"]);
+        let prev = (ctl.view().0 + 2) % 3;
+
+        ctl.cache_work();
+
+        assert!(!ctl.resolving.contains(&(prev, false)), "resolved the previous video ahead of time");
     }
 
     #[test]
