@@ -122,6 +122,18 @@ export function streamState(
 
 const SUPERVISOR_EXE_MISSING = 'The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP.';
 
+/** The supervisor refuses a config.json with a bad cookie value, so a save must not write one.
+ *  Only the save path checks: a hand-edited file must not stop Node from starting. */
+export function cookieSettingError(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') return '"yt-dlp cookies from browser" must be text.';
+  const v = value.trim();
+  if ([...v].length > 200) return '"yt-dlp cookies from browser" is longer than 200 characters.';
+  // No control characters: the value goes to yt-dlp as one argument.
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(v)) return '"yt-dlp cookies from browser" contains a control character.';
+  return null;
+}
+
 function maskConfig(config: AppConfig): Record<string, unknown> {
   const { streamKeyProtected, ...supervisor } = config.supervisor;
   return {
@@ -242,6 +254,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
           supervisor.preferredEncoder = supervisor.encoder;
         }
       }
+      const cookieError = cookieSettingError(body.ytdlCookiesFromBrowser);
+      if (cookieError) return res.status(400).json({ error: cookieError });
       const r = await saveAndReload(body as Partial<AppConfig>);
       logger.info({ restartRequired: r.restartRequired, reloadError: r.reloadError }, 'Config updated via API');
       res.json({ ok: true, config: maskConfig(r.config), restartRequired: r.restartRequired, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });

@@ -285,6 +285,22 @@ describe('describe details', () => {
 describe('AlertGate', () => {
   const kinds = (g: AlertGate, es: SupervisorEvent[]) => es.map((e) => g.describe(e).discord?.kind);
 
+  it('alerts a refused config once per streak, again after a supervisor that started', () => {
+    const gate = new AlertGate();
+    const refused = ev('config-refused', { reason: 'config.json: ytdlCookiesFromBrowser is longer than 200 characters' }, 'critical');
+
+    const sent = kinds(gate, [refused, refused, refused, ev('start'), refused]);
+
+    expect(sent).toEqual(['critical', undefined, undefined, undefined, 'critical']);
+    expect(gate.describe(refused).message).toBe('The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters');
+  });
+
+  it('notes cookies yt-dlp went on without, as a warning off Discord', () => {
+    const d = describeEvent(ev('cookies-unreadable', { browser: 'chrome', reason: 'Failed to decrypt with DPAPI' }, 'warn'));
+    expect(d.message).toBe('yt-dlp could not read the chrome cookies and went on without them: Failed to decrypt with DPAPI');
+    expect(d.discord).toBeUndefined();
+  });
+
   it('alerts once per outage: one drop, one critical, one restart, every cycle on the timeline', () => {
     const gate = new AlertGate();
     const out: Array<ReturnType<AlertGate['describe']>> = [];

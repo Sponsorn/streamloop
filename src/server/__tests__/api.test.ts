@@ -393,6 +393,19 @@ WshShell.Run """${bat}""", 1, False`;
   });
 
   describe('config', () => {
+    it.each([
+      ['longer than 200 characters', 'x'.repeat(201)],
+      ['a control character', 'fire\nfox'],
+    ])('POST /config refuses a cookie browser value with %s and saves nothing', async (why, value) => {
+      const res = await post('/config', { ytdlCookiesFromBrowser: value });
+      const body = await res.json();
+
+      expect(res.status).toBe(400);
+      expect(body.error).toContain(why);
+      expect(h.save).not.toHaveBeenCalled();
+      expect(h.client.reload).not.toHaveBeenCalled();
+    });
+
     it('GET /config reports whether a key is set and never the blob', async () => {
       const text = await (await get('/config')).text();
       const body = JSON.parse(text);

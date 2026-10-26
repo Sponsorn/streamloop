@@ -128,6 +128,26 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Startup and POST /reload read the config the same way.
+/// Exit code for a config.json the supervisor will not run with; 2 is only ever "port taken".
+const CONFIG_REFUSED_EXIT: i32 = 3;
+
+/// Bind before anything else: a duplicate launch must exit 2 before it reads config.json, prunes
+/// logs, touches the cache or starts a thread or child, all of which the live instance owns.
+/// A refused config.json is a critical `config-refused` event (Node tails it) and exit 3.
+fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Snapshot) -> Result<Settings, i32> {
+    if let Err(e) = api::serve(port, args.debug_faults, tx, snapshot) {
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        return Err(2);
+    }
+    read_settings(args).map_err(|e| {
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        let logs = Logs::new(args.paths.data.join("logs"), "");
+        let _ = std::fs::create_dir_all(&logs.dir);
+        logs.event("critical", "config-refused", json!({"reason": e}));
+        CONFIG_REFUSED_EXIT
+    })
+}
+
 fn read_settings(args: &Args) -> Result<Settings, String> {
     let json = std::fs::read_to_string(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
     // --target brings its own key; the protected one is not needed.
@@ -527,6 +547,10 @@ struct Ctl {
     cookie_problem: Option<String>,
     /// No yt-dlp call before this, after a cookie failure.
     cookie_after: Instant,
+    /// yt-dlp went on without the cookies, warned once per streak.
+    cookies_skipped: bool,
+    /// Files of videos a switch dropped that a feeder was still reading; removed by a later pass.
+    strays: Vec<PathBuf>,
 }
 
 const STALL: Duration = Duration::from_secs(10);
@@ -607,6 +631,8 @@ impl Ctl {
             from_saved: false,
             cookie_problem: None,
             cookie_after: now,
+            cookies_skipped: false,
+            strays: vec![],
         }
     }
 
@@ -928,7 +954,7 @@ impl Ctl {
             // The browser's cookie store failed, not YouTube: the breaker stays where it is.
             self.breaker.probing &= !probe;
             self.cookie_after = Instant::now() + COOKIE_RETRY;
-            let browser = self.settings.cookies_from_browser.split([':', '+']).next().unwrap_or("").to_string();
+            let browser = self.cookie_browser();
             let short: String = reason.trim().trim_start_matches("ERROR:").trim_start_matches("yt-dlp.exe: error:").trim().chars().take(200).collect();
             if self.cookie_problem.is_none() {
                 self.logs.event("critical", "cookies-unreadable", json!({"browser": browser, "reason": short}));
@@ -956,6 +982,11 @@ impl Ctl {
             rules::BreakerChange::Closed => self.logs.event("info", "youtube-breaker-closed", json!({})),
             rules::BreakerChange::None => {}
         }
+    }
+
+    /// The browser part of the cookie setting, without a profile path or keyring.
+    fn cookie_browser(&self) -> String {
+        self.settings.cookies_from_browser.split([':', '+']).next().unwrap_or("").to_string()
     }
 
     fn breaker_retry_iso(&self) -> Option<String> {
@@ -1104,6 +1135,13 @@ impl Ctl {
         if self.deadline.is_some_and(|d| now >= d) && !self.stopping {
             self.logs.event("info", "deadline", json!({"hours": self.args.dev.hours}));
             self.shutdown();
+        }
+        for note in self.yt.take_cookie_notes() {
+            if let (Some(reason), false) = (&note, self.cookies_skipped) {
+                let browser = self.cookie_browser();
+                self.logs.event("warn", "cookies-unreadable", json!({"browser": browser, "reason": reason, "usedCookies": false}));
+            }
+            self.cookies_skipped = note.is_some();
         }
         // The playlist fetch is a YouTube call too: same spacing, never past an open breaker.
         // With no list yet, the fetch is also the open breaker's probe.
@@ -1343,6 +1381,8 @@ impl Ctl {
         if self.videos.is_empty() || self.stopping {
             return;
         }
+        let reading = self.live.as_ref().filter(|f| f.source == Source::File).map(|f| self.file_of(f.index));
+        self.strays.retain(|p| Some(p) == reading.as_ref() || (std::fs::remove_file(p).is_err() && p.exists()));
         let win = self.window();
         let view = self.view().0;
         let fed = self.live.as_ref().filter(|f| !f.filler).map(|f| f.index);
@@ -1567,20 +1607,21 @@ impl Ctl {
                 return;
             }
             let f = playlist_failure(first, self.playlist_problem.is_some());
-            if let Some(level) = f.event {
+            // A bot check can last hours: the last list of this playlist lets a cached video play on.
+            let saved = f.refetch.then(|| std::fs::read_to_string(self.logs.dir.join("playlist.json")).ok().and_then(|t| saved_playlist(&t, &id))).flatten();
+            match (f.event, &saved) {
+                (_, Some(saved)) => self.logs.event("warn", "playlist-from-saved", json!({"playlistId": id, "count": saved.len(), "reason": reason})),
                 // a switch keeps playing the old list
-                self.logs.event(level, "playlist-failed", json!({"playlistId": id, "reason": reason, "playing": self.playlist, "refetch": f.refetch}));
+                (Some(level), None) => self.logs.event(level, "playlist-failed", json!({"playlistId": id, "reason": reason, "playing": self.playlist, "refetch": f.refetch})),
+                (None, None) => {}
             }
             if f.refetch {
                 self.playlist_problem = Some(reason);
                 self.playlist_wanted = true;
-                // A bot check can last hours: the last list of this playlist lets a cached video play on.
-                let saved = std::fs::read_to_string(self.logs.dir.join("playlist.json")).ok().and_then(|t| saved_playlist(&t, &id));
-                if let Some(saved) = saved {
-                    self.logs.event("warn", "playlist-from-saved", json!({"playlistId": id, "count": saved.len()}));
-                    self.from_saved = true;
-                    self.load_list(id, saved, true, None);
-                }
+            }
+            if let Some(saved) = saved {
+                self.load_list(id, saved, true, None);
+                self.from_saved = true;
             }
             return;
         }
@@ -1599,7 +1640,7 @@ impl Ctl {
             }
             // The list changed meanwhile: go on with the video on air, from where it is, in the new list.
             let (i, pos, _) = self.view();
-            let at = (self.id(i), pos);
+            let at = (self.id(i), i, pos);
             self.load_list(id, entries, false, Some(at));
             return;
         }
@@ -1607,8 +1648,10 @@ impl Ctl {
     }
 
     /// Put `entries` on as the list. `first` resumes from state.json; otherwise it is a switch that
-    /// starts at the reload's video, or at `at` (id, position) when the new list has that id.
-    fn load_list(&mut self, id: String, entries: Vec<Entry>, first: bool, at: Option<(String, f64)>) {
+    /// starts at the reload's video, or goes on from `at` (id, index, position): at that id when the
+    /// new list has it, else at the same index clamped to the list.
+    fn load_list(&mut self, id: String, entries: Vec<Entry>, first: bool, at: Option<(String, usize, f64)>) {
+        self.from_saved = false;
         let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
         let old = std::mem::replace(&mut self.videos, new);
         self.playlist = id.clone();
@@ -1624,9 +1667,12 @@ impl Ctl {
         }
         if !first {
             // A switch: indexes now mean other videos. Keep files the new list has, drop the rest.
-            for v in old.iter().filter(|v| v.on_disk) {
+            let reading = self.live.as_ref().filter(|f| f.source == Source::File && !f.filler).map(|f| f.index);
+            for (i, v) in old.iter().enumerate().filter(|(_, v)| v.on_disk) {
                 match self.videos.iter_mut().find(|n| n.entry.id == v.entry.id) {
                     Some(n) => (n.on_disk, n.disk_bytes, n.bytes) = (true, v.disk_bytes, Some(v.disk_bytes)),
+                    // A feeder still reads it: the next cache pass removes it.
+                    None if reading == Some(i) => self.strays.push(self.cache.join(format!("{}.mp4", v.entry.id))),
                     None => {
                         let _ = std::fs::remove_file(self.cache.join(format!("{}.mp4", v.entry.id)));
                     }
@@ -1639,8 +1685,8 @@ impl Ctl {
             (self.spare, self.spare_due) = (None, None);
             (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
             self.unavailable_streak.clear();
-            let (start, pos) = match at.and_then(|(vid, pos)| Some((self.position(&vid)?, pos))) {
-                Some(found) => found,
+            let (start, pos) = match at {
+                Some((vid, i, pos)) => self.position(&vid).map_or((i.min(self.n().saturating_sub(1)), 0.0), |j| (j, pos)),
                 None => (self.switch_start().unwrap_or(0), 0.0),
             };
             if let Err(e) = self.control_at("jump", Some(start as i64), None, pos) {
@@ -1836,6 +1882,13 @@ impl Ctl {
         }
         let ok = code == Some(0);
         if rules::ended_early(ok, fed, self.duration(index)) {
+            if source == Source::File {
+                // A power cut can leave a zero-filled file under the finished name: the retry plays the URL.
+                let file = self.file_of(index);
+                let _ = std::fs::remove_file(&file);
+                (self.videos[index].on_disk, self.videos[index].disk_bytes) = (false, 0);
+                self.logs.event("warn", "cache-file-dropped", json!({"index": index, "id": self.id(index), "removed": !file.exists()}));
+            }
             self.fail(index, fed, if ok { "early-eof" } else { "exit" }, json!({"code": code, "frames": frames, "fed": fed, "duration": self.duration(index), "source": source.name()}));
         } else {
             self.consecutive_skips = 0;
@@ -2216,25 +2269,13 @@ fn main() {
         });
         std::process::exit(code);
     }
-    let started = parse_args(&argv).and_then(|a| {
-        let s = read_settings(&a)?;
-        Ok((a, s))
+    let args = parse_args(&argv).unwrap_or_else(|e| {
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        std::process::exit(CONFIG_REFUSED_EXIT);
     });
-    let (args, settings) = match started {
-        Ok(v) => v,
-        Err(e) => {
-            logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
-            std::process::exit(2);
-        }
-    };
-    // Bind before anything else: a duplicate launch must exit 2 before it prunes logs, wipes the
-    // cache or starts a thread or child, all of which the live instance owns.
     let (tx, rx) = channel::<Msg>();
     let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
-    if let Err(e) = api::serve(PORT, args.debug_faults, tx.clone(), snapshot.clone()) {
-        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
-        std::process::exit(2);
-    }
+    let settings = bind_then_settings(&args, PORT, tx.clone(), snapshot.clone()).unwrap_or_else(|code| std::process::exit(code));
     if let Err(e) = procs::enter_job() {
         logs::echo(&mut std::io::stderr().lock(), &format!("warning: {e}; children will not die with the supervisor"));
     }
@@ -3047,6 +3088,141 @@ mod tests {
 
         assert_eq!(*ctl.yt.cookies.lock().unwrap(), "firefox");
         assert_eq!(r["restartRequired"], false);
+    }
+
+    /// Args for a root in a fresh temp folder whose config.json is `config`.
+    fn startup_args(name: &str, config: &Value) -> Args {
+        let dir = std::env::temp_dir().join(format!("sl-startup-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = dir.to_string_lossy().into_owned();
+        let args = parse_args(&["--root".into(), d.clone(), "--data".into(), d]).unwrap();
+        std::fs::create_dir_all(args.config.parent().unwrap()).unwrap();
+        std::fs::write(&args.config, config.to_string()).unwrap();
+        args
+    }
+
+    fn refused_events(args: &Args) -> Vec<Value> {
+        let dir = args.paths.data.join("logs");
+        let text: String = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("events-")).map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
+        text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|v| v["kind"] == "config-refused").collect()
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
+    #[test]
+    fn a_refused_config_is_logged_and_exits_3_never_2() {
+        let args = startup_args("refused", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "x".repeat(201)}));
+        let (tx, _rx) = channel();
+
+        let r = bind_then_settings(&args, free_port(), tx, Arc::default());
+
+        assert_eq!(r.err(), Some(CONFIG_REFUSED_EXIT));
+        assert_eq!(CONFIG_REFUSED_EXIT, 3);
+        let ev = refused_events(&args);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["level"], "critical");
+        assert!(ev[0]["reason"].as_str().unwrap().contains("ytdlCookiesFromBrowser"), "{}", ev[0]);
+    }
+
+    #[test]
+    fn a_taken_port_exits_2_even_with_a_bad_config() {
+        let args = startup_args("taken", &json!({"playlists": []}));
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (tx, _rx) = channel();
+
+        let r = bind_then_settings(&args, held.local_addr().unwrap().port(), tx, Arc::default());
+
+        assert_eq!(r.err(), Some(2));
+        assert!(refused_events(&args).is_empty(), "a duplicate launch wrote the live one's logs");
+    }
+
+    #[test]
+    fn a_good_config_binds_and_loads() {
+        let args = startup_args("good", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+        let (tx, _rx) = channel();
+
+        let s = bind_then_settings(&args, free_port(), tx, Arc::default()).unwrap();
+
+        assert_eq!(s.playlist_id, "P");
+    }
+
+    #[test]
+    fn cookies_yt_dlp_went_on_without_are_a_warning_once_per_streak() {
+        let mut ctl = test_ctl("cookies-skipped", &["a"]);
+        ctl.settings.cookies_from_browser = "chrome".into();
+        let dpapi = "Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info";
+
+        ctl.yt.note_cookies(Some(dpapi.into()));
+        ctl.yt.note_cookies(Some(dpapi.into()));
+        ctl.tick();
+        ctl.yt.note_cookies(None);
+        ctl.yt.note_cookies(Some(dpapi.into()));
+        ctl.tick();
+
+        let ev = event_lines(&ctl, "cookies-unreadable");
+        assert_eq!(ev.len(), 2, "{ev:?}");
+        assert!(ev.iter().all(|e| e["level"] == "warn" && e["browser"] == "chrome"), "{ev:?}");
+        assert!(ev[0]["reason"].as_str().unwrap().starts_with("Failed to decrypt with DPAPI"), "{}", ev[0]);
+    }
+
+    #[test]
+    fn a_file_feeder_that_fails_drops_the_cached_file_and_retries_from_the_url() {
+        let mut ctl = test_ctl("bad-file", &["a", "b"]);
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("b.mp4"), [0u8; 64]).unwrap();
+        (ctl.videos[1].on_disk, ctl.videos[1].disk_bytes) = (true, 64);
+        ctl.feeder_seq = 7;
+        ctl.live = Some(Feeder { seq: 7, child: Arc::new(Mutex::new(exited_child())), index: 1, source: Source::File, start_pos: 30.0, offset: BASE, started: Instant::now(), filler: false, expire: None });
+
+        ctl.on_feeder_exit(7, Some(1), 0);
+
+        assert!(!ctl.videos[1].on_disk && ctl.videos[1].disk_bytes == 0);
+        assert!(!ctl.cache.join("b.mp4").exists(), "the broken file is still there");
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 30.0, "retry")));
+    }
+
+    #[test]
+    fn an_on_air_video_missing_from_the_fetched_list_goes_on_at_its_index_and_keeps_its_file() {
+        let mut ctl = test_ctl("from-saved-gone", &[]);
+        ctl.settings.playlist_id = "PLa".into();
+        save_playlist(&ctl, "PLa", &["a", "b", "c", "d"]);
+        ctl.on_playlist("PLa".into(), Err("bot check".into()));
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("c.mp4"), [0u8; 8]).unwrap();
+        (ctl.videos[2].on_disk, ctl.videos[2].disk_bytes) = (true, 8);
+        ctl.seams.push(Seam { offset: BASE, index: 2, source: Source::File, start_pos: 40.0 });
+        ctl.live = Some(Feeder { seq: 1, child: Arc::new(Mutex::new(running_child())), index: 2, source: Source::File, start_pos: 40.0, offset: BASE, started: Instant::now(), filler: false, expire: None });
+        let file_in_use = ctl.cache.join("c.mp4").exists();
+
+        ctl.on_playlist("PLa".into(), entries(&["a", "b", "x", "y", "z"]));
+
+        assert!(file_in_use);
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2), "went back to video 0");
+        assert!(ctl.strays.contains(&ctl.cache.join("c.mp4")), "the on-air file was not left for the next pass");
+    }
+
+    #[test]
+    fn a_failed_first_fetch_with_a_saved_list_sends_no_playlist_failed_alert() {
+        let mut ctl = test_ctl("from-saved-quiet", &[]);
+        ctl.settings.playlist_id = "PLa".into();
+        save_playlist(&ctl, "PLa", &["a", "b"]);
+
+        ctl.on_playlist("PLa".into(), Err("bot check".into()));
+
+        assert!(!events(&ctl).iter().any(|(_, k)| k == "playlist-failed"), "{:?}", events(&ctl));
+    }
+
+    #[test]
+    fn a_playlist_switch_ends_the_saved_list_mode() {
+        let mut ctl = reload_ctl("from-saved-switch", "PLb");
+        ctl.from_saved = true;
+
+        ctl.reload(None, None).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q"]));
+
+        assert!(!ctl.from_saved);
     }
 
     #[test]

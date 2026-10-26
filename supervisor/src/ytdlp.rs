@@ -22,6 +22,8 @@ pub struct Ytdlp {
     pub player_client: Mutex<String>,
     /// `--cookies-from-browser` value, empty for none; changed live by POST /reload.
     pub cookies: Mutex<String>,
+    /// Per finished call while cookies are set: Some(yt-dlp's cookie error) when it went on without them.
+    cookie_notes: Mutex<Vec<Option<String>>>,
     limit_rate: Option<String>,
 }
 
@@ -76,6 +78,15 @@ pub fn parse_playlist(stdout: &str) -> Vec<Entry> {
         .collect()
 }
 
+/// The cookie error of a call that went on without its cookies; None when the cookies were read,
+/// or when the call failed on them (that failure is handled as a cookie problem on its own).
+pub fn cookies_skipped(stderr: &str, ok: bool) -> Option<String> {
+    if !ok && crate::rules::is_cookie_problem(&describe_error(stderr, None)) {
+        return None;
+    }
+    stderr.lines().find(|l| l.contains("ERROR") && crate::rules::is_cookie_problem(l)).map(|l| l.trim().trim_start_matches("ERROR:").trim().to_string())
+}
+
 pub struct Output {
     pub ok: bool,
     pub stdout: String,
@@ -85,7 +96,15 @@ pub struct Output {
 
 impl Ytdlp {
     pub fn new(paths: &Paths, player_client: &str, limit_rate: Option<String>) -> Ytdlp {
-        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), ffmpeg: paths.ffmpeg.clone(), player_client: Mutex::new(player_client.into()), cookies: Mutex::default(), limit_rate }
+        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), ffmpeg: paths.ffmpeg.clone(), player_client: Mutex::new(player_client.into()), cookies: Mutex::default(), cookie_notes: Mutex::default(), limit_rate }
+    }
+
+    pub fn note_cookies(&self, note: Option<String>) {
+        self.cookie_notes.lock().unwrap().push(note);
+    }
+
+    pub fn take_cookie_notes(&self) -> Vec<Option<String>> {
+        std::mem::take(&mut *self.cookie_notes.lock().unwrap())
     }
 
     /// deno must be named by absolute path: yt-dlp runs in the temp folder, and a relative one fails.
@@ -186,7 +205,11 @@ impl Ytdlp {
             stdout.push('\n');
         }
         let stderr = err_thread.join().unwrap_or_default();
-        Output { ok: status.is_some_and(|s| s.success()), stdout, stderr, cancelled }
+        let ok = status.is_some_and(|s| s.success());
+        if !cancelled && !self.cookies.lock().unwrap().is_empty() {
+            self.note_cookies(cookies_skipped(&stderr, ok));
+        }
+        Output { ok, stdout, stderr, cancelled }
     }
 
     pub fn playlist(&self, url: &str, logs: &Logs) -> Result<Vec<Entry>, String> {
@@ -334,6 +357,25 @@ mod tests {
         let a = yt.base();
         let at = a.iter().position(|x| x == "--cookies-from-browser").expect("--cookies-from-browser");
         assert_eq!(a[at + 1], r"firefox:C:\Profiles\x y");
+    }
+
+    #[test]
+    fn a_dpapi_failure_before_a_bot_check_is_the_bot_check() {
+        let stderr = "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info\nERROR: [youtube] a: Sign in to confirm you're not a bot\n";
+
+        let reason = describe_error(stderr, Some(1));
+
+        assert!(crate::rules::is_bot_check(&reason) && !crate::rules::is_cookie_problem(&reason), "{reason}");
+        assert!(cookies_skipped(stderr, false).is_some_and(|l| l.contains("DPAPI")), "the unused cookies went unnoticed");
+    }
+
+    #[test]
+    fn cookies_skipped_only_when_the_call_went_on_without_them() {
+        let dpapi = "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info";
+        assert_eq!(cookies_skipped(&format!("{dpapi}\n"), true).as_deref(), Some(dpapi.trim_start_matches("ERROR:").trim()));
+        // the call failed on the cookies themselves: that is the critical path, not this one
+        assert_eq!(cookies_skipped(&format!("{dpapi}\n"), false), None);
+        assert_eq!(cookies_skipped("[youtube] a: Downloading webpage\n", true), None);
     }
 
     #[test]

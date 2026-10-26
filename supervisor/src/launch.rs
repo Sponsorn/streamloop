@@ -10,6 +10,7 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 const ERROR_ACCESS_DENIED: i32 = 5;
 const PORT_TAKEN_EXIT: i32 = 2;
+const CONFIG_REFUSED_EXIT: i32 = 3;
 const BIND_WAIT: Duration = Duration::from_secs(3);
 
 /// CREATE_NO_WINDOW is left out: Windows ignores it beside DETACHED_PROCESS, which has no console at all.
@@ -24,10 +25,11 @@ pub fn retry_without_breakaway(err: &std::io::Error, breakaway: bool) -> bool {
 }
 
 /// The intermediate's exit code for a supervisor that exited during the wait: port taken is
-/// relayed so Node can attach, a clean exit is 0, and any crash is 1 so Node sees it as down.
+/// relayed so Node can attach, a refused config.json is relayed so Node can say why, a clean exit
+/// is 0, and any crash is 1 so Node sees it as down.
 pub fn relay(code: Option<i32>) -> i32 {
     match code {
-        Some(PORT_TAKEN_EXIT) => PORT_TAKEN_EXIT,
+        Some(c @ (PORT_TAKEN_EXIT | CONFIG_REFUSED_EXIT)) => c,
         Some(0) => 0,
         _ => 1,
     }
@@ -73,7 +75,9 @@ pub fn run(args: &[String], port: u16, report: impl Fn(bool, u32)) -> i32 {
             return relay(status.code());
         }
         if !held_before && answers(port) {
-            return 0;
+            // The supervisor binds before it reads config.json: give a refusal its moment to exit 3.
+            std::thread::sleep(Duration::from_millis(300));
+            return child.try_wait().ok().flatten().map_or(0, |s| relay(s.code()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -101,6 +105,7 @@ mod tests {
     #[test]
     fn port_taken_is_relayed_and_a_crash_is_one() {
         assert_eq!(relay(Some(2)), 2);
+        assert_eq!(relay(Some(3)), 3, "a refused config.json reaches Node");
         assert_eq!(relay(Some(1)), 1);
         assert_eq!(relay(Some(0)), 0);
         assert_eq!(relay(None), 1);

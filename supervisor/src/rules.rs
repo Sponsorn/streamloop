@@ -277,7 +277,14 @@ pub fn is_bot_check(reason: &str) -> bool {
 /// database the browser holds locked, DPAPI): the PC's problem, not YouTube's answer.
 pub fn is_cookie_problem(reason: &str) -> bool {
     let r = reason.to_lowercase();
-    ["specified for cookies", "cookies database", "cookie database", "failed to decrypt with dpapi", "failed to load cookies", "invalid cookies from browser", "containers.json"]
+    if is_bot_check(&r) {
+        return false;
+    }
+    // yt-dlp also prints this one for a single cookie and then carries on to YouTube's own answer.
+    if r.contains("failed to decrypt with dpapi") {
+        return r.lines().filter(|l| l.contains("error")).count() == 1;
+    }
+    ["specified for cookies", "cookies database", "cookie database", "failed to load cookies", "invalid cookies from browser", "containers.json"]
         .iter()
         .any(|w| r.contains(w))
 }
@@ -445,6 +452,11 @@ mod tests {
         }
         assert!(!is_cookie_problem("ERROR: [youtube] a: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies"));
         assert!(!is_cookie_problem("ERROR: [youtube] a: Video unavailable"));
+        // A DPAPI line is the cookie problem only when it is the sole ERROR line.
+        let dpapi = "ERROR: Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info";
+        assert!(!is_cookie_problem(&format!("{dpapi}\nERROR: [youtube] a: Sign in to confirm you're not a bot")));
+        assert!(!is_cookie_problem(&format!("{dpapi}\nERROR: [youtube] a: Requested format is not available")));
+        assert!(is_cookie_problem(&format!("[youtube] a: Downloading webpage\n{dpapi}\n")));
     }
 
     #[test]
