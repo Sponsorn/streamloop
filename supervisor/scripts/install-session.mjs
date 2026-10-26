@@ -9,6 +9,10 @@
 // 3. Stop from 3.0's dashboard, kill 3.0's Node tree, start the v2.3.8 full ZIP from
 //    %TEMP%\sl2 install\, read its stream guard, stop it, start 3.0 again: stopped until Start.
 // 4. Key grep over both installs, leftover processes, both installs removed.
+//   node install-session.mjs faults
+// The stage 5 gate instead: step 1 into %TEMP%\sl3 gate Ö\ with STREAMLOOP_DEBUG_FAULTS=1 and the
+// webhook on a local catcher, then one fault at a time through POST /debug/fault, each checked
+// before the next (see faults()). Then the key grep, leftovers and removal as above.
 // node-session.mjs runs its session on import, so the few helpers needed are repeated here.
 // Nothing opens a window: every child is spawned hidden.
 import * as cp from 'node:child_process';
@@ -18,6 +22,7 @@ import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import net from 'node:net';
+import http from 'node:http';
 import { TOKEN_SERVER_PING, FFPROBE, PLAYLIST, redact } from './lib.mjs';
 
 const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
@@ -38,10 +43,11 @@ const INGEST = 'rtmp://127.0.0.1:1935/live';
 const READ_URL = `${INGEST}/${KEY}`;
 const NODE_API = 'http://127.0.0.1:7654/api';
 const SUP = 'http://127.0.0.1:4417';
-const S3 = join(tmpdir(), 'sl3 install Ö');
+const GATE = process.argv[2] === 'faults';
+const S3 = join(tmpdir(), GATE ? 'sl3 gate Ö' : 'sl3 install Ö');
 const S2 = join(tmpdir(), 'sl2 install');
 const ROOT3 = join(S3, 'streamloop');
-const OUT = join(REPO, 'supervisor', 'results', 'install');
+const OUT = join(REPO, 'supervisor', 'results', GATE ? 'gate' : 'install');
 const V2_CACHE = join(REPO, 'supervisor', 'results', 'v2-zip');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const iso = (ms = Date.now()) => new Date(ms).toISOString();
@@ -64,7 +70,7 @@ async function ps() {
   return Array.isArray(v) ? v : [v];
 }
 // PowerShell's output codepage can mangle the Ö, so match the ASCII part of the install folders.
-const inInstall = (p) => /sl[23] install/.test(p.CommandLine ?? '');
+const inInstall = (p) => /sl[23] install|sl3 gate/.test(p.CommandLine ?? '');
 const isTestNode = (p) => p.Name === 'node.exe' && inInstall(p) && /src[\\/]server[\\/]index\.ts/.test(p.CommandLine ?? '');
 const supervisors = async () => (await ps()).filter((p) => p.Name === 'streamloop-supervisor.exe').map((p) => p.ProcessId);
 
@@ -90,7 +96,7 @@ function startBat(root, label, extraEnv = {}) {
   child.on('exit', (code) => { closeSync(log); note(`START.bat (${label}) exited`, { code }); });
   return child;
 }
-const ENV3 = { STREAMLOOP_TEST_HOOKS: '1' };
+const ENV3 = GATE ? { STREAMLOOP_DEBUG_FAULTS: '1' } : { STREAMLOOP_TEST_HOOKS: '1' };
 
 let token = '';
 async function nodeUp(label, timeoutMs = 120_000) {
@@ -266,7 +272,7 @@ async function step1() {
   const patch = Object.fromEntries(Object.entries(picked).filter(([k, v]) => cfg.supervisor[k] !== v));
   r.setupSave = Object.keys(patch).length ? { patch, status: (await api('POST', '/config', { supervisor: patch })).status } : 'nothing differed';
   const key = await api('POST', '/stream-key', { key: KEY });
-  const save = await api('POST', '/config', { playlists: [{ id: PLAYLIST }], discord: { webhookUrl: '' }, supervisor: { ingestUrl: INGEST } });
+  const save = await api('POST', '/config', { playlists: [{ id: PLAYLIST }], discord: { webhookUrl: GATE ? WEBHOOK : '' }, supervisor: { ingestUrl: INGEST } });
   r.keyStatus = key.status;
   r.saveStatus = save.status;
   const live = await waitLive('live after the wizard');
@@ -446,6 +452,216 @@ async function step3() {
   results.step3 = r;
 }
 
+// the gate: Discord catcher, supervisor events, faults
+const CATCHER_PORT = 8790;
+const WEBHOOK = `http://127.0.0.1:${CATCHER_PORT}/webhook/gate`;
+const alerts = [];
+let catcher = null;
+if (GATE) {
+  catcher = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const embed = JSON.parse(body || '{}').embeds?.[0] ?? {};
+      // a batch prefixes each message with its level's emoji
+      const messages = String(embed.description ?? '').split('\n\n').map((m) => m.replace(/^(ℹ️|⚠️|\u{1F6A8}) /u, '')).filter(Boolean);
+      const row = { ms: Date.now(), at: iso(), title: embed.title, footer: embed.footer?.text, messages };
+      alerts.push(row);
+      appendFileSync(join(OUT, 'catcher.jsonl'), `${JSON.stringify(row)}\n`);
+      res.writeHead(204).end();
+    });
+  });
+  await new Promise((r) => catcher.listen(CATCHER_PORT, '127.0.0.1', r));
+}
+const ALERT_KINDS = {
+  error: /^Playback error/, skip: /^Skipping video/, frozen: /^Output frozen/, drop: /^Stream stopped unexpectedly/, restart: /^Stream restarted successfully/,
+  down: /supervisor has stopped answering/, back: /Supervisor answering again/, resume: /^Playback resumed/,
+};
+const alertKind = (m) => Object.keys(ALERT_KINDS).find((k) => ALERT_KINDS[k].test(m)) ?? 'other';
+/** Alerts caught in [from, to] against the expected count per kind; `optional` kinds may also appear, up to their count. */
+function alertCheck(from, to, want, optional = {}) {
+  const got = alerts.filter((a) => a.ms >= from && a.ms <= to).flatMap((a) => a.messages.map((m) => ({ at: a.at, kind: alertKind(m), m })));
+  const counts = {};
+  for (const g of got) counts[g.kind] = (counts[g.kind] ?? 0) + 1;
+  const ok = Object.entries(want).every(([k, n]) => (counts[k] ?? 0) === n)
+    && Object.entries(counts).every(([k, n]) => k in want || (k in optional && n <= optional[k]));
+  return { ok, counts, messages: got };
+}
+function alertSummary() {
+  const messages = alerts.flatMap((a) => a.messages.map((m) => ({ ms: a.ms, m })));
+  const dupes = messages.filter((x, i) => messages.some((y, j) => j < i && y.m === x.m && x.ms - y.ms < 120_000));
+  return { posts: alerts.length, messages: messages.length, batched: alerts.filter((a) => a.messages.length > 1).length, duplicatesWithin2Min: dupes.map((d) => d.m) };
+}
+
+function supEvents() {
+  const dir = join(ROOT3, 'data', 'logs');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((n) => /^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).sort()
+    .flatMap((n) => readFileSync(join(dir, n), 'utf8').split(/\r?\n/).filter(Boolean))
+    .map((l) => { try { const e = JSON.parse(l); return { ...e, ms: Date.parse(e.ts) }; } catch { return null; } }).filter(Boolean);
+}
+const eventsSince = (ms, kinds) => supEvents().filter((e) => e.ms >= ms && (!kinds || kinds.includes(e.kind)));
+const QUIET = ['handover', 'spare-resolve', 'spare-used', 'youtube-probe', 'download-cancel'];
+const brief = (e) => Object.fromEntries(Object.entries(e).filter(([k]) => !['level', 'at', 'ms'].includes(k)));
+const eventsOf = (ms) => eventsSince(ms).filter((e) => !QUIET.includes(e.kind)).map(brief);
+const firstEvent = (from, kind, timeoutMs, where = () => true) => waitFor(kind, async () => eventsSince(from, [kind]).find(where), timeoutMs, 500);
+
+async function fault(kind) {
+  const playing = (await supStatus())?.playing ?? null;
+  const ms = Date.now();
+  let reply;
+  try {
+    reply = await (await fetch(`${SUP}/debug/fault`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind }), signal: AbortSignal.timeout(10_000) })).json();
+  } catch (err) { reply = { error: String(err) }; }
+  note(`fault ${kind}`, { playing, reply });
+  return { ms, playing, reply };
+}
+
+/** Mean absolute difference of two grabs, 5 s apart, of a picture patch clear of the overlay, read
+ *  from the output as a viewer gets it. About 0 is a still picture. */
+async function grabDiff(crop = 'crop=400:200:760:300') {
+  const grab = async () => {
+    const r = await run(join(ROOT3, 'ffmpeg', 'ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-i', READ_URL, '-frames:v', '1', '-vf', `${crop},format=gray`, '-f', 'rawvideo', '-'], { timeout: 30_000, encoding: 'buffer' });
+    return r.stdout?.length > 0 ? r.stdout : null;
+  };
+  const a = await grab();
+  await sleep(5000);
+  const b = await grab();
+  if (!a || !b || a.length !== b.length) return null;
+  let sum = 0;
+  for (let i = 0; i < a.length; i += 1) sum += Math.abs(a[i] - b[i]);
+  return Math.round((sum / a.length) * 1000) / 1000;
+}
+const MOVING = 0.5;
+
+/** A freeze or a silence needs the read-ahead plus the watchdog's duration on one video. A fault
+ *  that takes the retry ladder also needs a retry left: cold-start stalls can spend both. */
+async function roomLeft(seconds, retriesLeft = false) {
+  const r = await waitFor(`${seconds} s left in a video${retriesLeft ? ' with a retry left' : ''}`, async () => {
+    const s = await supStatus();
+    const p = s?.playing;
+    const ok = p && p.source !== 'slate' && p.duration && p.duration - p.position >= seconds && (!retriesLeft || (s.recovery?.step === 'none' && s.recovery.retries < 2));
+    return ok ? { ...p, retries: s.recovery?.retries } : null;
+  }, 20 * 60_000, 2000);
+  if (!r.value) throw new Stop(`no video with ${seconds} s left`);
+  return r.value;
+}
+const liveNow = async () => (await nodeStatus())?.stream?.state === 'live';
+
+/** Records the checks; a failed one stops the run before the next fault. */
+function verdict(name, r, checks) {
+  r.checks = checks;
+  r.pass = Object.values(checks).every(Boolean);
+  results.faults[name] = r;
+  note(`${name}: ${r.pass ? 'PASS' : 'FAIL'}`, r);
+  if (!r.pass) throw new Stop(`${name} failed: ${Object.keys(checks).filter((k) => !checks[k]).join(', ')}`);
+}
+
+async function faults() {
+  results.faults = {};
+  // Past the cold start's URL feeder before anything is injected.
+  await sleep(30_000);
+  results.alertsBeforeFaults = alertCheck(0, Date.now(), {});
+
+  // 1. kill-feeder: a retry in place, covered by the read-ahead.
+  {
+    const room = await roomLeft(60, true);
+    const f = await fault('kill-feeder');
+    const retry = await firstEvent(f.ms, 'retry', 30_000);
+    await sleep(20_000);
+    const live = await waitFor('live after kill-feeder', liveNow, 30_000, 1000);
+    const r = { at: iso(f.ms), playing: f.playing, retriesBefore: room.retries, reply: f.reply, retryMs: retry.value ? retry.value.ms - f.ms : null, retry: retry.value && brief(retry.value),
+      events: eventsOf(f.ms), gap: gapStats(f.ms - 5000, Date.now()), alerts: alertCheck(f.ms, Date.now(), { error: 1 }) };
+    verdict('kill-feeder', r, { accepted: f.reply?.accepted === true, retry: Boolean(retry.value), live: Boolean(live.value),
+      gapUnder2s: r.gap.maxWallGapMs < 2000 && r.gap.readerReconnects === 0, oneErrorAlert: r.alerts.ok });
+  }
+
+  // 2. freeze-video: the frozen picture goes out after the read-ahead; the watchdog retries it.
+  {
+    const room = await roomLeft(120, true);
+    const before = await grabDiff();
+    const f = await fault('freeze-video');
+    await sleep(25_000);
+    const frozen = await grabDiff();
+    const wd = await firstEvent(f.ms, 'watchdog-freeze', 120_000);
+    // On air: the reader's first video packet at the freeze's start (reader dts = encoder media time).
+    const since = wd.value?.since;
+    const onAir = since === undefined ? null : packets.find((p) => p.ms >= f.ms && p.s === 0 && p.dts >= since)?.ms ?? null;
+    const retry = await firstEvent(f.ms, 'retry', 30_000, (e) => e.why === 'freeze');
+    await sleep(15_000);
+    const after = [];
+    for (let i = 0; i < 3 && !(after.at(-1) >= MOVING); i += 1) after.push(await grabDiff());
+    await sleep(10_000);
+    const r = { at: iso(f.ms), playing: f.playing, retriesBefore: room.retries, reply: f.reply, watchdog: wd.value && brief(wd.value), faultToVerdictMs: wd.value ? wd.value.ms - f.ms : null,
+      frozenOnAirToVerdictMs: onAir && wd.value ? wd.value.ms - onAir : null, retry: retry.value && brief(retry.value),
+      pictureDiff: { before, frozen, after }, events: eventsOf(f.ms), gap: gapStats(f.ms - 5000, Date.now()), alerts: alertCheck(f.ms, Date.now(), { frozen: 1 }) };
+    verdict('freeze-video', r, { accepted: f.reply?.accepted === true, verdictRetry: wd.value?.outcome === 'retry',
+      // stage 2 run B acted 25.1 s after the frozen picture went out; 35 s allows for the reader's timing
+      verdictInTime: r.frozenOnAirToVerdictMs !== null && r.frozenOnAirToVerdictMs <= 35_000, retried: Boolean(retry.value),
+      movingAgain: after.at(-1) >= MOVING, live: await liveNow(), oneFrozenAlert: r.alerts.ok });
+  }
+
+  // 3. mute-audio: in 3.0.1 and 3.0.2 silence alone never acts, so the verdict is content and play goes on.
+  {
+    await roomLeft(120);
+    const f = await fault('mute-audio');
+    const wd = await firstEvent(f.ms, 'watchdog-silence', 150_000);
+    await sleep(30_000);
+    const restarts = eventsSince(f.ms, ['feeder-start']).filter((e) => e.reason === 'watchdog');
+    const r = { at: iso(f.ms), playing: f.playing, reply: f.reply, watchdog: wd.value && brief(wd.value), faultToVerdictMs: wd.value ? wd.value.ms - f.ms : null,
+      watchdogFeederStarts: restarts.map(brief), events: eventsOf(f.ms), gap: gapStats(f.ms - 5000, Date.now()), alerts: alertCheck(f.ms, Date.now(), {}) };
+    verdict('mute-audio', r, { accepted: f.reply?.accepted === true, verdictContent: wd.value?.outcome === 'content', noWatchdogRestart: restarts.length === 0,
+      noRetry: !r.events.some((e) => e.kind === 'retry'), live: await liveNow(), noGap: r.gap.maxWallGapMs < 2000 && r.gap.readerReconnects === 0, noAlert: r.alerts.ok });
+  }
+
+  // 4. kill-encoder: the one fault here that drops the RTMP connection.
+  {
+    const gen = (await supStatus())?.encoder?.generation ?? null;
+    const segAtFault = reconnects.length - 1;
+    const f = await fault('kill-encoder');
+    const states = [];
+    const back = await waitFor('live after kill-encoder', async () => {
+      const s = (await nodeStatus())?.stream?.state ?? null;
+      if (states.at(-1)?.state !== s) states.push({ ms: Date.now() - f.ms, state: s });
+      return s === 'live' && states.some((x) => x.state !== 'live') ? s : null;
+    }, 60_000, 250);
+    await sleep(20_000);
+    const s = await supStatus();
+    const encStart = eventsSince(f.ms, ['encoder-start'])[0];
+    const outputBack = packets.find((p) => p.ms > f.ms && p.seg > segAtFault);
+    // Node says live only after the viewer has watched 10 s past the fault (the supervisor's step rule),
+    // so on air is judged on the encoder and the reader, and Node's live time is recorded beside it.
+    const r = { at: iso(f.ms), playing: f.playing, reply: f.reply, states, nodeLiveMs: back.value ? states.at(-1).ms : null,
+      encoderStartMs: encStart ? encStart.ms - f.ms : null, outputBackMs: outputBack ? outputBack.ms - f.ms : null,
+      generation: { before: gen, after: s?.encoder?.generation ?? null }, events: eventsOf(f.ms), gap: gapStats(f.ms - 5000, Date.now()),
+      alerts: alertCheck(f.ms, Date.now(), { drop: 1, restart: 1 }) };
+    verdict('kill-encoder', r, { accepted: f.reply?.accepted === true, sawRecovering: states.some((x) => x.state !== 'live'),
+      onAirWithin10s: r.encoderStartMs !== null && r.encoderStartMs <= 10_000 && r.outputBackMs !== null && r.outputBackMs <= 10_000,
+      nodeLive: back.value !== null, oneDropOneRestart: r.alerts.ok });
+  }
+
+  // 5. The supervisor process alone (no /T): its Job Object takes the children, Node relaunches it.
+  {
+    const [pid] = await supervisors();
+    const playing = (await supStatus())?.playing ?? null;
+    const t = Date.now();
+    const kill = await run('taskkill', ['/F', '/PID', String(pid)], { encoding: 'utf8' });
+    const relaunched = await waitFor('a new supervisor process', async () => (await supervisors()).some((p) => p !== pid), 60_000, 250);
+    const orphans = (await ps()).filter((p) => p.ParentProcessId === pid).map((p) => `${p.Name} ${p.ProcessId}`);
+    const live = await waitLive('live after the supervisor kill', 180_000);
+    const liveMs = live.value ? Date.now() - t : null;
+    const resume = await firstEvent(t, 'resume', 30_000);
+    await sleep(20_000);
+    const r = { at: iso(t), oldPid: pid, newPids: await supervisors(), kill: kill.stdout.trim(), playing, relaunchMs: relaunched.ms, orphansOfOldPid: orphans,
+      liveMs, resume: resume.value && brief(resume.value), events: eventsOf(t), gap: gapStats(t - 5000, Date.now()),
+      // the resume event's own alert may ride along with "back"
+      alerts: alertCheck(t, Date.now(), { down: 1, back: 1 }, { resume: 1 }) };
+    const order = r.alerts.messages.map((m) => m.kind);
+    verdict('supervisor-kill', r, { relaunchWithin10s: relaunched.ms !== null && relaunched.ms <= 10_000, noOrphans: orphans.length === 0, live: Boolean(live.value),
+      sameVideo: resume.value?.index === playing?.index && resume.value?.id === playing?.id, downThenBack: r.alerts.ok && order.indexOf('down') < order.indexOf('back') });
+  }
+}
+
 async function cleanup() {
   readerStop = true;
   probe?.kill();
@@ -465,8 +681,8 @@ async function cleanup() {
 
 try {
   await step1();
-  await step2();
-  await step3();
+  if (GATE) await faults();
+  else { await step2(); await step3(); }
 } catch (err) {
   results.failed = String(err?.stack ?? err);
   note('run stopped', { error: results.failed });
@@ -479,6 +695,13 @@ const names = ['streamloop-supervisor.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp
 results.tasklist = Object.fromEntries(names.map((n) => [n, tl.stdout.split(/\r?\n/).filter((l) => l.toLowerCase().startsWith(`"${n}"`)).length]));
 results.testNodesLeft = (await ps()).filter(isTestNode).length;
 results.tokenServerAfter = await tokenServerOk();
+if (GATE) {
+  results.alertsOverall = alertSummary();
+  const inFault = (m) => Object.values(results.faults ?? {}).some((f) => f.alerts.messages.some((x) => x.at === m.at && x.m === m.m));
+  results.alertsOutsideFaults = alertCheck(0, Date.now(), {}).messages.filter((m) => !inFault(m));
+  note('alerts', { overall: results.alertsOverall, outsideFaults: results.alertsOutsideFaults });
+  catcher.close();
+}
 results.keyGrep = { sl3: grepTree(S3, KEY), sl2: grepTree(S2, KEY), scriptOutput: grepTree(OUT, KEY) };
 writeFileSync(join(OUT, 'results.json'), redact(JSON.stringify(results, null, 2), KEY));
 note('key grep', results.keyGrep);
