@@ -42,10 +42,13 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
                             let index = v["index"].as_i64();
                             // restart-encoder's note for the event log, capped at 200 characters
                             let reason = v["reason"].as_str().map(|r| r.chars().take(200).collect());
+                            let id = v["id"].as_str().map(String::from);
                             if !v["index"].is_null() && index.is_none() {
                                 Some(Err("index must be an integer".into()))
+                            } else if !v["id"].is_null() && id.is_none() {
+                                Some(Err("id must be a string".into()))
                             } else {
-                                ask(&tx, |reply| Msg::Control { cmd, index, reason, reply })
+                                ask(&tx, |reply| Msg::Control { cmd, index, id, reason, reply })
                             }
                         }
                     },
@@ -53,10 +56,13 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
                         Err(e) => Some(Err(format!("bad JSON: {e}"))),
                         Ok(v) => {
                             let index = v["index"].as_u64().map(|i| i as usize);
+                            let id = v["id"].as_str().map(String::from);
                             if !v["index"].is_null() && index.is_none() {
                                 Some(Err("index must be a non-negative integer".into()))
+                            } else if !v["id"].is_null() && id.is_none() {
+                                Some(Err("id must be a string".into()))
                             } else {
-                                ask(&tx, |reply| Msg::Reload { index, reply })
+                                ask(&tx, |reply| Msg::Reload { index, id, reply })
                             }
                         }
                     },
@@ -164,15 +170,18 @@ mod tests {
         reply
     }
 
-    /// Answers every reload on the channel and hands back the index each one carried.
-    fn reload_indexes(rx: std::sync::mpsc::Receiver<Msg>) -> std::sync::mpsc::Receiver<Option<usize>> {
+    /// Answers every reload and control on the channel and hands back the index and id each carried.
+    fn reload_indexes(rx: std::sync::mpsc::Receiver<Msg>) -> std::sync::mpsc::Receiver<(Option<i64>, Option<String>)> {
         let (seen, out) = channel();
         std::thread::spawn(move || {
             for msg in rx {
-                if let Msg::Reload { index, reply } = msg {
-                    let _ = seen.send(index);
-                    let _ = reply.send(Ok(json!({"applied": true})));
-                }
+                let (got, reply) = match msg {
+                    Msg::Reload { index, id, reply } => ((index.map(|i| i as i64), id), reply),
+                    Msg::Control { index, id, reply, .. } => ((index, id), reply),
+                    _ => continue,
+                };
+                let _ = seen.send(got);
+                let _ = reply.send(Ok(json!({"applied": true})));
             }
         });
         out
@@ -183,11 +192,17 @@ mod tests {
         let (port, _tx, rx) = start();
         let seen = reload_indexes(rx);
 
-        let replies = [post(port, "/reload", ""), post(port, "/reload", "{}"), post(port, "/reload", r#"{"index":3}"#)];
+        let replies = [
+            post(port, "/reload", ""),
+            post(port, "/reload", "{}"),
+            post(port, "/reload", r#"{"index":3}"#),
+            post(port, "/reload", r#"{"index":3,"id":"abc"}"#),
+            post(port, "/control", r#"{"cmd":"jump","index":2,"id":"xyz"}"#),
+        ];
 
         assert!(replies.iter().all(|r| r.starts_with("HTTP/1.1 200")), "{replies:?}");
-        let got: Vec<_> = (0..3).map(|_| seen.recv_timeout(Duration::from_secs(5)).unwrap()).collect();
-        assert_eq!(got, [None, None, Some(3)]);
+        let got: Vec<_> = (0..5).map(|_| seen.recv_timeout(Duration::from_secs(5)).unwrap()).collect();
+        assert_eq!(got, [(None, None), (None, None), (Some(3), None), (Some(3), Some("abc".into())), (Some(2), Some("xyz".into()))]);
     }
 
     #[test]
@@ -195,8 +210,8 @@ mod tests {
         let (port, _tx, rx) = start();
         let seen = reload_indexes(rx);
 
-        for body in [r#"{"index":-1}"#, r#"{"index":1.5}"#, r#"{"index":"2"}"#] {
-            let reply = post(port, "/reload", body);
+        for (path, body) in [("/reload", r#"{"index":-1}"#), ("/reload", r#"{"index":1.5}"#), ("/reload", r#"{"index":"2"}"#), ("/reload", r#"{"id":7}"#), ("/control", r#"{"cmd":"jump","index":1,"id":7}"#)] {
+            let reply = post(port, path, body);
             assert!(reply.starts_with("HTTP/1.1 400"), "{body}: {reply}");
         }
         assert!(seen.recv_timeout(Duration::from_millis(300)).is_err(), "a bad index reached the loop");

@@ -267,11 +267,12 @@ pub enum Purpose {
 }
 
 pub enum Msg {
-    Control { cmd: String, index: Option<i64>, reason: Option<String>, reply: Sender<Result<Value, String>> },
+    /// `id` names the jump's video; when the list has it, it wins over `index`.
+    Control { cmd: String, index: Option<i64>, id: Option<String>, reason: Option<String>, reply: Sender<Result<Value, String>> },
     Fault { kind: String, count: Option<u32>, reply: Sender<Result<Value, String>> },
     Shutdown,
-    /// `index`: where a switch to a new playlist starts.
-    Reload { index: Option<usize>, reply: Sender<Result<Value, String>> },
+    /// `index` and `id`: where a switch to a new playlist starts.
+    Reload { index: Option<usize>, id: Option<String>, reply: Sender<Result<Value, String>> },
     /// The playlist id it was fetched for, so a superseded fetch is dropped.
     Playlist(String, Result<Vec<Entry>, String>),
     /// `id` guards against a playlist switch while the call ran: indexes then mean other videos.
@@ -459,8 +460,8 @@ struct Ctl {
     /// The playlist id `videos` came from.
     playlist: String,
     playlist_wanted: bool,
-    /// Where the pending playlist switch starts, from POST /reload; clamped to the new list.
-    switch_index: usize,
+    /// Where a pending playlist switch starts, from POST /reload: (index, id).
+    switch_to: Option<(usize, Option<String>)>,
     logs: Logs,
     tx: Sender<Msg>,
     shared: Arc<Shared>,
@@ -535,7 +536,7 @@ impl Ctl {
             args,
             playlist: String::new(),
             playlist_wanted: true,
-            switch_index: 0,
+            switch_to: None,
             key_problem: config::stream_ready(&settings).err().map(|(_, reason)| reason),
             waiting_for_key: config::stream_ready(&settings).is_err(),
             playlist_problem: None,
@@ -1409,15 +1410,16 @@ impl Ctl {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Control { cmd, index, reason, reply } => {
+            Msg::Control { cmd, index, id, reason, reply } => {
+                let index = id.and_then(|id| self.position(&id)).map(|i| i as i64).or(index);
                 let _ = reply.send(self.control(&cmd, index, reason));
             }
             Msg::Fault { kind, count, reply } => {
                 let _ = reply.send(self.fault(&kind, count));
             }
             Msg::Shutdown => self.shutdown(),
-            Msg::Reload { index, reply } => {
-                let _ = reply.send(self.reload(index));
+            Msg::Reload { index, id, reply } => {
+                let _ = reply.send(self.reload(index, id));
             }
             Msg::Playlist(id, result) => self.on_playlist(id, result),
             Msg::Resolved { index, id, purpose, result } => self.on_resolved(index, &id, purpose, result),
@@ -1563,10 +1565,15 @@ impl Ctl {
             (self.spare, self.spare_due) = (None, None);
             (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
             self.unavailable_streak.clear();
-            let start = self.switch_index.min(self.n() - 1);
+            let start = self.switch_start().unwrap_or(0);
             if let Err(e) = self.control("jump", Some(start as i64), None) {
                 self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
             }
+            return;
+        }
+        // A switch asked for before any list loaded names its own start; state.json is the old list's.
+        if let Some(start) = self.switch_start() {
+            self.set_target(start, 0.0, "coldstart", false);
             return;
         }
         let resume = std::fs::read_to_string(self.state_file()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
@@ -1582,14 +1589,25 @@ impl Ctl {
         }
     }
 
+    fn position(&self, id: &str) -> Option<usize> {
+        self.videos.iter().position(|v| v.entry.id == id)
+    }
+
+    /// Takes the pending switch's start in the loaded list: the id's position when the list has
+    /// it (Node's index can count videos this list leaves out), else the index clamped to the list.
+    fn switch_start(&mut self) -> Option<usize> {
+        let (index, id) = self.switch_to.take()?;
+        Some(id.and_then(|id| self.position(&id)).unwrap_or(index.min(self.n().saturating_sub(1))))
+    }
+
     fn state_file(&self) -> PathBuf {
         self.args.paths.data.join("state.json")
     }
 
     /// POST /reload. Live fields apply now; ingest, key and encoder wait for a restart, except
-    /// in needs-stream-key, where nothing runs yet and a working key starts the encoder. `index` is
-    /// where a switch to a new playlist starts; with the same playlist it is ignored.
-    fn reload(&mut self, index: Option<usize>) -> Result<Value, String> {
+    /// in needs-stream-key, where nothing runs yet and a working key starts the encoder. `index` and
+    /// `id` say where a switch to a new playlist starts; with the same playlist they are ignored.
+    fn reload(&mut self, index: Option<usize>, id: Option<String>) -> Result<Value, String> {
         let mut new = read_settings(&self.args)?;
         self.logs.add_key(&new.stream_key);
         let ready = config::stream_ready(&new);
@@ -1610,7 +1628,7 @@ impl Ctl {
         if switch {
             // Fetch unless the new id is the list already playing (A, B, back to A before B lands).
             self.playlist_wanted = self.videos.is_empty() || running.playlist_id != self.playlist;
-            self.switch_index = index.unwrap_or(0);
+            self.switch_to = Some((index.unwrap_or(0), id));
         }
         self.settings = running;
         let restart = !waiting && plan == config::Reload::Restart;
@@ -2260,7 +2278,7 @@ mod tests {
     fn a_reload_to_another_playlist_with_an_index_starts_at_that_video() {
         let mut ctl = reload_ctl("reload-index", "PLb");
 
-        ctl.reload(Some(3)).unwrap();
+        ctl.reload(Some(3), None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s", "t"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((3, "control")));
@@ -2270,7 +2288,7 @@ mod tests {
     fn a_reload_index_past_the_end_of_the_new_playlist_clamps_to_its_last_video() {
         let mut ctl = reload_ctl("reload-clamp", "PLb");
 
-        ctl.reload(Some(9)).unwrap();
+        ctl.reload(Some(9), None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2));
@@ -2280,7 +2298,7 @@ mod tests {
     fn a_reload_to_another_playlist_without_an_index_starts_at_video_0() {
         let mut ctl = reload_ctl("reload-no-index", "PLb");
 
-        ctl.reload(None).unwrap();
+        ctl.reload(None, None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(0));
@@ -2291,11 +2309,70 @@ mod tests {
         let mut ctl = reload_ctl("reload-same", "PLa");
         ctl.set_target(1, 4.0, "coldstart", false);
 
-        ctl.reload(Some(0)).unwrap();
+        ctl.reload(Some(0), Some("b".into())).unwrap();
 
         assert!(!ctl.playlist_wanted, "the same playlist was fetched again");
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((1, "coldstart")));
         assert_eq!(ctl.control_seq, 0, "the index jumped");
+    }
+
+    #[test]
+    fn a_reload_id_found_in_the_new_playlist_wins_over_the_index() {
+        let mut ctl = reload_ctl("reload-id", "PLb");
+
+        // Node's row 3 counted a private video the supervisor's list leaves out
+        ctl.reload(Some(3), Some("s".into())).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "s", "t"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2));
+    }
+
+    #[test]
+    fn a_reload_id_missing_from_the_new_playlist_falls_back_to_the_index() {
+        let mut ctl = reload_ctl("reload-unknown-id", "PLb");
+
+        ctl.reload(Some(1), Some("gone".into())).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(1));
+    }
+
+    #[test]
+    fn a_switch_before_the_first_playlist_loads_starts_at_its_video_not_the_resume_point() {
+        let mut ctl = reload_ctl("reload-first", "PLb");
+        (ctl.videos, ctl.playlist) = (vec![], String::new());
+        std::fs::write(ctl.state_file(), json!({"id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        ctl.reload(Some(3), None).unwrap();
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s", "t"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos)), Some((3, 0.0)));
+    }
+
+    /// Sends a control through the loop's message handler, as the HTTP API does.
+    fn send_control(ctl: &mut Ctl, cmd: &str, index: Option<i64>, id: Option<&str>) -> Result<Value, String> {
+        let (reply, rx) = channel();
+        ctl.handle(Msg::Control { cmd: cmd.into(), index, id: id.map(String::from), reason: None, reply });
+        rx.recv().unwrap()
+    }
+
+    #[test]
+    fn a_jump_by_id_lands_on_that_video_when_the_index_counts_a_video_the_list_left_out() {
+        // Node's list had a private video at 1, so "c" is its row 3; here "c" is at 2
+        let mut ctl = test_ctl("jump-id", &["a", "b", "c"]);
+
+        let reply = send_control(&mut ctl, "jump", Some(3), Some("c")).unwrap();
+
+        assert_eq!((reply["targetIndex"].clone(), reply["targetId"].clone()), (json!(2), json!("c")));
+    }
+
+    #[test]
+    fn a_jump_with_an_unknown_id_falls_back_to_the_index() {
+        let mut ctl = test_ctl("jump-unknown-id", &["a", "b", "c"]);
+
+        assert_eq!(send_control(&mut ctl, "jump", Some(1), Some("gone")).unwrap()["targetIndex"], json!(1));
+        assert!(send_control(&mut ctl, "jump", Some(5), Some("gone")).is_err(), "an out-of-range index still errors");
+        assert_eq!(send_control(&mut ctl, "jump", Some(0), None).unwrap()["targetIndex"], json!(0));
     }
 
     #[test]
