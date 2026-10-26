@@ -55,6 +55,22 @@ describe('parsePlaylistOutput', () => {
     expect(result[1]).toEqual({ index: 1, id: 'def456', title: 'Valid Two', duration: 120 });
   });
 
+  it('drops private and deleted entries like the supervisor, so indexes match its list', () => {
+    const output = [
+      JSON.stringify({ id: 'aaa', title: 'One', duration: 60 }),
+      JSON.stringify({ id: 'ppp', title: '[Private video]', duration: null }),
+      JSON.stringify({ id: 'ddd', title: '[Deleted video]', duration: null }),
+      JSON.stringify({ id: 'bbb', title: 'Two', duration: 90 }),
+    ].join('\n');
+
+    const result = parsePlaylistOutput(output);
+
+    expect(result).toEqual([
+      { index: 0, id: 'aaa', title: 'One', duration: 60 },
+      { index: 1, id: 'bbb', title: 'Two', duration: 90 },
+    ]);
+  });
+
   it('returns empty array for empty or whitespace-only input', () => {
     expect(parsePlaylistOutput('')).toEqual([]);
     expect(parsePlaylistOutput('   ')).toEqual([]);

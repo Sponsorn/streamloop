@@ -28,6 +28,8 @@ export function parsePlaylistOutput(output: string): PlaylistVideo[] {
 
     try {
       const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      // Same rule as the supervisor's list (supervisor/src/ytdlp.rs), so indexes agree.
+      if (obj['title'] === '[Private video]' || obj['title'] === '[Deleted video]') continue;
       videos.push({
         index: index++,
         id: typeof obj['id'] === 'string' ? obj['id'] : '',
