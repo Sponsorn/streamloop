@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, type GithubRelease,
 } from '../updater.js';
@@ -275,7 +276,7 @@ describe('stageUpdate with a flat ZIP', () => {
 });
 
 // One patch above the installed version, so the release below is always an update.
-const [major, minor, patch] = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version.split('.').map(Number);
+const [major, minor, patch] = (JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version: string }).version.split('.').map(Number);
 const NEXT = `${major}.${minor}.${patch + 1}`;
 
 describe('Updater node notice', () => {
