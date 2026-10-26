@@ -28,8 +28,8 @@ export interface ReadbackStatus { lastCheckAt: number | null; lastDiff: number |
 export type GrabRun = (exe: string, args: string[]) => Promise<Buffer>;
 
 /** The overlay clock (`hh:mm:ss`) in a 1920x1080 frame, with a few pixels of slack: overlay.rs
- *  draws the progress line at x=24, y=1027, 22 px, and the clock is its first 8 characters. */
-const CLOCK_1080: Region = { x: 16, y: 1019, w: 104, h: 32 };
+ *  draws the progress line at x=24, y=70 (top-left), 22 px, and the clock is its first 8 characters. */
+const CLOCK_1080: Region = { x: 16, y: 62, w: 104, h: 32 };
 
 export function timerRegion(width: number, height: number): Region {
   const sx = width / 1920;

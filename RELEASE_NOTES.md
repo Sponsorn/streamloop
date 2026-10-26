@@ -1,3 +1,12 @@
+## v3.0.3
+
+A prerelease for trial, not marked latest. 2.x installs do not update to it.
+
+- **The video title and the clock are now at the top left.** They sat at the bottom left, over the stream's own social media overlay. The progress bar stays along the bottom edge, and the "NOT LIVE" label stays at the top right. The Twitch picture check now reads the clock at its new place.
+- **This release changes the supervisor, so install the full ZIP**, the same way as 3.0.2: press Stop, close the window, extract the ZIP to a separate folder, copy what is inside its `streamloop` folder over the install, start it again and press Start. Settings, the stream key and `data\` are kept.
+
+---
+
 ## v3.0.2
 
 A prerelease for trial, not marked latest. 2.x installs do not update to it.

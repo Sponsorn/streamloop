@@ -124,11 +124,11 @@ describe('meanAbsDiff', () => {
 
 describe('timerRegion', () => {
   it('covers the overlay clock in a 1920x1080 rendition', () => {
-    expect(timerRegion(1920, 1080)).toEqual({ x: 16, y: 1019, w: 104, h: 32 });
+    expect(timerRegion(1920, 1080)).toEqual({ x: 16, y: 62, w: 104, h: 32 });
   });
 
   it('scales to a 1280x720 rendition', () => {
-    expect(timerRegion(1280, 720)).toEqual({ x: 11, y: 679, w: 69, h: 21 });
+    expect(timerRegion(1280, 720)).toEqual({ x: 11, y: 41, w: 69, h: 21 });
   });
 });
 
@@ -219,7 +219,7 @@ describe('TwitchReadback', () => {
     expect(onFrozen).toHaveBeenCalledOnce();
     const args = (run as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
     expect(args).toContain('https://video.example/test.m3u8');
-    expect(args).toContain('crop=104:32:16:1019,format=gray');
+    expect(args).toContain('crop=104:32:16:62,format=gray');
   });
 
   it('one bad read then a good one does not act', async () => {
@@ -266,7 +266,7 @@ describe('TwitchReadback', () => {
     const { rb, run } = setup({ master: master.replace('1920x1080', '640x360'), frames: [] });
     await rb.check();
     // the highest listed rendition is now 1280x720
-    expect((run as ReturnType<typeof vi.fn>).mock.calls[0][1]).toContain('crop=69:21:11:679,format=gray');
+    expect((run as ReturnType<typeof vi.fn>).mock.calls[0][1]).toContain('crop=69:21:11:41,format=gray');
   });
 
   it('compares the whole frame when the overlay is off', async () => {
@@ -423,9 +423,9 @@ describe('the overlay clock as the movement signal (renders with ffmpeg)', () =>
     const graph = [
       // a still picture: one testsrc2 frame, looped
       'testsrc2=s=1920x1080:r=30,trim=end_frame=1,loop=loop=-1:size=1,setpts=N/30/TB[norm]',
-      `[norm]${text(join(dir, 'title.txt'), 28, 981, false)},` +
+      `[norm]${text(join(dir, 'title.txt'), 28, 24, false)},` +
         `drawtext=fontfile='${esc(FONT)}':textfile='${esc(join(dir, 'label.txt'))}':expansion=none:fontsize=22:fontcolor=white:x=main_w-text_w-24:y=24:box=1:boxcolor=red@0.8:boxborderw=10,` +
-        `${text(progress, 22, 1027, true)},drawbox=x=0:y=1074:w=1920:h=6:color=white@0.25:t=fill[base]`,
+        `${text(progress, 22, 70, true)},drawbox=x=0:y=1074:w=1920:h=6:color=white@0.25:t=fill[base]`,
       'color=c=red:s=1920x6[bar]',
       `[base][bar]overlay=x='max(-1920,min(0,1920*((${startPos}+t)/${duration}-1)))':y=1074:shortest=1[outv]`,
     ].join(';');
