@@ -37,7 +37,7 @@ export interface ApiDependencies {
   getTwitch: () => TwitchLivenessChecker;
   getUptime: () => number;
   apiToken: string;
-  runSetupCheck?: (root: string) => Promise<SetupReport>;
+  runSetupCheck?: (root: string, opts: { durationsS: number[] }) => Promise<SetupReport>;
   /** The Windows Startup folder; tests point it at a temp dir. */
   startupDir?: string;
   /** STREAMLOOP_TEST_HOOKS=1 only: adds POST /test/exit-75, the update restart without an update. */
@@ -163,7 +163,7 @@ function isVideoId(v: unknown): v is string {
 export function createApiRouter(deps: ApiDependencies): Router {
   const router = Router();
   const save = deps.saveConfig ?? ((patch: Partial<AppConfig>) => saveConfigFile(patch));
-  const runSetupCheck = deps.runSetupCheck ?? ((root: string) => runSetupCheckDefault(root));
+  const runSetupCheck = deps.runSetupCheck ?? ((root: string, opts: { durationsS: number[] }) => runSetupCheckDefault(root, opts));
   let setupRun: Promise<SetupReport> | null = null;
   const protect = deps.protect ?? ((exe: string, plain: string) => protectStreamKey(exe, plain));
   const logDirs: Record<string, string | null> = {
@@ -496,11 +496,25 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   // Recommendations are not applied here; the dashboard saves them through POST /config.
-  router.post('/setup-check/run', async (_req, res) => {
+  router.post('/setup-check/run', async (req, res) => {
     const root = deps.root;
     if (!root) return res.status(503).json({ error: NO_ROOT });
+    // The wizard sends its playlist before it is saved; otherwise the one playing sizes the cache.
+    const { playlistId } = (req.body ?? {}) as { playlistId?: unknown };
+    if (playlistId !== undefined && (typeof playlistId !== 'string' || !/^[A-Za-z0-9_-]{2,64}$/.test(playlistId))) {
+      return res.status(400).json({ error: 'Invalid playlist id' });
+    }
+    const id = (playlistId as string | undefined) ?? deps.getConfig().playlists[0]?.id;
+    const durations = async (): Promise<number[]> => {
+      if (!id) return [];
+      try {
+        return (await deps.playlistCache.fetch(id)).videos.map((v) => v.duration).filter((d) => typeof d === 'number');
+      } catch {
+        return [];
+      }
+    };
     // A second click while the probes run gets the same result instead of a second set of probes.
-    setupRun ??= runSetupCheck(root).finally(() => { setupRun = null; });
+    setupRun ??= durations().then((durationsS) => runSetupCheck(root, { durationsS })).finally(() => { setupRun = null; });
     try {
       res.json(await setupRun);
     } catch (err) {
