@@ -336,7 +336,8 @@ async function wizRunSetupCheck() {
   $('#wiz-setup-apply').classList.add('hidden');
   $('#wiz-setup-use').classList.add('hidden');
   $('#wiz-setup-hint').classList.add('hidden');
-  wizSetupReport = await runSetupCheck($('#wiz-setup-run'), $('#wiz-setup-report'));
+  // The playlist is not saved yet; the check sizes the cache from its videos.
+  wizSetupReport = await runSetupCheck($('#wiz-setup-run'), $('#wiz-setup-report'), { playlistId: wizState.playlists[0]?.id });
   if (!wizSetupReport) return;
   const { encoder, cache } = wizSetupReport;
   $('#wiz-encoder').innerHTML = $('#pb-encoder').innerHTML;
@@ -411,12 +412,12 @@ const RUN_CHECK_LABEL = 'Run checks again';
 let setupRun = null;
 
 /** Runs POST /api/setup-check/run with a busy button; returns the report, or null after showing why not. */
-async function runSetupCheck(btn, container) {
+async function runSetupCheck(btn, container, body = {}) {
   btn.disabled = true;
   btn.textContent = 'Checking...';
   container.textContent = 'Checking this PC. This can take up to a minute.';
   container.className = 'setup-report muted';
-  setupRun ??= post('/api/setup-check/run').finally(() => { setupRun = null; });
+  setupRun ??= post('/api/setup-check/run', body).finally(() => { setupRun = null; });
   try {
     const report = await setupRun;
     renderSetupReport(container, report);

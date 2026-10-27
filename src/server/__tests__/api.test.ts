@@ -658,9 +658,40 @@ WshShell.Run """${bat}""", 1, False`;
       mkdirSync(join(tmp, 'root', 'data'), { recursive: true });
       writeFileSync(join(tmp, 'root', 'data', 'setup-check.json'), JSON.stringify(report));
 
-      expect(h.runSetupCheck).toHaveBeenCalledWith(join(tmp, 'root'));
+      expect(h.runSetupCheck).toHaveBeenCalledWith(join(tmp, 'root'), { durationsS: [] });
       expect(report.encoder.chosen).toBe('h264_nvenc');
       expect(await (await get('/setup-check')).json()).toEqual(report);
+    });
+
+    it("POST /setup-check/run sizes the cache from the playing playlist's durations", async () => {
+      vi.mocked(h.deps.playlistCache.fetch).mockResolvedValueOnce({ playlistId: 'PLx', fetchedAt: 0, videos: [{ index: 0, id: 'a', title: 'a', duration: 100 }, { index: 1, id: 'b', title: 'b', duration: 30_474 }, { index: 2, id: 'c', title: 'c', duration: 26_953 }] });
+
+      await post('/setup-check/run');
+
+      expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith(h.deps.getConfig().playlists[0].id);
+      expect(h.runSetupCheck).toHaveBeenCalledWith(join(tmp, 'root'), { durationsS: [100, 30_474, 26_953] });
+    });
+
+    it("POST /setup-check/run uses the wizard's playlist before it is saved", async () => {
+      await post('/setup-check/run', { playlistId: 'PLwizardPlaylist01' });
+
+      expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith('PLwizardPlaylist01');
+    });
+
+    it('POST /setup-check/run refuses a playlist id that is not one', async () => {
+      const r = await post('/setup-check/run', { playlistId: '../x' });
+
+      expect(r.status).toBe(400);
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
+    });
+
+    it('POST /setup-check/run still runs when the playlist cannot be read', async () => {
+      vi.mocked(h.deps.playlistCache.fetch).mockRejectedValueOnce(new Error('bot check'));
+
+      const r = await post('/setup-check/run');
+
+      expect(r.status).toBe(200);
+      expect(h.runSetupCheck).toHaveBeenCalledWith(join(tmp, 'root'), { durationsS: [] });
     });
 
     it('answers 503 with a reason when there is no install root', async () => {

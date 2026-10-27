@@ -78,10 +78,25 @@ export async function pickEncoder(
   return { encoder: last, tried, software: last === 'libx264', works: false };
 }
 
-export function recommendCacheMb(freeMb: number): { mb: number; warning: string | null } {
+/** A 1080p YouTube download, with headroom: the box measured 0.4 MB a second (12,197 MB for 8.5 h). */
+const CACHE_MB_PER_SECOND = 0.5;
+
+/** With the playlist's durations, room for its two longest videos, so the next one downloads while
+ *  the current one plays; without them, a share of the free space. Never more than half of it. */
+export function recommendCacheMb(freeMb: number, durationsS: number[] = []): { mb: number; warning: string | null } {
   if (freeMb < 2048) return { mb: 50, warning: 'Less than 2 GB free on this drive. The download cache is set to its minimum.' };
-  const mb = Math.min(Math.max(Math.floor(freeMb * 0.1), 500), 4096, freeMb - 2048);
-  return { mb: Math.max(mb, 50), warning: null };
+  const spare = Math.min(Math.floor(freeMb * 0.5), freeMb - 2048);
+  const longest = durationsS.filter((d) => d > 0).sort((a, b) => b - a).slice(0, 2);
+  if (longest.length === 0) {
+    return { mb: Math.max(Math.min(Math.max(Math.floor(freeMb * 0.1), 500), 4096, spare), 50), warning: null };
+  }
+  const need = Math.max(Math.ceil((longest[0] + (longest[1] ?? 0)) * CACHE_MB_PER_SECOND), 500);
+  if (need <= spare) return { mb: need, warning: null };
+  const gb = (mb: number): number => Math.round(mb / 1024);
+  return {
+    mb: spare,
+    warning: `The two longest videos need about ${gb(need)} GB, but only ${gb(spare)} GB can be spared on this drive. Long videos play from YouTube while they download.`,
+  };
 }
 
 /** What the supervisor needs at run time, in the layout of supervisor/src/paths.rs. */
@@ -105,6 +120,8 @@ export interface SetupCheckDeps {
   run?: RunFn;
   exists?: (p: string) => boolean;
   statfs?: (path: string) => Promise<{ bavail: number; bsize: number }>;
+  /** The playlist's video lengths, which size the download cache. */
+  durationsS?: number[];
 }
 
 const reportPath = (root: string): string => join(root, 'data', 'setup-check.json');
@@ -115,7 +132,7 @@ export async function runSetupCheck(root: string, deps: SetupCheckDeps = {}): Pr
   const data = join(root, 'data');
   const fs = await (deps.statfs ?? statfs)(exists(data) ? data : root);
   const freeMb = Math.floor((fs.bavail * fs.bsize) / MiB);
-  const cache = recommendCacheMb(freeMb);
+  const cache = recommendCacheMb(freeMb, deps.durationsS);
   const report: SetupReport = {
     at: new Date().toISOString(),
     encoder: { chosen: pick.encoder, tried: pick.tried, software: pick.software, works: pick.works },

@@ -96,6 +96,30 @@ describe('recommendCacheMb', () => {
   it('sets the minimum with a warning below 2 GB free', () => {
     expect(recommendCacheMb(1536)).toEqual({ mb: 50, warning: 'Less than 2 GB free on this drive. The download cache is set to its minimum.' });
   });
+
+  it('makes room for the two longest videos, so the next one downloads while the current one plays', () => {
+    // Arrange: the box's 8.5 h and 7.5 h videos, at 0.5 MB a second
+    const longest = [30_474, 26_953, 600];
+
+    // Act
+    const r = recommendCacheMb(400 * 1024, longest);
+
+    // Assert: (30474 + 26953) * 0.5 = 28714 MB, well past the old 4096 MB ceiling
+    expect(r).toEqual({ mb: 28_714, warning: null });
+  });
+
+  it('keeps at least 500 MB when the playlist has only short videos', () => {
+    expect(recommendCacheMb(400 * 1024, [120, 90])).toEqual({ mb: 500, warning: null });
+  });
+
+  it('caps at half the free space and says long videos will play from YouTube while they download', () => {
+    // Arrange: 40 GB free, so at most 20 GB can go to the cache
+    const r = recommendCacheMb(40 * 1024, [30_474, 26_953]);
+
+    // Assert
+    expect(r.mb).toBe(20 * 1024);
+    expect(r.warning).toBe('The two longest videos need about 28 GB, but only 20 GB can be spared on this drive. Long videos play from YouTube while they download.');
+  });
 });
 
 describe('checkDependencies', () => {

@@ -76,8 +76,8 @@ fn text_clause(file: &Path, size: u32, y: u32, expand: bool) -> String {
 /// (drawbox's width is fixed at init). Only that stage needs `shortest=1`: `color=` never ends.
 fn script(title_file: &Path, label_file: &Path, progress_file: Option<&Path>, duration: Option<f64>, start_pos: f64) -> String {
     let h = |size: u32| (size as f64 * LINE_HEIGHT_RATIO).round() as u32;
-    let total = h(TITLE_SIZE) + if progress_file.is_some() { STACK_GAP + h(PROGRESS_SIZE) } else { 0 };
-    let title_y = FRAME_H - MARGIN - total;
+    // Top-left: the bottom of the picture is left to the stream's own overlays.
+    let title_y = MARGIN;
     let mut text = vec![text_clause(title_file, TITLE_SIZE, title_y, false)];
     // Top-right, white on red@0.8, always shown (2.x's overlay and spike 3 show the same label).
     text.push(format!(
@@ -189,6 +189,20 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("label.txt")).unwrap(), "NOT LIVE");
         let label = s.split(',').find(|c| c.contains("label.txt")).unwrap();
         assert!(label.contains("x=main_w-text_w-24:y=24") && label.contains("fontsize=22") && label.contains("boxcolor=red@0.8"), "{label}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Top-left, so the bottom of the picture stays free for the stream's own overlays; the
+    /// Twitch read-back's clock region (CLOCK_1080 in twitch-readback.ts) is 8 px above the clock line.
+    #[test]
+    fn the_title_and_clock_sit_top_left_and_the_bar_stays_at_the_bottom() {
+        let dir = std::env::temp_dir().join(format!("sl-overlay-pos-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = std::fs::read_to_string(prepare("t", Some(1200.0), 0.0, &dir).unwrap()).unwrap();
+        let clause = |file: &str| s.split(',').find(|c| c.contains(file)).unwrap().to_string();
+        assert!(clause("title.txt").contains("x=24:y=24"), "{}", clause("title.txt"));
+        assert!(clause("progress.txt").contains("x=24:y=70"), "{}", clause("progress.txt"));
+        assert!(s.contains("drawbox=x=0:y=1074"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
