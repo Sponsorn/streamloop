@@ -884,7 +884,8 @@ function copyRedirectUrl(btn) {
 async function loadAutostart() {
   try {
     const status = await api('/api/autostart');
-    $('#autostart-toggle').checked = status.enabled;
+    // On only when it starts this install, so a file another install owns offers the takeover.
+    $('#autostart-toggle').checked = status.thisInstall;
     $('#autostart-target').textContent = autostartLabel(status);
   } catch {
     // Leaves the toggle off; changing it reports any error.
