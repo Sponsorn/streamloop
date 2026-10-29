@@ -432,9 +432,67 @@ pub fn next_download(win: &[usize], on_disk: &[bool], failed: &[bool]) -> Option
     win.iter().copied().find(|&i| !on_disk[i] && !failed[i])
 }
 
+/// One download round: the configured list, then each client alone, since yt-dlp takes the first
+/// client's formats from a list and does not fall back when they are refused. One client: two tries.
+pub fn download_clients(list: &str) -> Vec<String> {
+    let each: Vec<String> = list.split(',').map(str::trim).filter(|c| !c.is_empty()).map(String::from).collect();
+    let mut out = vec![list.to_string()];
+    if each.len() > 1 {
+        out.extend(each);
+    } else {
+        out.push(list.to_string());
+    }
+    out
+}
+
+/// Seconds until video `i` goes on air, with the viewer at `pos` into `view`. None when a
+/// duration on the way is unknown.
+pub fn until_needed_s(view: usize, pos: f64, i: usize, durations: &[Option<f64>]) -> Option<f64> {
+    let n = durations.len();
+    if i == view || n == 0 {
+        return Some(0.0);
+    }
+    let mut t = durations[view]? - pos;
+    let mut j = (view + 1) % n;
+    while j != i {
+        t += durations[j]?;
+        j = (j + 1) % n;
+    }
+    Some(t.max(0.0))
+}
+
+/// Wait after a failed download round: a quarter of the time until the video airs, 2 min to 1 h
+/// (10 min when unknown), so a refusal that lifts is caught without asking YouTube every few seconds.
+pub fn download_retry_s(until_needed_s: Option<f64>) -> u64 {
+    until_needed_s.map_or(600, |t| (t / 4.0).clamp(120.0, 3600.0) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_download_round_tries_the_list_then_each_client_alone() {
+        assert_eq!(download_clients("mweb,web_embedded"), ["mweb,web_embedded", "mweb", "web_embedded"]);
+        assert_eq!(download_clients("mweb"), ["mweb", "mweb"]);
+    }
+
+    #[test]
+    fn time_until_needed_walks_forward_from_the_viewer() {
+        let d = [Some(100.0), Some(200.0), Some(300.0), None];
+        assert_eq!(until_needed_s(0, 40.0, 0, &d), Some(0.0));
+        assert_eq!(until_needed_s(0, 40.0, 1, &d), Some(60.0));
+        assert_eq!(until_needed_s(0, 40.0, 3, &d), Some(560.0));
+        assert_eq!(until_needed_s(1, 0.0, 0, &d), None, "video 3's length is unknown");
+    }
+
+    #[test]
+    fn a_failed_download_waits_longer_the_further_off_it_is() {
+        assert_eq!(download_retry_s(Some(8.0 * 3600.0)), 3600);
+        assert_eq!(download_retry_s(Some(3600.0)), 900);
+        assert_eq!(download_retry_s(Some(60.0)), 120);
+        assert_eq!(download_retry_s(None), 600);
+    }
 
     #[test]
     fn cookie_store_failures_are_told_apart_from_youtube() {

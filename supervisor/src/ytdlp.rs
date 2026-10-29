@@ -108,7 +108,8 @@ impl Ytdlp {
     }
 
     /// deno must be named by absolute path: yt-dlp runs in the temp folder, and a relative one fails.
-    fn base(&self) -> Vec<String> {
+    /// `client` replaces the configured player client list for this call.
+    fn base(&self, client: Option<&str>) -> Vec<String> {
         let mut a = vec![
             "--no-warnings".into(),
             "--no-update".into(),
@@ -120,7 +121,7 @@ impl Ytdlp {
             "--ffmpeg-location".into(),
             self.ffmpeg.to_string_lossy().into_owned(),
             "--extractor-args".into(),
-            format!("youtube:player_client={}", self.player_client.lock().unwrap()),
+            format!("youtube:player_client={}", client.map_or_else(|| self.player_client.lock().unwrap().clone(), String::from)),
         ];
         // No shell between here and yt-dlp, so a profile path with spaces stays one argument.
         let cookies = self.cookies.lock().unwrap();
@@ -132,8 +133,8 @@ impl Ytdlp {
 
     /// Run yt-dlp; stdout lines go to `on_line`, `[pot` lines and all stderr to ytdlp.log.
     /// `cancel` or `timeout` kill the whole tree.
-    pub fn run(&self, args: &[String], logs: &Logs, cancel: &AtomicBool, timeout: Duration, pid: impl FnOnce(u32), mut on_line: impl FnMut(&str)) -> Output {
-        let mut child = match command(&self.exe).env("PYTHONIOENCODING", "utf-8").args(self.base()).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+    pub fn run(&self, client: Option<&str>, args: &[String], logs: &Logs, cancel: &AtomicBool, timeout: Duration, pid: impl FnOnce(u32), mut on_line: impl FnMut(&str)) -> Output {
+        let mut child = match command(&self.exe).env("PYTHONIOENCODING", "utf-8").args(self.base(client)).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => return Output { ok: false, stdout: String::new(), stderr: format!("spawn failed: {e}"), cancelled: false },
         };
@@ -214,7 +215,7 @@ impl Ytdlp {
 
     pub fn playlist(&self, url: &str, logs: &Logs) -> Result<Vec<Entry>, String> {
         let args: Vec<String> = ["--flat-playlist", "--print", "%(id)s\t%(title)s\t%(duration)s", url].map(String::from).to_vec();
-        let out = self.run(&args, logs, &AtomicBool::new(false), Duration::from_secs(120), |_| {}, |_| {});
+        let out = self.run(None, &args, logs, &AtomicBool::new(false), Duration::from_secs(120), |_| {}, |_| {});
         let entries = parse_playlist(&out.stdout);
         if entries.is_empty() {
             return Err(describe_error(&out.stderr, None));
@@ -224,7 +225,7 @@ impl Ytdlp {
 
     pub fn resolve(&self, id: &str, logs: &Logs) -> Result<Resolved, String> {
         let args: Vec<String> = ["-j", "--no-playlist", "-f", FORMAT, &watch_url(id)].map(String::from).to_vec();
-        let out = self.run(&args, logs, &AtomicBool::new(false), Duration::from_secs(90), |_| {}, |_| {});
+        let out = self.run(None, &args, logs, &AtomicBool::new(false), Duration::from_secs(90), |_| {}, |_| {});
         if !out.ok {
             return Err(describe_error(&out.stderr, None));
         }
@@ -232,13 +233,13 @@ impl Ytdlp {
         parse_resolved(line)
     }
 
-    pub fn download(&self, id: &str, file: &Path, logs: &Logs, cancel: &AtomicBool, pid: impl FnOnce(u32), mut progress: impl FnMut(f64)) -> Output {
+    pub fn download(&self, client: &str, id: &str, file: &Path, logs: &Logs, cancel: &AtomicBool, pid: impl FnOnce(u32), mut progress: impl FnMut(f64)) -> Output {
         let mut args: Vec<String> = ["--no-playlist", "--newline", "--no-continue", "-f", FORMAT, "--merge-output-format", "mp4"].map(String::from).to_vec();
         if let Some(r) = &self.limit_rate {
             args.extend(["--limit-rate".into(), r.clone()]);
         }
         args.extend(["-o".into(), file.to_string_lossy().into_owned(), watch_url(id)]);
-        self.run(&args, logs, cancel, Duration::from_secs(6 * 3600), pid, |line| {
+        self.run(Some(client), &args, logs, cancel, Duration::from_secs(6 * 3600), pid, |line| {
             if let Some(p) = parse_download_progress(line) {
                 progress(p);
             }
@@ -338,23 +339,25 @@ mod tests {
     fn every_call_gets_the_plugin_dir_and_an_absolute_deno() {
         let root = std::env::temp_dir().join("sl-root");
         let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None);
-        let a = yt.base();
+        let a = yt.base(None);
         let after = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone()).unwrap_or_default();
         assert_eq!(after("--plugin-dirs"), root.join("yt-dlp").join("plugins").to_string_lossy());
         let deno = after("--js-runtimes");
         let path = deno.strip_prefix("deno:").expect("deno: prefix");
         assert!(Path::new(path).is_absolute() && path.ends_with("deno.exe"), "{deno}");
         assert_eq!(after("--extractor-args"), "youtube:player_client=mweb");
+        let b = yt.base(Some("web_embedded"));
+        assert_eq!(b[b.iter().position(|x| x == "--extractor-args").unwrap() + 1], "youtube:player_client=web_embedded");
     }
 
     #[test]
     fn cookies_go_in_as_one_separate_argument_only_when_set() {
         let yt = Ytdlp::new(&crate::paths::layout(&std::env::temp_dir().join("sl-root")), "mweb", None);
-        assert!(!yt.base().iter().any(|a| a.contains("cookies")), "{:?}", yt.base());
+        assert!(!yt.base(None).iter().any(|a| a.contains("cookies")), "{:?}", yt.base(None));
 
         *yt.cookies.lock().unwrap() = r"firefox:C:\Profiles\x y".into();
 
-        let a = yt.base();
+        let a = yt.base(None);
         let at = a.iter().position(|x| x == "--cookies-from-browser").expect("--cookies-from-browser");
         assert_eq!(a[at + 1], r"firefox:C:\Profiles\x y");
     }
@@ -382,7 +385,7 @@ mod tests {
     fn every_call_names_the_bundled_ffmpeg_for_the_merge() {
         let root = std::env::temp_dir().join("sl-root");
         let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None);
-        let a = yt.base();
+        let a = yt.base(None);
         let at = a.iter().position(|x| x == "--ffmpeg-location").expect("--ffmpeg-location");
         assert_eq!(a[at + 1], root.join("ffmpeg").join("ffmpeg.exe").to_string_lossy());
     }

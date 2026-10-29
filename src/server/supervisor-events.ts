@@ -165,7 +165,12 @@ export function describe(e: SupervisorEvent): Described {
     case 'playlist-recovered': return { message: 'Playlist loaded after an earlier failure' };
     case 'playlist-from-saved': return { message: `YouTube is not answering, so the saved playlist (${num(e, 'count')} videos) is used.` };
     case 'playlist-switch-failed': return { message: `Playlist switch failed: ${one(e.reason)}` };
-    case 'download-failed': return { message: `Download of video ${n} failed: ${one(e.reason)}` };
+    case 'download-failed': {
+      // The supervisor schedules the next round; one from before that leaves retryInS out.
+      const retry = num(e, 'retryInS');
+      const next = retry > 0 ? `; trying again in ${Math.max(1, Math.round(retry / 60))} min` : '';
+      return { message: `Download of video ${n} failed: ${one(e.reason)}${next}` };
+    }
     case 'resolve-failed': return { message: `Lookup of video ${n} failed: ${one(e.reason)}` };
     case 'url-refresh': return { message: `Refreshed the address of video ${n}` };
     case 'slate-stall': return { message: 'Standby slate stalled' };

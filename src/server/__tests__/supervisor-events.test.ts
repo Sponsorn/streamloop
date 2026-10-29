@@ -145,6 +145,16 @@ describe('describe', () => {
     expect(crit.discord).toMatchObject({ kind: 'critical', level: 'error' });
   });
 
+  it('says when a failed download is tried again', () => {
+    const reason = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
+
+    const scheduled = describeEvent(ev('download-failed', { index: 165, reason, retryInS: 3600 }, 'warn'));
+    const old = describeEvent(ev('download-failed', { index: 165, reason }, 'warn'));
+
+    expect(scheduled.message).toBe(`Download of video 166 failed: ${reason}; trying again in 60 min`);
+    expect(old.message).toBe(`Download of video 166 failed: ${reason}`);
+  });
+
   it('maps encoder-start to streamRestart only after an exit', () => {
     expect(describeEvent(ev('encoder-start', { generation: 1, restarts: 0 })).discord).toBeUndefined();
     expect(describeEvent(ev('encoder-start', { generation: 2, restarts: 1 })).discord).toMatchObject({ kind: 'streamRestart', vars: { attempts: 1 } });

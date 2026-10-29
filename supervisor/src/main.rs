@@ -306,7 +306,8 @@ pub enum Msg {
 
 enum Job {
     Size(usize, String),
-    Download(usize, String, Arc<AtomicBool>),
+    /// index, id, cancel, player client list for this try
+    Download(usize, String, Arc<AtomicBool>, String),
 }
 
 
@@ -315,8 +316,13 @@ struct Video {
     bytes: Option<u64>,
     on_disk: bool,
     disk_bytes: u64,
+    /// Tries in this download round, one per entry of `rules::download_clients`.
     dl_attempts: u32,
     dl_failed: bool,
+    /// When a video whose round failed is tried again; until then it stays `dl_failed`.
+    dl_retry_at: Option<Instant>,
+    /// Already counted toward `dl_fail_streak`, so its later rounds do not add to it.
+    dl_counted: bool,
     skipped: bool,
     retries: u32,
 }
@@ -1381,6 +1387,12 @@ impl Ctl {
         if self.videos.is_empty() || self.stopping {
             return;
         }
+        let now = Instant::now();
+        for v in &mut self.videos {
+            if v.dl_retry_at.is_some_and(|t| now >= t) {
+                (v.dl_failed, v.dl_retry_at) = (false, None);
+            }
+        }
         let reading = self.live.as_ref().filter(|f| f.source == Source::File).map(|f| self.file_of(f.index));
         self.strays.retain(|p| Some(p) == reading.as_ref() || (std::fs::remove_file(p).is_err() && p.exists()));
         let win = self.window();
@@ -1401,12 +1413,22 @@ impl Ctl {
             }
         }
 
+        // A failed download is asked for again on the next lap, once the viewer has passed it. The
+        // window leaves failed videos out, so "outside the window" alone would retry it at once.
+        let reach = {
+            let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
+            let skipped: Vec<bool> = self.videos.iter().map(|v| v.skipped).collect();
+            rules::window(view, &sizes, &skipped, self.settings.cache_budget_mb * 1_048_576)
+        };
         // Deletion by playout: anything outside the window that no feeder reads.
         for i in 0..self.n() {
             if !rules::deletable(i, &win, view, fed) || Some(i) == target {
                 continue;
             }
-            self.videos[i].dl_failed = false;
+            if !reach.contains(&i) {
+                let v = &mut self.videos[i];
+                (v.dl_failed, v.dl_retry_at, v.dl_counted) = (false, None, false);
+            }
             if !self.videos[i].on_disk || self.downloading.as_ref().is_some_and(|d| d.0 == i) {
                 continue;
             }
@@ -1439,7 +1461,9 @@ impl Ctl {
         } else {
             let cancel = Arc::new(AtomicBool::new(false));
             self.downloading = Some((i, 0.0, cancel.clone()));
-            let _ = self.jobs.send(Job::Download(i, self.id(i), cancel));
+            let clients = rules::download_clients(&self.settings.player_client);
+            let client = clients[(self.videos[i].dl_attempts as usize).min(clients.len() - 1)].clone();
+            let _ = self.jobs.send(Job::Download(i, self.id(i), cancel, client));
         }
     }
 
@@ -1545,12 +1569,13 @@ impl Ctl {
                     v.disk_bytes = bytes;
                     v.bytes = Some(bytes);
                     v.dl_attempts = 0;
+                    (v.dl_retry_at, v.dl_counted) = (None, false);
                     self.dl_fail_streak = 0;
                     "done"
                 } else {
                     v.dl_attempts += 1;
                     self.dl_after = Instant::now() + Duration::from_secs(5);
-                    if v.dl_attempts >= 2 {
+                    if v.dl_attempts as usize >= rules::download_clients(&self.settings.player_client).len() {
                         v.dl_failed = true;
                         v.dl_attempts = 0;
                         "skip"
@@ -1559,10 +1584,17 @@ impl Ctl {
                     }
                 };
                 if result == "skip" {
-                    // A video that cannot be downloaded plays from its URL; many in a row is systemic
-                    // (the merge, the token server, a player client) and needs a human.
-                    self.dl_fail_streak += 1;
-                    self.logs.event("warn", "download-failed", json!({"index": index, "id": self.id(index), "reason": reason, "inARow": self.dl_fail_streak}));
+                    // Tried again later, sooner as its turn comes; until then it plays from its URL if it airs.
+                    let (view, pos, _) = self.view();
+                    let durations: Vec<Option<f64>> = self.videos.iter().map(|v| v.entry.duration).collect();
+                    let wait = rules::download_retry_s(rules::until_needed_s(view, pos, index, &durations));
+                    self.videos[index].dl_retry_at = Some(Instant::now() + Duration::from_secs(wait));
+                    // Many videos in a row is systemic (the merge, the token server, a player client) and
+                    // needs a human; one video's later rounds count once.
+                    if !std::mem::replace(&mut self.videos[index].dl_counted, true) {
+                        self.dl_fail_streak += 1;
+                    }
+                    self.logs.event("warn", "download-failed", json!({"index": index, "id": self.id(index), "reason": reason, "inARow": self.dl_fail_streak, "retryInS": wait}));
                     if self.dl_fail_streak == DOWNLOAD_FAILS_CRITICAL {
                         self.logs.event("critical", "downloads-failing", json!({"inARow": self.dl_fail_streak, "reason": reason}));
                     }
@@ -1652,7 +1684,7 @@ impl Ctl {
     /// new list has it, else at the same index clamped to the list.
     fn load_list(&mut self, id: String, entries: Vec<Entry>, first: bool, at: Option<(String, usize, f64)>) {
         self.from_saved = false;
-        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
+        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }).collect();
         let old = std::mem::replace(&mut self.videos, new);
         self.playlist = id.clone();
         self.logs.event("info", "playlist", json!({"playlistId": id, "count": self.n()}));
@@ -2130,11 +2162,11 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 let result = yt.resolve(&id, &logs);
                 let _ = tx.send(Msg::Resolved { index, id, purpose: Purpose::Size, result });
             }
-            Job::Download(index, id, cancel) => {
+            Job::Download(index, id, cancel, client) => {
                 let started = Instant::now();
                 let file = cache.join(format!("{id}.mp4"));
                 let mut last = -1.0;
-                let out = yt.download(&id, &file, &logs, &cancel, |_| {}, |p| {
+                let out = yt.download(&client, &id, &file, &logs, &cancel, |_| {}, |p| {
                     if p - last >= 1.0 || p >= 100.0 {
                         last = p;
                         let _ = tx.send(Msg::DlProgress { index, percent: p });
@@ -2360,7 +2392,7 @@ mod tests {
         let (jobs, _) = channel();
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
         ctl.playlist_wanted = false;
-        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, skipped: false, retries: 0 }).collect();
+        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }).collect();
         ctl
     }
 
@@ -2708,6 +2740,63 @@ mod tests {
         let count = |level: &str, kind: &str| ev.iter().filter(|(l, k)| l == level && k == kind).count();
         assert_eq!(count("warn", "download-failed"), 4, "{ev:?}");
         assert_eq!(count("critical", "downloads-failing"), 1, "{ev:?}");
+    }
+
+    /// On the box a video refused with a 403 was cleared as "outside the window" and downloaded again every 35 s.
+    #[test]
+    fn a_failed_download_stays_failed_while_it_is_still_ahead_of_the_viewer() {
+        let (mut ctl, ahead) = forbidden_ctl("dl-failed-stays");
+
+        fail_round(&mut ctl, ahead);
+        ctl.cache_work();
+
+        assert!(ctl.videos[ahead].dl_failed, "a failed video still ahead of the viewer is asked for again");
+        assert_ne!(ctl.downloading.as_ref().map(|d| d.0), Some(ahead));
+        // 100 s until it airs: a quarter of that is under the 2 min floor.
+        let wait = ctl.videos[ahead].dl_retry_at.unwrap() - Instant::now();
+        assert!((118..=120).contains(&wait.as_secs()), "{wait:?}");
+
+        ctl.videos[ahead].dl_retry_at = Some(Instant::now() - Duration::from_secs(1));
+        ctl.dl_after = Instant::now() - Duration::from_secs(1);
+        ctl.cache_work();
+
+        assert_eq!(ctl.downloading.as_ref().map(|d| d.0), Some(ahead), "the scheduled retry never came");
+        assert_eq!(ctl.videos[ahead].dl_attempts, 0, "a new round starts with the full client list");
+    }
+
+    #[test]
+    fn a_round_tries_each_client_and_one_video_counts_once_toward_the_critical() {
+        let (mut ctl, ahead) = forbidden_ctl("dl-failed-once");
+
+        for _ in 0..3 {
+            fail_round(&mut ctl, ahead);
+        }
+
+        let ev = events(&ctl);
+        assert_eq!(ev.iter().filter(|(_, k)| k == "download-failed").count(), 3, "{ev:?}");
+        assert!(!ev.iter().any(|(_, k)| k == "downloads-failing"), "one video tripped the critical: {ev:?}");
+        assert_eq!(ctl.dl_fail_streak, 1);
+    }
+
+    /// Four 100 s videos, sizes known, the one on air on disk, both clients configured; returns the video after it.
+    fn forbidden_ctl(name: &str) -> (Ctl, usize) {
+        let mut ctl = test_ctl(name, &["a", "b", "c", "d"]);
+        ctl.settings.cache_budget_mb = 50;
+        ctl.settings.player_client = "mweb,web_embedded".into();
+        for v in &mut ctl.videos {
+            v.bytes = Some(1_000);
+        }
+        let view = ctl.view().0;
+        (ctl.videos[view].on_disk, ctl.videos[view].disk_bytes) = (true, 1_000);
+        (ctl, (view + 1) % 4)
+    }
+
+    /// One round: the list, then mweb, then web_embedded, each refused.
+    fn fail_round(ctl: &mut Ctl, index: usize) {
+        for _ in 0..3 {
+            assert!(ctl.videos[index].dl_attempts < 3);
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into() });
+        }
     }
 
     #[test]
