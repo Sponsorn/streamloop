@@ -1,3 +1,14 @@
+## v3.0.4
+
+A prerelease for trial, not marked latest. 2.x installs do not update to it.
+
+- **Twitch's 48-hour cut is no longer reported as a stream drop.** Twitch ends a broadcast after 48 hours, and StreamLoop reconnects within seconds. That reconnect used to send "Stream stopped unexpectedly" and "Stream restarted successfully" to Discord. It now shows on the timeline only: "Twitch ended the stream at its 48 hour limit". If the reconnect fails three times in a row, Discord still gets the alert.
+- **A video YouTube refuses to download is no longer asked for every 35 seconds.** On the box, one video got "HTTP Error 403: Forbidden" and was downloaded again every 35 seconds, around the clock, which also set off "3 downloads failed in a row" on its own. Now each download tries the player clients from Settings together, then one at a time, since YouTube can refuse a video to one client and serve it to another. If all of them fail, it waits before trying again: up to an hour while the video is far off, down to 2 minutes as its turn comes. The timeline says when the next try is. "Downloads failed in a row" counts each video once.
+- **The Startup toggle can take autostart over from another install.** When autostart pointed at the 2.x install, the toggle showed as on and only offered to turn it off, which it then refused. It now shows as off in that case, and turning it on moves autostart to this install.
+- **This release changes the supervisor, so install the full ZIP**, the same way as 3.0.3: press Stop, close the window, extract the ZIP to a separate folder, copy what is inside its `streamloop` folder over the install, start it again and press Start. Settings, the stream key and `data\` are kept. With the update alone, only the Startup toggle fix applies.
+
+---
+
 ## v3.0.3
 
 A prerelease for trial, not marked latest. 2.x installs do not update to it.
