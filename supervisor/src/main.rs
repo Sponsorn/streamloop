@@ -1081,7 +1081,7 @@ impl Ctl {
         self.step_offset = BASE;
         self.count("encoderExits");
         let level = if self.enc.failures >= 3 { "critical" } else { "warn" };
-        self.logs.event(level, "encoder-exit", json!({"why": why, "code": code, "failures": self.enc.failures, "restartInS": wait, "resumeIndex": index, "resumePos": pos}));
+        self.logs.event(level, "encoder-exit", json!({"why": why, "code": code, "failures": self.enc.failures, "restartInS": wait, "resumeIndex": index, "resumePos": pos, "uptimeS": self.enc.started.elapsed().as_secs()}));
         // A control (or playlist switch) waiting to be fed is what the viewer asked for next.
         if !self.stopping && self.target.as_ref().is_none_or(|t| t.reason != "control") {
             self.set_target(index, pos, "encoder-restart", false);

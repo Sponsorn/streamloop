@@ -43,6 +43,9 @@ function critical(message: string, timeline = message): Described {
   return { message: timeline, discord: { kind: 'critical', vars: { message }, level: 'error' } };
 }
 
+/** Twitch cuts a broadcast at 48 h; an encoder that ran this long and then dropped hit that limit. */
+const TWITCH_LIMIT_S = 47.5 * 3600;
+
 /** One per video, seam or probe: they would push everything else out of the 100-entry timeline. */
 const QUIET = new Set(['feeder-start', 'handover', 'spare-resolve', 'spare-used', 'youtube-probe', 'download-cancel']);
 
@@ -53,6 +56,9 @@ export function describe(e: SupervisorEvent): Described {
   switch (e.kind) {
     case 'encoder-exit': {
       const failures = num(e, 'failures');
+      if (failures === 1 && num(e, 'uptimeS') >= TWITCH_LIMIT_S) {
+        return { message: `Twitch ended the stream at its 48 hour limit; restarting in ${num(e, 'restartInS')}s` };
+      }
       const msg = `Encoder stopped (${one(e.why)}); restarting in ${num(e, 'restartInS')}s`;
       if (e.level === 'critical') return critical(`The encoder has stopped ${failures} times in a row (${one(e.why)}).`, msg);
       // 3 failures in a row is where the supervisor goes critical, so it is the limit shown here.
@@ -204,7 +210,8 @@ export class AlertGate {
         const failures = num(e, 'failures');
         // 1 is the drop, 3 the critical; 2 and everything past 3 are timeline only.
         if (failures !== 1 && failures !== 3) return drop();
-        this.encoderAlerted = true;
+        // The 48 h cut sends nothing, so its restart sends nothing either.
+        if (d.discord) this.encoderAlerted = true;
         return d;
       }
       case 'encoder-spawn-failed':

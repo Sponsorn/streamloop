@@ -340,6 +340,27 @@ describe('AlertGate', () => {
     expect(got).toEqual(['critical', undefined, undefined, 'streamRestart', 'critical']);
   });
 
+  it('treats a drop after 48 hours of encoding as Twitch ending the stream, not an outage', () => {
+    // The box's run of 2026-10-29: the encoder had run 48 h when Twitch closed the socket.
+    const cut = ev('encoder-exit', { why: 'exited (exit code: 0xffffd8bb)', code: -10053, failures: 1, restartInS: 2, uptimeS: 172802 }, 'warn');
+
+    const got = kinds(new AlertGate(), [cut, ev('encoder-start', { generation: 1, restarts: 1 })]);
+
+    expect(got).toEqual([undefined, undefined]);
+    expect(describeEvent(cut).message).toBe('Twitch ended the stream at its 48 hour limit; restarting in 2s');
+  });
+
+  it('still alerts when the restart after the 48 hour cut keeps failing', () => {
+    const got = kinds(new AlertGate(), [
+      ev('encoder-exit', { why: 'x', failures: 1, restartInS: 2, uptimeS: 172802 }, 'warn'),
+      ev('encoder-exit', { why: 'x', failures: 2, restartInS: 5, uptimeS: 1 }, 'warn'),
+      ev('encoder-exit', { why: 'x', failures: 3, restartInS: 10, uptimeS: 1 }, 'critical'),
+      ev('encoder-start', { restarts: 4 }),
+    ]);
+
+    expect(got).toEqual([undefined, undefined, 'critical', 'streamRestart']);
+  });
+
   it('sends no restart for a start that follows no alert', () => {
     expect(new AlertGate().describe(ev('encoder-start', { restarts: 2 })).discord).toBeUndefined();
   });
