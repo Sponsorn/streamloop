@@ -296,6 +296,17 @@ pub fn ping(port: u16) -> bool {
     s.read_exact(&mut buf).is_ok() && buf.starts_with(b"HTTP/1.") && &buf[9..12] == b"200"
 }
 
+/// Drops the token server's cached session data and minters, so its next token comes from a new minter.
+pub fn invalidate_token_caches(port: u16) -> bool {
+    let Ok(mut s) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(2)) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+    if s.write_all(b"POST /invalidate_caches HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 12];
+    s.read_exact(&mut buf).is_ok() && buf.starts_with(b"HTTP/1.") && buf[9] == b'2'
+}
+
 pub fn spawn_token_server(node: &Path, script: &Path, port: u16, logs: &Logs) -> std::io::Result<Child> {
     let mut child = command(node).arg(script).args(["-H", "127.0.0.1", "-p", &port.to_string()]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)].into_iter().flatten() {
@@ -333,6 +344,25 @@ mod tests {
         assert_eq!(r.headers, "User-Agent: UA\r\n");
         assert_eq!((r.bytes, r.expire, r.duration, r.available_at), (Some(120), Some(1790000000), Some(596.5), Some(1790000006)));
         assert!(parse_resolved(r#"{"title":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn clearing_the_token_caches_posts_to_invalidate_caches() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut req = [0u8; 64];
+            let n = c.read(&mut req).unwrap();
+            c.write_all(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap();
+            String::from_utf8_lossy(&req[..n]).into_owned()
+        });
+
+        let cleared = invalidate_token_caches(port);
+
+        assert!(cleared);
+        assert!(server.join().unwrap().starts_with("POST /invalidate_caches HTTP/1.0"));
+        assert!(!invalidate_token_caches(1), "nothing listens on port 1");
     }
 
     #[test]

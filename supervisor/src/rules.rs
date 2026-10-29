@@ -462,9 +462,41 @@ pub fn download_retry_s(until_needed_s: Option<f64>) -> u64 {
     until_needed_s.map_or(600, |t| (t / 4.0).clamp(120.0, 3600.0) as u64)
 }
 
+/// Token-backed downloads refused in a row before the token server's caches are cleared.
+pub const TOKEN_REFUSALS_CLEAR: u32 = 2;
+pub const TOKEN_CLEAR_GAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Clear the token server's minters once refusals pile up, at most once per 30 min: on the box a
+/// refreshed minter's tokens were all refused while yesterday's refreshes worked.
+pub fn clear_token_caches(refusals: u32, since_last_clear: Option<std::time::Duration>) -> bool {
+    refusals >= TOKEN_REFUSALS_CLEAR && since_last_clear.is_none_or(|d| d >= TOKEN_CLEAR_GAP)
+}
+
+/// A try that got a PO token and still a 403: what clearing the minters can help with.
+pub fn token_refused(used_token: bool, reason: &str) -> bool {
+    used_token && reason.contains("HTTP Error 403")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_caches_clear_after_two_refusals_and_not_again_within_30_min() {
+        let min = |m: u64| Some(std::time::Duration::from_secs(m * 60));
+        assert!(!clear_token_caches(1, None));
+        assert!(clear_token_caches(2, None));
+        assert!(!clear_token_caches(5, min(29)));
+        assert!(clear_token_caches(2, min(30)));
+    }
+
+    #[test]
+    fn only_a_403_on_a_try_that_used_a_token_counts_as_a_refusal() {
+        let forbidden = "ERROR: unable to download video data: HTTP Error 403: Forbidden";
+        assert!(token_refused(true, forbidden));
+        assert!(!token_refused(false, forbidden), "web_embedded uses no token");
+        assert!(!token_refused(true, "ERROR: Postprocessing: ffmpeg not found"));
+    }
 
     #[test]
     fn a_download_round_tries_each_client_alone() {

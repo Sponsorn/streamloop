@@ -186,6 +186,12 @@ export function describe(e: SupervisorEvent): Described {
     case 'token-server-adopt': return { message: 'Token server already running' };
     case 'token-server-down': return { message: 'Token server stopped answering' };
     case 'token-server-restart': return { message: 'Token server restarted' };
+    case 'token-caches-cleared':
+      return {
+        message: e.ok === false
+          ? `YouTube refused ${num(e, 'refusals')} downloads with a token, and the token server's cache could not be cleared`
+          : `YouTube refused ${num(e, 'refusals')} downloads with a token, so the token server starts over with new tokens`,
+      };
     case 'token-server-spawn-failed': return critical(`The token server could not start: ${one(e.error)}`, `Token server could not start: ${one(e.error)}`);
     default:
       // A kind this table does not know still reaches Discord when the supervisor calls it critical.

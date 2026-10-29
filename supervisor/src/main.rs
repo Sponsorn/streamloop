@@ -301,7 +301,7 @@ pub enum Msg {
     EncProgress { generation: u64, media: f64, speed: Option<f64> },
     Detect { generation: u64, d: Detect },
     DlProgress { index: usize, percent: f64 },
-    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String },
+    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String, used_token: bool },
 }
 
 enum Job {
@@ -523,6 +523,9 @@ struct Ctl {
     hold: rules::SkipHold,
     /// Videos in a row whose download failed for good.
     dl_fail_streak: u32,
+    /// Token-backed download tries refused in a row, and when the token server's caches were last cleared.
+    token_refusals: u32,
+    token_cleared_at: Option<Instant>,
     /// Feeder spawn failures in a row, and when the next spawn may run.
     feeder_fails: u32,
     feeder_after: Instant,
@@ -614,6 +617,8 @@ impl Ctl {
             consecutive_skips: 0,
             hold: rules::SkipHold::default(),
             dl_fail_streak: 0,
+            token_refusals: 0,
+            token_cleared_at: None,
             feeder_fails: 0,
             feeder_after: now,
             control_seq: 0,
@@ -1544,7 +1549,7 @@ impl Ctl {
                     d.1 = percent;
                 }
             }
-            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client } => {
+            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client, used_token } => {
                 self.downloading = None;
                 if !cancelled {
                     self.breaker_result(ok, rules::is_bot_check(&reason), false, false, &reason);
@@ -1597,6 +1602,20 @@ impl Ctl {
                     self.logs.event("warn", "download-failed", json!({"index": index, "id": self.id(index), "reason": reason, "inARow": self.dl_fail_streak, "retryInS": wait}));
                     if self.dl_fail_streak == DOWNLOAD_FAILS_CRITICAL {
                         self.logs.event("critical", "downloads-failing", json!({"inARow": self.dl_fail_streak, "reason": reason}));
+                    }
+                }
+                if ok && used_token {
+                    self.token_refusals = 0;
+                } else if rules::token_refused(used_token, &reason) {
+                    self.token_refusals += 1;
+                    if rules::clear_token_caches(self.token_refusals, self.token_cleared_at.map(|t| t.elapsed())) {
+                        let refusals = std::mem::take(&mut self.token_refusals);
+                        self.token_cleared_at = Some(Instant::now());
+                        let logs = self.logs.clone();
+                        std::thread::spawn(move || {
+                            let cleared = ytdlp::invalidate_token_caches(TOKEN_PORT);
+                            logs.event(if cleared { "info" } else { "warn" }, "token-caches-cleared", json!({"refusals": refusals, "ok": cleared}));
+                        });
                     }
                 }
                 let attempt = self.videos[index].dl_attempts;
@@ -2182,7 +2201,8 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 }
                 let bytes = if ok { std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) } else { 0 };
                 let reason = if ok || out.cancelled { String::new() } else { ytdlp::describe_error(&out.stderr, None) };
-                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client });
+                let used_token = out.stdout.contains("[pot");
+                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client, used_token });
             }
         }
     }
@@ -2727,7 +2747,7 @@ mod tests {
         let mut ctl = test_ctl("dl-failed", &["a", "b", "c", "d"]);
         let fail = |ctl: &mut Ctl, index: usize, id: &str| {
             for _ in 0..2 {
-                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new() });
+                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new(), used_token: false });
             }
         };
 
@@ -2776,6 +2796,9 @@ mod tests {
         assert_eq!(ev.iter().filter(|(_, k)| k == "download-failed").count(), 3, "{ev:?}");
         assert!(!ev.iter().any(|(_, k)| k == "downloads-failing"), "one video tripped the critical: {ev:?}");
         assert_eq!(ctl.dl_fail_streak, 1);
+        // Rounds 1 and 2 each had an mweb try refused with a token: cleared once, then counting again.
+        assert!(ctl.token_cleared_at.is_some(), "two token refusals did not clear the token server's caches");
+        assert_eq!(ctl.token_refusals, 1, "round 3's refusal counts toward the next clear");
         let csv = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("downloads-")).unwrap();
         let clients: Vec<String> = std::fs::read_to_string(csv.path()).unwrap().lines().map(|l| l.rsplit(',').next().unwrap().to_string()).collect();
         assert_eq!(clients[..2], ["mweb", "web_embedded"], "each row names the client it tried");
@@ -2798,7 +2821,7 @@ mod tests {
     fn fail_round(ctl: &mut Ctl, index: usize) {
         for client in ["mweb", "web_embedded"] {
             assert!(ctl.videos[index].dl_attempts < 2);
-            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into() });
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into(), used_token: client == "mweb" });
         }
     }
 

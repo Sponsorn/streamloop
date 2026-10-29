@@ -145,6 +145,15 @@ describe('describe', () => {
     expect(crit.discord).toMatchObject({ kind: 'critical', level: 'error' });
   });
 
+  it('notes a token cache clear on the timeline only', () => {
+    const cleared = describeEvent(ev('token-caches-cleared', { refusals: 2, ok: true }));
+    const failed = describeEvent(ev('token-caches-cleared', { refusals: 2, ok: false }, 'warn'));
+
+    expect(cleared).toEqual({ message: 'YouTube refused 2 downloads with a token, so the token server starts over with new tokens' });
+    expect(failed.message).toBe("YouTube refused 2 downloads with a token, and the token server's cache could not be cleared");
+    expect(failed.discord).toBeUndefined();
+  });
+
   it('says when a failed download is tried again', () => {
     const reason = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
 
