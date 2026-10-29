@@ -17,7 +17,7 @@ import { join, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
-import { TOKEN_SERVER_PING, FFMPEG, FFPROBE, PLAYLIST, redact } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_SERVER_PING, FFMPEG, FFPROBE, PLAYLIST, redact } from './lib.mjs';
 import { makeDevRoot } from './dev-root.mjs';
 
 // Every child hidden: nothing this script starts may show a window.
@@ -256,7 +256,7 @@ function gapStats(fromMs, toMs) {
 function supEvents() {
   const dir = join(DATA, 'logs');
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((n) => /^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).sort()
+  return dailyFiles(readdirSync(dir), EVENTS, 'jsonl')
     .flatMap((n) => readFileSync(join(dir, n), 'utf8').split(/\r?\n/).filter(Boolean))
     .map((l) => { try { const e = JSON.parse(l); return { ...e, ms: Date.parse(e.ts) }; } catch { return null; } }).filter(Boolean);
 }

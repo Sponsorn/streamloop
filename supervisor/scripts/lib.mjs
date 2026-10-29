@@ -133,12 +133,16 @@ export function leaks(processes, root = null) {
   });
 }
 
-/** The supervisor's daily logs of one kind (`events-2026-10-23.jsonl`), oldest first. A run that
- *  crosses midnight has two. The `encoder-` prefix is shared with the per-process
+/** The supervisor's events log: `supervisor-events-DATE.jsonl` from 3.0.5, `events-DATE.jsonl` before. */
+export const EVENTS = '(?:supervisor-)?events';
+
+/** The supervisor's daily logs of one kind (`encoder-2026-10-23.csv`), oldest first by the date in
+ *  the name. A run that crosses midnight has two. The `encoder-` prefix is shared with the per-process
  *  `encoder-YYYYMMDD-HHMMSS-gen.log` files, which the exact date pattern leaves out. */
 export function dailyFiles(names, base, ext) {
-  const re = new RegExp(`^${base}-\\d{4}-\\d{2}-\\d{2}\\.${ext}$`);
-  return names.filter((n) => re.test(n)).sort();
+  const re = new RegExp(`^${base}-(\\d{4}-\\d{2}-\\d{2})\\.${ext}$`);
+  const dated = names.map((n) => [n, re.exec(n)?.[1]]).filter(([, d]) => d);
+  return dated.sort(([a, da], [b, db]) => da.localeCompare(db) || a.localeCompare(b)).map(([n]) => n);
 }
 
 export function redact(text, secret) {

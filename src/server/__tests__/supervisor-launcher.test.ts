@@ -54,13 +54,13 @@ afterEach(() => {
 });
 
 describe('SupervisorLauncher', () => {
-  it('shows why the supervisor refused config.json when it exits 3', async () => {
+  it.each(['supervisor-events', 'events'])('shows why the supervisor refused config.json when it exits 3 (%s log)', async (base) => {
     // Arrange
     const { launcher, children } = setup();
     const d = new Date();
     const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     mkdirSync(join(root, 'data', 'logs'), { recursive: true });
-    writeFileSync(join(root, 'data', 'logs', `events-${date}.jsonl`),
+    writeFileSync(join(root, 'data', 'logs', `${base}-${date}.jsonl`),
       [
         { ts: 't', level: 'critical', kind: 'config-refused', reason: 'old' },
         { ts: 't', level: 'info', kind: 'start' },

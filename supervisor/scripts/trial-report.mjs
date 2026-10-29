@@ -5,7 +5,7 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dailyFiles, parseCsv, cpuRows, median } from './lib.mjs';
+import { dailyFiles, EVENTS, parseCsv, cpuRows, median } from './lib.mjs';
 
 const ENCODER_COLUMNS = ['wallMs', 'us', 'speed', 'generation', 'speedNum', 'encoderCpu', 'feederCpu', 'systemCpu'];
 const DOWN = new Set(['encoder-exit', 'encoder-spawn-failed', 'shutdown']);
@@ -115,7 +115,7 @@ function main() {
   };
   const names = readdirSync(dir);
   const read = (base, ext) => dailyFiles(names, base, ext).map((f) => readFileSync(join(dir, f), 'utf8'));
-  const files = { events: read('events', 'jsonl'), encoderCsv: read('encoder', 'csv') };
+  const files = { events: read(EVENTS, 'jsonl'), encoderCsv: read('encoder', 'csv') };
   const times = files.events.flatMap((t) => t.split(/\r?\n/).filter(Boolean).map((l) => Date.parse(JSON.parse(l).ts)));
   const from = flag('--from') ?? Math.min(...times);
   const to = flag('--to') ?? Math.max(...times);

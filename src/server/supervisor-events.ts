@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, statSync } from 'fs';
+import { closeSync, existsSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import type { DiscordConfig } from './types.js';
 import { logger } from './logger.js';
@@ -280,6 +280,13 @@ function localDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** The supervisor's events file for a day: supervisor-events-DATE.jsonl from 3.0.5, events-DATE.jsonl
+ *  before. An update ZIP can put this Node beside an older supervisor, so both are read. */
+export function supervisorEventsFile(logsDir: string, date: string): string {
+  const current = join(logsDir, `supervisor-events-${date}.jsonl`);
+  return existsSync(current) ? current : join(logsDir, `events-${date}.jsonl`);
+}
+
 export interface SupervisorEventsOptions {
   /** The supervisor's own `data\logs` folder, never Node's `logs\`. */
   logsDir: string;
@@ -293,6 +300,8 @@ export class SupervisorEvents {
   private timer: ReturnType<typeof setInterval> | null = null;
   private date = '';
   private offset = 0;
+  /** The file the offset belongs to; a supervisor that switches to the new name starts it from 0. */
+  private path = '';
   private warnedFile = '';
   private readonly now: () => Date;
 
@@ -301,18 +310,19 @@ export class SupervisorEvents {
   }
 
   private file(date: string): string {
-    return join(this.opts.logsDir, `events-${date}.jsonl`);
+    return supervisorEventsFile(this.opts.logsDir, date);
   }
 
-  private size(date: string): number {
-    try { return statSync(this.file(date)).size; } catch { return -1; }
+  private size(path: string): number {
+    try { return statSync(path).size; } catch { return -1; }
   }
 
   start(): void {
     if (this.timer) return;
     this.date = localDate(this.now());
     // No replay: begin at the end of today's file.
-    this.offset = Math.max(0, this.size(this.date));
+    this.path = this.file(this.date);
+    this.offset = Math.max(0, this.size(this.path));
     this.timer = setInterval(() => this.poll(), this.opts.intervalMs ?? 2000);
     this.timer.unref();
   }
@@ -339,12 +349,17 @@ export class SupervisorEvents {
   }
 
   private readNew(): void {
-    const size = this.size(this.date);
+    const path = this.file(this.date);
+    if (path !== this.path) {
+      this.path = path;
+      this.offset = 0;
+    }
+    const size = this.size(path);
     if (size < 0) return;
     if (size < this.offset) this.offset = 0;
     if (size === this.offset) return;
     const buf = Buffer.alloc(size - this.offset);
-    const fd = openSync(this.file(this.date), 'r');
+    const fd = openSync(path, 'r');
     try {
       readSync(fd, buf, 0, buf.length, this.offset);
     } finally {
@@ -361,7 +376,7 @@ export class SupervisorEvents {
       } catch {
         if (this.warnedFile !== this.date) {
           this.warnedFile = this.date;
-          logger.warn({ file: this.file(this.date) }, 'Skipping an unparseable supervisor event line');
+          logger.warn({ file: path }, 'Skipping an unparseable supervisor event line');
         }
         continue;
       }

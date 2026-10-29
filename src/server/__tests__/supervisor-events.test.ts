@@ -36,6 +36,24 @@ describe('SupervisorEvents', () => {
     expect(seen).toEqual(['a', 'b']);
   });
 
+  it('follows a supervisor that switches to supervisor-events mid-day and reads the new file from its start', async () => {
+    // Arrange: an old supervisor wrote events-DATE.jsonl; the new one starts after a full-ZIP install.
+    const old = join(dir, 'events-2026-10-25.jsonl');
+    writeFileSync(old, line('old-history') + line('old-history'));
+    const bridge = make();
+    bridge.start();
+    appendFileSync(old, line('old-last'));
+    await bridge.poll();
+
+    // Act
+    writeFileSync(join(dir, 'supervisor-events-2026-10-25.jsonl'), line('new-first'));
+    await bridge.poll();
+    bridge.stop();
+
+    // Assert
+    expect(seen).toEqual(['old-last', 'new-first']);
+  });
+
   it('holds a half-written line until it is finished', async () => {
     const f = join(dir, 'events-2026-10-25.jsonl');
     writeFileSync(f, '');

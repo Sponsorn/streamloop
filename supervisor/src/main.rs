@@ -2637,7 +2637,7 @@ mod tests {
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 12.0, "encoder-restart")), "does not resume at P_view");
         let ev = events(&ctl);
         assert!(ev.contains(&("info".into(), "encoder-restart-requested".into())) && ev.iter().any(|(_, k)| k == "encoder-exit"), "{ev:?}");
-        let log = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("events-")).unwrap();
+        let log = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("supervisor-events-")).unwrap();
         assert!(std::fs::read_to_string(log.path()).unwrap().contains("twitch shows the channel offline"));
         assert_eq!(ctl.control("restart-encoder", None, None), Ok(json!({"accepted": true, "alreadyRestarting": true})), "a restart is already pending");
         ctl.waiting_for_key = true;
@@ -2738,7 +2738,7 @@ mod tests {
 
     /// (level, kind) of every event the test control loop logged.
     fn events(ctl: &Ctl) -> Vec<(String, String)> {
-        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("events-"));
+        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("supervisor-events-"));
         file.map_or(String::new(), |f| std::fs::read_to_string(f.path()).unwrap()).lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).map(|v| (v["level"].as_str().unwrap().to_string(), v["kind"].as_str().unwrap().to_string())).collect()
     }
 
@@ -3012,7 +3012,7 @@ mod tests {
     }
 
     fn event_lines(ctl: &Ctl, kind: &str) -> Vec<Value> {
-        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("events-"));
+        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("supervisor-events-"));
         let text = file.map_or(String::new(), |f| std::fs::read_to_string(f.path()).unwrap());
         text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|v| v["kind"] == kind).collect()
     }
@@ -3219,7 +3219,7 @@ mod tests {
 
     fn refused_events(args: &Args) -> Vec<Value> {
         let dir = args.paths.data.join("logs");
-        let text: String = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("events-")).map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
+        let text: String = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("supervisor-events-")).map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
         text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|v| v["kind"] == "config-refused").collect()
     }
 

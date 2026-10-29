@@ -1,5 +1,5 @@
 //! The supervisor's logs under `data\logs\`, bounded for 24/7 running. Growing files are daily
-//! (`events-2026-10-23.jsonl`), ffmpeg process logs are one file per process, `run.json` is a single file.
+//! (`supervisor-events-2026-10-23.jsonl`), ffmpeg process logs are one file per process, `run.json` is a single file.
 //! Days are local time, so a name matches the clock on the box.
 
 use crate::config;
@@ -13,7 +13,8 @@ pub const KEEP_DAYS: u32 = 7;
 /// Per-process ffmpeg logs kept, newest first (2.x kept the last 10 mpv logs).
 pub const KEEP_PROCESS_LOGS: usize = 10;
 /// Bases of the daily files. Anything else in the folder is never pruned.
-const DAILY: [&str; 9] = ["events", "seams", "controls", "encoder", "downloads", "deletes", "ytdlp", "buffer", "tokenserver"];
+/// "events" is the events log's name before 3.0.5, kept so old files still age out.
+const DAILY: [&str; 10] = ["supervisor-events", "events", "seams", "controls", "encoder", "downloads", "deletes", "ytdlp", "buffer", "tokenserver"];
 /// Prefixes of the per-process logs: `encoder-<stamp>-<generation>.log`, `feeder-<stamp>-<seq>.log`.
 const PROCESS: [&str; 2] = ["encoder", "feeder"];
 
@@ -186,7 +187,8 @@ impl Logs {
             m.extend(e);
         }
         echo(&mut std::io::stderr().lock(), &format!("{level:8} {kind} {}", self.redact(&v.to_string())));
-        self.daily("events", "jsonl", &format!("{v}\n"));
+        // Named apart from Node's own events-DATE.jsonl, so both can sit in one folder.
+        self.daily("supervisor-events", "jsonl", &format!("{v}\n"));
     }
     /// Prune old files; failures become one warn event and never stop the supervisor.
     pub fn prune(&self) {
@@ -286,7 +288,7 @@ mod tests {
     #[test]
     fn prune_counts_across_month_and_year_ends() {
         let dir = temp("calendar");
-        for n in ["events-2026-12-24.jsonl", "events-2026-12-25.jsonl", "events-2025-12-31.jsonl"] {
+        for n in ["events-2026-12-24.jsonl", "events-2026-12-25.jsonl", "events-2025-12-31.jsonl", "supervisor-events-2026-12-24.jsonl", "supervisor-events-2026-12-25.jsonl"] {
             std::fs::write(dir.join(n), "x").unwrap();
         }
 
@@ -294,7 +296,7 @@ mod tests {
 
         let left = names(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(left, ["events-2026-12-25.jsonl"]);
+        assert_eq!(left, ["events-2026-12-25.jsonl", "supervisor-events-2026-12-25.jsonl"], "both names age out");
     }
 
     #[test]

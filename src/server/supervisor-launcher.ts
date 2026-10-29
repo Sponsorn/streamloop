@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { logger } from './logger.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import type { SupervisorClient } from './supervisor-client.js';
+import { supervisorEventsFile } from './supervisor-events.js';
 
 export type LauncherState = 'missing' | 'starting' | 'running' | 'stopped-by-user' | 'down';
 export type LauncherEvent = 'supervisor-launched' | 'supervisor-down' | 'supervisor-back' | 'supervisor-missing';
@@ -41,7 +42,7 @@ export function lastConfigRefusal(root: string, now: Date = new Date()): string 
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   let text: string;
   try {
-    text = readFileSync(join(root, 'data', 'logs', `events-${date}.jsonl`), 'utf-8');
+    text = readFileSync(supervisorEventsFile(join(root, 'data', 'logs'), date), 'utf-8');
   } catch {
     return null;
   }

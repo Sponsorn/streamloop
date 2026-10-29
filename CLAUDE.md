@@ -81,7 +81,7 @@ Back to 3.0: close 2.x and OBS, start 3.0's `START.bat`, press Start. Until Star
 **Node backend + supervisor + admin dashboard.** `ARCHITECTURE.md` has the diagram, the supervisor's interface and the main flows.
 
 - **Server** (`src/server/`): Express app on 127.0.0.1:7654. `index.ts` wires the components by dependency injection.
-- **Supervisor** (`supervisor/`, Rust): launched by Node through `streamloop-supervisor.exe launch`, a short-lived intermediate, so it is a sibling with a dead parent: a Node crash, restart, update or tree kill leaves the stream up. Node talks to it over HTTP on 127.0.0.1:4417 and reads its events from `ROOT\data\logs\events-DATE.jsonl`.
+- **Supervisor** (`supervisor/`, Rust): launched by Node through `streamloop-supervisor.exe launch`, a short-lived intermediate, so it is a sibling with a dead parent: a Node crash, restart, update or tree kill leaves the stream up. Node talks to it over HTTP on 127.0.0.1:4417 and reads its events from `ROOT\data\logs\supervisor-events-DATE.jsonl` (`events-DATE.jsonl` up to 3.0.4; Node reads both).
 - **Admin Dashboard** (`src/admin/`): first-run wizard, status, timeline, transport (next, previous, restart, jump), Stop and Start stream, settings, webhooks, logs, update button.
 
 **Server modules:**

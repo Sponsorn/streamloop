@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import net from 'node:net';
 import http from 'node:http';
-import { TOKEN_SERVER_PING, FFPROBE, PLAYLIST, redact } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_SERVER_PING, FFPROBE, PLAYLIST, redact } from './lib.mjs';
 
 const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
 const run = (cmd, args, opts = {}) => new Promise((resolve) => {
@@ -496,7 +496,7 @@ function alertSummary() {
 function supEvents() {
   const dir = join(ROOT3, 'data', 'logs');
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((n) => /^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).sort()
+  return dailyFiles(readdirSync(dir), EVENTS, 'jsonl')
     .flatMap((n) => readFileSync(join(dir, n), 'utf8').split(/\r?\n/).filter(Boolean))
     .map((l) => { try { const e = JSON.parse(l); return { ...e, ms: Date.parse(e.ts) }; } catch { return null; } }).filter(Boolean);
 }

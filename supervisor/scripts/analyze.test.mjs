@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   epochAt, effectiveSeams, viewAt, readerReach, riseAt, lagSpikes, slateEdge, resumeErrorSec, deletionOk,
-  firstEventAfter, leaks, splitCsv, median, dailyFiles, redact, cpuRows, watchdogPlace, wallAtMedia,
+  firstEventAfter, leaks, splitCsv, median, dailyFiles, EVENTS, redact, cpuRows, watchdogPlace, wallAtMedia,
 } from './lib.mjs';
 
 describe('epochAt', () => {
@@ -198,6 +198,17 @@ describe('dailyFiles', () => {
 
     // Assert
     expect(files).toEqual(['encoder-2026-10-23.csv', 'encoder-2026-10-24.csv']);
+  });
+
+  it('reads the events files under both names in date order', () => {
+    // Arrange
+    const names = ['supervisor-events-2026-10-30.jsonl', 'events-2026-10-31.jsonl', 'events-2026-10-29.jsonl', 'nodeevents-2026-10-30.jsonl'];
+
+    // Act
+    const files = dailyFiles(names, EVENTS, 'jsonl');
+
+    // Assert
+    expect(files).toEqual(['events-2026-10-29.jsonl', 'supervisor-events-2026-10-30.jsonl', 'events-2026-10-31.jsonl']);
   });
 });
 

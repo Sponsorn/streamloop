@@ -6,7 +6,7 @@ import { readFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import {
   BASE, median, parseCsv, epochAt, effectiveSeams, viewAt, readerReach, riseAt, lagSpikes, slateEdge,
-  resumeErrorSec, deletionOk, firstEventAfter, leaks, dailyFiles, cpuRows, watchdogPlace, wallAtMedia, FFMPEG, FFPROBE,
+  resumeErrorSec, deletionOk, firstEventAfter, leaks, dailyFiles, EVENTS, cpuRows, watchdogPlace, wallAtMedia, FFMPEG, FFPROBE,
 } from './lib.mjs';
 
 const dir = process.argv[2];
@@ -16,7 +16,7 @@ const read = (f) => (existsSync(path(f)) ? readFileSync(path(f), 'utf8') : '');
 const readCsv = (f, columns) => parseCsv(read(f), columns);
 const readJson = (f) => (existsSync(path(f)) ? JSON.parse(readFileSync(path(f), 'utf8')) : null);
 const lines = (f) => read(f).trim().split(/\r?\n/).filter(Boolean);
-// The supervisor's growing logs are daily files (events-DATE.jsonl); a run across midnight has two.
+// The supervisor's growing logs are daily files (encoder-DATE.csv); a run across midnight has two.
 const names = existsSync(dir) ? readdirSync(dir) : [];
 const daily = (base, ext) => dailyFiles(names, base, ext).map(read).join('');
 const dailyLines = (base, ext) => daily(base, ext).trim().split(/\r?\n/).filter(Boolean);
@@ -33,7 +33,7 @@ const out = {};
 const print = (label, value) => { out[label] = value; console.log(label, JSON.stringify(value)); };
 
 // inputs
-const events = dailyLines('events', 'jsonl').map((l) => JSON.parse(l)).map((e) => ({ ...e, wallMs: Date.parse(e.ts) }));
+const events = dailyLines(EVENTS, 'jsonl').map((l) => JSON.parse(l)).map((e) => ({ ...e, wallMs: Date.parse(e.ts) }));
 const epochStarts = events.filter((e) => e.kind === 'encoder-start').map((e) => e.wallMs);
 const processStarts = events.filter((e) => e.kind === 'start').map((e) => e.wallMs);
 const ep = (wallMs) => epochAt(epochStarts, wallMs);
