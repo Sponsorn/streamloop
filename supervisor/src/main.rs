@@ -301,7 +301,7 @@ pub enum Msg {
     EncProgress { generation: u64, media: f64, speed: Option<f64> },
     Detect { generation: u64, d: Detect },
     DlProgress { index: usize, percent: f64 },
-    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String },
+    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String },
 }
 
 enum Job {
@@ -1544,7 +1544,7 @@ impl Ctl {
                     d.1 = percent;
                 }
             }
-            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason } => {
+            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client } => {
                 self.downloading = None;
                 if !cancelled {
                     self.breaker_result(ok, rules::is_bot_check(&reason), false, false, &reason);
@@ -1600,7 +1600,7 @@ impl Ctl {
                     }
                 }
                 let attempt = self.videos[index].dl_attempts;
-                self.logs.csv("downloads", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason]);
+                self.logs.csv("downloads", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason, client]);
             }
         }
     }
@@ -1833,7 +1833,7 @@ impl Ctl {
                 match purpose {
                     Purpose::Size => {
                         self.videos[index].dl_failed = true;
-                        self.logs.csv("downloads", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason]);
+                        self.logs.csv("downloads", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason, self.settings.player_client.clone()]);
                     }
                     // The video itself will not play: the ladder skips it, breaker open or not.
                     Purpose::Play | Purpose::Probe if per_video => match self.target.clone().filter(|t| t.index == index) {
@@ -2182,7 +2182,7 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 }
                 let bytes = if ok { std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) } else { 0 };
                 let reason = if ok || out.cancelled { String::new() } else { ytdlp::describe_error(&out.stderr, None) };
-                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason });
+                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client });
             }
         }
     }
@@ -2727,7 +2727,7 @@ mod tests {
         let mut ctl = test_ctl("dl-failed", &["a", "b", "c", "d"]);
         let fail = |ctl: &mut Ctl, index: usize, id: &str| {
             for _ in 0..2 {
-                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into() });
+                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new() });
             }
         };
 
@@ -2776,6 +2776,9 @@ mod tests {
         assert_eq!(ev.iter().filter(|(_, k)| k == "download-failed").count(), 3, "{ev:?}");
         assert!(!ev.iter().any(|(_, k)| k == "downloads-failing"), "one video tripped the critical: {ev:?}");
         assert_eq!(ctl.dl_fail_streak, 1);
+        let csv = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("downloads-")).unwrap();
+        let clients: Vec<String> = std::fs::read_to_string(csv.path()).unwrap().lines().map(|l| l.rsplit(',').next().unwrap().to_string()).collect();
+        assert_eq!(clients[..2], ["mweb", "web_embedded"], "each row names the client it tried");
     }
 
     /// Four 100 s videos, sizes known, the one on air on disk, both clients configured; returns the video after it.
@@ -2791,11 +2794,11 @@ mod tests {
         (ctl, (view + 1) % 4)
     }
 
-    /// One round: the list, then mweb, then web_embedded, each refused.
+    /// One round: mweb, then web_embedded, each refused.
     fn fail_round(ctl: &mut Ctl, index: usize) {
-        for _ in 0..3 {
-            assert!(ctl.videos[index].dl_attempts < 3);
-            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into() });
+        for client in ["mweb", "web_embedded"] {
+            assert!(ctl.videos[index].dl_attempts < 2);
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into() });
         }
     }
 

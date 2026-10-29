@@ -432,17 +432,12 @@ pub fn next_download(win: &[usize], on_disk: &[bool], failed: &[bool]) -> Option
     win.iter().copied().find(|&i| !on_disk[i] && !failed[i])
 }
 
-/// One download round: the configured list, then each client alone, since yt-dlp takes the first
-/// client's formats from a list and does not fall back when they are refused. One client: two tries.
+/// One download round: each configured client alone, in order, since yt-dlp takes the first
+/// client's formats from a list and does not fall back when they are refused; alone, the log
+/// names the client that served the file. One client: two tries.
 pub fn download_clients(list: &str) -> Vec<String> {
     let each: Vec<String> = list.split(',').map(str::trim).filter(|c| !c.is_empty()).map(String::from).collect();
-    let mut out = vec![list.to_string()];
-    if each.len() > 1 {
-        out.extend(each);
-    } else {
-        out.push(list.to_string());
-    }
-    out
+    if each.len() > 1 { each } else { vec![list.trim().to_string(); 2] }
 }
 
 /// Seconds until video `i` goes on air, with the viewer at `pos` into `view`. None when a
@@ -472,8 +467,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_download_round_tries_the_list_then_each_client_alone() {
-        assert_eq!(download_clients("mweb,web_embedded"), ["mweb,web_embedded", "mweb", "web_embedded"]);
+    fn a_download_round_tries_each_client_alone() {
+        assert_eq!(download_clients("mweb, web_embedded"), ["mweb", "web_embedded"]);
         assert_eq!(download_clients("mweb"), ["mweb", "mweb"]);
     }
 

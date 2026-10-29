@@ -55,7 +55,7 @@ const encoderRows = encoderCsv
 const points = Array.from({ length: epochCount }, () => []);
 for (const r of encoderRows) { const e = ep(r.wallMs); if (e >= 0) points[e].push({ t: r.us / 1e6, lag: r.wallMs - r.us / 1000, wallMs: r.wallMs }); }
 
-const downloads = dailyCsv('downloads', ['iso', 'id', 'result', 'attempt', 'bytes', 'ms', 'reason']).map((r) => ({ ...r, bytes: Number(r.bytes) }));
+const downloads = dailyCsv('downloads', ['iso', 'id', 'result', 'attempt', 'bytes', 'ms', 'reason', 'client']).map((r) => ({ ...r, bytes: Number(r.bytes) }));
 const deletes = dailyCsv('deletes', ['iso', 'id', 'bytes', 'pView', 'fileEndTimeline']);
 const bufferRows = dailyCsv('buffer', ['iso', 'cacheBytes', 'videosOnDisk', 'downloadingId', 'percent', 'playingName', 'encoderMedia', 'readAheadSeconds'])
   .map((r) => ({ ...r, cacheBytes: Number(r.cacheBytes), readAheadSeconds: Number(r.readAheadSeconds) }));
