@@ -354,6 +354,93 @@ describe('supervisor config', () => {
   });
 });
 
+describe('a config.json written by 3.0.x', () => {
+  // Typed out instead of built from the schema, because this is what installs in the field hold.
+  // Key order counts: a config that comes back in another order gets rewritten on every start.
+  const written = {
+    port: 7700,
+    playlists: [{ id: 'PLone', name: 'One' }, { id: 'PLtwo' }],
+    discord: {
+      webhookUrl: 'https://discord.example/hook',
+      botName: 'Bot',
+      avatarUrl: '',
+      rolePing: '123',
+      events: {
+        error: true, skip: false, recovery: true, critical: true, resume: true,
+        streamDrop: true, streamRestart: true, outputFrozen: true, twitchMismatch: false, twitchRestart: true,
+      },
+      templates: {
+        error: 'custom {errorCode}', skip: 'custom {reason}', recovery: 'custom {step}', critical: 'custom {message}',
+        resume: 'custom {videoId}', streamDrop: 'custom {attempt}', streamRestart: 'custom {attempts}',
+        outputFrozen: 'custom {kind}', twitchMismatch: 'custom {channel}', twitchRestart: 'custom {channel}',
+      },
+    },
+    supervisor: {
+      ingestUrl: 'rtmp://ingest.example/app',
+      streamKeyProtected: 'AQAAANCMnd8BFdERjHoAwE_fake_blob',
+      encoder: 'h264_amf',
+      preferredEncoder: 'h264_nvenc',
+      cacheBudgetMb: 8192,
+      readAheadSeconds: 12.5,
+      playerClient: 'tv',
+      overlay: false,
+      freezeSeconds: 25,
+      silenceSeconds: 45,
+      futureKnob: 7,
+    },
+    autoUpdateCheck: false,
+    updateCheckIntervalMs: 3600000,
+    autoUpdateYtdlp: false,
+    autoOpenAdmin: false,
+    twitchClientId: 'client-id',
+    twitchClientSecret: 'client-secret',
+    twitchChannel: 'channel',
+    twitchLivenessEnabled: true,
+    twitchPollIntervalMs: 30000,
+    ytdlCookiesFromBrowser: 'firefox',
+  };
+  const example = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', '..', 'config.example.json'), 'utf-8'));
+
+  it('loads with every value as written and leaves the file untouched', () => {
+    // Arrange
+    const text = JSON.stringify(written, null, 2);
+    writeFileSync(tmpConfig, text);
+
+    // Act
+    const cfg = loadConfig(tmpConfig);
+
+    // Assert
+    expect(cfg).toEqual(written);
+    expect(readFileSync(tmpConfig, 'utf-8')).toBe(text);
+  });
+
+  it('changes only the saved field on a save', () => {
+    // Arrange
+    writeFileSync(tmpConfig, JSON.stringify(written, null, 2));
+
+    // Act
+    saveConfig({ port: 7000 }, tmpConfig);
+
+    // Assert
+    expect(readFileSync(tmpConfig, 'utf-8')).toBe(JSON.stringify({ ...written, port: 7000 }, null, 2));
+  });
+
+  it.each([
+    ['absent sections', {}],
+    ['empty sections', { discord: {}, supervisor: {} }],
+    ['empty nested sections', { discord: { events: {}, templates: {} } }],
+  ])('fills %s with the values in config.example.json', (_name, sections) => {
+    // Arrange
+    writeFileSync(tmpConfig, JSON.stringify({ playlists: example.playlists, ...sections }));
+
+    // Act
+    const cfg = loadConfig(tmpConfig);
+
+    // Assert
+    expect(cfg).toEqual(example);
+  });
+});
+
 describe('old discord keys', () => {
   it('loads a config that still has obsDisconnect and obsReconnect', () => {
     writeFileSync(tmpConfig, JSON.stringify({

@@ -5,6 +5,7 @@ import type { AddressInfo } from 'net';
 import { mkdirSync, rmSync, writeFileSync, utimesSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createApiRouter, type ApiDependencies } from '../api.js';
+import { saveConfig } from '../config.js';
 import { logger } from '../logger.js';
 import type { AppConfig } from '../types.js';
 import type { SupervisorStatus } from '../supervisor-client.js';
@@ -694,6 +695,26 @@ WshShell.Run """${bat}""", 1, False`;
 
       expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith('PLaaa');
       expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: 1, playing: true });
+    });
+  });
+
+  describe('POST /config against the real schema', () => {
+    it('answers 400 naming each refused field and saves nothing', async () => {
+      // Arrange
+      mkdirSync(tmp, { recursive: true });
+      const path = join(tmp, 'config.json');
+      const before = JSON.stringify(makeConfig(), null, 2);
+      writeFileSync(path, before);
+      h.save.mockImplementation((patch: Partial<AppConfig>) => saveConfig(patch, path));
+
+      // Act
+      const res = await post('/config', { playlists: [], supervisor: { cacheBudgetMb: 10 } });
+
+      // Assert
+      expect(res.status).toBe(400);
+      const { error } = await res.json() as { error: string };
+      expect(error).toMatch(/^playlists: [^;]+; supervisor\.cacheBudgetMb: [^;]+$/);
+      expect(readFileSync(path, 'utf-8')).toBe(before);
     });
   });
 
