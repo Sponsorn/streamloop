@@ -352,10 +352,15 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
-            let mut req = [0u8; 64];
-            let n = c.read(&mut req).unwrap();
+            // Closing with request bytes unread resets the connection on Windows, and the reset can beat the reply.
+            let (mut req, mut chunk) = (vec![], [0u8; 64]);
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = c.read(&mut chunk).unwrap();
+                assert!(n > 0, "the request ended before its headers did");
+                req.extend_from_slice(&chunk[..n]);
+            }
             c.write_all(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap();
-            String::from_utf8_lossy(&req[..n]).into_owned()
+            String::from_utf8_lossy(&req).into_owned()
         });
 
         let cleared = invalidate_token_caches(port);
