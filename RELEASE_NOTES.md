@@ -1,3 +1,18 @@
+## v3.0.5
+
+A prerelease for trial, not marked latest. 2.x installs do not update to it.
+
+- **Playlists now play one after another.** 3.0 only ever played one playlist: when it ended, that playlist started over and the others never aired. Now the next playlist starts when one ends, and after the last one the first starts again, as in 2.x. The next playlist's first video downloads ahead of time, so the change looks like any other change of video.
+- **The order in Settings stays as you set it.** Pressing ▶ on another playlist used to move it to the top of the list. It now switches the stream and leaves the order alone, and the dropdown on the Monitor tab marks the playlist that is playing. A restart goes back to the playlist that was on air. Reordering in Settings no longer switches the stream, and ▶ on another playlist while the stream is stopped now tells you to start it first.
+- **Next and Previous cross into the neighbouring playlist** at the end of a list.
+- **The timeline says when a playlist ends:** "Playlist finished. Now playing ..." or, with one playlist, "Starting it again". A playlist that cannot be loaded is tried again every 10 minutes, and if a playlist ends while another is still missing, Discord gets an alert.
+- **Downloads recover when YouTube refuses a token.** On the box, every token from a new token minter was refused for one video. After two downloads in a row that used a token and still got "HTTP Error 403: Forbidden", the supervisor now clears the token server's cache, at most once per 30 minutes, so the next token comes from a new minter. The timeline notes each clear.
+- **Each download try now uses one player client,** in the order from Settings, and `downloads-DATE.csv` names the client in a new last column. The first try used to combine them, so the log could not say which one served a file.
+- **The supervisor's events log is now `supervisor-events-DATE.jsonl`.** It shared the name `events-DATE.jsonl` with Node's timeline, so the two collided when copied into one folder.
+- **This release changes the supervisor, so install the full ZIP**, the same way as 3.0.4: press Stop, close the window, extract the ZIP to a separate folder, copy what is inside its `streamloop` folder over the install, start it again and press Start. Settings, the stream key and `data\` are kept. With the update alone the stream stays on one playlist, and ▶ on another playlist says the full ZIP is needed.
+
+---
+
 ## v3.0.4
 
 A prerelease for trial, not marked latest. 2.x installs do not update to it.
