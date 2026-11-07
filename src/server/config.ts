@@ -30,6 +30,7 @@ export const DISCORD_TEMPLATE_VARIABLES: Record<keyof DiscordTemplates, string[]
   twitchRestart: ['channel'],
 };
 
+// prefault({}), not default({}): only prefault runs the {} through the object's schema, which fills the field defaults.
 const discordSchema = z.object({
   webhookUrl: z.string().default(''),
   botName: z.string().default(''),
@@ -46,7 +47,7 @@ const discordSchema = z.object({
     outputFrozen: z.boolean().default(true),
     twitchMismatch: z.boolean().default(true),
     twitchRestart: z.boolean().default(true),
-  }).default({}),
+  }).prefault({}),
   templates: z.object({
     error: z.string().default(DEFAULT_DISCORD_TEMPLATES.error),
     skip: z.string().default(DEFAULT_DISCORD_TEMPLATES.skip),
@@ -58,8 +59,8 @@ const discordSchema = z.object({
     outputFrozen: z.string().default(DEFAULT_DISCORD_TEMPLATES.outputFrozen),
     twitchMismatch: z.string().default(DEFAULT_DISCORD_TEMPLATES.twitchMismatch),
     twitchRestart: z.string().default(DEFAULT_DISCORD_TEMPLATES.twitchRestart),
-  }).default({}),
-}).default({});
+  }).prefault({}),
+}).prefault({});
 
 /** A blank string means the default, so clearing a field cannot leave the encoder without a target. */
 const blankIsDefault = (fallback: string) =>
@@ -78,7 +79,7 @@ const supervisorSchema = z.object({
   overlay: z.boolean().default(true),
   freezeSeconds: z.number().min(5).default(20),
   silenceSeconds: z.number().min(5).default(30),
-}).passthrough().default({}); // passthrough: keys from a newer supervisor survive
+}).loose().prefault({}); // loose: keys from a newer supervisor survive
 
 const configSchema = z.object({
   port: z.number().int().positive().default(7654),
