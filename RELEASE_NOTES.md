@@ -9,6 +9,7 @@ A prerelease for trial, not marked latest. 2.x installs do not update to it.
 - **Downloads recover when YouTube refuses a token.** On the box, every token from a new token minter was refused for one video. After two downloads in a row that used a token and still got "HTTP Error 403: Forbidden", the supervisor now clears the token server's cache, at most once per 30 minutes, so the next token comes from a new minter. The timeline notes each clear.
 - **Each download try now uses one player client,** in the order from Settings, and `downloads-DATE.csv` names the client in a new last column. The first try used to combine them, so the log could not say which one served a file.
 - **The supervisor's events log is now `supervisor-events-DATE.jsonl`.** It shared the name `events-DATE.jsonl` with Node's timeline, so the two collided when copied into one folder.
+- **Zod is updated to version 4,** which fixes a high-severity advisory about memory use when validating oversized collections (GHSA-mrhx-c7xc-m3w5). Config files from earlier versions load with the same values. When Settings refuses a value, the message is worded a little differently.
 - **This release changes the supervisor, so install the full ZIP**, the same way as 3.0.4: press Stop, close the window, extract the ZIP to a separate folder, copy what is inside its `streamloop` folder over the install, start it again and press Start. Settings, the stream key and `data\` are kept. With the update alone the stream stays on one playlist, and ▶ on another playlist says the full ZIP is needed.
 
 ---
