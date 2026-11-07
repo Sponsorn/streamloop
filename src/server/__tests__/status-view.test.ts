@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -266,5 +266,21 @@ describe('streamLine with a YouTube note', () => {
 
   it('shows no note while the stream is stopped', () => {
     expect(streamLine({ state: 'stopped', reason: 'Stopped.' }, 'YouTube is blocking requests.').reason).toBe('Stopped.');
+  });
+});
+
+describe('playingListIndex', () => {
+  const lists = [{ id: 'PLa' }, { id: 'PLb' }];
+
+  it('finds the list on air in the configured order', () => {
+    expect(playingListIndex(lists, 'PLb')).toBe(1);
+  });
+
+  it('takes the first list when the supervisor names none', () => {
+    expect(playingListIndex(lists, null)).toBe(0);
+  });
+
+  it('takes the first list when the one on air has left the config', () => {
+    expect(playingListIndex(lists, 'PLgone')).toBe(0);
   });
 });

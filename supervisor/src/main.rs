@@ -18,7 +18,7 @@ use config::Settings;
 use logs::Logs;
 use media::{Input, Live, Queue, Shared};
 use paths::Paths;
-use rules::{secs, ticks, Ladder, Seam, Source, BASE, FRAME};
+use rules::{secs, ticks, Ladder, Seam, Source, Span, BASE, FRAME};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -291,10 +291,12 @@ pub enum Msg {
     Control { cmd: String, index: Option<i64>, id: Option<String>, reason: Option<String>, reply: Sender<Result<Value, String>> },
     Fault { kind: String, count: Option<u32>, reply: Sender<Result<Value, String>> },
     Shutdown,
-    /// `index` and `id`: where a switch to a new playlist starts.
-    Reload { index: Option<usize>, id: Option<String>, reply: Sender<Result<Value, String>> },
+    /// `playlist`: the list to go to, among the configured ones. `index` and `id`: where in it to start.
+    Reload { playlist: Option<String>, index: Option<usize>, id: Option<String>, reply: Sender<Result<Value, String>> },
     /// The playlist id it was fetched for, so a superseded fetch is dropped.
     Playlist(String, Result<Vec<Entry>, String>),
+    /// A configured list other than the one asked for, on its way into the ring.
+    ExtraList(String, Result<Vec<Entry>, String>),
     /// `id` guards against a playlist switch while the call ran: indexes then mean other videos.
     Resolved { index: usize, id: String, purpose: Purpose, result: Result<Resolved, String> },
     FeederExit { seq: u64, code: Option<i32>, frames: u64 },
@@ -325,6 +327,12 @@ struct Video {
     dl_counted: bool,
     skipped: bool,
     retries: u32,
+}
+
+impl Video {
+    fn of(entry: Entry) -> Video {
+        Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }
+    }
 }
 
 /// A second resolved URL for the video on air, so a retry skips yt-dlp and the site's wait.
@@ -483,9 +491,19 @@ struct Ctl {
     playlist_problem: Option<String>,
     /// The playlist id whose in-flight fetch is the breaker's probe.
     playlist_probe: Option<String>,
-    /// The playlist id `videos` came from.
+    /// The list a start or reload last loaded or went to; the ring moves on from it by itself.
     playlist: String,
     playlist_wanted: bool,
+    /// Which stretch of `videos` is which list, in play order.
+    spans: Vec<Span>,
+    /// A fetch of a list that is not in the ring yet is running.
+    list_fetching: bool,
+    /// Lists whose fetch failed, and when each is tried again.
+    list_retry: HashMap<String, Instant>,
+    /// The ring position on air at the last look, to notice a list ending.
+    last_view: Option<usize>,
+    /// Timeline offset up to which seams still carry ring positions from before a rebuilt ring.
+    ring_settled_at: i64,
     /// Where a pending playlist switch starts, from POST /reload: (index, id).
     switch_to: Option<(usize, Option<String>)>,
     logs: Logs,
@@ -568,6 +586,8 @@ const DOWNLOAD_FAILS_CRITICAL: u32 = 3;
 const FILLER_BELOW_S: f64 = 2.0;
 /// After a cookie failure, yt-dlp waits this long; a reload with a new value ends it sooner.
 const COOKIE_RETRY: Duration = Duration::from_secs(60);
+/// A list that would not load is asked for again after this long.
+const LIST_RETRY: Duration = Duration::from_secs(600);
 
 impl Ctl {
     #[allow(clippy::too_many_arguments)]
@@ -579,6 +599,11 @@ impl Ctl {
             args,
             playlist: String::new(),
             playlist_wanted: true,
+            spans: vec![],
+            list_fetching: false,
+            list_retry: HashMap::new(),
+            last_view: None,
+            ring_settled_at: 0,
             switch_to: None,
             key_problem: config::stream_ready(&settings).err().map(|(_, reason)| reason),
             waiting_for_key: config::stream_ready(&settings).is_err(),
@@ -653,6 +678,36 @@ impl Ctl {
 
     fn n(&self) -> usize {
         self.videos.len()
+    }
+
+    /// The list holding ring position `i`. With no list loaded, one empty list.
+    fn list_of(&self, i: usize) -> Span {
+        rules::list_of(&self.spans, i).cloned().unwrap_or_else(|| Span { id: self.playlist.clone(), start: 0, len: self.n() })
+    }
+
+    fn list_named(&self, id: &str) -> Span {
+        self.spans.iter().find(|s| s.id == id).cloned().unwrap_or_else(|| Span { id: id.to_string(), start: 0, len: self.n() })
+    }
+
+    /// A video's number within its list, the way the dashboard and the logs count.
+    fn number(&self, i: usize) -> usize {
+        i - self.list_of(i).start
+    }
+
+    fn position_in(&self, s: &Span, id: &str) -> Option<usize> {
+        (s.start..s.start + s.len).find(|&i| self.videos[i].entry.id == id)
+    }
+
+    /// A video of list `s`: the id's position when the list has it (Node's number can count videos
+    /// this list leaves out), else the number clamped to the list.
+    fn ring_index(&self, s: &Span, number: usize, id: Option<&str>) -> usize {
+        id.and_then(|id| self.position_in(s, id)).unwrap_or(s.start + number.min(s.len.saturating_sub(1)))
+    }
+
+    /// The video on air as (id, number in its list, position), to go on from after the ring changes.
+    fn on_air_at(&self) -> (String, usize, f64) {
+        let (i, pos, _) = self.view();
+        (self.id(i), self.number(i), pos)
     }
 
     fn view_timeline(&self) -> i64 {
@@ -758,7 +813,7 @@ impl Ctl {
                 self.feeder_fails += 1;
                 let (log, wait) = rules::feeder_spawn_failed(self.feeder_fails);
                 if log {
-                    self.logs.event("critical", "feeder-spawn-failed", json!({"error": e.to_string(), "index": index, "source": source.name()}));
+                    self.logs.event("critical", "feeder-spawn-failed", json!({"error": e.to_string(), "index": self.number(index), "source": source.name()}));
                 }
                 self.feeder_after = Instant::now() + Duration::from_secs(wait);
                 // The video waits for the next try instead of being lost; a slate is started when needed anyway.
@@ -769,14 +824,14 @@ impl Ctl {
             }
         };
         if std::mem::take(&mut self.feeder_fails) > 0 {
-            self.logs.event("info", "feeder-spawn-recovered", json!({"index": index, "source": source.name()}));
+            self.logs.event("info", "feeder-spawn-recovered", json!({"index": self.number(index), "source": source.name()}));
         }
         let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
         let child = Arc::new(Mutex::new(child));
         self.shared.q.lock().unwrap().live = Some(Live { seq, last_pts: None, frames: 0, last_push: Instant::now(), blocked: false });
         let name = if source == Source::Slate { "slate".to_string() } else { self.id(index) };
         rules::push_seam(&mut self.seams, Seam { offset, index, source: source.clone(), start_pos: pos });
-        self.metas.insert(seq, FeederMeta { name: name.clone(), started_iso: iso_now(), offset, index, source: source.clone(), start_pos: pos, reason });
+        self.metas.insert(seq, FeederMeta { name: name.clone(), started_iso: iso_now(), offset, index: self.number(index), source: source.clone(), start_pos: pos, reason });
         let logs = self.logs.clone();
         let tag = format!("[{seq} {name}]");
         std::thread::spawn(move || {
@@ -805,7 +860,7 @@ impl Ctl {
             let status = status.unwrap_or_else(wait);
             let _ = tx.send(Msg::FeederExit { seq, code: status.code(), frames });
         });
-        self.logs.event("info", "feeder-start", json!({"seq": seq, "name": name, "index": index, "source": source.name(), "pos": pos, "offset": secs(offset), "reason": reason, "fault": fault.map(|f| format!("{f:?}"))}));
+        self.logs.event("info", "feeder-start", json!({"seq": seq, "name": name, "index": self.number(index), "source": source.name(), "pos": pos, "offset": secs(offset), "reason": reason, "fault": fault.map(|f| format!("{f:?}"))}));
         self.live = Some(Feeder { seq, child, index, source, start_pos: pos, offset, started: Instant::now(), filler, expire });
     }
 
@@ -877,7 +932,7 @@ impl Ctl {
                 self.step = "retry";
                 self.step_offset = self.queue_end();
                 self.count("retries");
-                self.logs.event("warn", "retry", json!({"index": index, "id": self.id(index), "why": why, "detail": detail, "retry": retries + 1, "pos": fed}));
+                self.logs.event("warn", "retry", json!({"index": self.number(index), "id": self.id(index), "why": why, "detail": detail, "retry": retries + 1, "pos": fed}));
                 self.set_target(index, fed, "retry", false);
             }
             Ladder::Skip => {
@@ -887,7 +942,7 @@ impl Ctl {
                 self.step_offset = self.queue_end();
                 self.count("skips");
                 let level = if self.consecutive_skips >= 3 { "critical" } else { "warn" };
-                self.logs.event(level, "skip", json!({"index": index, "id": self.id(index), "why": why, "detail": detail, "consecutive": self.consecutive_skips}));
+                self.logs.event(level, "skip", json!({"index": self.number(index), "id": self.id(index), "why": why, "detail": detail, "consecutive": self.consecutive_skips}));
                 let next = self.next_playable(index + 1);
                 self.set_target(next, 0.0, "skip", false);
             }
@@ -899,7 +954,7 @@ impl Ctl {
         let (now_s, id, margin) = (unix_ms() as u64 / 1000, self.id(index), self.margin_s());
         match retry_spare(&mut self.spare, &mut self.spare_due, index, &id, now_s, margin, self.args.dev.url_ttl, Instant::now()) {
             Some(r) => {
-                self.logs.event("info", "spare-used", json!({"index": index, "id": id}));
+                self.logs.event("info", "spare-used", json!({"index": self.number(index), "id": id}));
                 self.resolved.insert(index, (r, Instant::now()));
             }
             None => {
@@ -944,7 +999,7 @@ impl Ctl {
         self.last_resolve = Some(Instant::now());
         if probe {
             self.probe_key = Some(key);
-            self.logs.event("info", "youtube-probe", json!({"index": index, "id": self.id(index), "level": self.breaker.level}));
+            self.logs.event("info", "youtube-probe", json!({"index": self.number(index), "id": self.id(index), "level": self.breaker.level}));
         }
         let (yt, logs, tx, id) = (self.yt.clone(), self.logs.clone(), self.tx.clone(), self.id(index));
         if std::mem::take(&mut self.fake_bot) {
@@ -983,7 +1038,7 @@ impl Ctl {
             rules::BreakerChange::Opened => {
                 self.logs.event("critical", "youtube-breaker-open", json!({"reason": reason, "bot": bot, "retryAt": retry_at}));
                 if let Some((i, _, cancel)) = &self.downloading {
-                    self.logs.event("info", "download-cancel", json!({"index": i, "id": self.id(*i), "why": "breaker"}));
+                    self.logs.event("info", "download-cancel", json!({"index": self.number(*i), "id": self.id(*i), "why": "breaker"}));
                     cancel.store(true, Ordering::Relaxed);
                 }
             }
@@ -1090,6 +1145,7 @@ impl Ctl {
         self.enc.ingest_was_down = false;
         self.step = "encoder-restart";
         self.step_offset = BASE;
+        self.ring_settled_at = 0;
         self.count("encoderExits");
         let level = if self.enc.failures >= 3 { "critical" } else { "warn" };
         self.logs.event(level, "encoder-exit", json!({"why": why, "code": code, "failures": self.enc.failures, "restartInS": wait, "resumeIndex": index, "resumePos": pos, "uptimeS": self.enc.started.elapsed().as_secs()}));
@@ -1215,7 +1271,7 @@ impl Ctl {
             } else if source == Source::Url && !filler && self.videos[index].on_disk {
                 let (i, fed, _) = self.cut_live().unwrap();
                 self.count("handovers");
-                self.logs.event("info", "handover", json!({"index": i, "id": self.id(i), "pos": fed}));
+                self.logs.event("info", "handover", json!({"index": self.number(i), "id": self.id(i), "pos": fed}));
                 self.start_feeder(i, Source::File, fed, "handover", false);
             } else if source == Source::Url && !filler && self.refresh_pending == Some(index) && self.url_ready(index) {
                 // URL-to-URL handover at P_fed on the continuing offset, before the old URL expires.
@@ -1227,7 +1283,7 @@ impl Ctl {
                 let unix = unix_ms() as u64 / 1000;
                 if expire.is_some_and(|e| rules::refresh_due(unix, e, self.margin_s())) && !self.resolving.contains(&(index, false)) {
                     if self.request_resolve(index, Purpose::Refresh) {
-                        self.logs.event("info", "url-refresh", json!({"index": index, "id": self.id(index), "expire": expire, "now": unix}));
+                        self.logs.event("info", "url-refresh", json!({"index": self.number(index), "id": self.id(index), "expire": expire, "now": unix}));
                         self.refresh_after = now + Duration::from_secs(30);
                     }
                 }
@@ -1249,7 +1305,7 @@ impl Ctl {
                 if self.breaker.open && !self.videos[t.index].on_disk {
                     let n = self.n();
                     if let Some(j) = (1..n).map(|d| (t.index + d) % n).find(|&j| self.videos[j].on_disk && !self.videos[j].skipped) {
-                        self.logs.event("warn", "breaker-retarget", json!({"from": t.index, "to": j, "id": self.id(j)}));
+                        self.logs.event("warn", "breaker-retarget", json!({"from": self.number(t.index), "to": self.number(j), "id": self.id(j)}));
                         t = Target { index: j, pos: 0.0, ..t };
                         self.target = Some(t.clone());
                     }
@@ -1287,6 +1343,7 @@ impl Ctl {
             let i = self.target.as_ref().map_or(self.view().0, |t| t.index);
             self.request_resolve(i, Purpose::Probe);
         }
+        self.fetch_missing_list();
         self.cache_work();
         self.periodic();
     }
@@ -1347,7 +1404,7 @@ impl Ctl {
     }
 
     fn watchdog_event(&mut self, kind: &str, index: usize, pos: f64, since: f64, outcome: &str) {
-        let v = json!({"verdict": kind, "index": index, "id": self.id(index), "pos": round2(pos), "since": round2(since), "outcome": outcome, "at": iso_now()});
+        let v = json!({"verdict": kind, "index": self.number(index), "id": self.id(index), "pos": round2(pos), "since": round2(since), "outcome": outcome, "at": iso_now()});
         let level = if matches!(outcome, "ignored" | "content") { "info" } else { "warn" };
         self.logs.event(level, &format!("watchdog-{kind}"), v.clone());
         self.watch.last = v;
@@ -1378,7 +1435,7 @@ impl Ctl {
         let id = self.id(index);
         let wanted = spare_wanted(self.spare_due, index, now, self.spare.as_ref(), &id, unix_ms() as u64 / 1000, self.args.dev.url_ttl, self.margin_s());
         if wanted && self.request_resolve(index, Purpose::Spare) {
-            self.logs.event("info", "spare-resolve", json!({"index": index, "id": id}));
+            self.logs.event("info", "spare-resolve", json!({"index": self.number(index), "id": id}));
         }
     }
 
@@ -1413,7 +1470,7 @@ impl Ctl {
             let wanted = win.contains(i) || Some(*i) == url_fed || Some(*i) == target;
             let wrong = !wanted || first.is_some_and(|u| u != *i);
             if wrong && !cancel.load(Ordering::Relaxed) {
-                self.logs.event("info", "download-cancel", json!({"index": i, "id": self.id(*i)}));
+                self.logs.event("info", "download-cancel", json!({"index": self.number(*i), "id": self.id(*i)}));
                 cancel.store(true, Ordering::Relaxed);
             }
         }
@@ -1479,10 +1536,12 @@ impl Ctl {
             self.max_cache = self.max_cache.max(self.cache_bytes);
         }
         let (index, pos, source) = self.view();
-        let switching = self.target.as_ref().is_some_and(|t| t.reason != "normal") || self.step != "none" || source == Source::Slate || self.enc.child.is_none();
+        self.note_list_change(index, &source);
+        let switching = self.target.as_ref().is_some_and(|t| t.reason != "normal") || self.step != "none" || source == Source::Slate || self.enc.child.is_none() || self.view_timeline() < self.ring_settled_at;
         if self.last_state.elapsed() >= Duration::from_secs(2) && !switching && !self.videos.is_empty() && !self.stopping {
             self.last_state = Instant::now();
-            let v = json!({"index": index, "id": self.id(index), "position": (pos * 1000.0).round() / 1000.0, "savedAt": iso_now()});
+            let list = self.list_of(index);
+            let v = json!({"playlistId": list.id, "index": index - list.start, "id": self.id(index), "position": (pos * 1000.0).round() / 1000.0, "savedAt": iso_now()});
             let file = self.state_file();
             let tmp = file.with_extension("tmp");
             if std::fs::write(&tmp, v.to_string()).is_ok() {
@@ -1505,17 +1564,25 @@ impl Ctl {
     fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::Control { cmd, index, id, reason, reply } => {
-                let index = id.and_then(|id| self.position(&id)).map(|i| i as i64).or(index);
-                let _ = reply.send(self.control(&cmd, index, reason));
+                // Node numbers videos within a list; the ring numbers them across all lists.
+                let list = self.list_of(self.view().0);
+                let by_id = id.and_then(|id| self.position_in(&list, &id).or_else(|| self.position(&id))).map(|i| i as i64);
+                let index = match (by_id, index) {
+                    (Some(i), _) => Ok(Some(i)),
+                    (None, Some(i)) if cmd == "jump" => rules::ring_jump(i, &list).map(Some),
+                    (None, i) => Ok(i),
+                };
+                let _ = reply.send(index.and_then(|i| self.control(&cmd, i, reason)));
             }
             Msg::Fault { kind, count, reply } => {
                 let _ = reply.send(self.fault(&kind, count));
             }
             Msg::Shutdown => self.shutdown(),
-            Msg::Reload { index, id, reply } => {
-                let _ = reply.send(self.reload(index, id));
+            Msg::Reload { playlist, index, id, reply } => {
+                let _ = reply.send(self.reload(playlist, index, id));
             }
             Msg::Playlist(id, result) => self.on_playlist(id, result),
+            Msg::ExtraList(id, result) => self.on_extra_list(id, result),
             Msg::Resolved { index, id, purpose, result } => self.on_resolved(index, &id, purpose, result),
             Msg::FeederExit { seq, code, frames } => self.on_feeder_exit(seq, code, frames),
             Msg::EncProgress { generation, media, speed } => {
@@ -1599,7 +1666,7 @@ impl Ctl {
                     if !std::mem::replace(&mut self.videos[index].dl_counted, true) {
                         self.dl_fail_streak += 1;
                     }
-                    self.logs.event("warn", "download-failed", json!({"index": index, "id": self.id(index), "reason": reason, "inARow": self.dl_fail_streak, "retryInS": wait}));
+                    self.logs.event("warn", "download-failed", json!({"index": self.number(index), "id": self.id(index), "reason": reason, "inARow": self.dl_fail_streak, "retryInS": wait}));
                     if self.dl_fail_streak == DOWNLOAD_FAILS_CRITICAL {
                         self.logs.event("critical", "downloads-failing", json!({"inARow": self.dl_fail_streak, "reason": reason}));
                     }
@@ -1624,7 +1691,8 @@ impl Ctl {
         }
     }
 
-    fn on_playlist(&mut self, id: String, result: Result<Vec<Entry>, String>) {
+    /// A fetch's answer as (entries, why there are none), after the test knobs.
+    fn fetched(&self, result: Result<Vec<Entry>, String>) -> (Vec<Entry>, String) {
         let (mut entries, mut reason) = match result {
             Ok(e) => (e, String::new()),
             Err(r) => (vec![], r),
@@ -1636,6 +1704,11 @@ impl Ctl {
         if entries.is_empty() && reason.is_empty() {
             reason = "the playlist has no entries (after --start/--max-videos)".into();
         }
+        (entries, reason)
+    }
+
+    fn on_playlist(&mut self, id: String, result: Result<Vec<Entry>, String>) {
+        let (entries, reason) = self.fetched(result);
         // An empty list counts as a failure too, or a refetch would run every 5 s.
         let probe = self.playlist_probe.as_ref() == Some(&id);
         if probe {
@@ -1682,40 +1755,87 @@ impl Ctl {
         self.logs.write("playlist.json", &saved_playlist_json(&id, &entries));
         if refresh {
             self.from_saved = false;
-            if entries.len() == self.n() && entries.iter().zip(&self.videos).all(|(e, v)| e.id == v.entry.id) {
-                for (e, v) in entries.into_iter().zip(&mut self.videos) {
+            let s = self.list_named(&id);
+            let shown = &mut self.videos[s.start..s.start + s.len];
+            if entries.len() == s.len && entries.iter().zip(shown.iter()).all(|(e, v)| e.id == v.entry.id) {
+                for (e, v) in entries.into_iter().zip(shown) {
                     v.entry = e;
                 }
-                self.logs.event("info", "playlist", json!({"playlistId": id, "count": self.n()}));
+                self.logs.event("info", "playlist", json!({"playlistId": id, "count": s.len}));
                 return;
             }
             // The list changed meanwhile: go on with the video on air, from where it is, in the new list.
-            let (i, pos, _) = self.view();
-            let at = (self.id(i), i, pos);
+            let at = self.on_air_at();
             self.load_list(id, entries, false, Some(at));
             return;
         }
         self.load_list(id, entries, first, None);
     }
 
-    /// Put `entries` on as the list. `first` resumes from state.json; otherwise it is a switch that
-    /// starts at the reload's video, or goes on from `at` (id, index, position): at that id when the
-    /// new list has it, else at the same index clamped to the list.
+    /// `first` resumes from state.json; otherwise it is a switch to the reload's video, or on from
+    /// `at` (id, number in its list, position): at that id when the ring has it, else that number here.
     fn load_list(&mut self, id: String, entries: Vec<Entry>, first: bool, at: Option<(String, usize, f64)>) {
         self.from_saved = false;
-        let new: Vec<Video> = entries.into_iter().map(|entry| Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }).collect();
-        let old = std::mem::replace(&mut self.videos, new);
         self.playlist = id.clone();
-        self.logs.event("info", "playlist", json!({"playlistId": id, "count": self.n()}));
-        // Finished downloads from the last run count as on disk for their videos; a file no video claims goes.
+        let old = self.set_ring(Some((id, entries)));
+        self.after_ring_change(old, first, at);
+    }
+
+    /// The lists the ring should hold, in play order: the configured order from where the ring
+    /// starts, limited to the lists it has and `adding`.
+    fn wanted_order(&self, adding: Option<&str>) -> Vec<String> {
+        let ids = &self.settings.playlist_ids;
+        let pivot = self.spans.first().map(|s| s.id.as_str()).filter(|id| ids.iter().any(|c| c == id)).or(adding).unwrap_or("");
+        let has = |id: &String| adding == Some(id.as_str()) || self.spans.iter().any(|s| s.id == *id);
+        let mut order: Vec<String> = rules::ring_order(ids, pivot).into_iter().filter(has).collect();
+        if let Some(a) = adding.filter(|a| !order.iter().any(|id| id == a)) {
+            order.push(a.to_string());
+        }
+        order
+    }
+
+    fn ring_ids(&self) -> Vec<String> {
+        self.spans.iter().map(|s| s.id.clone()).collect()
+    }
+
+    /// Lay `videos` out in the wanted order, with `add` as its list's videos. Returns the old videos.
+    fn set_ring(&mut self, add: Option<(String, Vec<Entry>)>) -> Vec<Video> {
+        let order = self.wanted_order(add.as_ref().map(|(id, _)| id.as_str()));
+        let (mut videos, mut spans) = (vec![], vec![]);
+        for id in order {
+            let list: Vec<Entry> = match &add {
+                Some((a, entries)) if *a == id => entries.clone(),
+                _ => self.spans.iter().find(|s| s.id == id).map_or(vec![], |s| self.videos[s.start..s.start + s.len].iter().map(|v| v.entry.clone()).collect()),
+            };
+            spans.push(Span { id, start: videos.len(), len: list.len() });
+            videos.extend(list.into_iter().map(Video::of));
+        }
+        if let Some((id, entries)) = &add {
+            self.logs.event("info", "playlist", json!({"playlistId": id, "count": entries.len()}));
+        }
+        self.spans = spans;
+        std::mem::replace(&mut self.videos, videos)
+    }
+
+    /// Finished downloads from the last run count as on disk for their videos. Once every configured
+    /// list has answered, a file no video claims goes; until then it may belong to a list still on its way.
+    fn claim_kept(&mut self) {
         for v in &mut self.videos {
             if let Some(b) = self.kept.remove(&v.entry.id) {
                 (v.on_disk, v.disk_bytes, v.bytes) = (true, b, Some(b));
             }
         }
-        for stray in std::mem::take(&mut self.kept).into_keys() {
-            let _ = std::fs::remove_file(self.cache.join(format!("{stray}.mp4")));
+        let waiting = self.settings.playlist_ids.iter().any(|id| !self.spans.iter().any(|s| s.id == *id) && !self.list_retry.contains_key(id));
+        if !waiting {
+            for stray in std::mem::take(&mut self.kept).into_keys() {
+                let _ = std::fs::remove_file(self.cache.join(format!("{stray}.mp4")));
+            }
         }
+    }
+
+    /// `videos` was laid out anew: see `load_list` for `first` and `at`.
+    fn after_ring_change(&mut self, old: Vec<Video>, first: bool, at: Option<(String, usize, f64)>) {
+        self.claim_kept();
         if !first {
             // A switch: indexes now mean other videos. Keep files the new list has, drop the rest.
             let reading = self.live.as_ref().filter(|f| f.source == Source::File && !f.filler).map(|f| f.index);
@@ -1736,13 +1856,18 @@ impl Ctl {
             (self.spare, self.spare_due) = (None, None);
             (self.refresh_pending, self.break_url, self.consecutive_skips) = (None, None, 0);
             self.unavailable_streak.clear();
+            let list = self.list_named(&self.playlist);
             let (start, pos) = match at {
-                Some((vid, i, pos)) => self.position(&vid).map_or((i.min(self.n().saturating_sub(1)), 0.0), |j| (j, pos)),
-                None => (self.switch_start().unwrap_or(0), 0.0),
+                Some((vid, number, pos)) => self.position(&vid).map_or((self.ring_index(&list, number, None), 0.0), |j| (j, pos)),
+                None => (self.switch_start().unwrap_or(list.start), 0.0),
             };
+            // Seams up to the cut still name positions in the old layout.
+            self.last_view = None;
+            self.ring_settled_at = i64::MAX;
             if let Err(e) = self.control_at("jump", Some(start as i64), None, pos) {
                 self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
             }
+            self.ring_settled_at = self.queue_end();
             return;
         }
         // A switch asked for before any list loaded names its own start; state.json is the old list's.
@@ -1751,15 +1876,96 @@ impl Ctl {
             return;
         }
         let resume = std::fs::read_to_string(self.state_file()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
-        match resume {
+        // A state file from before lists were named holds a video of the first list.
+        match resume.filter(|s| s["playlistId"].as_str().is_none_or(|l| l == self.playlist)) {
             Some(s) => {
                 let id = s["id"].as_str().unwrap_or("");
                 let index = self.videos.iter().position(|v| v.entry.id == id).or(s["index"].as_u64().map(|i| i as usize).filter(|&i| i < self.n())).unwrap_or(0);
                 let pos = s["position"].as_f64().unwrap_or(0.0);
-                self.logs.event("info", "resume", json!({"index": index, "id": self.id(index), "pos": pos}));
+                self.logs.event("info", "resume", json!({"index": self.number(index), "id": self.id(index), "pos": pos}));
                 self.set_target(index, pos, "resume", false);
             }
             None => self.set_target(0, 0.0, "coldstart", false),
+        }
+    }
+
+    /// The other configured lists join the ring one at a time, once a video is on air and no video
+    /// waits for YouTube. A list that fails waits its turn and holds up no other.
+    fn fetch_missing_list(&mut self) {
+        if self.list_fetching || !self.ever_played || self.target.is_some() || self.breaker.open || self.videos.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let first = self.spans.first().map_or("", |s| s.id.as_str());
+        let missing = rules::ring_order(&self.settings.playlist_ids, first).into_iter().find(|id| !self.spans.iter().any(|s| s.id == *id) && self.list_retry.get(id).is_none_or(|t| now >= *t));
+        let Some(id) = missing else { return };
+        if self.youtube_slot().is_none() {
+            return;
+        }
+        self.last_resolve = Some(now);
+        self.list_fetching = true;
+        let (yt, l, tx) = (self.yt.clone(), self.logs.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let result = yt.playlist(&format!("https://www.youtube.com/playlist?list={id}"), &l);
+            let _ = tx.send(Msg::ExtraList(id, result));
+        });
+    }
+
+    /// One list that will not load costs only itself: it counts toward the breaker only for a bot
+    /// check, it is reported once per streak, and it is tried again later.
+    fn on_extra_list(&mut self, id: String, result: Result<Vec<Entry>, String>) {
+        self.list_fetching = false;
+        let (entries, reason) = self.fetched(result);
+        self.breaker_result(!entries.is_empty(), rules::is_bot_check(&reason), false, false, &reason);
+        if !self.settings.playlist_ids.contains(&id) || self.spans.iter().any(|s| s.id == id) {
+            return;
+        }
+        if entries.is_empty() {
+            if self.list_retry.insert(id.clone(), Instant::now() + LIST_RETRY).is_none() {
+                self.logs.event("warn", "playlist-failed", json!({"playlistId": id, "reason": reason, "playing": self.playlist, "refetch": true}));
+            }
+            self.claim_kept();
+            return;
+        }
+        if self.list_retry.remove(&id).is_some() {
+            self.logs.event("info", "playlist-recovered", json!({"playlistId": id}));
+        }
+        if rules::only_appends(&self.ring_ids(), &self.wanted_order(Some(&id))) {
+            self.logs.event("info", "playlist", json!({"playlistId": id, "count": entries.len()}));
+            self.spans.push(Span { id, start: self.videos.len(), len: entries.len() });
+            self.videos.extend(entries.into_iter().map(Video::of));
+            self.claim_kept();
+        } else {
+            let at = self.on_air_at();
+            let old = self.set_ring(Some((id, entries)));
+            self.after_ring_change(old, false, Some(at));
+        }
+    }
+
+    /// The list a start goes back to: the one state.json names while the config still has it.
+    fn start_list(&self) -> Option<String> {
+        let saved = std::fs::read_to_string(self.state_file()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        rules::pick_list(&self.settings.playlist_ids, saved.as_ref().and_then(|s| s["playlistId"].as_str()))
+    }
+
+    /// A list that would not load starts to matter when a list ends, so that is when it goes critical.
+    /// playlist.json follows the list on air: a start during a bot check can only play the saved list.
+    fn note_list_change(&mut self, index: usize, source: &Source) {
+        if *source == Source::Slate || self.videos.is_empty() || self.view_timeline() < self.ring_settled_at {
+            return;
+        }
+        let Some(was) = self.last_view.replace(index) else { return };
+        let (from, to) = (self.list_of(was), self.list_of(index));
+        let finished = was + 1 == from.start + from.len;
+        let missing: Vec<&String> = self.settings.playlist_ids.iter().filter(|id| finished && !self.spans.iter().any(|s| s.id == **id)).collect();
+        let level = if missing.is_empty() { "info" } else { "critical" };
+        let missing = (!missing.is_empty()).then_some(missing);
+        if from.id != to.id {
+            self.logs.event(level, "playlist-advance", json!({"from": from.id, "to": to.id, "count": to.len, "finished": finished, "missing": missing}));
+            let entries: Vec<Entry> = self.videos[to.start..to.start + to.len].iter().map(|v| v.entry.clone()).collect();
+            self.logs.write("playlist.json", &saved_playlist_json(&to.id, &entries));
+        } else if finished && was != index && index == to.start {
+            self.logs.event(level, "playlist-restart", json!({"playlistId": to.id, "count": to.len, "missing": missing}));
         }
     }
 
@@ -1767,22 +1973,27 @@ impl Ctl {
         self.videos.iter().position(|v| v.entry.id == id)
     }
 
-    /// Takes the pending switch's start in the loaded list: the id's position when the list has
-    /// it (Node's index can count videos this list leaves out), else the index clamped to the list.
+    /// Takes the pending switch's start in the list it went to.
     fn switch_start(&mut self) -> Option<usize> {
-        let (index, id) = self.switch_to.take()?;
-        Some(id.and_then(|id| self.position(&id)).unwrap_or(index.min(self.n().saturating_sub(1))))
+        let (number, id) = self.switch_to.take()?;
+        Some(self.ring_index(&self.list_named(&self.playlist), number, id.as_deref()))
     }
 
     fn state_file(&self) -> PathBuf {
         self.args.paths.data.join("state.json")
     }
 
-    /// POST /reload. Live fields apply now; ingest, key and encoder wait for a restart, except
-    /// in needs-stream-key, where nothing runs yet and a working key starts the encoder. `index` and
-    /// `id` say where a switch to a new playlist starts; with the same playlist they are ignored.
-    fn reload(&mut self, index: Option<usize>, id: Option<String>) -> Result<Value, String> {
+    /// Live fields apply now; ingest, key and encoder wait for a restart, except in needs-stream-key,
+    /// where a working key starts the encoder. With no `playlist` named the stream stays on the list on air.
+    fn reload(&mut self, playlist: Option<String>, index: Option<usize>, id: Option<String>) -> Result<Value, String> {
         let mut new = read_settings(&self.args)?;
+        if let Some(p) = playlist.as_ref().filter(|p| !new.playlist_ids.contains(p)) {
+            return Err(format!("playlist {p} is not in config.json"));
+        }
+        let on_air = if self.videos.is_empty() { self.settings.playlist_id.clone() } else { self.list_of(self.view().0).id };
+        if let Some(want) = playlist.clone().or_else(|| rules::pick_list(&new.playlist_ids, Some(&on_air))) {
+            new.playlist_id = want;
+        }
         self.logs.add_key(&new.stream_key);
         let ready = config::stream_ready(&new);
         let old = &self.settings;
@@ -1803,12 +2014,8 @@ impl Ctl {
             // A new setting gets its own try at once, and its own event if it fails too.
             (self.cookie_after, self.cookie_problem) = (Instant::now(), None);
         }
-        let switch = running.playlist_id != old.playlist_id;
-        if switch {
-            // Fetch unless the new id is the list already playing (A, B, back to A before B lands).
-            self.playlist_wanted = self.videos.is_empty() || running.playlist_id != self.playlist;
-            self.switch_to = Some((index.unwrap_or(0), id));
-        }
+        let want = running.playlist_id.clone();
+        let switch = want != on_air || (playlist.is_some() && (index.is_some() || id.is_some()));
         self.settings = running;
         let restart = !waiting && plan == config::Reload::Restart;
         let key = key_after_reload(waiting, self.key_problem.is_some(), ready);
@@ -1821,7 +2028,43 @@ impl Ctl {
             self.waiting_for_key = false;
             self.start_encoder();
         }
+        self.apply_lists(&want, switch, index, id);
         Ok(json!({"applied": true, "restartRequired": restart, "streamKeyProblem": key.problem}))
+    }
+
+    /// Bring the ring in line with the config and go where a reload asked.
+    fn apply_lists(&mut self, want: &str, switch: bool, number: Option<usize>, id: Option<String>) {
+        let order = self.wanted_order(None);
+        if switch && !order.iter().any(|l| l == want) {
+            // Until the list lands, the ring plays on as it is.
+            self.playlist_wanted = true;
+            self.switch_to = Some((number.unwrap_or(0), id));
+            return;
+        }
+        if !switch && !self.videos.is_empty() {
+            // Back on the list on air before an earlier switch landed. A list played from its saved
+            // copy keeps asking for the real one.
+            self.playlist_wanted &= self.from_saved;
+            self.switch_to = None;
+        }
+        let reordered = !self.spans.is_empty() && order != self.ring_ids();
+        if switch {
+            self.playlist = want.to_string();
+            if reordered {
+                self.switch_to = Some((number.unwrap_or(0), id));
+                let old = self.set_ring(None);
+                self.after_ring_change(old, false, None);
+            } else {
+                let t = self.ring_index(&self.list_named(want), number.unwrap_or(0), id.as_deref());
+                if let Err(e) = self.control_at("jump", Some(t as i64), None, 0.0) {
+                    self.logs.event("warn", "playlist-switch-failed", json!({"reason": e}));
+                }
+            }
+        } else if reordered {
+            let at = self.on_air_at();
+            let old = self.set_ring(None);
+            self.after_ring_change(old, false, Some(at));
+        }
     }
 
     fn on_resolved(&mut self, index: usize, id: &str, purpose: Purpose, result: Result<Resolved, String>) {
@@ -1844,7 +2087,7 @@ impl Ctl {
         let mut r = match result {
             Ok(r) => r,
             Err(reason) => {
-                self.logs.event("warn", "resolve-failed", json!({"index": index, "id": self.id(index), "purpose": format!("{purpose:?}"), "reason": reason}));
+                self.logs.event("warn", "resolve-failed", json!({"index": self.number(index), "id": self.id(index), "purpose": format!("{purpose:?}"), "reason": reason}));
                 // Not the video's fault: nothing is retried or skipped, the call runs again after COOKIE_RETRY.
                 if rules::is_cookie_problem(&reason) {
                     return;
@@ -1860,7 +2103,7 @@ impl Ctl {
                         // Not on air or next (the "prev" pre-resolve): skipped, so it is not asked for again.
                         None => {
                             self.videos[index].skipped = true;
-                            self.logs.event("warn", "skip", json!({"index": index, "id": self.id(index), "why": "unavailable", "detail": {"reason": reason}}));
+                            self.logs.event("warn", "skip", json!({"index": self.number(index), "id": self.id(index), "why": "unavailable", "detail": {"reason": reason}}));
                         }
                     },
                     // Not the video's fault while YouTube is off limits: no retry, no skip, the
@@ -1878,10 +2121,11 @@ impl Ctl {
                 return;
             }
         };
-        if let Some((i, count)) = self.break_url.as_mut().filter(|(i, _)| *i == index) {
+        let number = self.number(index);
+        if let Some((_, count)) = self.break_url.as_mut().filter(|(i, _)| *i == index) {
             r.video = rules::mangle_sig(&r.video);
             r.audio = rules::mangle_sig(&r.audio);
-            self.logs.event("info", "fault-applied", json!({"fault": "break-url", "index": *i}));
+            self.logs.event("info", "fault-applied", json!({"fault": "break-url", "index": number}));
             if let Some(c) = count {
                 *c -= 1;
                 if *c == 0 {
@@ -1939,7 +2183,7 @@ impl Ctl {
                 let file = self.file_of(index);
                 let _ = std::fs::remove_file(&file);
                 (self.videos[index].on_disk, self.videos[index].disk_bytes) = (false, 0);
-                self.logs.event("warn", "cache-file-dropped", json!({"index": index, "id": self.id(index), "removed": !file.exists()}));
+                self.logs.event("warn", "cache-file-dropped", json!({"index": self.number(index), "id": self.id(index), "removed": !file.exists()}));
             }
             self.fail(index, fed, if ok { "early-eof" } else { "exit" }, json!({"code": code, "frames": frames, "fed": fed, "duration": self.duration(index), "source": source.name()}));
         } else {
@@ -1971,21 +2215,22 @@ impl Ctl {
             self.enc.child.is_none() || self.step != "none",
         );
         let v = self.videos.get(index);
+        let list = self.list_of(index);
         // One lock per statement: json! keeps its temporaries (and their guards) alive to the end.
         let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
         let generation = self.shared.q.lock().unwrap().generation;
         let mut body = json!({
-            "playing": {"index": index, "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration), "spareReady": self.spare.as_ref().is_some_and(|s| s.index == index)},
+            "playing": {"index": index - list.start, "playlistId": (!list.id.is_empty()).then(|| list.id.clone()), "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration), "spareReady": self.spare.as_ref().is_some_and(|s| s.index == index)},
             "timeline": secs(self.view_timeline()),
             "readAheadSeconds": (self.read_ahead() * 100.0).round() / 100.0,
             "cacheBytes": self.cache_bytes,
-            "downloading": self.downloading.as_ref().map(|d| json!({"index": d.0, "percent": d.1})),
+            "downloading": self.downloading.as_ref().map(|d| json!({"index": self.number(d.0), "percent": d.1})),
             "encoder": {"alive": self.enc.child.is_some(), "restarts": self.enc.restarts, "generation": generation, "mediaTime": self.enc.media, "speed": self.enc.speed, "cpuPercent": round2(self.cpu.encoder)},
             "cpu": {"encoder": round2(self.cpu.encoder), "feeder": round2(self.cpu.feeder), "system": round2(self.cpu.system)},
             "tokenServer": token,
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
             "watchdog": {"last": self.watch.last},
-            "playlistCount": self.n(),
+            "playlistCount": list.len,
             "hold": self.hold.holding(self.now_s()).then(|| json!({"reason": "every video in the playlist failed; the slate airs until the next try", "level": self.hold.level, "until": iso(unix_ms() + ((self.hold.until.unwrap_or(0.0) - self.now_s()).max(0.0) * 1000.0) as u128)})),
             "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures, "cookieProblem": self.cookie_problem},
         });
@@ -2032,10 +2277,10 @@ impl Ctl {
         self.hold.until = None;
         self.step = "none";
         self.set_target(t, pos, "control", false);
-        self.logs.csv("controls", &[unix_ms().to_string(), cmd.into(), index.map_or(String::new(), |i| i.to_string()), t.to_string(), self.id(t), format!("{:.6}", secs(cut)), flushed.to_string()]);
-        self.logs.event("info", "control", json!({"cmd": cmd, "seq": self.control_seq, "from": view, "target": t, "id": self.id(t), "cutOffset": secs(cut), "flushedBytes": flushed}));
+        self.logs.csv("controls", &[unix_ms().to_string(), cmd.into(), index.map_or(String::new(), |i| self.number(i as usize).to_string()), self.number(t).to_string(), self.id(t), format!("{:.6}", secs(cut)), flushed.to_string()]);
+        self.logs.event("info", "control", json!({"cmd": cmd, "seq": self.control_seq, "from": self.number(view), "target": self.number(t), "id": self.id(t), "cutOffset": secs(cut), "flushedBytes": flushed}));
         self.tick();
-        Ok(json!({"accepted": true, "seq": self.control_seq, "targetIndex": t, "targetId": self.id(t), "cutOffset": secs(cut)}))
+        Ok(json!({"accepted": true, "seq": self.control_seq, "targetIndex": self.number(t), "targetId": self.id(t), "cutOffset": secs(cut)}))
     }
 
     fn fault(&mut self, kind: &str, count: Option<u32>) -> Result<Value, String> {
@@ -2361,6 +2606,9 @@ fn main() {
 
     let mut ctl = Ctl::new(args, settings, logs, tx, shared, yt, cache, jobs_tx, token, snapshot);
     ctl.kept = kept;
+    if let Some(list) = ctl.start_list() {
+        ctl.settings.playlist_id = list;
+    }
     let p = &ctl.args.paths;
     ctl.logs.event("info", "start", json!({"keptFiles": ctl.kept.len(), "target": config::target_url(&ctl.settings), "encoder": ctl.settings.encoder, "root": p.root, "data": p.data, "ffmpeg": p.ffmpeg, "deno": p.deno}));
     match config::stream_ready(&ctl.settings) {
@@ -2515,7 +2763,7 @@ mod tests {
     fn a_reload_to_another_playlist_with_an_index_starts_at_that_video() {
         let mut ctl = reload_ctl("reload-index", "PLb");
 
-        ctl.reload(Some(3), None).unwrap();
+        ctl.reload(None, Some(3), None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s", "t"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((3, "control")));
@@ -2525,7 +2773,7 @@ mod tests {
     fn a_reload_index_past_the_end_of_the_new_playlist_clamps_to_its_last_video() {
         let mut ctl = reload_ctl("reload-clamp", "PLb");
 
-        ctl.reload(Some(9), None).unwrap();
+        ctl.reload(None, Some(9), None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2));
@@ -2535,7 +2783,7 @@ mod tests {
     fn a_reload_to_another_playlist_without_an_index_starts_at_video_0() {
         let mut ctl = reload_ctl("reload-no-index", "PLb");
 
-        ctl.reload(None, None).unwrap();
+        ctl.reload(None, None, None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(0));
@@ -2546,7 +2794,7 @@ mod tests {
         let mut ctl = reload_ctl("reload-same", "PLa");
         ctl.set_target(1, 4.0, "coldstart", false);
 
-        ctl.reload(Some(0), Some("b".into())).unwrap();
+        ctl.reload(None, Some(0), Some("b".into())).unwrap();
 
         assert!(!ctl.playlist_wanted, "the same playlist was fetched again");
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.reason)), Some((1, "coldstart")));
@@ -2558,7 +2806,7 @@ mod tests {
         let mut ctl = reload_ctl("reload-id", "PLb");
 
         // Node's row 3 counted a private video the supervisor's list leaves out
-        ctl.reload(Some(3), Some("s".into())).unwrap();
+        ctl.reload(None, Some(3), Some("s".into())).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "s", "t"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2));
@@ -2568,7 +2816,7 @@ mod tests {
     fn a_reload_id_missing_from_the_new_playlist_falls_back_to_the_index() {
         let mut ctl = reload_ctl("reload-unknown-id", "PLb");
 
-        ctl.reload(Some(1), Some("gone".into())).unwrap();
+        ctl.reload(None, Some(1), Some("gone".into())).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(1));
@@ -2580,7 +2828,7 @@ mod tests {
         (ctl.videos, ctl.playlist) = (vec![], String::new());
         std::fs::write(ctl.state_file(), json!({"id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
 
-        ctl.reload(Some(3), None).unwrap();
+        ctl.reload(None, Some(3), None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q", "r", "s", "t"]));
 
         assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos)), Some((3, 0.0)));
@@ -3200,7 +3448,7 @@ mod tests {
         let mut ctl = reload_ctl("reload-cookies", "PLa");
         std::fs::write(&ctl.args.config, json!({"playlists": [{"id": "PLa"}], "supervisor": {}, "ytdlCookiesFromBrowser": "firefox"}).to_string()).unwrap();
 
-        let r = ctl.reload(None, None).unwrap();
+        let r = ctl.reload(None, None, None).unwrap();
 
         assert_eq!(*ctl.yt.cookies.lock().unwrap(), "firefox");
         assert_eq!(r["restartRequired"], false);
@@ -3351,7 +3599,7 @@ mod tests {
         let mut ctl = reload_ctl("from-saved-switch", "PLb");
         ctl.from_saved = true;
 
-        ctl.reload(None, None).unwrap();
+        ctl.reload(None, None, None).unwrap();
         ctl.on_playlist("PLb".into(), entries(&["p", "q"]));
 
         assert!(!ctl.from_saved);
@@ -3365,5 +3613,804 @@ mod tests {
         let a = args(&["--root", "x", "--debug-faults", "--hours", "0.5", "--data", "d"]).unwrap();
         assert_eq!(a.dev.hours, Some(0.5));
         assert!(a.paths.data.ends_with("d") && a.config.ends_with("app/config.json"));
+    }
+
+    fn write_config(ctl: &Ctl, ids: &[&str]) {
+        std::fs::create_dir_all(ctl.args.config.parent().unwrap()).unwrap();
+        let lists: Vec<Value> = ids.iter().map(|id| json!({"id": id})).collect();
+        std::fs::write(&ctl.args.config, json!({"playlists": lists, "supervisor": {}}).to_string()).unwrap();
+    }
+
+    /// A control loop with `ids` configured and `first` loaded, nothing fed yet.
+    fn list_ctl(name: &str, ids: &[&str], first: &str, videos: &[&str]) -> Ctl {
+        let mut ctl = test_ctl(name, &[]);
+        write_config(&ctl, ids);
+        ctl.settings.playlist_id = first.into();
+        ctl.settings.playlist_ids = ids.iter().map(|id| id.to_string()).collect();
+        ctl.on_playlist(first.into(), entries(videos));
+        ctl
+    }
+
+    /// PLa (a, b) loaded first, PLb (p, q, r) after it, config.json naming both.
+    fn ring_ctl(name: &str) -> Ctl {
+        let mut ctl = list_ctl(name, &["PLa", "PLb"], "PLa", &["a", "b"]);
+        ctl.on_extra_list("PLb".into(), entries(&["p", "q", "r"]));
+        ctl.target = None;
+        ctl
+    }
+
+    fn on_air(ctl: &mut Ctl, index: usize, pos: f64) {
+        ctl.seams.clear();
+        ctl.seams.push(Seam { offset: BASE, index, source: Source::File, start_pos: pos });
+    }
+
+    fn ring(ctl: &Ctl) -> Vec<String> {
+        ctl.videos.iter().map(|v| v.entry.id.clone()).collect()
+    }
+
+    fn event_kinds(ctl: &Ctl, kind: &str) -> Vec<Value> {
+        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("supervisor-events-"));
+        file.map_or(String::new(), |f| std::fs::read_to_string(f.path()).unwrap()).lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|v| v["kind"] == kind).collect()
+    }
+
+    /// Every condition `periodic` asks of a state write, so a test sees only the one it is about.
+    fn ready_to_save_state(ctl: &mut Ctl) {
+        ctl.enc.child = Some(exited_child());
+        ctl.target = None;
+        ctl.step = "none";
+        ctl.last_state = Instant::now() - Duration::from_secs(3);
+    }
+
+    /// The video at `index` has just played to its end.
+    fn finish_video(ctl: &mut Ctl, index: usize) {
+        ctl.feeder_seq = 7;
+        ctl.live = Some(Feeder { seq: 7, child: Arc::new(Mutex::new(exited_child())), index, source: Source::File, start_pos: 100.0, offset: BASE, started: Instant::now(), filler: false, expire: None });
+        ctl.on_feeder_exit(7, Some(0), 3000);
+    }
+
+    #[test]
+    fn a_configured_list_joins_the_ring_after_the_loaded_one() {
+        let ctl = ring_ctl("ring-joins");
+
+        assert_eq!(ring(&ctl), ["a", "b", "p", "q", "r"]);
+        assert_eq!(ctl.spans, [Span { id: "PLa".into(), start: 0, len: 2 }, Span { id: "PLb".into(), start: 2, len: 3 }]);
+    }
+
+    #[test]
+    fn a_list_that_played_to_its_end_goes_on_to_the_next_list() {
+        let mut ctl = ring_ctl("ring-advance");
+
+        finish_video(&mut ctl, 1);
+
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.pos, t.reason, t.gated)), Some(("p".to_string(), 0.0, "normal", true)));
+    }
+
+    #[test]
+    fn the_last_list_goes_on_to_the_first() {
+        let mut ctl = ring_ctl("ring-wrap");
+
+        finish_video(&mut ctl, 4);
+
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("a".to_string()));
+    }
+
+    #[test]
+    fn a_single_list_goes_back_to_its_first_video() {
+        let mut ctl = list_ctl("ring-single", &["PLa"], "PLa", &["a", "b"]);
+        ctl.target = None;
+
+        finish_video(&mut ctl, 1);
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(0));
+    }
+
+    #[test]
+    fn the_look_ahead_reaches_into_the_next_list() {
+        let mut ctl = ring_ctl("ring-window");
+        ctl.settings.cache_budget_mb = 1000;
+        ctl.videos.iter_mut().for_each(|v| v.bytes = Some(1_000_000));
+        on_air(&mut ctl, 1, 50.0);
+
+        assert!(ctl.window().contains(&2), "{:?}", ctl.window());
+    }
+
+    #[test]
+    fn status_counts_videos_within_the_list_on_air() {
+        let mut ctl = ring_ctl("ring-status");
+        on_air(&mut ctl, 3, 12.0);
+
+        let s = ctl.status();
+
+        assert_eq!(s["playing"]["id"], "q");
+        assert_eq!(s["playing"]["index"], 1);
+        assert_eq!(s["playing"]["playlistId"], "PLb");
+        assert_eq!(s["playlistCount"], 3);
+    }
+
+    #[test]
+    fn status_has_no_list_before_one_loads() {
+        let ctl = test_ctl("ring-status-empty", &[]);
+
+        assert_eq!(ctl.status()["playing"]["playlistId"], Value::Null);
+    }
+
+    #[test]
+    fn a_jump_number_counts_within_the_list_on_air() {
+        let mut ctl = ring_ctl("ring-jump");
+        on_air(&mut ctl, 3, 12.0);
+
+        send_control(&mut ctl, "jump", Some(2), None).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("r".to_string()));
+    }
+
+    #[test]
+    fn a_jump_number_past_the_end_of_the_list_is_refused() {
+        let mut ctl = ring_ctl("ring-jump-past");
+        on_air(&mut ctl, 0, 12.0);
+
+        let r = send_control(&mut ctl, "jump", Some(2), None);
+
+        assert_eq!(r.unwrap_err(), "index 2 out of range 0..1");
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), None);
+    }
+
+    #[test]
+    fn a_jump_by_id_prefers_the_list_on_air_when_a_video_is_in_two_lists() {
+        let mut ctl = list_ctl("ring-jump-dup", &["PLa", "PLb"], "PLa", &["a", "same"]);
+        ctl.on_extra_list("PLb".into(), entries(&["p", "same"]));
+        ctl.target = None;
+        on_air(&mut ctl, 2, 12.0);
+
+        send_control(&mut ctl, "jump", Some(0), Some("same")).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(3));
+    }
+
+    #[test]
+    fn next_on_the_last_video_of_a_list_goes_to_the_next_list() {
+        let mut ctl = ring_ctl("ring-next");
+        on_air(&mut ctl, 1, 12.0);
+
+        send_control(&mut ctl, "next", None, None).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("p".to_string()));
+    }
+
+    #[test]
+    fn a_reload_naming_a_list_in_the_ring_starts_at_its_video_without_a_fetch() {
+        let mut ctl = ring_ctl("ring-named");
+        on_air(&mut ctl, 0, 12.0);
+
+        ctl.reload(Some("PLb".into()), Some(1), None).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.reason)), Some(("q".to_string(), "control")));
+        assert!(!ctl.playlist_wanted, "the list was fetched again");
+        assert_eq!(ctl.settings.playlist_ids, ["PLa", "PLb"], "the configured order changed");
+    }
+
+    #[test]
+    fn a_reload_naming_a_video_id_finds_it_in_that_list() {
+        let mut ctl = ring_ctl("ring-named-id");
+        on_air(&mut ctl, 0, 12.0);
+
+        ctl.reload(Some("PLb".into()), Some(0), Some("r".into())).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("r".to_string()));
+    }
+
+    #[test]
+    fn a_reload_naming_a_list_with_no_video_starts_at_its_first() {
+        let mut ctl = ring_ctl("ring-named-first");
+        on_air(&mut ctl, 0, 12.0);
+
+        ctl.reload(Some("PLb".into()), None, None).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("p".to_string()));
+    }
+
+    #[test]
+    fn a_reload_naming_a_video_in_the_list_on_air_starts_there() {
+        let mut ctl = ring_ctl("ring-named-same");
+        on_air(&mut ctl, 2, 12.0);
+
+        ctl.reload(Some("PLb".into()), Some(2), None).unwrap();
+
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("r".to_string()));
+    }
+
+    #[test]
+    fn a_reload_naming_the_list_on_air_with_no_video_moves_nothing() {
+        let mut ctl = ring_ctl("ring-named-same-no-video");
+        on_air(&mut ctl, 2, 12.0);
+
+        ctl.reload(Some("PLb".into()), None, None).unwrap();
+
+        assert_eq!(ctl.control_seq, 0);
+    }
+
+    #[test]
+    fn a_reload_naming_a_list_not_in_the_config_is_refused() {
+        let mut ctl = ring_ctl("ring-named-unknown");
+        on_air(&mut ctl, 0, 12.0);
+
+        let r = ctl.reload(Some("PLother".into()), None, None);
+
+        assert!(r.is_err());
+        assert_eq!(ctl.target.as_ref().map(|t| t.index), None);
+    }
+
+    #[test]
+    fn a_reload_naming_a_list_that_has_not_loaded_fetches_it_and_starts_there() {
+        let mut ctl = ring_ctl("ring-named-fetch");
+        on_air(&mut ctl, 0, 12.0);
+        write_config(&ctl, &["PLa", "PLb", "PLc"]);
+
+        ctl.reload(Some("PLc".into()), Some(1), None).unwrap();
+        assert!(ctl.playlist_wanted);
+        ctl.on_playlist("PLc".into(), entries(&["x", "y"]));
+
+        assert_eq!(ring(&ctl), ["a", "b", "p", "q", "r", "x", "y"]);
+        assert_eq!(ctl.target.as_ref().map(|t| ctl.id(t.index)), Some("y".to_string()));
+    }
+
+    #[test]
+    fn a_reload_with_no_name_stays_on_the_list_the_ring_moved_on_to() {
+        let mut ctl = ring_ctl("ring-settings-save");
+        on_air(&mut ctl, 3, 12.0);
+
+        ctl.reload(None, None, None).unwrap();
+
+        assert_eq!(ctl.control_seq, 0, "a settings save moved the stream");
+        assert!(!ctl.playlist_wanted);
+        assert_eq!(ctl.settings.playlist_id, "PLb");
+    }
+
+    #[test]
+    fn a_reload_with_no_name_keeps_trying_a_list_played_from_its_saved_copy() {
+        let mut ctl = ring_ctl("ring-settings-save-saved");
+        on_air(&mut ctl, 0, 12.0);
+        (ctl.from_saved, ctl.playlist_wanted) = (true, true);
+
+        ctl.reload(None, None, None).unwrap();
+
+        assert!(ctl.playlist_wanted, "the retry of the real list stopped");
+    }
+
+    #[test]
+    fn a_reload_dropping_the_list_on_air_goes_to_a_list_that_is_left() {
+        let mut ctl = ring_ctl("ring-dropped");
+        on_air(&mut ctl, 0, 12.0);
+        write_config(&ctl, &["PLb"]);
+
+        ctl.reload(None, None, None).unwrap();
+
+        assert_eq!(ring(&ctl), ["p", "q", "r"]);
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.pos)), Some(("p".to_string(), 0.0)));
+    }
+
+    #[test]
+    fn a_reload_dropping_another_list_keeps_the_video_on_air() {
+        let mut ctl = ring_ctl("ring-dropped-other");
+        on_air(&mut ctl, 1, 42.0);
+        write_config(&ctl, &["PLa"]);
+
+        ctl.reload(None, None, None).unwrap();
+
+        assert_eq!(ring(&ctl), ["a", "b"]);
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.pos)), Some(("b".to_string(), 42.0)));
+    }
+
+    #[test]
+    fn a_rebuilt_ring_waits_for_the_seams_from_before_it_to_leave() {
+        let mut ctl = ring_ctl("ring-settling");
+        on_air(&mut ctl, 1, 42.0);
+        ctl.last_view = Some(1);
+        write_config(&ctl, &["PLa"]);
+
+        ctl.reload(None, None, None).unwrap();
+
+        assert_eq!(ctl.last_view, None);
+        assert_eq!(ctl.ring_settled_at, ctl.queue_end());
+    }
+
+    #[test]
+    fn a_list_added_at_the_end_joins_without_touching_the_stream() {
+        let mut ctl = ring_ctl("ring-added");
+        on_air(&mut ctl, 1, 12.0);
+        write_config(&ctl, &["PLa", "PLb", "PLc"]);
+
+        ctl.reload(None, None, None).unwrap();
+        ctl.on_extra_list("PLc".into(), entries(&["x"]));
+
+        assert_eq!(ring(&ctl), ["a", "b", "p", "q", "r", "x"]);
+        assert_eq!(ctl.control_seq, 0, "adding a list jumped");
+    }
+
+    #[test]
+    fn a_new_order_keeps_the_video_on_air_at_its_position() {
+        let mut ctl = ring_ctl("ring-reorder");
+        write_config(&ctl, &["PLa", "PLb", "PLc"]);
+        ctl.reload(None, None, None).unwrap();
+        ctl.on_extra_list("PLc".into(), entries(&["x"]));
+        on_air(&mut ctl, 3, 42.0);
+        write_config(&ctl, &["PLa", "PLc", "PLb"]);
+
+        ctl.reload(None, None, None).unwrap();
+
+        assert_eq!(ring(&ctl), ["a", "b", "x", "p", "q", "r"]);
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.pos)), Some(("q".to_string(), 42.0)));
+    }
+
+    #[test]
+    fn a_list_that_loads_late_takes_its_place_in_the_order() {
+        let mut ctl = list_ctl("ring-late", &["PLa", "PLb", "PLc"], "PLa", &["a"]);
+        ctl.on_extra_list("PLb".into(), Err("not now".into()));
+        ctl.on_extra_list("PLc".into(), entries(&["x", "y"]));
+        ctl.target = None;
+        on_air(&mut ctl, 2, 42.0);
+
+        ctl.on_extra_list("PLb".into(), entries(&["p"]));
+
+        assert_eq!(ring(&ctl), ["a", "p", "x", "y"]);
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.pos)), Some(("y".to_string(), 42.0)));
+    }
+
+    #[test]
+    fn the_ring_started_on_a_later_list_keeps_who_follows_whom() {
+        let mut ctl = list_ctl("ring-rotated", &["PLa", "PLb", "PLc"], "PLb", &["p"]);
+
+        ctl.on_extra_list("PLc".into(), entries(&["x"]));
+        ctl.on_extra_list("PLa".into(), entries(&["a"]));
+
+        assert_eq!(ring(&ctl), ["p", "x", "a"]);
+        assert_eq!(ctl.control_seq, 0, "lists joining in order moved no video");
+    }
+
+    #[test]
+    fn a_file_kept_for_a_later_list_waits_until_that_list_answers() {
+        let mut ctl = test_ctl("ring-kept", &[]);
+        write_config(&ctl, &["PLa", "PLb"]);
+        ctl.settings.playlist_id = "PLa".into();
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into()];
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        for f in ["p", "stray"] {
+            std::fs::write(ctl.cache.join(format!("{f}.mp4")), [0u8; 8]).unwrap();
+            ctl.kept.insert(f.to_string(), 8);
+        }
+
+        ctl.on_playlist("PLa".into(), entries(&["a"]));
+        assert!(ctl.cache.join("p.mp4").exists(), "the later list's file went before that list answered");
+
+        ctl.on_extra_list("PLb".into(), entries(&["p"]));
+        assert!(ctl.videos[1].on_disk, "the later list did not claim its file");
+        assert!(ctl.cache.join("p.mp4").exists());
+        assert!(!ctl.cache.join("stray.mp4").exists(), "a file no list claims is still there");
+    }
+
+    #[test]
+    fn a_file_kept_for_a_list_that_cannot_load_goes_once_it_has_answered() {
+        let mut ctl = test_ctl("ring-kept-failed", &[]);
+        write_config(&ctl, &["PLa", "PLb"]);
+        ctl.settings.playlist_id = "PLa".into();
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into()];
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("p.mp4"), [0u8; 8]).unwrap();
+        ctl.kept.insert("p".to_string(), 8);
+        ctl.on_playlist("PLa".into(), entries(&["a"]));
+
+        ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+
+        assert!(!ctl.cache.join("p.mp4").exists());
+    }
+
+    #[test]
+    fn a_list_that_fails_is_reported_once_and_tried_again_later() {
+        let mut ctl = list_ctl("ring-failed", &["PLa", "PLb"], "PLa", &["a"]);
+
+        ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+        ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+
+        let failed = event_kinds(&ctl, "playlist-failed");
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0]["level"], "warn");
+        assert_eq!(failed[0]["playlistId"], "PLb");
+        assert!(ctl.list_retry.get("PLb").is_some_and(|t| *t > Instant::now()), "no later try is planned");
+        assert_eq!(ring(&ctl), ["a"]);
+    }
+
+    #[test]
+    fn a_list_that_fails_never_opens_the_breaker_on_its_own() {
+        let mut ctl = list_ctl("ring-failed-breaker", &["PLa", "PLb"], "PLa", &["a"]);
+
+        for _ in 0..5 {
+            ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+        }
+
+        assert!(!ctl.breaker.open);
+    }
+
+    #[test]
+    fn a_bot_check_on_a_list_opens_the_breaker() {
+        let mut ctl = list_ctl("ring-failed-bot", &["PLa", "PLb"], "PLa", &["a"]);
+
+        ctl.on_extra_list("PLb".into(), Err("Sign in to confirm you are not a bot".into()));
+
+        assert!(ctl.breaker.open);
+    }
+
+    #[test]
+    fn a_list_that_loads_after_failing_is_reported_as_recovered() {
+        let mut ctl = list_ctl("ring-recovered", &["PLa", "PLb"], "PLa", &["a"]);
+        ctl.on_extra_list("PLb".into(), Err("not now".into()));
+
+        ctl.on_extra_list("PLb".into(), entries(&["p"]));
+
+        assert_eq!(event_kinds(&ctl, "playlist-recovered").len(), 1);
+        assert!(ctl.list_retry.is_empty());
+    }
+
+    #[test]
+    fn a_list_taken_out_of_the_config_while_it_was_fetched_stays_out() {
+        let mut ctl = ring_ctl("ring-removed-in-flight");
+
+        ctl.on_extra_list("PLgone".into(), entries(&["z"]));
+
+        assert_eq!(ring(&ctl), ["a", "b", "p", "q", "r"]);
+    }
+
+    /// PLa on air and PLb not in the ring yet.
+    fn fetch_ctl(name: &str) -> Ctl {
+        let mut ctl = list_ctl(name, &["PLa", "PLb"], "PLa", &["a"]);
+        ctl.target = None;
+        ctl.ever_played = true;
+        ctl
+    }
+
+    #[test]
+    fn a_missing_list_is_fetched_once_a_video_is_on_air() {
+        let mut ctl = fetch_ctl("ring-fetch");
+
+        ctl.fetch_missing_list();
+
+        assert!(ctl.list_fetching);
+    }
+
+    #[test]
+    fn a_missing_list_waits_while_a_video_waits_for_youtube() {
+        let mut ctl = fetch_ctl("ring-fetch-target");
+        ctl.set_target(0, 0.0, "coldstart", false);
+
+        ctl.fetch_missing_list();
+
+        assert!(!ctl.list_fetching);
+    }
+
+    #[test]
+    fn a_missing_list_is_not_asked_for_past_an_open_breaker() {
+        let mut ctl = fetch_ctl("ring-fetch-breaker");
+        ctl.breaker.open = true;
+        ctl.breaker.retry_at = 0.0;
+
+        ctl.fetch_missing_list();
+
+        assert!(!ctl.list_fetching);
+        assert!(!ctl.breaker.probing, "the list took the breaker's probe");
+    }
+
+    #[test]
+    fn a_failed_list_is_not_asked_for_before_its_time() {
+        let mut ctl = fetch_ctl("ring-fetch-retry");
+        ctl.list_retry.insert("PLb".into(), Instant::now() + Duration::from_secs(60));
+
+        ctl.fetch_missing_list();
+
+        assert!(!ctl.list_fetching);
+    }
+
+    #[test]
+    fn a_failed_list_does_not_hold_up_the_one_after_it() {
+        let mut ctl = fetch_ctl("ring-fetch-next");
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into(), "PLc".into()];
+        ctl.list_retry.insert("PLb".into(), Instant::now() + Duration::from_secs(60));
+
+        ctl.fetch_missing_list();
+
+        assert!(ctl.list_fetching);
+    }
+
+    #[test]
+    fn a_start_goes_back_to_the_list_in_state_json() {
+        let mut ctl = test_ctl("ring-start", &[]);
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into()];
+        std::fs::write(ctl.state_file(), json!({"playlistId": "PLb", "id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        assert_eq!(ctl.start_list(), Some("PLb".to_string()));
+    }
+
+    #[test]
+    fn a_start_with_a_list_no_longer_configured_takes_the_first() {
+        let mut ctl = test_ctl("ring-start-gone", &[]);
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into()];
+        std::fs::write(ctl.state_file(), json!({"playlistId": "PLgone", "id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        assert_eq!(ctl.start_list(), Some("PLa".to_string()));
+    }
+
+    #[test]
+    fn a_start_from_a_state_file_with_no_list_takes_the_first() {
+        let mut ctl = test_ctl("ring-start-old", &[]);
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into()];
+        std::fs::write(ctl.state_file(), json!({"id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        assert_eq!(ctl.start_list(), Some("PLa".to_string()));
+    }
+
+    #[test]
+    fn a_resume_in_the_later_list_goes_to_its_video_and_position() {
+        let mut ctl = test_ctl("ring-resume", &[]);
+        ctl.settings.playlist_id = "PLb".into();
+        ctl.settings.playlist_ids = vec!["PLa".into(), "PLb".into()];
+        std::fs::write(ctl.state_file(), json!({"playlistId": "PLb", "id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        ctl.on_playlist("PLb".into(), entries(&["p", "q", "r"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 30.0, "resume")));
+    }
+
+    #[test]
+    fn a_state_file_with_no_list_still_resumes_its_video() {
+        let mut ctl = test_ctl("ring-resume-old", &[]);
+        ctl.settings.playlist_id = "PLa".into();
+        ctl.settings.playlist_ids = vec!["PLa".into()];
+        std::fs::write(ctl.state_file(), json!({"id": "b", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        ctl.on_playlist("PLa".into(), entries(&["a", "b", "c"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((1, 30.0, "resume")));
+    }
+
+    #[test]
+    fn a_state_file_from_another_list_does_not_place_the_start() {
+        let mut ctl = test_ctl("ring-resume-other", &[]);
+        ctl.settings.playlist_id = "PLa".into();
+        ctl.settings.playlist_ids = vec!["PLa".into()];
+        std::fs::write(ctl.state_file(), json!({"playlistId": "PLgone", "id": "q", "index": 1, "position": 30.0}).to_string()).unwrap();
+
+        ctl.on_playlist("PLa".into(), entries(&["a", "b", "c"]));
+
+        assert_eq!(ctl.target.as_ref().map(|t| (t.index, t.pos, t.reason)), Some((0, 0.0, "coldstart")));
+    }
+
+    #[test]
+    fn the_state_file_names_the_list_and_counts_within_it() {
+        let mut ctl = ring_ctl("ring-state");
+        on_air(&mut ctl, 3, 12.0);
+        ready_to_save_state(&mut ctl);
+
+        ctl.periodic();
+
+        let s: Value = serde_json::from_str(&std::fs::read_to_string(ctl.state_file()).unwrap()).unwrap();
+        assert_eq!((s["playlistId"].as_str(), s["id"].as_str(), s["index"].as_u64()), (Some("PLb"), Some("q"), Some(1)));
+    }
+
+    #[test]
+    fn no_state_is_saved_while_seams_from_before_a_rebuilt_ring_are_on_air() {
+        let mut ctl = ring_ctl("ring-state-settling");
+        on_air(&mut ctl, 3, 12.0);
+        ready_to_save_state(&mut ctl);
+        ctl.ring_settled_at = BASE + ticks(5.0);
+
+        ctl.periodic();
+
+        assert!(!ctl.state_file().exists());
+    }
+
+    #[test]
+    fn an_encoder_restart_ends_the_wait_for_a_rebuilt_ring_to_settle() {
+        let mut ctl = ring_ctl("ring-settle-restart");
+        on_air(&mut ctl, 3, 12.0);
+        ctl.enc.child = Some(exited_child());
+        ctl.ring_settled_at = BASE + ticks(99999.0);
+
+        ctl.encoder_down("test");
+
+        assert_eq!(ctl.ring_settled_at, 0);
+    }
+
+    #[test]
+    fn a_list_ending_is_logged_once_and_names_the_next_one() {
+        let mut ctl = ring_ctl("ring-event");
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 2, 0.0);
+        ctl.periodic();
+        ctl.periodic();
+
+        let advances = event_kinds(&ctl, "playlist-advance");
+        assert_eq!(advances.len(), 1, "{advances:?}");
+        assert_eq!((advances[0]["from"].as_str(), advances[0]["to"].as_str(), advances[0]["count"].as_u64(), advances[0]["finished"].as_bool()), (Some("PLa"), Some("PLb"), Some(3), Some(true)));
+    }
+
+    #[test]
+    fn a_jump_to_another_list_is_logged_as_not_finished() {
+        let mut ctl = ring_ctl("ring-event-jump");
+        on_air(&mut ctl, 0, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 3, 0.0);
+        ctl.periodic();
+
+        assert_eq!(event_kinds(&ctl, "playlist-advance")[0]["finished"], false);
+    }
+
+    #[test]
+    fn a_single_list_going_round_is_logged() {
+        let mut ctl = list_ctl("ring-event-restart", &["PLa"], "PLa", &["a", "b"]);
+        ctl.target = None;
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 0, 0.0);
+        ctl.periodic();
+
+        let restarts = event_kinds(&ctl, "playlist-restart");
+        assert_eq!(restarts.len(), 1, "{restarts:?}");
+        assert_eq!((restarts[0]["playlistId"].as_str(), restarts[0]["count"].as_u64()), (Some("PLa"), Some(2)));
+    }
+
+    #[test]
+    fn the_slate_between_two_videos_does_not_hide_a_list_ending() {
+        let mut ctl = ring_ctl("ring-event-slate");
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+
+        ctl.seams.clear();
+        ctl.seams.push(Seam { offset: BASE, index: 2, source: Source::Slate, start_pos: 0.0 });
+        ctl.periodic();
+        on_air(&mut ctl, 2, 0.0);
+        ctl.periodic();
+
+        assert_eq!(event_kinds(&ctl, "playlist-advance").len(), 1);
+    }
+
+    #[test]
+    fn nothing_is_logged_for_a_view_still_on_seams_from_before_a_rebuilt_ring() {
+        let mut ctl = ring_ctl("ring-event-settling");
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+        ctl.ring_settled_at = BASE + ticks(5.0);
+
+        on_air(&mut ctl, 3, 90.0);
+        ctl.periodic();
+
+        assert!(event_kinds(&ctl, "playlist-advance").is_empty());
+    }
+
+    #[test]
+    fn the_saved_list_follows_the_list_on_air() {
+        let mut ctl = ring_ctl("ring-saved");
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 2, 0.0);
+        ctl.periodic();
+
+        let text = std::fs::read_to_string(ctl.logs.dir.join("playlist.json")).unwrap();
+        let saved = saved_playlist(&text, "PLb").expect("playlist.json does not hold the list on air");
+        assert_eq!(saved.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["p", "q", "r"]);
+    }
+
+    #[test]
+    fn a_later_list_does_not_take_over_the_saved_list() {
+        let ctl = ring_ctl("ring-saved-first");
+
+        let text = std::fs::read_to_string(ctl.logs.dir.join("playlist.json")).unwrap();
+
+        assert!(saved_playlist(&text, "PLa").is_some());
+    }
+
+    #[test]
+    fn a_fetch_replacing_a_saved_list_leaves_the_other_list_in_the_ring() {
+        let mut ctl = ring_ctl("ring-refresh");
+        ctl.from_saved = true;
+        on_air(&mut ctl, 1, 42.0);
+
+        ctl.on_playlist("PLa".into(), entries(&["a", "new", "b"]));
+
+        assert_eq!(ring(&ctl), ["a", "new", "b", "p", "q", "r"]);
+        assert_eq!(ctl.target.as_ref().map(|t| (ctl.id(t.index), t.pos)), Some(("b".to_string(), 42.0)));
+    }
+
+    #[test]
+    fn a_fetch_matching_a_saved_list_moves_nothing() {
+        let mut ctl = ring_ctl("ring-refresh-same");
+        ctl.from_saved = true;
+        on_air(&mut ctl, 1, 42.0);
+
+        ctl.on_playlist("PLa".into(), entries(&["a", "b"]));
+
+        assert_eq!(ctl.control_seq, 0);
+        assert!(!ctl.from_saved);
+    }
+
+    #[test]
+    fn events_number_videos_within_their_list() {
+        let mut ctl = ring_ctl("ring-event-index");
+
+        ctl.fail(3, 10.0, "stall", json!({}));
+
+        assert_eq!(event_kinds(&ctl, "retry")[0]["index"], 1);
+    }
+
+    #[test]
+    fn a_list_going_round_because_the_next_would_not_load_is_critical() {
+        let mut ctl = list_ctl("ring-missing-round", &["PLa", "PLb"], "PLa", &["a", "b"]);
+        ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+        ctl.target = None;
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 0, 0.0);
+        ctl.periodic();
+
+        let restart = &event_kinds(&ctl, "playlist-restart")[0];
+        assert_eq!(restart["level"], "critical");
+        assert_eq!(restart["missing"], json!(["PLb"]));
+    }
+
+    #[test]
+    fn a_list_moving_on_past_one_that_would_not_load_is_critical() {
+        let mut ctl = list_ctl("ring-missing-advance", &["PLa", "PLb", "PLc"], "PLa", &["a"]);
+        ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+        ctl.on_extra_list("PLc".into(), entries(&["x"]));
+        ctl.target = None;
+        on_air(&mut ctl, 0, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 1, 0.0);
+        ctl.periodic();
+
+        let advance = &event_kinds(&ctl, "playlist-advance")[0];
+        assert_eq!(advance["level"], "critical");
+        assert_eq!(advance["missing"], json!(["PLb"]));
+    }
+
+    #[test]
+    fn a_list_ending_with_every_list_loaded_names_none_as_missing() {
+        let mut ctl = ring_ctl("ring-missing-none");
+        on_air(&mut ctl, 1, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 2, 0.0);
+        ctl.periodic();
+
+        let advance = &event_kinds(&ctl, "playlist-advance")[0];
+        assert_eq!(advance["level"], "info");
+        assert_eq!(advance["missing"], Value::Null);
+    }
+
+    #[test]
+    fn a_jump_away_while_a_list_would_not_load_is_no_alert() {
+        let mut ctl = list_ctl("ring-missing-jump", &["PLa", "PLb", "PLc"], "PLa", &["a", "b"]);
+        ctl.on_extra_list("PLb".into(), Err("This playlist does not exist".into()));
+        ctl.on_extra_list("PLc".into(), entries(&["x"]));
+        ctl.target = None;
+        on_air(&mut ctl, 0, 90.0);
+        ctl.periodic();
+
+        on_air(&mut ctl, 2, 0.0);
+        ctl.periodic();
+
+        assert_eq!(event_kinds(&ctl, "playlist-advance")[0]["level"], "info");
+    }
+
+    #[test]
+    fn status_numbers_a_download_within_its_list() {
+        let mut ctl = ring_ctl("ring-status-download");
+        ctl.downloading = Some((3, 10.0, Arc::new(AtomicBool::new(false))));
+
+        assert_eq!(ctl.status()["downloading"]["index"], 1);
     }
 }

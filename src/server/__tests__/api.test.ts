@@ -566,36 +566,92 @@ WshShell.Run """${bat}""", 1, False`;
   });
 
   describe('playlists', () => {
-    it('POST /playlist/switch moves the playlist to the front and reloads', async () => {
+    const onAir = (playlistId: string | null) => playing({ playing: { index: 0, playlistId } });
+
+    it('POST /playlist/switch asks the supervisor for that list', async () => {
+      h.sup.value = onAir('PLaaa');
+
       const res = await post('/playlist/switch', { playlistIndex: 2 });
 
       expect(res.status).toBe(200);
-      expect(h.save).toHaveBeenCalledWith({ playlists: [{ id: 'PLccc', name: 'C' }, { id: 'PLaaa', name: 'A' }, { id: 'PLbbb', name: 'B' }] });
-      expect(h.applyConfig).toHaveBeenCalledOnce();
-      expect(h.client.reload).toHaveBeenCalledOnce();
+      expect(h.client.reload).toHaveBeenCalledWith({ playlist: 'PLccc' });
+    });
+
+    it('POST /playlist/switch leaves the configured order alone', async () => {
+      h.sup.value = onAir('PLaaa');
+
+      await post('/playlist/switch', { playlistIndex: 2 });
+
+      expect(h.save).not.toHaveBeenCalled();
     });
 
     it('POST /playlist/switch rejects a bad index', async () => {
       expect((await post('/playlist/switch', { playlistIndex: 3 })).status).toBe(400);
-      expect(h.save).not.toHaveBeenCalled();
+      expect(h.client.reload).not.toHaveBeenCalled();
     });
 
-    it('POST /playlist/switch passes the start video to the reload', async () => {
+    it('POST /playlist/switch passes the start video to the supervisor', async () => {
+      h.sup.value = onAir('PLaaa');
+
       const res = await post('/playlist/switch', { playlistIndex: 1, videoIndex: 4, videoId: 'abc_DEF-123' });
 
       expect(res.status).toBe(200);
-      expect(h.save).toHaveBeenCalledWith({ playlists: [{ id: 'PLbbb', name: 'B' }, { id: 'PLaaa', name: 'A' }, { id: 'PLccc', name: 'C' }] });
-      expect(h.client.reload).toHaveBeenCalledWith({ index: 4, id: 'abc_DEF-123' });
+      expect(h.client.reload).toHaveBeenCalledWith({ playlist: 'PLbbb', index: 4, id: 'abc_DEF-123' });
     });
 
-    it.each(['', 'a/b', 'x'.repeat(65), 7, null])('POST /playlist/switch rejects videoId %j before saving', async (videoId) => {
+    it('POST /playlist/switch works before the supervisor has a list on air', async () => {
+      h.sup.value = onAir(null);
+
+      expect((await post('/playlist/switch', { playlistIndex: 1 })).status).toBe(200);
+      expect(h.client.reload).toHaveBeenCalledWith({ playlist: 'PLbbb' });
+    });
+
+    it('POST /playlist/switch answers 503 while the stream is stopped', async () => {
+      h.launcherState.stopped = true;
+
+      const res = await post('/playlist/switch', { playlistIndex: 1 });
+
+      expect(res.status).toBe(503);
+      expect((await res.json()).error).toBe('The stream is stopped. Start it first.');
+      expect(h.client.reload).not.toHaveBeenCalled();
+    });
+
+    it('POST /playlist/switch answers 503 while the supervisor is not running', async () => {
+      h.launcherState.value = 'down';
+
+      const res = await post('/playlist/switch', { playlistIndex: 1 });
+
+      expect(res.status).toBe(503);
+      expect(h.client.reload).not.toHaveBeenCalled();
+    });
+
+    it('POST /playlist/switch reports a refused switch', async () => {
+      h.sup.value = onAir('PLaaa');
+      h.client.reload.mockResolvedValueOnce({ ok: false, error: 'playlist PLbbb is not in config.json' } as never);
+
+      const res = await post('/playlist/switch', { playlistIndex: 1 });
+
+      expect(res.status).toBe(502);
+      expect((await res.json()).error).toBe('The supervisor refused: playlist PLbbb is not in config.json');
+    });
+
+    it('POST /playlist/switch says the full ZIP is needed when the supervisor names no list', async () => {
+      h.sup.value = playing({ playing: { index: 0 } });
+
+      const res = await post('/playlist/switch', { playlistIndex: 1 });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toContain('full ZIP');
+      expect(h.client.reload).not.toHaveBeenCalled();
+    });
+
+    it.each(['', 'a/b', 'x'.repeat(65), 7, null])('POST /playlist/switch rejects videoId %j', async (videoId) => {
       expect((await post('/playlist/switch', { playlistIndex: 1, videoIndex: 0, videoId })).status).toBe(400);
-      expect(h.save).not.toHaveBeenCalled();
+      expect(h.client.reload).not.toHaveBeenCalled();
     });
 
     it.each([-1, 1.5, '2', null, 1_000_000])('POST /playlist/switch rejects videoIndex %j', async (videoIndex) => {
       expect((await post('/playlist/switch', { playlistIndex: 1, videoIndex })).status).toBe(400);
-      expect(h.save).not.toHaveBeenCalled();
       expect(h.client.reload).not.toHaveBeenCalled();
     });
 
@@ -605,7 +661,23 @@ WshShell.Run """${bat}""", 1, False`;
       const body = await (await get('/playlist/videos?playlist=2&page=1&perPage=1')).json();
 
       expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith('PLccc');
-      expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: null });
+      expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: null, playing: false });
+    });
+
+    it('GET /playlist/videos marks the list on air, wherever it is in the config', async () => {
+      h.sup.value = playing({ playing: { index: 1, playlistId: 'PLbbb' } });
+
+      const body = await (await get('/playlist/videos?playlist=1&page=1&perPage=1')).json();
+
+      expect(body).toMatchObject({ currentIndex: 1, playing: true });
+    });
+
+    it('GET /playlist/videos gives the first list no current video while another is on air', async () => {
+      h.sup.value = playing({ playing: { index: 1, playlistId: 'PLbbb' } });
+
+      const body = await (await get('/playlist/videos?playlist=0&page=1&perPage=1')).json();
+
+      expect(body).toMatchObject({ currentIndex: null, playing: false });
     });
 
     it.each(['3', '-1', 'x', '1.5'])('GET /playlist/videos rejects playlist=%s', async (playlist) => {
@@ -615,13 +687,13 @@ WshShell.Run """${bat}""", 1, False`;
       expect(h.deps.playlistCache.fetch).not.toHaveBeenCalled();
     });
 
-    it('GET /playlist/videos takes currentIndex from the supervisor', async () => {
+    it('GET /playlist/videos takes the first list as on air when the supervisor names none', async () => {
       h.sup.value = playing({ playing: { index: 1 } });
 
       const body = await (await get('/playlist/videos?page=1&perPage=1')).json();
 
       expect(h.deps.playlistCache.fetch).toHaveBeenCalledWith('PLaaa');
-      expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: 1 });
+      expect(body).toEqual({ videos: [{ id: 'v1' }], total: 2, page: 1, perPage: 1, currentIndex: 1, playing: true });
     });
   });
 

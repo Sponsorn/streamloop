@@ -171,11 +171,18 @@ export function createApiRouter(deps: ApiDependencies): Router {
     node: deps.nodeLogsDir,
   };
 
+  /** Why the stream cannot take a command now; null when it can. */
+  function notReady(): string | null {
+    if (deps.launcher.isStoppedByUser()) return 'The stream is stopped. Start it first.';
+    if (deps.launcher.state() !== 'running') return 'The supervisor is not running.';
+    return null;
+  }
+
   /** Saves, takes the new config in and asks the supervisor to read it. */
-  async function saveAndReload(patch: Partial<AppConfig>, reloadOpts?: { index?: number; id?: string }) {
+  async function saveAndReload(patch: Partial<AppConfig>) {
     const config = save(patch);
     deps.applyConfig(config);
-    const reload = await (reloadOpts ? deps.client.reload(reloadOpts) : deps.client.reload());
+    const reload = await deps.client.reload();
     return {
       config,
       restartRequired: reload.restartRequired === true,
@@ -405,14 +412,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return res.status(400).json({ error: 'Invalid playlist index' });
     }
     try {
-      // The supervisor plays the first playlist; any other is only browsed.
-      const [metadata, sup] = await Promise.all([
-        deps.playlistCache.fetch(playlists[which].id),
-        which === 0 ? deps.client.status() : null,
-      ]);
+      const [metadata, sup] = await Promise.all([deps.playlistCache.fetch(playlists[which].id), deps.client.status()]);
       const start = (page - 1) * perPage;
       const videos = metadata.videos.slice(start, start + perPage);
-      res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: sup?.playing?.index ?? null });
+      // A supervisor that names no list plays the config's first.
+      const onAir = sup?.playing?.playlistId;
+      const playing = onAir ? playlists[which].id === onAir : which === 0;
+      res.json({ videos, total: metadata.videos.length, page, perPage, currentIndex: playing ? sup?.playing?.index ?? null : null, playing });
     } catch (err) {
       logger.error({ err }, 'Failed to fetch playlist metadata');
       res.status(500).json({ error: 'Failed to fetch playlist metadata' });
@@ -421,7 +427,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   router.post('/playlist/switch', async (req, res) => {
     const { playlistIndex, videoIndex, videoId } = req.body as { playlistIndex: unknown; videoIndex?: unknown; videoId?: unknown };
-    const playlists = [...deps.getConfig().playlists];
+    const playlists = deps.getConfig().playlists;
     if (typeof playlistIndex !== 'number' || !Number.isInteger(playlistIndex) || playlistIndex < 0 || playlistIndex >= playlists.length) {
       return res.status(400).json({ error: 'Invalid playlist index' });
     }
@@ -431,26 +437,23 @@ export function createApiRouter(deps: ApiDependencies): Router {
     if (videoId !== undefined && !isVideoId(videoId)) {
       return res.status(400).json({ error: 'Invalid video id' });
     }
-    const [chosen] = playlists.splice(playlistIndex, 1);
-    try {
-      const start = videoIndex === undefined && videoId === undefined ? undefined : { index: videoIndex, id: videoId };
-      const r = await saveAndReload({ playlists: [chosen, ...playlists] }, start);
-      res.json({ ok: true, reloadError: r.reloadError, reloadErrorCode: r.reloadErrorCode });
-    } catch (err) {
-      logger.error({ err }, 'Failed to switch playlist');
-      res.status(500).json({ error: 'Failed to switch playlist' });
+    const why = notReady();
+    if (why) return res.status(503).json({ error: why });
+    // The supervisor keeps the list on air itself, so the configured order stays as the user set it.
+    const sup = await deps.client.status();
+    if (sup?.playing && !('playlistId' in sup.playing)) {
+      return res.status(409).json({ error: 'Switching playlists needs a newer supervisor. Install the full ZIP.' });
     }
+    const r = await deps.client.reload({ playlist: playlists[playlistIndex].id, index: videoIndex, id: videoId });
+    if (!r.ok) return res.status(502).json({ error: `The supervisor refused: ${r.error ?? 'unknown error'}` });
+    res.json({ ok: true });
   });
 
   // --- Player control endpoints ---
 
   async function control(res: Response, cmd: 'next' | 'prev' | 'restart' | 'jump', index?: number, id?: string) {
-    if (deps.launcher.isStoppedByUser()) {
-      return res.status(503).json({ error: 'The stream is stopped. Start it first.' });
-    }
-    if (deps.launcher.state() !== 'running') {
-      return res.status(503).json({ error: 'The supervisor is not running.' });
-    }
+    const why = notReady();
+    if (why) return res.status(503).json({ error: why });
     const r = await deps.client.control(cmd, index, undefined, id);
     if (!r.ok) return res.status(502).json({ error: `The supervisor refused: ${r.error ?? 'unknown error'}` });
     res.json({ ok: true });

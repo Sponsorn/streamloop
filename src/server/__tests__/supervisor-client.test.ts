@@ -138,7 +138,8 @@ describe('SupervisorClient.reload and shutdown', () => {
     await client(f).reload();
     await client(f).reload({ index: 3 });
     await client(f).reload({ index: 3, id: 'abc' });
-    expect(calls.map((c) => [c.method, c.body])).toEqual([['POST', '{}'], ['POST', '{"index":3}'], ['POST', '{"index":3,"id":"abc"}']]);
+    await client(f).reload({ playlist: 'PLb', index: 3 });
+    expect(calls.map((c) => [c.method, c.body])).toEqual([['POST', '{}'], ['POST', '{"index":3}'], ['POST', '{"index":3,"id":"abc"}'], ['POST', '{"playlist":"PLb","index":3}']]);
   });
 
   it('returns the error from a rejected reload', async () => {

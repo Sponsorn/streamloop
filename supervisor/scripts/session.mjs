@@ -1,7 +1,9 @@
 // One whole supervisor run: MediaMTX + token-server check, a dev root (dev-root.mjs) with a temp
 // config, the product binary, spike 1's watcher, a raw packet reader, a recorder, an optional
 // drive.mjs, then the dummy-key grep, analyze + verdict.
-//   node session.mjs <name> [--drive controls|faults|switch|resume] [--gap-s 60] [--key protected|target] [supervisor flags...]
+//   node session.mjs <name> [--drive controls|faults|switch|resume|advance] [--gap-s 60] [--key protected|target] [supervisor flags...]
+// advance: two playlists, starting 90 s before the first one's end. Needs --debug-faults --max-videos 2, so the
+// list ends on the video named in FIRST_LIST_LAST.
 // --key protected (default): a random dummy key, DPAPI-protected into the config, against
 // rtmp://127.0.0.1:1935/live. --key target: --target rtmp://127.0.0.1:1935/live/spike instead.
 // --gap-s only shortens the controls plan's spacing (for a shakedown); everything else goes to the supervisor.
@@ -11,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { API, TOKEN_SERVER_PING, FFMPEG, FFPROBE, FFMPEG_BIN, PLAYLIST, redact } from './lib.mjs';
+import { API, TOKEN_SERVER_PING, FFMPEG, FFPROBE, FFMPEG_BIN, PLAYLIST, SECOND_PLAYLIST, redact } from './lib.mjs';
 import { makeDevRoot } from './dev-root.mjs';
 
 const SUP_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -22,7 +24,7 @@ const node = process.execPath;
 
 const [name, ...rest] = process.argv.slice(2);
 if (!name || name.startsWith('--')) {
-  console.error('usage: node session.mjs <name> [--drive controls|faults|switch|resume] [--key protected|target] [supervisor flags...]');
+  console.error('usage: node session.mjs <name> [--drive controls|faults|switch|resume|advance] [--key protected|target] [supervisor flags...]');
   process.exit(2);
 }
 let drivePlan = null;
@@ -76,7 +78,10 @@ if (keyMode === 'protected') {
 } else {
   supArgs.unshift('--target', readUrl);
 }
-writeFileSync(configFile, JSON.stringify({ playlists: [{ id: PLAYLIST }], supervisor: supervisorConfig }, null, 2));
+// With --max-videos 2, the last video of PLAYLIST.
+const FIRST_LIST_LAST = { id: 'u9lj-c29dxI', index: 1, position: 148 };
+const playlists = drivePlan === 'advance' ? [{ id: PLAYLIST }, { id: SECOND_PLAYLIST }] : [{ id: PLAYLIST }];
+writeFileSync(configFile, JSON.stringify({ playlists, supervisor: supervisorConfig }, null, 2));
 
 rmSync(`${SUP_DIR}/logs`, { recursive: true, force: true });
 mkdirSync(`${SUP_DIR}/logs/rec`, { recursive: true });
@@ -173,6 +178,55 @@ if (drivePlan === 'resume') {
   const after = await fetch(`${API}/status`).then((r) => r.json()).catch(() => null);
   writeFileSync(`${SUP_DIR}/logs/resume-after.json`, JSON.stringify({ before, after }, null, 2));
   await sleep(40_000);
+  await stopSupervisor(supervisor);
+  endedAt = Date.now();
+} else if (drivePlan === 'advance') {
+  // A real list takes weeks to end, so state.json puts the run just before it.
+  const state = () => JSON.parse(readFileSync(join(dataDir, 'state.json'), 'utf8'));
+  const status = () => fetch(`${API}/status`).then((r) => r.json()).catch(() => null);
+  const results = {};
+  const note = (key, value) => { results[key] = value; writeFileSync(`${SUP_DIR}/logs/advance.json`, JSON.stringify(results, null, 2)); };
+  const waitFor = async (limitS, test) => {
+    const from = Date.now();
+    while (Date.now() - from < limitS * 1000) {
+      const s = await status();
+      if (s && test(s)) return { waitedS: Math.round((Date.now() - from) / 1000), playing: s.playing, restarts: s.encoder?.restarts, generation: s.encoder?.generation, count: s.playlistCount };
+      await sleep(250);
+    }
+    return null;
+  };
+  const onVideo = (list, id) => (s) => s.playing?.playlistId === list && s.playing?.source !== 'slate' && (!id || s.playing?.id === id);
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(dataDir, 'state.json'), JSON.stringify({ playlistId: PLAYLIST, ...FIRST_LIST_LAST }));
+  const configBefore = readFileSync(configFile, 'utf8');
+
+  supervisor = launchSupervisor(supArgs);
+  await sleep(8000);
+  runReader(); runWatch(); runRecorder();
+  note('firstList', await waitFor(60, onVideo(PLAYLIST, FIRST_LIST_LAST.id)));
+  // The next list's first video should be on disk before the seam reaches it.
+  const secondId = (await waitFor(120, (s) => s.playing?.playlistId === SECOND_PLAYLIST || s.downloading))?.playing?.id;
+  note('sawDownloadOrSeam', secondId ?? null);
+  note('advanced', await waitFor(180, onVideo(SECOND_PLAYLIST)));
+  await sleep(10_000);
+  note('stateAfterAdvance', state());
+  note('settingsSaveMovesNothing', { reply: await fetch(`${API}/reload`, { method: 'POST', body: '{}' }).then((r) => r.json()).catch(String), still: await (await sleep(5000), waitFor(10, onVideo(SECOND_PLAYLIST))) });
+
+  // A restart goes back to the list on air, not to the config's first.
+  await stopSupervisor(supervisor);
+  const beforeRestart = state();
+  await sleep(3000);
+  supervisor = launchSupervisor(supArgs);
+  note('resumedInSecondList', { before: beforeRestart, after: await waitFor(90, onVideo(SECOND_PLAYLIST, beforeRestart.id)) });
+
+  // The second list ends and the ring goes round to the first.
+  const durationS = (await status())?.playing?.duration ?? 600;
+  note('wrappedToFirstList', await waitFor(durationS + 60, onVideo(PLAYLIST)));
+
+  // A named switch goes straight there, and the configured order stays.
+  note('namedSwitch', { reply: await fetch(`${API}/reload`, { method: 'POST', body: JSON.stringify({ playlist: SECOND_PLAYLIST, index: 0 }) }).then((r) => r.json()).catch(String), after: await waitFor(60, onVideo(SECOND_PLAYLIST)) });
+  note('jumpPastTheListRefused', await fetch(`${API}/control`, { method: 'POST', body: JSON.stringify({ cmd: 'jump', index: 1 }) }).then(async (r) => ({ http: r.status, body: await r.json() })).catch(String));
+  note('configUnchanged', readFileSync(configFile, 'utf8') === configBefore);
   await stopSupervisor(supervisor);
   endedAt = Date.now();
 } else {

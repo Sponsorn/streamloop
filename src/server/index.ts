@@ -18,7 +18,7 @@ import { updateYtdlp } from './ytdlp-updater.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import { SupervisorClient } from './supervisor-client.js';
 import { SupervisorLauncher, installRoot } from './supervisor-launcher.js';
-import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent } from './supervisor-events.js';
+import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent, withPlaylistNames } from './supervisor-events.js';
 import { launchGuard } from './setup-check.js';
 import type { AppConfig } from './types.js';
 
@@ -69,7 +69,7 @@ async function main() {
   // One gate for the process lifetime, so supervisor and launcher alerts share its streaks.
   const gate = new AlertGate();
   const onEvent = (e: SupervisorEvent): void => {
-    const d = gate.describe(e);
+    const d = gate.describe(withPlaylistNames(e, config.playlists));
     if (d.message) eventLog.addEvent(d.message);
     if (d.discord) void discord.notifyEvent(d.discord);
   };

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import { SupervisorEvents, AlertGate, describe as describeEvent, launcherEvent, type SupervisorEvent } from '../supervisor-events.js';
+import { SupervisorEvents, AlertGate, describe as describeEvent, launcherEvent, withPlaylistNames, type SupervisorEvent } from '../supervisor-events.js';
 import { launchGuard, OBS_RUNNING, type RunFn } from '../setup-check.js';
 
 const dir = join(process.cwd(), '.test-tmp', 'supervisor-events');
@@ -237,6 +237,45 @@ describe('describe', () => {
     expect(d.discord).toBeUndefined();
   });
 
+  it('says a finished list moved on to the next one, by name', () => {
+    const d = describeEvent(ev('playlist-advance', { from: 'PLa', to: 'PLb', name: '2021/2022', count: 5, finished: true }));
+    expect(d.message).toBe('Playlist finished. Now playing 2021/2022');
+    expect(d.discord).toBeUndefined();
+  });
+
+  it('names a list by its id when it has no name', () => {
+    const d = describeEvent(ev('playlist-advance', { from: 'PLa', to: 'PLb', count: 5, finished: true }));
+    expect(d.message).toBe('Playlist finished. Now playing PLb');
+  });
+
+  it('says another list is on air after a jump, without calling the first finished', () => {
+    const d = describeEvent(ev('playlist-advance', { from: 'PLa', to: 'PLb', name: '2021/2022', count: 5, finished: false }));
+    expect(d.message).toBe('Now playing 2021/2022');
+  });
+
+  it('says a list that went round starts over', () => {
+    const d = describeEvent(ev('playlist-restart', { playlistId: 'PLa', count: 192 }));
+    expect(d.message).toBe('Playlist finished. Starting it again (192 videos)');
+    expect(d.discord).toBeUndefined();
+  });
+
+  it('alerts when a list starts over because the next one could not load', () => {
+    const d = describeEvent(ev('playlist-restart', { playlistId: 'PLa', count: 192, missing: ['2021/2022'] }, 'critical'));
+    expect(d.message).toBe('Playlist finished. Starting it again, because 2021/2022 could not be loaded');
+    expect(d.discord?.kind).toBe('critical');
+  });
+
+  it('alerts when a list moves on past one that could not load', () => {
+    const d = describeEvent(ev('playlist-advance', { from: 'PLa', to: 'PLb', name: 'B', count: 5, finished: true, missing: ['C', 'D'] }, 'critical'));
+    expect(d.message).toBe('Playlist finished. Now playing B. C, D could not be loaded');
+    expect(d.discord?.kind).toBe('critical');
+  });
+
+  it('names the list a failed load was for', () => {
+    const d = describeEvent(ev('playlist-failed', { reason: 'r', playlistId: 'PLb', name: '2021/2022', refetch: true }, 'warn'));
+    expect(d.message).toBe('Playlist 2021/2022 could not be loaded: r');
+  });
+
   it('sends playlist-failed as critical only for the first load', () => {
     expect(describeEvent(ev('playlist-failed', { reason: 'r' }, 'critical')).discord?.kind).toBe('critical');
     expect(describeEvent(ev('playlist-failed', { reason: 'r' }, 'warn')).discord).toBeUndefined();
@@ -283,6 +322,31 @@ describe('describe', () => {
   it('builds launcher events with the right level', () => {
     expect(launcherEvent('supervisor-down').level).toBe('critical');
     expect(launcherEvent('supervisor-back').level).toBe('info');
+  });
+});
+
+describe('withPlaylistNames', () => {
+  const lists = [{ id: 'PLa', name: 'first' }, { id: 'PLb' }];
+
+  it('names the list a list moved on to', () => {
+    expect(withPlaylistNames(ev('playlist-advance', { to: 'PLa' }), lists).name).toBe('first');
+  });
+
+  it('leaves a list with no name to be shown by its id', () => {
+    expect(withPlaylistNames(ev('playlist-advance', { to: 'PLb' }), lists).name).toBeUndefined();
+  });
+
+  it('names the list a failed load was for', () => {
+    expect(withPlaylistNames(ev('playlist-failed', { playlistId: 'PLa' }), lists).name).toBe('first');
+  });
+
+  it('names the lists that could not load, by id where they have no name', () => {
+    expect(withPlaylistNames(ev('playlist-restart', { missing: ['PLa', 'PLb', 'PLgone'] }), lists).missing).toEqual(['first', 'PLb', 'PLgone']);
+  });
+
+  it('leaves every other event as it is', () => {
+    const e = ev('skip', { to: 'PLa', playlistId: 'PLa' });
+    expect(withPlaylistNames(e, lists)).toBe(e);
   });
 });
 

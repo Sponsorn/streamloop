@@ -1,6 +1,6 @@
 import {
   streamLine, youtubeNote, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
-  encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml,
+  encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, playingListIndex,
 } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -40,7 +40,6 @@ function showDashboard() {
   loadSettings();
   loadAutostart();
   loadPlaylistSelector();
-  loadVideoList(1);
   loadLogList();
 }
 
@@ -520,6 +519,7 @@ function renderNowPlaying(s) {
     ? `${formatTime(p.position)} / ${p.duration ? formatTime(p.duration) : '--:--:--'}`
     : '-';
   $('#np-source').textContent = sourceLabel(p.source);
+  if (p.playlistId && p.playlistId !== playingPlaylistId) onPlayingListChanged(p.playlistId);
   updateVideoListHighlight(typeof p.index === 'number' ? p.index : -1);
 }
 
@@ -564,17 +564,12 @@ function initMonitorControls() {
     const index = Number(btn.dataset.index);
     // The id lets the supervisor find the video even if its list numbers it differently.
     const id = btn.dataset.id || undefined;
-    if (browsedPlaylist === 0) {
+    if (browsedPlaylist === playingPlaylist) {
       runAction(btn, () => post('/api/player/jump', { index, id }));
       return;
     }
-    runAction(btn, async () => {
-      const r = await post('/api/playlist/switch', { playlistIndex: browsedPlaylist, videoIndex: index, videoId: id });
-      if (!isBenignReloadError(r)) showToast('Switched, but the supervisor could not reload: ' + r.reloadError);
-      settingsLoaded = false;
-      loadPlaylistSelector();
-      loadVideoList(Math.floor(index / VIDEO_LIST_PER_PAGE) + 1);
-    });
+    // The list on the dropdown catches up when the next status names this list as on air.
+    runAction(btn, () => post('/api/playlist/switch', { playlistIndex: browsedPlaylist, videoIndex: index, videoId: id }));
   });
 
   $('#video-list-pagination').addEventListener('click', (e) => {
@@ -588,26 +583,49 @@ function initMonitorControls() {
 
 // Monitor: playlist and video list
 
-/** Index into config.playlists of the list shown below the dropdown; 0 is the one playing. */
+/** Index into config.playlists of the list shown below the dropdown. */
 let browsedPlaylist = 0;
+/** Index into config.playlists of the list on air, and the id the supervisor last named. */
+let playingPlaylist = 0;
+let playingPlaylistId = null;
+let configuredPlaylists = [];
+
+function renderPlaylistOptions() {
+  const select = $('#playlist-select');
+  select.innerHTML = '';
+  configuredPlaylists.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = (p.name || p.id) + (i === playingPlaylist ? ' (playing)' : '');
+    select.appendChild(opt);
+  });
+  select.value = String(browsedPlaylist);
+}
 
 async function loadPlaylistSelector() {
-  const select = $('#playlist-select');
-  browsedPlaylist = 0;
   try {
     const cfg = await api('/api/config');
-    select.innerHTML = '';
-    cfg.playlists.forEach((p, i) => {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = p.name || p.id;
-      select.appendChild(opt);
-    });
-    // The first playlist is the one playing; a switch moves the chosen one to the front.
-    select.value = '0';
+    configuredPlaylists = cfg.playlists;
+    playingPlaylist = playingListIndex(configuredPlaylists, playingPlaylistId);
+    browsedPlaylist = playingPlaylist;
+    renderPlaylistOptions();
+    loadVideoList(1);
   } catch (err) {
     console.error('Failed to load playlists:', err);
   }
+}
+
+/** Another list went on air. Someone watching the old one follows along; someone browsing stays put. */
+function onPlayingListChanged(id) {
+  const following = browsedPlaylist === playingPlaylist;
+  playingPlaylistId = id;
+  playingPlaylist = playingListIndex(configuredPlaylists, id);
+  if (following && browsedPlaylist !== playingPlaylist) {
+    browsedPlaylist = playingPlaylist;
+    loadVideoList(1);
+  }
+  renderPlaylistOptions();
+  $('#video-list-browsing').classList.toggle('hidden', browsedPlaylist === playingPlaylist);
 }
 
 let lastHighlightedIndex = -1;
@@ -617,7 +635,7 @@ async function loadVideoList(page) {
   const status = $('#video-list-status');
   status.textContent = 'Loading playlist...';
   status.classList.remove('hidden');
-  $('#video-list-browsing').classList.toggle('hidden', which === 0);
+  $('#video-list-browsing').classList.toggle('hidden', which === playingPlaylist);
   try {
     const data = await api('/api/playlist/videos?playlist=' + which + '&page=' + page + '&perPage=' + VIDEO_LIST_PER_PAGE);
     if (which !== browsedPlaylist) return; // the dropdown moved on while this loaded
@@ -666,7 +684,7 @@ function renderVideoList(data) {
 
 function updateVideoListHighlight(currentIndex) {
   // The playing index means nothing in a browsed playlist.
-  if (browsedPlaylist !== 0 || currentIndex === lastHighlightedIndex) return;
+  if (browsedPlaylist !== playingPlaylist || currentIndex === lastHighlightedIndex) return;
   lastHighlightedIndex = currentIndex;
   $$('#video-list-body tr').forEach(tr => {
     const btn = tr.querySelector('.btn-play');
@@ -859,7 +877,6 @@ async function handleSettingsSave() {
       settingsLoaded = false;
       loadSettings();
       loadPlaylistSelector();
-      loadVideoList(1);
     }
   } catch (err) {
     showToast('Could not save: ' + err.message);

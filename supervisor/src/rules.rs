@@ -398,6 +398,48 @@ pub fn token_backoff_s(restarts: u32) -> u64 {
 }
 
 
+/// One configured playlist's stretch of the ring: all lists' videos in one row, in play order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Span {
+    pub id: String,
+    pub start: usize,
+    pub len: usize,
+}
+
+pub fn list_of(spans: &[Span], i: usize) -> Option<&Span> {
+    spans.iter().find(|s| i >= s.start && i < s.start + s.len)
+}
+
+/// The configured order rotated to start at `first`, so each list keeps the one that follows it.
+pub fn ring_order(ids: &[String], first: &str) -> Vec<String> {
+    match ids.iter().position(|id| id == first) {
+        Some(p) => ids[p..].iter().chain(&ids[..p]).cloned().collect(),
+        None => ids.to_vec(),
+    }
+}
+
+/// `current` while the config still has it, else the first list.
+pub fn pick_list(ids: &[String], current: Option<&str>) -> Option<String> {
+    current.filter(|c| ids.iter().any(|id| id == c)).map(String::from).or_else(|| ids.first().cloned())
+}
+
+/// Going from ring order `old` to `new` adds lists at the end only, so no video changes position.
+pub fn only_appends(old: &[String], new: &[String]) -> bool {
+    new.len() >= old.len() && new[..old.len()] == *old
+}
+
+/// A video number within list `s`, as a ring position. Without this, a number past the end of the
+/// list would land in the next one. An empty list goes through for `control_target` to refuse.
+pub fn ring_jump(index: i64, s: &Span) -> Result<i64, String> {
+    if s.len == 0 {
+        Ok(index)
+    } else if index >= 0 && (index as usize) < s.len {
+        Ok((s.start + index as usize) as i64)
+    } else {
+        Err(format!("index {index} out of range 0..{}", s.len - 1))
+    }
+}
+
 /// Videos worth having on disk, walking forward from the viewer within the budget. The viewer's
 /// own video always counts; the one just behind never does; an unknown size ends the walk.
 pub fn window(view: usize, sizes: &[Option<u64>], skipped: &[bool], budget: u64) -> Vec<usize> {
@@ -900,5 +942,66 @@ mod tests {
     fn downloads_the_first_missing_window_entry() {
         assert_eq!(next_download(&[3, 4, 0], &[false, false, false, true, false], &[false; 5]), Some(4));
         assert_eq!(next_download(&[3, 4], &[false, false, false, true, false], &[false, false, false, false, true]), None);
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn list_of_finds_the_list_holding_a_ring_position() {
+        let spans = [Span { id: "A".into(), start: 0, len: 2 }, Span { id: "B".into(), start: 2, len: 3 }];
+
+        assert_eq!(list_of(&spans, 1).map(|s| s.id.as_str()), Some("A"));
+        assert_eq!(list_of(&spans, 2).map(|s| s.id.as_str()), Some("B"));
+        assert_eq!(list_of(&spans, 4).map(|s| s.id.as_str()), Some("B"));
+        assert_eq!(list_of(&spans, 5), None);
+    }
+
+    #[test]
+    fn ring_order_starts_at_a_list_and_keeps_who_follows_whom() {
+        assert_eq!(ring_order(&ids(&["A", "B", "C"]), "B"), ids(&["B", "C", "A"]));
+        assert_eq!(ring_order(&ids(&["A", "B", "C"]), "A"), ids(&["A", "B", "C"]));
+    }
+
+    #[test]
+    fn ring_order_of_an_unknown_list_is_the_configured_order() {
+        assert_eq!(ring_order(&ids(&["A", "B"]), "gone"), ids(&["A", "B"]));
+    }
+
+    #[test]
+    fn pick_list_keeps_a_list_that_is_still_configured() {
+        assert_eq!(pick_list(&ids(&["A", "B"]), Some("B")), Some("B".to_string()));
+    }
+
+    #[test]
+    fn pick_list_falls_back_to_the_first_list() {
+        assert_eq!(pick_list(&ids(&["A", "B"]), Some("gone")), Some("A".to_string()));
+        assert_eq!(pick_list(&ids(&["A", "B"]), None), Some("A".to_string()));
+        assert_eq!(pick_list(&[], Some("A")), None);
+    }
+
+    #[test]
+    fn only_appends_is_true_when_no_list_moves() {
+        assert!(only_appends(&ids(&["A"]), &ids(&["A", "B"])));
+        assert!(only_appends(&ids(&["A", "B"]), &ids(&["A", "B"])));
+        assert!(!only_appends(&ids(&["A", "C"]), &ids(&["A", "B", "C"])));
+        assert!(!only_appends(&ids(&["A", "B"]), &ids(&["A"])));
+    }
+
+    #[test]
+    fn ring_jump_counts_within_the_list() {
+        let b = Span { id: "B".into(), start: 192, len: 3 };
+
+        assert_eq!(ring_jump(0, &b), Ok(192));
+        assert_eq!(ring_jump(2, &b), Ok(194));
+    }
+
+    #[test]
+    fn ring_jump_refuses_a_video_past_the_end_of_the_list() {
+        let b = Span { id: "B".into(), start: 192, len: 3 };
+
+        assert_eq!(ring_jump(3, &b), Err("index 3 out of range 0..2".to_string()));
+        assert_eq!(ring_jump(-1, &b), Err("index -1 out of range 0..2".to_string()));
     }
 }

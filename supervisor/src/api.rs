@@ -57,12 +57,15 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
                         Ok(v) => {
                             let index = v["index"].as_u64().map(|i| i as usize);
                             let id = v["id"].as_str().map(String::from);
+                            let playlist = v["playlist"].as_str().map(String::from);
                             if !v["index"].is_null() && index.is_none() {
                                 Some(Err("index must be a non-negative integer".into()))
                             } else if !v["id"].is_null() && id.is_none() {
                                 Some(Err("id must be a string".into()))
+                            } else if !v["playlist"].is_null() && playlist.is_none() {
+                                Some(Err("playlist must be a string".into()))
                             } else {
-                                ask(&tx, |reply| Msg::Reload { index, id, reply })
+                                ask(&tx, |reply| Msg::Reload { playlist, index, id, reply })
                             }
                         }
                     },
@@ -176,7 +179,7 @@ mod tests {
         std::thread::spawn(move || {
             for msg in rx {
                 let (got, reply) = match msg {
-                    Msg::Reload { index, id, reply } => ((index.map(|i| i as i64), id), reply),
+                    Msg::Reload { index, id, reply, .. } => ((index.map(|i| i as i64), id), reply),
                     Msg::Control { index, id, reply, .. } => ((index, id), reply),
                     _ => continue,
                 };
@@ -206,11 +209,31 @@ mod tests {
     }
 
     #[test]
+    fn reload_passes_the_playlist_it_names() {
+        let (port, _tx, rx) = start();
+        let (seen, named) = channel();
+        std::thread::spawn(move || {
+            for msg in rx {
+                if let Msg::Reload { playlist, reply, .. } = msg {
+                    let _ = seen.send(playlist);
+                    let _ = reply.send(Ok(json!({"applied": true})));
+                }
+            }
+        });
+
+        post(port, "/reload", r#"{"playlist":"PLb","index":3}"#);
+        post(port, "/reload", "{}");
+
+        assert_eq!(named.recv_timeout(Duration::from_secs(5)).unwrap(), Some("PLb".to_string()));
+        assert_eq!(named.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    }
+
+    #[test]
     fn reload_rejects_an_index_that_is_not_a_non_negative_integer() {
         let (port, _tx, rx) = start();
         let seen = reload_indexes(rx);
 
-        for (path, body) in [("/reload", r#"{"index":-1}"#), ("/reload", r#"{"index":1.5}"#), ("/reload", r#"{"index":"2"}"#), ("/reload", r#"{"id":7}"#), ("/control", r#"{"cmd":"jump","index":1,"id":7}"#)] {
+        for (path, body) in [("/reload", r#"{"index":-1}"#), ("/reload", r#"{"index":1.5}"#), ("/reload", r#"{"index":"2"}"#), ("/reload", r#"{"id":7}"#), ("/reload", r#"{"playlist":7}"#), ("/control", r#"{"cmd":"jump","index":1,"id":7}"#)] {
             let reply = post(port, path, body);
             assert!(reply.starts_with("HTTP/1.1 400"), "{body}: {reply}");
         }

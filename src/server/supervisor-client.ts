@@ -7,7 +7,10 @@ export interface SupervisorStatus {
   reason?: string | null;
   streamKeyProblem?: string | null;
   playing?: {
+    /** Counts within the list on air. */
     index?: number;
+    /** Null until a list has loaded. Absent from a supervisor before lists were named here, which plays only the config's first list. */
+    playlistId?: string | null;
     id?: string | null;
     title?: string | null;
     source?: string;
@@ -95,11 +98,11 @@ export class SupervisorClient {
     }
   }
 
-  /** `index` and `id` say where a switch to a new playlists[0] starts; a supervisor before 3.0.1 ignores them. */
-  async reload(opts: { index?: number; id?: string } = {}): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
+  /** `playlist` goes to that configured list; `index` and `id` say where in it to start. */
+  async reload(opts: { playlist?: string; index?: number; id?: string } = {}): Promise<{ ok: boolean; restartRequired?: boolean; error?: string; code?: string }> {
     try {
       // JSON.stringify drops undefined fields, so the body is {} without them.
-      const r = await this.call('/reload', { index: opts.index, id: opts.id });
+      const r = await this.call('/reload', { playlist: opts.playlist, index: opts.index, id: opts.id });
       if (r.status !== 200) return { ok: false, error: String(r.json?.error ?? `HTTP ${r.status}`) };
       return { ok: true, restartRequired: r.json?.restartRequired === true };
     } catch (e) {

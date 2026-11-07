@@ -4,7 +4,10 @@ use serde_json::Value;
 
 #[derive(Clone, PartialEq, Default)]
 pub struct Settings {
+    /// The list a start or reload asks for; the others in `playlist_ids` join it in the ring.
     pub playlist_id: String,
+    /// Every configured playlist, in the config's order, each once.
+    pub playlist_ids: Vec<String>,
     pub ingest_url: String,
     pub stream_key: String,
     pub encoder: String,
@@ -35,6 +38,12 @@ fn text(v: &Value) -> Option<String> {
 pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> Result<Settings, String> {
     let v: Value = serde_json::from_str(json).map_err(|e| format!("config.json is not valid JSON: {e}"))?;
     let playlist_id = v["playlists"][0]["id"].as_str().filter(|id| !id.is_empty()).ok_or("config.json: playlists is empty (need playlists[0].id)")?;
+    let mut playlist_ids: Vec<String> = vec![];
+    for id in v["playlists"].as_array().into_iter().flatten().filter_map(|p| p["id"].as_str()).filter(|id| !id.is_empty()) {
+        if !playlist_ids.iter().any(|known| known == id) {
+            playlist_ids.push(id.into());
+        }
+    }
     let s = v.get("supervisor").filter(|s| s.is_object()).ok_or("config.json: no supervisor object")?;
     // An unusable key is not a config error: the supervisor stays up and waits for a working one.
     let (stream_key, key_error) = match field(s, "streamKeyProtected", None, |v| v.as_str().map(|b| Some(b.to_string())))?.map(|b| unprotect(&b)) {
@@ -44,6 +53,7 @@ pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> R
     };
     let out = Settings {
         playlist_id: playlist_id.into(),
+        playlist_ids,
         ingest_url: field(s, "ingestUrl", "rtmp://live.twitch.tv/app".into(), text)?,
         stream_key,
         encoder: field(s, "encoder", "h264_nvenc".into(), text)?,
@@ -111,6 +121,7 @@ impl std::fmt::Debug for Settings {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("Settings")
             .field("playlist_id", &self.playlist_id)
+            .field("playlist_ids", &self.playlist_ids)
             .field("ingest_url", &self.ingest_url)
             .field("stream_key", &"***")
             .field("encoder", &self.encoder)
@@ -278,5 +289,20 @@ mod tests {
         assert_eq!(reload_plan(&old, &Settings { freeze_seconds: 30.0, ..old.clone() }), Reload::Restart);
         assert_eq!(reload_plan(&old, &Settings { silence_seconds: 60.0, ..old.clone() }), Reload::Restart);
         assert_eq!(reload_plan(&old, &Settings { stream_key: "k".into(), playlist_id: "PLb".into(), ..old.clone() }), Reload::Restart);
+    }
+
+    #[test]
+    fn every_configured_playlist_is_read_in_order() {
+        let s = load(r#"{"playlists":[{"id":"PLx"},{"id":"PLy","name":"second"},{"id":"PLz"}],"supervisor":{}}"#, &no_key).unwrap();
+
+        assert_eq!(s.playlist_ids, ["PLx", "PLy", "PLz"]);
+        assert_eq!(s.playlist_id, "PLx");
+    }
+
+    #[test]
+    fn a_playlist_listed_twice_counts_once() {
+        let s = load(r#"{"playlists":[{"id":"PLx"},{"id":"PLy"},{"id":"PLx"}],"supervisor":{}}"#, &no_key).unwrap();
+
+        assert_eq!(s.playlist_ids, ["PLx", "PLy"]);
     }
 }

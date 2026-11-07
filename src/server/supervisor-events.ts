@@ -39,6 +39,16 @@ function video(e: SupervisorEvent): number {
   return num(e, 'index') + 1;
 }
 
+/** A list as people know it: the name withPlaylistNames found, else the id under `key`. */
+function listName(e: SupervisorEvent, key: string): string {
+  return one(e.name) || one(e[key]);
+}
+
+/** The lists an event says could not load, ready for a sentence; empty when there are none. */
+function missingLists(e: SupervisorEvent): string {
+  return Array.isArray(e.missing) ? e.missing.map(one).join(', ') : '';
+}
+
 function critical(message: string, timeline = message): Described {
   return { message: timeline, discord: { kind: 'critical', vars: { message }, level: 'error' } };
 }
@@ -48,6 +58,15 @@ const TWITCH_LIMIT_S = 47.5 * 3600;
 
 /** One per video, seam or probe: they would push everything else out of the 100-entry timeline. */
 const QUIET = new Set(['feeder-start', 'handover', 'spare-resolve', 'spare-used', 'youtube-probe', 'download-cancel']);
+
+/** The supervisor knows lists by id; this adds the names people gave them in the config. */
+export function withPlaylistNames(e: SupervisorEvent, playlists: readonly { id: string; name?: string }[]): SupervisorEvent {
+  if (e.kind !== 'playlist-advance' && e.kind !== 'playlist-restart' && e.kind !== 'playlist-failed') return e;
+  const nameOf = (id: unknown): string | undefined => playlists.find((p) => p.id === id)?.name;
+  const name = nameOf(e.kind === 'playlist-advance' ? e.to : e.playlistId);
+  const missing = Array.isArray(e.missing) ? { missing: e.missing.map((id) => nameOf(id) ?? id) } : {};
+  return { ...e, ...(name ? { name } : {}), ...missing };
+}
 
 /** The one mapping from a supervisor or launcher event to timeline text and an optional Discord alert. */
 export function describe(e: SupervisorEvent): Described {
@@ -111,8 +130,20 @@ export function describe(e: SupervisorEvent): Described {
       };
     case 'all-skipped':
       return critical(`Every video was skipped. Holding for ${num(e, 'holdS')}s before trying again.`);
+    case 'playlist-advance': {
+      const now = `Now playing ${listName(e, 'to')}`;
+      const msg = e.finished === true ? `Playlist finished. ${now}` : now;
+      const missing = missingLists(e);
+      return missing ? critical(`${msg}. ${missing} could not be loaded`) : { message: msg };
+    }
+    case 'playlist-restart': {
+      const missing = missingLists(e);
+      if (missing) return critical(`Playlist finished. Starting it again, because ${missing} could not be loaded`);
+      return { message: `Playlist finished. Starting it again (${num(e, 'count')} videos)` };
+    }
     case 'playlist-failed': {
-      const msg = `Playlist could not be loaded: ${one(e.reason)}`;
+      const which = listName(e, 'playlistId');
+      const msg = `Playlist ${which ? `${which} ` : ''}could not be loaded: ${one(e.reason)}`;
       // Only a first load is critical; a failed switch keeps the old list playing.
       return e.level === 'critical' ? critical(msg) : { message: msg };
     }
