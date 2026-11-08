@@ -8,7 +8,7 @@
 // land in ROOT\app\logs, where the Rust control process puts them too.
 import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -258,8 +258,14 @@ function startCatcher(counter) {
   });
 }
 
+/** Unlinks the node_modules junction first, so removing the root never walks into the repo. */
+function removeRoot(root) {
+  try { rmdirSync(join(root, 'app', 'node_modules')); } catch { /* absent or not a junction */ }
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}
+
 function seedRoot(root) {
-  rmSync(root, { recursive: true, force: true });
+  removeRoot(root);
   const app = join(root, 'app');
   const logs = join(root, 'data', 'logs');
   mkdirSync(join(app, 'logs'), { recursive: true });
@@ -301,10 +307,28 @@ function launchServer(kind, root) {
   return cp.spawn(exe, ['--root', root], { cwd: join(root, 'app'), env, windowsHide: true, stdio: 'ignore' });
 }
 
-const killTree = (child) => new Promise((resolve) => {
-  if (!child || child.exitCode !== null || !child.pid) return resolve();
-  cp.execFile('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true }, () => resolve());
-});
+/** What the run has started; the exit hooks end all of it. */
+const live = { child: null, servers: [], root: null };
+
+/** Synchronous, so it also runs from an exit hook. Never throws: cleanup must not hide the real error. */
+function cleanupSync() {
+  const { child, servers, root } = live;
+  live.child = null;
+  live.servers = [];
+  live.root = null;
+  if (child?.pid) {
+    try { cp.execFileSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' }); } catch { /* the pid is gone */ }
+  }
+  for (const s of servers) {
+    try { s.closeAllConnections?.(); s.close(); } catch { /* already closed */ }
+  }
+  if (root) {
+    try { removeRoot(root); } catch (e) { console.error(`could not remove ${root}: ${e.message}`); }
+  }
+}
+
+process.on('exit', cleanupSync);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(sig, () => { cleanupSync(); process.exit(130); });
 
 async function send(request) {
   const body = request.body === undefined || request.body === null ? undefined : typeof request.body === 'string' ? request.body : JSON.stringify(request.body);
@@ -325,11 +349,14 @@ async function record(kind, out) {
   const fake = startFakeSupervisor(received);
   const catcher = startCatcher(catcherCount);
   let child = null;
+  live.servers = [fake, catcher];
+  live.root = root;
   try {
     seedRoot(root);
     await listen(fake, SUPERVISOR_PORT);
     await listen(catcher, CATCHER_PORT);
     child = launchServer(kind, root);
+    live.child = child;
     const exited = new Promise((resolve) => child.once('exit', resolve));
     // up: the token answers; ready: the launcher has seen the fake supervisor
     let up = false;
@@ -360,12 +387,7 @@ async function record(kind, out) {
     writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
     return result;
   } finally {
-    await killTree(child);
-    fake.close();
-    catcher.close();
-    fake.closeAllConnections?.();
-    catcher.closeAllConnections?.();
-    rmSync(root, { recursive: true, force: true });
+    cleanupSync();
   }
 }
 
