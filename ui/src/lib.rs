@@ -7,6 +7,7 @@ pub mod api;
 pub mod app;
 pub mod dashboard;
 pub mod logic;
+pub mod logs;
 pub mod monitor;
 #[cfg(test)]
 mod test_support;

@@ -1,4 +1,4 @@
-//! The Monitor tab (index.html `#panel-monitor`): the stream card, Now Playing and the Timeline.
+//! The Monitor tab (index.html `#panel-monitor`): the stream card, Now Playing, the Timeline and the Logs.
 
 use std::{
     collections::HashMap,
@@ -6,8 +6,8 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, Context, Div, FontWeight, IntoElement, Render, SharedString, Window, div,
-    prelude::*, px, rgb,
+    AnyElement, AppContext, Context, Div, Entity, FontWeight, IntoElement, Render, SharedString,
+    Window, div, prelude::*, px, rgb,
 };
 use gpui_kit::{
     base::{SelectableText, TestTextExt},
@@ -30,6 +30,7 @@ use crate::{
         admin::{encoder_line, local_hms, now_playing_index, now_playing_time},
         source_label, stream_line, twitch_line, youtube_note,
     },
+    logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
     videos::VideoList,
     widgets::{ActionView, Busy, action_button, btn, run_action},
@@ -46,12 +47,14 @@ pub struct MonitorView {
     status: Option<Status>,
     events: Option<Vec<Event>>,
     pub(crate) videos: VideoList,
+    pub(crate) logs: Entity<LogViewer>,
 }
 
 impl MonitorView {
     pub fn new(app: AppHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             videos: VideoList::new(app.clone(), window, cx),
+            logs: cx.new(|cx| LogViewer::new(app.clone(), window, cx)),
             app,
             busy: Busy::default(),
             status: None,
@@ -283,6 +286,7 @@ impl ActionView for MonitorView {
 impl TabView for MonitorView {
     fn on_dashboard_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.videos.on_dashboard_open(window, cx);
+        self.logs.update(cx, |logs, cx| logs.load_list(window, cx));
     }
 
     fn on_poll(
@@ -308,12 +312,12 @@ impl TabView for MonitorView {
 
 impl Render for MonitorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Task 9 adds Logs after the Timeline.
         div()
             .child(self.render_stream_card(cx))
             .child(self.render_now_playing())
             .child(self.render_playlist_card(cx))
             .child(self.render_timeline())
+            .child(section("Logs").child(self.logs.clone()))
     }
 }
 

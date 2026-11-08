@@ -67,6 +67,29 @@ function extraEvent() {
 
 const current = () => lists[state.list].videos[state.index];
 
+// Two log files: a small Node log, and a yt-dlp log over 1 MB with å ä ö, emoji and CJK in it.
+const LOG_TAIL_BYTES = 1024 * 1024;
+const nodeLog = Array.from({ length: 20 }, (_, i) =>
+  `{"level":30,"time":"2026-11-08T13:${String(10 + i).padStart(2, '0')}:00.000Z","msg":"Poll answered in ${40 + i} ms"}\n`).join('');
+let ytdlpLog = '';
+for (let i = 1; Buffer.byteLength(ytdlpLog) < 1.3 * LOG_TAIL_BYTES; i++) {
+  ytdlpLog += `[2026-11-07 ${String(Math.floor(i / 3600) % 24).padStart(2, '0')}:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}] `
+    + `[download] Kaffe på Söder: å ä ö 🎥 日本の配信 part ${i} - ${(i * 7) % 100}.${i % 10}% of 1.2 GiB\n`;
+}
+const logFiles = [
+  { source: 'node', name: 'streamloop-2026-11-08.log', text: nodeLog, mtime: new Date(started).toISOString() },
+  { source: 'supervisor', name: 'ytdlp-2026-11-07.log', text: ytdlpLog, mtime: new Date(started - 20 * 3_600_000).toISOString() },
+];
+
+/** `GET /api/logs/:source/:name` as Node answers it: the file, or its last 1 MB after a header line. */
+function logText(source, name) {
+  const file = logFiles.find((f) => f.source === source && f.name === name);
+  if (!file) return null;
+  const bytes = Buffer.from(file.text, 'utf-8');
+  if (bytes.length <= LOG_TAIL_BYTES) return file.text;
+  return '... (truncated, showing last 1 MB) ...\n' + bytes.subarray(bytes.length - LOG_TAIL_BYTES).toString('utf-8');
+}
+
 for (let i = MAX_EVENTS; i > 0; i--) addEvent(extraEvent(), started - i * 60_000);
 addEvent('Supervisor started');
 addEvent(`Now playing video ${state.index + 1}: ${current().title}`);
@@ -156,8 +179,7 @@ const GETS = {
   '/api/autostart': () => [200, { enabled: true, target: 'C:\\StreamLoop3\\streamloop\\START.bat', thisInstall: true }],
   '/api/setup-check': () => [503, { error: 'No setup check has run on this stand-in backend.' }],
   '/api/discord/defaults': () => [200, { templates: example.discord.templates, variables: {} }],
-  // An empty list keeps the web dashboard's log viewer empty; the GPUI window has none.
-  '/api/logs': () => [200, []],
+  '/api/logs': () => [200, logFiles.map(({ source, name, text, mtime }) => ({ name, size: Buffer.byteLength(text), mtime, source }))],
 };
 
 const POSTS = {
@@ -222,6 +244,13 @@ createServer(async (req, res) => {
   }
   if (path.startsWith('/admin/')) return serveAdmin(path, res);
   if (req.method === 'GET' && path === '/api/playlist/videos') return send(res, ...videoPage(url.searchParams));
+  const log = req.method === 'GET' && path.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
+  if (log) {
+    const text = logText(decodeURIComponent(log[1]), decodeURIComponent(log[2]));
+    if (text === null) return send(res, 404, { error: 'Log file not found' });
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end(text);
+  }
   if (req.method === 'GET' && GETS[path]) return send(res, ...GETS[path]());
   if (req.method === 'POST' && POSTS[path]) {
     if (req.headers['x-api-token'] !== TOKEN) return send(res, 403, { error: 'Forbidden: invalid API token' });

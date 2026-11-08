@@ -188,6 +188,16 @@ impl DashboardView {
         self.selected
     }
 
+    /// The view of `tab`, so a test can read that tab's own state.
+    #[cfg(test)]
+    pub(crate) fn tab_view(&self, tab: Tab) -> AnyView {
+        self.tabs
+            .iter()
+            .find(|(t, _)| *t == tab)
+            .map(|(_, view)| view.view())
+            .expect("every tab is built")
+    }
+
     pub fn select_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = tab;
         if let Some((_, view)) = self.tabs.iter().find(|(t, _)| *t == tab) {
