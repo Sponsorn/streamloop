@@ -84,7 +84,6 @@ pub fn status_json(state: &str, first_run: bool) -> Value {
 }
 
 /// `GET /api/config` as Node masks it: secrets as `********`, the key only as `streamKeySet`.
-#[allow(dead_code)]
 pub fn config_json() -> Value {
     json!({
         "playlists": [{ "id": "PLmain", "name": "Main" }, { "id": "PLsecond", "name": "Second" }],

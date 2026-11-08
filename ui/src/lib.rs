@@ -11,6 +11,7 @@ pub mod monitor;
 #[cfg(test)]
 mod test_support;
 pub mod theme;
+pub mod videos;
 pub mod widgets;
 
 use std::sync::Arc;

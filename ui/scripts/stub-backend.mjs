@@ -167,6 +167,13 @@ const POSTS = {
   '/api/player/prev': () => seek(state.index - 1),
   '/api/player/restart': () => seek(state.index),
   '/api/player/jump': (body) => seek(Number(body.index) || 0),
+  '/api/playlist/switch': (body) => {
+    const list = lists[body.playlistIndex];
+    if (!Number.isInteger(body.playlistIndex) || !list) return [400, { error: 'Invalid playlist index' }];
+    state.list = body.playlistIndex;
+    const byId = list.videos.findIndex((v) => v.id === body.videoId);
+    seek(byId >= 0 ? byId : Number(body.videoIndex) || 0);
+  },
 };
 
 function seek(index) {
@@ -218,7 +225,8 @@ createServer(async (req, res) => {
   if (req.method === 'GET' && GETS[path]) return send(res, ...GETS[path]());
   if (req.method === 'POST' && POSTS[path]) {
     if (req.headers['x-api-token'] !== TOKEN) return send(res, 403, { error: 'Forbidden: invalid API token' });
-    POSTS[path](await readBody(req));
+    const refused = POSTS[path](await readBody(req));
+    if (refused) return send(res, ...refused);
     return send(res, 200, { ok: true });
   }
   send(res, 404, { error: 'Not found' });

@@ -31,6 +31,7 @@ use crate::{
         source_label, stream_line, twitch_line, youtube_note,
     },
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
+    videos::VideoList,
     widgets::{ActionView, Busy, action_button, btn, run_action},
 };
 
@@ -44,11 +45,13 @@ pub struct MonitorView {
     busy: Busy,
     status: Option<Status>,
     events: Option<Vec<Event>>,
+    pub(crate) videos: VideoList,
 }
 
 impl MonitorView {
-    pub fn new(app: AppHandle, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(app: AppHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
+            videos: VideoList::new(app.clone(), window, cx),
             app,
             busy: Busy::default(),
             status: None,
@@ -191,18 +194,22 @@ impl MonitorView {
         )
     }
 
-    /// The card around the transport buttons, index.html's `.card.section` under Now Playing.
+    /// index.html's `.card.section` under Now Playing: the playlist dropdown, the transport buttons and the video list.
     fn render_playlist_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        card().mb(px(24.)).child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(8.))
-                .mb(px(12.))
-                .child(self.player_button("btn-prev", "Previous", "prev", cx))
-                .child(self.player_button("btn-restart", "Restart video", "restart", cx))
-                .child(self.player_button("btn-next", "Next", "next", cx)),
-        )
+        card()
+            .mb(px(24.))
+            .child(self.videos.render_dropdown())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(8.))
+                    .mb(px(12.))
+                    .child(self.player_button("btn-prev", "Previous", "prev", cx))
+                    .child(self.player_button("btn-restart", "Restart video", "restart", cx))
+                    .child(self.player_button("btn-next", "Next", "next", cx)),
+            )
+            .child(self.videos.render_list(&self.busy, cx))
     }
 
     fn player_button(
@@ -274,23 +281,34 @@ impl ActionView for MonitorView {
 }
 
 impl TabView for MonitorView {
+    fn on_dashboard_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.videos.on_dashboard_open(window, cx);
+    }
+
     fn on_poll(
         &mut self,
         status: &Status,
         events: &[Event],
         _update: Option<&UpdateStatus>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.status = Some(status.clone());
         self.events = Some(events.to_vec());
+        // admin.js `renderNowPlaying` passes an empty video when nothing plays.
+        let playing = self.playing().cloned().unwrap_or_default();
+        self.videos.on_status(&playing, window, cx);
         cx.notify();
+    }
+
+    fn on_playlists_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.videos.on_playlists_saved(window, cx);
     }
 }
 
 impl Render for MonitorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Task 8 adds the playlist dropdown and the video list to the playlist card; Task 9 adds Logs after the Timeline.
+        // Task 9 adds Logs after the Timeline.
         div()
             .child(self.render_stream_card(cx))
             .child(self.render_now_playing())
@@ -405,7 +423,7 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::{DateTime, Local};
-    use gpui::{AnyWindowHandle, AppContext, TestAppContext, point};
+    use gpui::{AnyWindowHandle, AppContext, ScrollDelta, TestAppContext, point};
     use gpui_kit::{
         base::{TextSelection, test_support::texts},
         test::TestWindowExt,
@@ -685,9 +703,23 @@ mod tests {
             .to_string()
     }
 
+    /// The playlist card pushes the Timeline below the window, so this scrolls the dashboard to its end.
+    fn scroll_to_timeline(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.scroll(
+                "btn-next",
+                ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+                cx,
+            );
+        })
+        .unwrap();
+    }
+
     #[gpui::test]
     fn timeline_is_newest_first_with_local_times(cx: &mut TestAppContext) {
         let (_, window) = open_with(cx, status_json("live", false), events_json(3));
+        scroll_to_timeline(cx, window);
 
         let lines: Vec<String> = painted(cx, window)
             .into_iter()
@@ -712,11 +744,13 @@ mod tests {
         fake.reply("GET", "/api/status", Ok(status_json("live", false)));
         // `/api/events` unanswered: the poll fails, so no events have arrived yet.
         let (_, window) = open_app(cx, fake.clone());
+        scroll_to_timeline(cx, window);
         assert!(shows(cx, window, "Loading events..."));
 
         fake.reply("GET", "/api/events", Ok(json!([])));
         cx.executor().advance_clock(POLL_EVERY);
 
+        scroll_to_timeline(cx, window);
         assert!(shows(cx, window, "No events yet"));
         assert!(!shows(cx, window, "Loading events..."));
     }
@@ -729,6 +763,7 @@ mod tests {
     #[gpui::test]
     fn a_selected_line_stays_selected_when_the_oldest_event_drops_off(cx: &mut TestAppContext) {
         let (fake, window) = open_with(cx, status_json("live", false), events(&[1, 2, 3]));
+        scroll_to_timeline(cx, window);
         let line = format!("{} Event 2", local("2026-11-08T12:00:02.000Z"));
         let selected = |cx: &mut TestAppContext| {
             cx.update_window(window, |_, window, cx| {
