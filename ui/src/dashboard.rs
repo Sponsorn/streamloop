@@ -67,6 +67,9 @@ pub trait TabView: Render {
         _cx: &mut Context<Self>,
     ) {
     }
+
+    /// admin.js `handleSettingsSave()` reloading `loadPlaylistSelector()`: a save may have changed the playlists.
+    fn on_playlists_saved(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 }
 
 /// A tab's entity with its type erased, so the dashboard keeps all four in one list.
@@ -82,6 +85,7 @@ trait AnyTab {
         window: &mut Window,
         cx: &mut App,
     );
+    fn playlists_saved(&self, window: &mut Window, cx: &mut App);
 }
 
 impl<T: TabView> AnyTab for Entity<T> {
@@ -109,9 +113,20 @@ impl<T: TabView> AnyTab for Entity<T> {
             tab.on_poll(status, events, update, window, cx)
         });
     }
+
+    fn playlists_saved(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |tab, cx| tab.on_playlists_saved(window, cx));
+    }
 }
 
 struct EmptyPanel;
+
+impl EmptyPanel {
+    /// Takes what a real tab's `new` takes, so each `build_tab` arm already has the shape it keeps.
+    fn new(_app: &AppHandle, _window: &mut Window) -> Self {
+        EmptyPanel
+    }
+}
 
 impl Render for EmptyPanel {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -123,14 +138,15 @@ impl TabView for EmptyPanel {}
 
 fn build_tab(
     tab: Tab,
-    _app: &AppHandle,
-    _window: &mut Window,
+    app: &AppHandle,
+    window: &mut Window,
     cx: &mut Context<DashboardView>,
 ) -> Box<dyn AnyTab> {
     match tab {
-        Tab::Monitor | Tab::Playback | Tab::Webhooks | Tab::Settings => {
-            Box::new(cx.new(|_| EmptyPanel))
-        }
+        Tab::Monitor => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
+        Tab::Playback => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
+        Tab::Webhooks => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
+        Tab::Settings => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
     }
 }
 
@@ -192,6 +208,12 @@ impl DashboardView {
             tab.poll(status, events, update, window, cx);
         }
         cx.notify();
+    }
+
+    pub fn on_playlists_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (_, tab) in &self.tabs {
+            tab.playlists_saved(window, cx);
+        }
     }
 
     pub fn set_connection_lost(&mut self, lost: bool, cx: &mut Context<Self>) {
@@ -336,6 +358,10 @@ mod tests {
             self.log.borrow_mut().push(format!("shown {:?}", self.tab));
         }
 
+        fn on_playlists_saved(&mut self, _: &mut Window, _: &mut Context<Self>) {
+            self.log.borrow_mut().push(format!("saved {:?}", self.tab));
+        }
+
         fn on_poll(
             &mut self,
             status: &Status,
@@ -355,28 +381,30 @@ mod tests {
         }
     }
 
+    type Log = Rc<RefCell<Vec<String>>>;
+
+    fn recording(
+        log: Log,
+    ) -> impl Fn(Tab, &AppHandle, &mut Window, &mut Context<DashboardView>) -> Box<dyn AnyTab> {
+        move |tab, _, _, cx| {
+            Box::new(cx.new(|_| Recorder {
+                tab,
+                log: log.clone(),
+            }))
+        }
+    }
+
     #[gpui::test]
     fn calls_the_tab_hooks(cx: &mut TestAppContext) {
         let (app, _) = open_app(cx, FakeApi::new());
         let handle = app.read_with(cx, |app, _| app.handle());
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let tab_log = log.clone();
+        let log = Log::default();
 
         let (window, dashboard) = cx
             .update(|cx| {
                 gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                     cx.new(|cx| {
-                        DashboardView::with_tabs(
-                            &handle,
-                            |tab, _, _, cx| {
-                                Box::new(cx.new(|_| Recorder {
-                                    tab,
-                                    log: tab_log.clone(),
-                                }))
-                            },
-                            window,
-                            cx,
-                        )
+                        DashboardView::with_tabs(&handle, recording(log.clone()), window, cx)
                     })
                 })
             })
@@ -421,6 +449,38 @@ mod tests {
                 "poll Playback 5000 1 false",
                 "poll Webhooks 5000 1 false",
                 "poll Settings 5000 1 false",
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn every_tab_hears_a_playlist_save_from_another_view(cx: &mut TestAppContext) {
+        let (app, window) = open_app(cx, FakeApi::new());
+        let handle = app.read_with(cx, |app, _| app.handle());
+        let log = Log::default();
+        cx.update_window(window, |_, window, cx| {
+            let dashboard =
+                cx.new(|cx| DashboardView::with_tabs(&handle, recording(log.clone()), window, cx));
+            app.update(cx, |app, cx| app.open_dashboard(dashboard, cx));
+        })
+        .unwrap();
+
+        cx.update(|cx| handle.playlists_saved(cx));
+        cx.run_until_parked();
+
+        let saved: Vec<String> = log
+            .borrow()
+            .iter()
+            .filter(|line| line.starts_with("saved"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                "saved Monitor",
+                "saved Playback",
+                "saved Webhooks",
+                "saved Settings"
             ]
         );
     }

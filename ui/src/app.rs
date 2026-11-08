@@ -75,6 +75,15 @@ impl AppHandle {
         self.later(cx, |app, window, cx| app.show_dashboard(window, cx));
     }
 
+    /// A Settings save went through: every tab's `on_playlists_saved` runs.
+    pub fn playlists_saved(&self, cx: &mut App) {
+        self.later(cx, |app, window, cx| {
+            if let Body::Dashboard(dashboard) = &app.body {
+                dashboard.update(cx, |dashboard, cx| dashboard.on_playlists_saved(window, cx));
+            }
+        });
+    }
+
     pub fn confirm(
         &self,
         title: &str,
@@ -234,6 +243,15 @@ impl AppView {
     pub fn show_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let app = self.handle.clone();
         let dashboard = cx.new(|cx| DashboardView::new(&app, window, cx));
+        self.open_dashboard(dashboard, cx);
+    }
+
+    /// Shows `dashboard` and starts the poll.
+    pub(crate) fn open_dashboard(
+        &mut self,
+        dashboard: Entity<DashboardView>,
+        cx: &mut Context<Self>,
+    ) {
         self.set_body(Body::Dashboard(dashboard), cx);
         let (client, window) = (self.handle.client.clone(), self.handle.window);
         self._polling = Some(cx.spawn(async move |this, cx| {
