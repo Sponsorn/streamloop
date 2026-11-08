@@ -1,0 +1,133 @@
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+use streamloop_pot::http::{serve, Service, MINT_QUEUE, MINT_WORKERS};
+use streamloop_pot::session::{PotAnswer, PotRequest};
+
+struct Slow {
+    delay: Duration,
+    started: AtomicUsize,
+}
+
+impl Slow {
+    fn new(delay: Duration) -> Arc<Self> {
+        Arc::new(Self { delay, started: AtomicUsize::new(0) })
+    }
+}
+
+impl Service for Slow {
+    fn get_pot(&self, r: &PotRequest) -> Result<PotAnswer, String> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        thread::sleep(self.delay);
+        Ok(PotAnswer {
+            content_binding: r.content_binding.clone(),
+            po_token: "tok".into(),
+            expires_at: UNIX_EPOCH + Duration::from_secs(1_794_139_200),
+        })
+    }
+    fn invalidate_caches(&self) {}
+    fn invalidate_it(&self) {}
+    fn minter_keys(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+fn start(svc: Arc<Slow>) -> (streamloop_pot::http::Running, SocketAddr) {
+    let running = serve("127.0.0.1:0".parse().unwrap(), svc).expect("bind a free loopback port");
+    let addr = running.addr();
+    (running, addr)
+}
+
+/// One request on its own connection; the whole reply as text.
+fn request(addr: SocketAddr, raw: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    s.write_all(raw.as_bytes()).unwrap();
+    let mut out = Vec::new();
+    let _ = s.read_to_end(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn get_pot_request() -> String {
+    let body = r#"{"content_binding":"vd"}"#;
+    format!(
+        "POST /get_pot HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+#[test]
+fn never_sends_cors_headers() {
+    let (_running, addr) = start(Slow::new(Duration::ZERO));
+    let options = request(
+        addr,
+        "OPTIONS /get_pot HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://evil.example\r\nAccess-Control-Request-Method: POST\r\nConnection: close\r\n\r\n",
+    );
+    assert!(options.starts_with("HTTP/1.1 404"), "{options}");
+    let post = request(addr, &get_pot_request().replace("Host:", "Origin: http://evil.example\r\nHost:"));
+    assert!(post.starts_with("HTTP/1.1 200"), "{post}");
+    for reply in [options, post] {
+        assert!(!reply.to_ascii_lowercase().contains("access-control-"), "{reply}");
+    }
+}
+
+#[test]
+fn ping_answers_while_a_mint_is_slow() {
+    let svc = Slow::new(Duration::from_secs(5));
+    let (_running, addr) = start(svc.clone());
+    let slow = thread::spawn(move || request(addr, &get_pot_request()));
+    while svc.started.load(Ordering::SeqCst) == 0 {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let t = Instant::now();
+    let reply = request(addr, "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(t.elapsed() < Duration::from_secs(1), "ping took {:?}", t.elapsed());
+    assert!(slow.join().unwrap().starts_with("HTTP/1.1 200"));
+}
+
+#[test]
+fn ping_answers_while_every_mint_worker_is_busy_and_more_wait() {
+    let svc = Slow::new(Duration::from_secs(4));
+    let (_running, addr) = start(svc.clone());
+    let busy: Vec<_> = (0..MINT_WORKERS + 1)
+        .map(|_| thread::spawn(move || request(addr, &get_pot_request())))
+        .collect();
+    while svc.started.load(Ordering::SeqCst) < MINT_WORKERS {
+        thread::sleep(Duration::from_millis(10));
+    }
+    for _ in 0..3 {
+        let t = Instant::now();
+        let reply = request(addr, "GET /ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
+        assert!(reply.starts_with("HTTP/1."), "{reply}");
+        assert_eq!(&reply[9..12], "200");
+        assert!(t.elapsed() < Duration::from_secs(1), "ping took {:?}", t.elapsed());
+    }
+    for b in busy {
+        assert!(b.join().unwrap().starts_with("HTTP/1.1 200"));
+    }
+}
+
+#[test]
+fn a_full_mint_queue_answers_503_and_ping_still_answers() {
+    let svc = Slow::new(Duration::from_secs(3));
+    let (_running, addr) = start(svc.clone());
+    let n = MINT_WORKERS + MINT_QUEUE + 4;
+    let all: Vec<_> = (0..n).map(|_| thread::spawn(move || request(addr, &get_pot_request()))).collect();
+    let replies: Vec<String> = all.into_iter().map(|h| h.join().unwrap()).collect();
+    assert!(replies.iter().any(|r| r.starts_with("HTTP/1.1 503")));
+    assert!(replies.iter().any(|r| r.starts_with("HTTP/1.1 200")));
+}
+
+#[test]
+fn answers_the_supervisors_http_1_0_ping() {
+    let (_running, addr) = start(Slow::new(Duration::ZERO));
+    let reply = request(addr, "GET /ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
+    assert!(reply.as_bytes().starts_with(b"HTTP/1."), "{reply}");
+    assert_eq!(&reply[9..12], "200");
+    assert!(reply.contains("\"version\":\"2.0.0\""));
+}
