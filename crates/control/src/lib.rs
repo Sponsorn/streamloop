@@ -4,4 +4,5 @@ pub mod clock;
 pub mod http;
 pub mod logging;
 pub mod runner;
+pub mod supervisor_client;
 pub mod timeline;

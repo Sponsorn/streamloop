@@ -1,8 +1,13 @@
 //! The stream key at rest: Windows DPAPI, current-user scope, base64 in config.json.
 //! A blob only decrypts for the same Windows user on the same PC.
 
+/// Trims the key, as the supervisor's `protect` command did, and refuses an empty one.
 pub fn protect(plain: &str) -> Result<String, String> {
-    dpapi(plain.as_bytes(), true).map(|b| b64_encode(&b))
+    let key = plain.trim();
+    if key.is_empty() {
+        return Err("stream key is empty".into());
+    }
+    dpapi(key.as_bytes(), true).map(|b| b64_encode(&b))
 }
 
 pub fn unprotect(blob_b64: &str) -> Result<String, String> {
@@ -119,5 +124,32 @@ mod tests {
     fn unprotect_rejects_invalid_base64() {
         let e = unprotect("not base64!").unwrap_err();
         assert!(e.contains("base64"), "{e}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn protect_round_trips_through_unprotect() {
+        let blob = protect("  live_123456_SECRETsecret
+").unwrap();
+        assert_eq!(unprotect(&blob).unwrap(), "live_123456_SECRETsecret");
+    }
+
+    #[test]
+    fn protect_refuses_an_empty_key() {
+        for empty in ["", "  
+"] {
+            let e = protect(empty).unwrap_err();
+            assert!(e.contains("empty"), "{e}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_unprotect_never_contains_the_key() {
+        let key = "live_123456_SECRETsecret";
+        let mut raw = b64_decode(&protect(key).unwrap()).unwrap();
+        raw[0] ^= 0xff;
+        let e = unprotect(&b64_encode(&raw)).unwrap_err();
+        assert!(!e.contains(key), "{e}");
     }
 }
