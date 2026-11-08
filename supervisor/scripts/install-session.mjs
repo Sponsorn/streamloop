@@ -24,7 +24,7 @@ import { dailyFiles, EVENTS, TOKEN_SERVER_PING, PLAYLIST, redact } from './lib.m
 import {
   spawn, run, KEY, INGEST, READ_URL, NODE_API, SUP, sleep, iso, Stop, useOut, note, ps, waitFor, startBat, token, nodeUp, api,
   nodeStatus, supStatus, waitLive, packets, reconnects, runReader, stopReader, gapStats, hashTree, sha256File, grepTree, extract, quietConfig,
-  tsxEval, portOpen, sweepLeftovers, onInterrupt, quickStop,
+  tsxEval, portOpen, sweepLeftovers, onInterrupt, quickStop, tempFolders,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -46,7 +46,8 @@ useOut(OUT);
 const results = {};
 
 // PowerShell's output codepage can mangle the Ö, so match the ASCII part of the install folders.
-const inInstall = (p) => /sl[23] install|sl3 gate/.test(p.CommandLine ?? '');
+const IN_TEMP = tempFolders(['sl3 install', 'sl2 install', 'sl3 gate']);
+const inInstall = (p) => IN_TEMP.test(p.CommandLine ?? '');
 const isTestNode = (p) => p.Name === 'node.exe' && inInstall(p) && /src[\\/]server[\\/]index\.ts/.test(p.CommandLine ?? '');
 const supervisors = async () => (await ps()).filter((p) => p.Name === 'streamloop-supervisor.exe').map((p) => p.ProcessId);
 
@@ -59,7 +60,7 @@ const guard2 = (root2) => tsxEval(root2, "import(process.env.MOD).then(async (m)
 // preflight
 async function tokenServerOk() { try { return (await fetch(TOKEN_SERVER_PING, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }
 for (const f of [FULL_ZIP, SLIM_ZIP]) if (!existsSync(f)) { note(`missing ${f}`); process.exit(2); }
-const swept = await sweepLeftovers({ dirs: [S3, S2], ascii: GATE ? /sl3 gate|sl2 install/i : /sl[23] install/i, mediamtx: join(TOOLS, 'mediamtx.exe') });
+const swept = await sweepLeftovers({ dirs: [S3, S2], ascii: tempFolders(GATE ? ['sl3 gate', 'sl2 install'] : ['sl3 install', 'sl2 install']), mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
 if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
 if (!(await tokenServerOk())) { note('PO-token server not answering: stop'); process.exit(2); }
@@ -520,7 +521,7 @@ function removeInstalls() {
 
 onInterrupt(async () => {
   stopReader();
-  await quickStop([bat3, bat2]);
+  note('quick stop', await quickStop([bat3, bat2], [S3, S2]));
   mediamtx?.kill();
   await cleanupOnce();
   catcher?.close();

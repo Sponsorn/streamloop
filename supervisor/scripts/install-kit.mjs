@@ -6,6 +6,7 @@ import * as cp from 'node:child_process';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, relative, basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import net from 'node:net';
 import { FFPROBE, redact } from './lib.mjs';
 
@@ -271,11 +272,33 @@ export async function sweepLeftovers({ dirs, ascii = null, mediamtx }) {
   return report;
 }
 
-/** The first thing a teardown does: a tool that interrupts can end this process within seconds of the
- *  signal. START.bat goes with its Node, so nothing relaunches the supervisor, which then takes its children. */
-export async function quickStop(bats) {
-  for (const b of bats) if (b && b.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(b.pid)]);
-  try { await fetch(`${SUP}/shutdown`, { method: 'POST', signal: AbortSignal.timeout(2000) }); } catch { /* none answering */ }
+/** The exe path of the process listening on 127.0.0.1:`port`, or null when nothing listens there. */
+export async function listenerPath(port) {
+  const r = await run('powershell', ['-NoProfile', '-Command',
+    `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $c = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).Path }`],
+    { encoding: 'utf8' });
+  return r.stdout.trim() || null;
+}
+
+/** First in a teardown, since a tool that interrupts can end this process within seconds. START.bat goes with
+ *  its Node; /shutdown goes only to a listener whose exe lies under `installDirs`, as other sessions use 4417. */
+export async function quickStop(bats, installDirs, { port = 4417, findListener = listenerPath } = {}) {
+  const started = bats.filter(Boolean);
+  for (const b of started) if (b.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(b.pid)]);
+  if (started.length === 0) return { shutdown: false, why: 'this harness started no START.bat' };
+  const path = await findListener(port);
+  const ours = path !== null && installDirs.some((d) => path.toLowerCase().startsWith(`${d.toLowerCase()}\\`));
+  if (!ours) return { shutdown: false, why: path === null ? `nothing listens on ${port}` : `the ${port} listener runs from outside this harness's installs` };
+  try { await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', signal: AbortSignal.timeout(2000) }); } catch { /* it went away */ }
+  return { shutdown: true, why: `the ${port} listener runs from this harness's install` };
+}
+
+/** Command lines naming one of the harness's temp folders (`names` are their ASCII starts). Any non-ASCII
+ *  in the temp path itself matches any run of characters, so a line in another codepage still matches. */
+export function tempFolders(names) {
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const prefix = esc(tmpdir()).replace(/[^\x00-\x7f]+/g, '[^\\\\]+');
+  return new RegExp(`${prefix}\\\\(?:${names.map(esc).join('|')})`, 'i');
 }
 
 // SIGINT, SIGTERM or SIGBREAK runs every registered teardown, newest first, then exits 130. A second

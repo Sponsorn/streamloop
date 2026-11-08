@@ -23,7 +23,7 @@ import { dailyFiles, EVENTS, PLAYLIST, redact } from './lib.mjs';
 import {
   spawn, run, TAR, KEY, INGEST, READ_URL, NODE_API, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, supStatus, waitLive,
   packets, reconnects, runReader, stopReader, resetReader, gapStats, sha256File, grepTree, extract, quietConfig, tsxEval, portOpen,
-  allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop,
+  allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders,
 } from './install-kit.mjs';
 import { hashParts } from '../../src/server/components.js';
 import { updateOfferText, updateBannerView } from '../../src/admin/status-view.js';
@@ -215,7 +215,8 @@ const posted = (ms, text) => postsSince(ms).some((a) => a.messages.includes(text
 
 // the install
 
-const underInstall = () => runningFrom([S], /\\sl3 update /i);
+const IN_TEMP = tempFolders(['sl3 update ']);
+const underInstall = () => runningFrom([S], IN_TEMP);
 const supervisors = async () => (await underInstall()).filter((p) => p.Name === 'streamloop-supervisor.exe').map((p) => p.ProcessId);
 
 function seedCache() {
@@ -875,7 +876,7 @@ function endSession() {
     summary.tasklist = Object.fromEntries(watch.map((n) => [n, all.filter((p) => String(p.Name).toLowerCase() === n).length]));
     const tools = join(TOOLS, 'mediamtx.exe').toLowerCase();
     summary.leftovers = {
-      underInstall: under(all, [S], /\\sl3 update /i).map((p) => `${p.Name} ${p.ProcessId}`),
+      underInstall: under(all, [S], IN_TEMP).map((p) => `${p.Name} ${p.ProcessId}`),
       mediamtx: all.filter((p) => p.Name === 'mediamtx.exe' && String(p.ExecutablePath).toLowerCase() === tools).map((p) => p.ProcessId),
       readers: all.filter((p) => p.Name === 'ffprobe.exe' && (p.CommandLine ?? '').includes(READ_URL)).map((p) => p.ProcessId),
     };
@@ -901,7 +902,7 @@ if (arg === 'build') {
   await buildReleases();
   process.exit(0);
 }
-const swept = await sweepLeftovers({ dirs: [S], ascii: /\\sl3 update /i, mediamtx: join(TOOLS, 'mediamtx.exe') });
+const swept = await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
 if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
 const taken = await portsTaken();
@@ -912,7 +913,7 @@ note('preflight: 7654, 4417, 4416, 4418, MediaMTX, release host and catcher port
 const summary = { at: iso(), dist: { full: basename(DIST_FULL), slim: basename(DIST_SLIM) }, swept, runs: {} };
 onInterrupt(async (signal) => {
   stopReader();
-  await quickStop([bat]);
+  note('quick stop', await quickStop([bat], [S]));
   mediamtx?.kill();
   const r = current;
   if (r) {
