@@ -1,11 +1,13 @@
 // One whole supervisor run: MediaMTX + token-server check, a dev root (dev-root.mjs) with a temp
 // config, the product binary, spike 1's watcher, a raw packet reader, a recorder, an optional
 // drive.mjs, then the dummy-key grep, analyze + verdict.
-//   node session.mjs <name> [--drive controls|faults|switch|resume|advance] [--gap-s 60] [--key protected|target] [supervisor flags...]
+//   node session.mjs <name> [--drive controls|faults|switch|resume|advance] [--gap-s 60] [--key protected|target] [--cookies SPEC] [supervisor flags...]
 // advance: two playlists, starting 90 s before the first one's end. Needs --debug-faults --max-videos 2, so the
 // list ends on the video named in FIRST_LIST_LAST.
 // --key protected (default): a random dummy key, DPAPI-protected into the config, against
 // rtmp://127.0.0.1:1935/live. --key target: --target rtmp://127.0.0.1:1935/live/spike instead.
+// --cookies SPEC is written as ytdlCookiesFromBrowser (empty without it), so a dev run is cookie-free by default.
+// The supervisor owns its token server; logs/token-server.json holds the identity /status reports.
 // --gap-s only shortens the controls plan's spacing (for a shakedown); everything else goes to the supervisor.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, rmSync, renameSync, writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, readdirSync, cpSync, createWriteStream } from 'node:fs';
@@ -13,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { API, TOKEN_SERVER_PING, FFMPEG, FFPROBE, FFMPEG_BIN, PLAYLIST, SECOND_PLAYLIST, redact } from './lib.mjs';
+import { API, TOKEN_PORT, TOKEN_PORT_TAKEN, FFMPEG, FFPROBE, FFMPEG_BIN, PLAYLIST, SECOND_PLAYLIST, redact } from './lib.mjs';
 import { makeDevRoot } from './dev-root.mjs';
 
 const SUP_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -30,11 +32,13 @@ if (!name || name.startsWith('--')) {
 let drivePlan = null;
 let gapS = '60';
 let keyMode = 'protected';
+let cookies = '';
 const supArgs = [];
 for (let i = 0; i < rest.length; i += 1) {
   if (rest[i] === '--drive') { drivePlan = rest[i += 1]; continue; }
   if (rest[i] === '--gap-s') { gapS = rest[i += 1]; continue; }
   if (rest[i] === '--key') { keyMode = rest[i += 1]; continue; }
+  if (rest[i] === '--cookies') { cookies = rest[i += 1]; continue; }
   supArgs.push(rest[i]);
 }
 
@@ -44,11 +48,14 @@ const rtmpUp = () => new Promise((resolve) => {
   socket.on('connect', () => { socket.destroy(); resolve(true); });
   socket.on('error', () => resolve(false));
 });
-const httpOk = async (url) => { try { return (await fetch(url)).ok; } catch { return false; } };
+const tokenPortTaken = () => new Promise((resolve) => {
+  const socket = net.connect(TOKEN_PORT, '127.0.0.1');
+  socket.on('connect', () => { socket.destroy(); resolve(true); });
+  socket.on('error', () => resolve(false));
+});
 
-if (!(await httpOk(TOKEN_SERVER_PING))) {
-  console.error(`PO-token server not answering at ${TOKEN_SERVER_PING}.`);
-  console.error('Start it first: node C:/Users/anton/bgutil-ytdlp-pot-provider/server/build/main.js');
+if (await tokenPortTaken()) {
+  console.error(TOKEN_PORT_TAKEN);
   process.exit(2);
 }
 let mediamtx = null;
@@ -81,7 +88,7 @@ if (keyMode === 'protected') {
 // With --max-videos 2, the last video of PLAYLIST.
 const FIRST_LIST_LAST = { id: 'u9lj-c29dxI', index: 1, position: 148 };
 const playlists = drivePlan === 'advance' ? [{ id: PLAYLIST }, { id: SECOND_PLAYLIST }] : [{ id: PLAYLIST }];
-writeFileSync(configFile, JSON.stringify({ playlists, supervisor: supervisorConfig }, null, 2));
+writeFileSync(configFile, JSON.stringify({ playlists, ytdlCookiesFromBrowser: cookies, supervisor: supervisorConfig }, null, 2));
 
 rmSync(`${SUP_DIR}/logs`, { recursive: true, force: true });
 mkdirSync(`${SUP_DIR}/logs/rec`, { recursive: true });
@@ -91,11 +98,24 @@ const log = (file, row) => appendFileSync(`${SUP_DIR}/logs/${file}`, `${row.join
 // The supervisor must find every tool through its root: no ffmpeg on its PATH.
 const noFfmpegPath = (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
 const console$ = createWriteStream(`${SUP_DIR}/logs/supervisor-console.log`, { flags: 'a' });
+/** Notes which token server answered, from /status.tokenServer.server; gives up after 60 s. */
+async function recordTokenServer() {
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(1000);
+    const s = await fetch(`${API}/status`).then((r) => r.json()).catch(() => null);
+    if (s?.tokenServer?.server) {
+      writeFileSync(`${SUP_DIR}/logs/token-server.json`, JSON.stringify(s.tokenServer, null, 2));
+      console.log(`token server: ${s.tokenServer.server}`);
+      return;
+    }
+  }
+}
 function launchSupervisor(args) {
   const child = spawn(BIN, ['--root', root, ...args], { cwd: SUP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: noFfmpegPath } });
   child.stdout.pipe(console$, { end: false });
   child.stderr.pipe(console$, { end: false });
   child.on('error', (err) => console.error(`supervisor failed to start: ${err.message}`));
+  recordTokenServer();
   return child;
 }
 
@@ -158,7 +178,7 @@ async function stopSupervisor(child) {
 
 function snapshotProcesses(file) {
   const ps = spawnSync('powershell', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'ffmpeg.exe|yt-dlp.exe|node.exe' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"],
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'ffmpeg.exe|yt-dlp.exe|node.exe|streamloop-pot.exe' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8' });
   writeFileSync(`${SUP_DIR}/logs/${file}`, redact(ps.stdout || '[]', dummyKey));
 }

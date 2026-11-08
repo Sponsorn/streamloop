@@ -17,7 +17,7 @@ import { join, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
-import { dailyFiles, EVENTS, TOKEN_SERVER_PING, FFMPEG, FFPROBE, PLAYLIST, redact } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_PORT, TOKEN_PORT_TAKEN, FFMPEG, FFPROBE, PLAYLIST, redact } from './lib.mjs';
 import { makeDevRoot } from './dev-root.mjs';
 
 // Every child hidden: nothing this script starts may show a window.
@@ -53,19 +53,18 @@ const save = (file, value) => writeFileSync(join(OUT, file), redact(typeof value
 const results = {};
 
 // preflight
-const httpOk = async (url) => { try { return (await fetch(url, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } };
-const rtmpUp = () => new Promise((resolve) => {
-  const s = net.connect(1935, '127.0.0.1');
+const portOpen = (port) => new Promise((resolve) => {
+  const s = net.connect(port, '127.0.0.1');
   s.on('connect', () => { s.destroy(); resolve(true); });
   s.on('error', () => resolve(false));
 });
-if (!(await httpOk(TOKEN_SERVER_PING))) { note('PO-token server not answering: stop'); process.exit(2); }
-note('token server answers /ping');
+if (await portOpen(TOKEN_PORT)) { note(TOKEN_PORT_TAKEN); process.exit(2); }
+note(`preflight: ${TOKEN_PORT} free, the supervisor runs its own token server`);
 let mediamtx = null;
-if (!(await rtmpUp())) {
+if (!(await portOpen(1935))) {
   mediamtx = spawn(join(TOOLS, 'mediamtx.exe'), [], { cwd: TOOLS, stdio: 'ignore' });
   await sleep(3000);
-  if (!(await rtmpUp())) { note('MediaMTX did not open :1935'); process.exit(2); }
+  if (!(await portOpen(1935))) { note('MediaMTX did not open :1935'); process.exit(2); }
   note('MediaMTX started');
 }
 
@@ -112,7 +111,7 @@ const WEBHOOK = `http://127.0.0.1:${CATCHER_PORT}/webhook/${RUN}`;
 // processes
 async function ps() {
   const r = await run('powershell', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop-supervisor.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe') } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json"],
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop-supervisor.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','streamloop-pot.exe') } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8', windowsHide: true });
   const v = JSON.parse(r.stdout || '[]');
   return Array.isArray(v) ? v : [v];
@@ -192,6 +191,8 @@ async function wizard() {
   const saved = await api('POST', '/config', { playlists: [{ id: PLAYLIST }], discord: { webhookUrl: WEBHOOK }, supervisor: { ingestUrl: 'rtmp://127.0.0.1:1935/live' } });
   const key = await api('POST', '/stream-key', { key: KEY });
   const live = await waitFor('live after the wizard', async () => (await nodeStatus())?.stream?.state === 'live', 180_000, 2000);
+  results.tokenServer = (await supStatus())?.tokenServer ?? null;
+  note('token server', results.tokenServer);
   const r = { firstRun: first?.firstRun, saveStatus: saved.status, reloadError: saved.json?.reloadError ?? null, keyStatus: key.status, keyReply: key.json, msToLive: live.ms, totalMs: Date.now() - t0 };
   note('wizard done', r);
   return r;

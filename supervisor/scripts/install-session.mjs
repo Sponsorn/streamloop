@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import net from 'node:net';
 import http from 'node:http';
-import { dailyFiles, EVENTS, TOKEN_SERVER_PING, FFPROBE, PLAYLIST, redact } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_PORT, TOKEN_PORT_TAKEN, FFPROBE, PLAYLIST, redact } from './lib.mjs';
 
 const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
 const run = (cmd, args, opts = {}) => new Promise((resolve) => {
@@ -228,11 +228,10 @@ const portOpen = (port) => new Promise((resolve) => {
   s.on('connect', () => { s.destroy(); resolve(true); });
   s.on('error', () => resolve(false));
 });
-async function tokenServerOk() { try { return (await fetch(TOKEN_SERVER_PING, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }
 for (const f of [FULL_ZIP, SLIM_ZIP]) if (!existsSync(f)) { note(`missing ${f}`); process.exit(2); }
-if (!(await tokenServerOk())) { note('PO-token server not answering: stop'); process.exit(2); }
+if (await portOpen(TOKEN_PORT)) { note(TOKEN_PORT_TAKEN); process.exit(2); }
 if (await portOpen(7654) || await portOpen(4417)) { note('7654 or 4417 already taken: stop'); process.exit(2); }
-note('preflight: token server answers /ping, 7654 and 4417 free');
+note(`preflight: ${TOKEN_PORT}, 7654 and 4417 free; the install's supervisor runs its own token server (a 3.0.x ZIP ships node and pot, so it is the TypeScript one)`);
 let mediamtx = null;
 if (!(await portOpen(1935))) {
   mediamtx = spawn(join(TOOLS, 'mediamtx.exe'), [], { cwd: TOOLS, stdio: 'ignore' });
@@ -694,7 +693,7 @@ const tl = await run('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8' });
 const names = ['streamloop-supervisor.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'mpv.exe'];
 results.tasklist = Object.fromEntries(names.map((n) => [n, tl.stdout.split(/\r?\n/).filter((l) => l.toLowerCase().startsWith(`"${n}"`)).length]));
 results.testNodesLeft = (await ps()).filter(isTestNode).length;
-results.tokenServerAfter = await tokenServerOk();
+results.tokenServerAfter = await portOpen(TOKEN_PORT);
 if (GATE) {
   results.alertsOverall = alertSummary();
   const inFault = (m) => Object.values(results.faults ?? {}).some((f) => f.alerts.messages.some((x) => x.at === m.at && x.m === m.m));

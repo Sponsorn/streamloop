@@ -165,7 +165,7 @@ describe('leaks', () => {
       { Name: 'ffmpeg.exe', CommandLine: 'ffmpeg -f mpegts -i pipe:0 -f flv rtmp://x' },
       { Name: 'yt-dlp.exe', CommandLine: 'yt-dlp -j x' },
       { Name: 'node.exe', CommandLine: 'node C:/bgutil/server/build/main.js' },
-      { Name: 'node.exe', CommandLine: 'node C:/bgutil/server/build/main.js -H 127.0.0.1 -p 4416' },
+      { Name: 'streamloop-pot.exe', CommandLine: 'R:/sl/supervisor/streamloop-pot.exe server --host 127.0.0.1 --port 4416 --data R:/sl/data/pot' },
     ];
 
     // Act

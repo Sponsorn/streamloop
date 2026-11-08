@@ -8,7 +8,9 @@ export const FFPROBE = `${FFMPEG_BIN}/ffprobe.exe`;
 /** Spike 5's Blender Foundation playlist, and a one-video Blender playlist for the live switch. */
 export const PLAYLIST = 'PL6B3937A5D230E335';
 export const SECOND_PLAYLIST = 'PLa1F2ddGya_8NhFM-rx_xh5SlIGbHyrZZ';
-export const TOKEN_SERVER_PING = 'http://127.0.0.1:4416/ping';
+export const TOKEN_PORT = 4416;
+/** A session needs the token port free so the supervisor starts and owns its server. */
+export const TOKEN_PORT_TAKEN = `Something already listens on 127.0.0.1:${TOKEN_PORT}. Stop it: the supervisor runs its own token server.`;
 /** Every encoder generation starts its timeline at BASE (rules.rs) but its input at 0, so
  *  reader dts = timeline offset - BASE (+ a per-run error analyze measures on the recording). */
 export const BASE = 10;
@@ -119,7 +121,7 @@ export function firstEventAfter(events, wallMs, kinds) {
 
 /** Processes the supervisor must not leave behind: any ffmpeg on a pipe or started from the dev
  *  root (feeders/encoder; the session's recorder and readers aren't), any yt-dlp, and a token
- *  server it owns (-p 4416). */
+ *  server it owns (streamloop-pot.exe, or the fallback's -p 4416). */
 export function leaks(processes, root = null) {
   const norm = (text) => text.toLowerCase().replaceAll('\\', '/');
   const fromRoot = (cmd) => root != null && norm(cmd).includes(norm(root));
@@ -128,6 +130,8 @@ export function leaks(processes, root = null) {
     const cmd = p.CommandLine ?? '';
     if (name === 'ffmpeg.exe') return cmd.includes('pipe:') || fromRoot(cmd);
     if (name === 'yt-dlp.exe') return true;
+    if (name === 'streamloop-pot.exe') return true;
+    // the TypeScript server the supervisor falls back to
     if (name === 'node.exe') return /main\.js/.test(cmd) && /-p\s+4416/.test(cmd);
     return false;
   });
