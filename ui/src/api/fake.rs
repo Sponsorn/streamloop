@@ -22,6 +22,7 @@ struct Script {
     once: HashMap<(&'static str, String), VecDeque<Answer>>,
     texts: HashMap<String, Result<String, ApiError>>,
     requests: Vec<Request>,
+    token_forgets: usize,
 }
 
 /// A scripted `Api` for tests. An unscripted call answers `Unreachable`.
@@ -74,6 +75,11 @@ impl FakeApi {
             .collect()
     }
 
+    /// How often `forget_token` was called; `HttpApi` reads `/api/token` again after each.
+    pub fn token_forgets(&self) -> usize {
+        self.script.lock().unwrap().token_forgets
+    }
+
     fn answer(&self, method: &'static str, path: &str, body: Option<Value>) -> Answer {
         let mut s = self.script.lock().unwrap();
         s.requests.push(Request {
@@ -108,5 +114,7 @@ impl Api for FakeApi {
         self.answer("POST", path, body)
     }
 
-    fn forget_token(&self) {}
+    fn forget_token(&self) {
+        self.script.lock().unwrap().token_forgets += 1;
+    }
 }

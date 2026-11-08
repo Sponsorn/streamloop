@@ -48,6 +48,11 @@ impl Client {
         parse(self.0.post(path, body)?)
     }
 
+    /// The next POST reads `/api/token` first, as after a Node restart.
+    pub fn forget_token(&self) {
+        self.0.forget_token();
+    }
+
     pub fn status(&self) -> Result<Status, ApiError> {
         self.get("/api/status")
     }

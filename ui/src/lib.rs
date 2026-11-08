@@ -4,21 +4,34 @@
 extern crate gpui_kit as gpui;
 
 pub mod api;
+pub mod app;
+pub mod dashboard;
 pub mod logic;
-mod spike_api;
-mod spike_view;
+#[cfg(test)]
+mod test_support;
+pub mod theme;
+pub mod widgets;
+
+use std::sync::Arc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Entity, Render, Result, TitlebarOptions, Window, WindowBounds,
     WindowOptions, px, size,
 };
 
+use crate::{
+    api::{client::Client, http::HttpApi},
+    app::AppView,
+};
+
 /// Opens the StreamLoop window against the backend on `port` and runs until it is closed.
 pub fn run(port: u16) {
-    spike_api::use_port(port);
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx: &mut App| {
+    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
-        open_main_window(cx, |_, cx| cx.new(spike_view::Dashboard::new)).expect("open the StreamLoop window");
+        theme::init(cx);
+        let client = Client(Arc::new(HttpApi::new(port)));
+        open_main_window(cx, |window, cx| cx.new(|cx| AppView::new(client, window, cx)))
+            .expect("open the StreamLoop window");
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
