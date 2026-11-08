@@ -2572,8 +2572,59 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
     }
 }
 
+/// Not 4417 (the live supervisor's) and not 4416 (its token server's), so a check never meets either.
+const CHECK_TOKEN_PORT: u16 = 4418;
+
+/// `streamloop-supervisor.exe check`: proves this binary runs, reads the config and can start the
+/// token server. It binds no supervisor port, enters no job, and writes nothing but the token
+/// server's daily log.
+fn self_check(args: &Args) -> Result<(), String> {
+    let settings = read_settings(args)?;
+    let p = &args.paths;
+    for path in [&p.ffmpeg, &p.ytdlp, &p.deno, &p.plugins, &p.token_server, &p.node, &p.slate] {
+        if !path.exists() {
+            return Err(format!("{} is missing", path.display()));
+        }
+    }
+    let out = procs::command(&p.ffmpeg).arg("-version").output().map_err(|e| format!("ffmpeg did not start: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("ffmpeg -version exited with {}", out.status));
+    }
+    let logs = Logs::new(p.data.join("logs"), &settings.stream_key);
+    let _ = std::fs::create_dir_all(&logs.dir);
+    let mut child = ytdlp::spawn_token_server(&p.node, &p.token_server, CHECK_TOKEN_PORT, &logs).map_err(|e| format!("the token server did not start: {e}"))?;
+    let mut answered = false;
+    for i in 0..3 {
+        if i > 0 {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        if ytdlp::ping(CHECK_TOKEN_PORT) {
+            answered = true;
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    if answered { Ok(()) } else { Err("the token server did not answer".into()) }
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|a| a == "check") {
+        let result = parse_args(&argv[1..]).and_then(|a| self_check(&a));
+        match result {
+            Ok(()) => {
+                if writeln!(std::io::stdout().lock(), "ok").is_err() {
+                    std::process::exit(1);
+                }
+                return;
+            }
+            Err(e) => {
+                logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor check: {e}"));
+                std::process::exit(1);
+            }
+        }
+    }
     if argv.first().is_some_and(|a| a == "protect") {
         match protect_stdin() {
             Ok(blob) => {
@@ -4521,5 +4572,25 @@ mod tests {
         ctl.downloading = Some((3, 10.0, Arc::new(AtomicBool::new(false))));
 
         assert_eq!(ctl.status()["downloading"]["index"], 1);
+    }
+
+    #[test]
+    fn check_names_the_first_missing_install_file() {
+        let args = startup_args("check-missing", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+
+        let r = self_check(&args);
+
+        let e = r.unwrap_err();
+        assert!(e.contains("ffmpeg.exe") && e.ends_with("is missing"), "{e}");
+    }
+
+    #[test]
+    fn check_refuses_a_config_the_supervisor_would_refuse() {
+        let args = startup_args("check-refused", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "no-such-encoder"}}));
+        let reason = read_settings(&args).err().unwrap();
+
+        let r = self_check(&args);
+
+        assert_eq!(r.unwrap_err(), reason);
     }
 }
