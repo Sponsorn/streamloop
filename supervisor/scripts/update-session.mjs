@@ -1,8 +1,8 @@
 // The full-update proof on the dev machine: release ZIPs as a user gets them, a local release list
 // and a local MediaMTX.
 //   node update-session.mjs <run>[,<run>...] | all | build   (build: only the release ZIPs)
-// Runs (RUNS below): full-on, full-off, app-only, locked, broken, bootstrap.
-// Release N (3.0.6) and the N+1 variants (3.0.7) are repacked from dist\ into
+// Runs (RUNS below): full-on, full-off, app-only, locked, broken, bootstrap, two-windows.
+// Release N (the dist version's patch + 1) and the N+1 variants (patch + 2) are repacked from dist\ into
 // supervisor\results\update-releases\ and served on 127.0.0.1:8791; Node reads the list through
 // STREAMLOOP_TEST_RELEASES. Discord posts go to a catcher on 127.0.0.1:8790.
 // Each run installs into %TEMP%\sl3 update Ö\, goes live through the wizard's API calls, updates
@@ -26,15 +26,16 @@ import {
   allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders,
 } from './install-kit.mjs';
 import { hashParts } from '../../src/server/components.js';
-import { updateOfferText, updateBannerView } from '../../src/admin/status-view.js';
+import { updateOfferText, updateBannerView, updateProgressText } from '../../src/admin/status-view.js';
 import { failureText } from '../../src/admin/update-text.js';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const DIST_FULL = join(REPO, 'dist', `streamloop-v${VERSION}.zip`);
 const DIST_SLIM = join(REPO, 'dist', `streamloop-v${VERSION}-update.zip`);
-const N = '3.0.6';
-const N1 = '3.0.7';
+const [V_MAJOR, V_MINOR, V_PATCH] = VERSION.split('-')[0].split('.').map(Number);
+const N = `${V_MAJOR}.${V_MINOR}.${V_PATCH + 1}`;
+const N1 = `${V_MAJOR}.${V_MINOR}.${V_PATCH + 2}`;
 const BOOT_TAG = 'v3.0.5';
 const BOOT_URL = `https://github.com/Sponsorn/streamloop/releases/download/${BOOT_TAG}/streamloop-${BOOT_TAG}`;
 const RESULTS = join(REPO, 'supervisor', 'results');
@@ -55,13 +56,17 @@ const WEBHOOK = `http://127.0.0.1:${CATCHER_PORT}/webhook/update`;
 const READY = 'Ready to stream. Press Start.';
 const UPDATING = `Updating to ${N1}, the stream is off air until it is done.`;
 const BACK = `Back on air on ${N1}.`;
+const READY_POST = `Updated to ${N1}. Ready to stream.`;
+const ANOTHER_WINDOW = 'Close the other StreamLoop window first.';
 // Overlay data at the end of a PE file: the exe still runs, its hash changes.
 const APPEND = Buffer.from('streamloop update proof: this build is N+1\n'.repeat(64));
+// A comment at the end of the token server's entry script: it still runs, the pot part's hash changes.
+const POT_APPEND = Buffer.from('\n// streamloop update proof: this build is N+1\n');
 
 /** What each release changes against dist\'s build. */
 const VARIANTS = {
   n: { version: N },
-  n1: { version: N1, supervisor: 'append' },
+  n1: { version: N1, supervisor: 'append', pot: 'append' },
   'n1-locked': { version: N1, supervisor: 'append', ffmpeg: 'append' },
   'n1-broken': { version: N1, supervisor: 'ffmpeg' },
   'n1-app': { version: N1 },
@@ -105,7 +110,7 @@ function exeRuns(exe, args, input = '') {
 }
 
 async function buildReleases() {
-  const want = { recipe: 2, full: sha256File(DIST_FULL), slim: sha256File(DIST_SLIM), variants: VARIANTS, append: sha(APPEND) };
+  const want = { recipe: 3, full: sha256File(DIST_FULL), slim: sha256File(DIST_SLIM), variants: VARIANTS, append: sha(APPEND), potAppend: sha(POT_APPEND) };
   const manifestFile = join(WORK, 'manifest.json');
   const have = readJson(manifestFile);
   const complete = have && same(have.want, want)
@@ -123,8 +128,10 @@ async function buildReleases() {
   const top = join(full, 'streamloop');
   const supExe = join(top, 'supervisor', 'streamloop-supervisor.exe');
   const ffExe = join(top, 'ffmpeg', 'ffmpeg.exe');
+  const potMain = join(top, 'pot', 'build', 'main.js');
   const sup0 = readFileSync(supExe);
   const ff0 = readFileSync(ffExe);
+  const pot0 = readFileSync(potMain);
   const nodeVersion = readFileSync(join(top, 'app', 'node-version.txt'), 'utf8').trim();
   const built = {};
   for (const [id, v] of Object.entries(VARIANTS)) {
@@ -132,6 +139,7 @@ async function buildReleases() {
     for (const tree of [full, slim]) setVersion(join(tree, 'streamloop', 'app', 'package.json'), v.version);
     writeFileSync(supExe, v.supervisor === 'append' ? Buffer.concat([sup0, APPEND]) : v.supervisor === 'ffmpeg' ? ff0 : sup0);
     writeFileSync(ffExe, v.ffmpeg === 'append' ? Buffer.concat([ff0, APPEND]) : ff0);
+    writeFileSync(potMain, v.pot === 'append' ? Buffer.concat([pot0, POT_APPEND]) : pot0);
     const runs = { supervisorProtect: await exeRuns(supExe, ['protect'], 'not-a-key'), ffmpegVersion: await exeRuns(ffExe, ['-hide_banner', '-version']) };
     // Only the broken release is meant to carry a supervisor that does not run.
     const supervisorRuns = runs.supervisorProtect.code === 0 && runs.supervisorProtect.line.length > 0;
@@ -242,6 +250,8 @@ function growSeed() {
 }
 
 let bat = null;
+/** two-windows: a second START.bat window from the same install. */
+let secondBat = null;
 let holder = null;
 
 /** Extracts a full ZIP, starts its START.bat hidden and takes it live with the wizard's calls. */
@@ -306,7 +316,7 @@ const leftovers = (snap) => [...snap.root.filter((f) => LEFTOVER.test(f)), ...sn
 let monitor = null;
 /** Polls the update's progress file, the supervisor and Node once a second while an update runs. */
 function startMonitor(t0) {
-  const m = { t0, states: [], playing: [], supervisor: [], node: [], savedAtStop: null, stop: false };
+  const m = { t0, states: [], percents: [], playing: [], supervisor: [], node: [], savedAtStop: null, stop: false };
   monitor = m;
   m.done = (async () => {
     let lastState = '';
@@ -319,6 +329,9 @@ function startMonitor(t0) {
         lastState = key;
         m.states.push({ t: Date.now() - t0, step: st?.step ?? null, result: st?.result ?? null, reason: st?.reason ?? null, stepStartedAt: st?.stepStartedAt ?? null });
         note('update state', m.states.at(-1));
+      }
+      if (st?.step === 'download' && typeof st.downloadPercent === 'number' && st.downloadPercent !== m.percents.at(-1)?.percent) {
+        m.percents.push({ t: Date.now() - t0, percent: st.downloadPercent, text: updateProgressText(st, [], Date.now()) });
       }
       const s = await supStatus();
       if ((s !== null) !== lastSup) {
@@ -345,7 +358,7 @@ async function endMonitor(m) {
   if (monitor === m) monitor = null;
   // Step lengths from the file's own start times.
   const steps = m.states.filter((s) => s.stepStartedAt).map((s) => ({ step: s.step, result: s.result, startedT: Date.parse(s.stepStartedAt) - m.t0 }));
-  return { states: m.states, steps, supervisor: m.supervisor.map(({ t, answering }) => ({ t, answering })), node: m.node, savedAtStop: m.savedAtStop };
+  return { states: m.states, steps, percents: m.percents, supervisor: m.supervisor.map(({ t, answering }) => ({ t, answering })), node: m.node, savedAtStop: m.savedAtStop };
 }
 
 function supEvents() {
@@ -407,7 +420,7 @@ async function apply(r) {
 async function dashboard() {
   const u = await getJson('/update/status');
   const s = await getJson('/status');
-  return { banner: u ? updateBannerView(u, Date.now()) : null, stream: s?.stream ?? null, progress: u?.progress ?? null, swapLog: u?.swapLog ?? null, currentVersion: u?.currentVersion ?? null, updateAvailable: u?.updateAvailable ?? null };
+  return { banner: u ? updateBannerView(u, Date.now(), s?.stream?.state ?? null) : null, stream: s?.stream ?? null, progress: u?.progress ?? null, swapLog: u?.swapLog ?? null, currentVersion: u?.currentVersion ?? null, updateAvailable: u?.updateAvailable ?? null };
 }
 
 function evidence(r, t0, runStart) {
@@ -416,6 +429,12 @@ function evidence(r, t0, runStart) {
   r.assets = assetLog.filter((a) => a.ms >= runStart).map((a) => ({ t: a.ms - t0, path: a.path, status: a.status, bytes: a.bytes }));
   r.posts = postsSince(runStart).map((a) => ({ t: a.ms - t0, title: a.title, footer: a.footer, messages: a.messages }));
 }
+/** From the start of one step to the start of the next, by the state file's own times. */
+const stepMs = (m, from, to) => {
+  const a = m.steps.find((s) => s.step === from)?.startedT;
+  const b = m.steps.find((s) => s.step === to)?.startedT;
+  return a === undefined || b === undefined ? null : b - a;
+};
 const fetched = (r, file) => r.assets.some((a) => a.status === 200 && a.path.endsWith(`/${file}`));
 
 // the runs
@@ -468,17 +487,20 @@ async function fullRun(r, autoStart) {
   r.resume = resumeCheck(mon);
   evidence(r, t0, runStart);
   r.dashboardAfter = await dashboard();
+  r.checkMs = stepMs(r.monitor, 'check', 'start');
   const n1 = componentsOf('n1').parts;
   r.checks = {
     testReleasesWarned: r.testReleasesWarned,
-    offeredFullSupervisor: r.offer.kind === 'full' && same(r.offer.parts, ['supervisor']) && r.offer.latestVersion === N1 && r.offer.sameVersion === false
-      && r.offer.text === 'Full update: the stream goes off air while these parts are replaced: Supervisor.',
+    offeredFullSupervisorAndPot: r.offer.kind === 'full' && same(r.offer.parts, ['supervisor', 'pot']) && r.offer.latestVersion === N1 && r.offer.sameVersion === false
+      && r.offer.text === 'Full update: the stream goes off air while these parts are replaced: Supervisor, Token server.',
     applied: r.applyStatus === 200,
     downloadedFullZip: fetched(r, zipName(N1, false)) && !fetched(r, zipName(N1, true)),
     result: r.state?.result === 'ok' && r.state?.step === want,
     nowN1: r.after.version === N1,
     partsAreN1: same(r.after.parts, n1),
-    onlySupervisorChanged: same(changedParts(r.before.parts, r.after.parts), ['supervisor']),
+    onlySupervisorAndPotChanged: same(changedParts(r.before.parts, r.after.parts), ['supervisor', 'pot']),
+    potSwapped: r.swapLog.includes('pot ok swapped'),
+    downloadPercentRecorded: r.state?.downloadPercent === 100 && r.monitor.percents.some((p) => p.percent === 100),
     ytdlpExeKept: r.before.ytdlpExe === r.after.ytdlpExe,
     configUnchanged: r.before.configSha256 === r.after.configSha256,
     keyUnchanged: r.before.keyProtectedSha256 === r.after.keyProtectedSha256,
@@ -487,12 +509,16 @@ async function fullRun(r, autoStart) {
     resumedAtSavedPosition: r.resume.ok,
     readerSteadyAfter: r.readerAfter.maxWallGapMs < 2000 && r.readerAfter.readerReconnects === 0 && r.readerAfter.packets > 0,
     updatingPosted: posted(runStart, UPDATING),
-    bannerSaysUpdated: r.dashboardAtResult.banner?.text === `Updated to ${N1}. Ready to stream.`,
   };
   if (autoStart) {
     r.checks.backOnAirByItself = r.liveAfterUpdate !== null && r.state?.step === 'done';
     r.checks.backOnAirPosted = posted(runStart, BACK);
+    r.checks.noReadyPost = !posted(runStart, READY_POST);
+    r.checks.bannerSaysBackOnAir = r.dashboardAtResult.banner?.text === BACK;
   } else {
+    r.checks.readyPosted = posted(runStart, READY_POST);
+    r.checks.bannerSaysReady = r.dashboardAtResult.banner?.text === READY_POST;
+    r.checks.readyBannerGoneWhenLive = r.dashboardAfter.stream?.state === 'live' && r.dashboardAfter.banner?.visible === false;
     r.checks.settingSaved = r.settingSave === 200 && r.before.autoStartStream === false;
     r.checks.heldReady = r.held.every((x) => x.supervisors === 0 && x.stream?.state === 'stopped' && x.stream?.reason === READY);
     r.checks.startWentLive = r.start === 200 && r.startToLiveMs !== null;
@@ -505,11 +531,11 @@ async function appOnly(r) {
   const env = { STREAMLOOP_TEST_RELEASES: writeReleases(r.run, ['n', 'n1-app']) };
   await goLive(r, zipOf('n'), env, 'n');
   const { t0, mon } = await apply(r);
-  const back = await waitFor('Node on 3.0.7', async () => ((await getJson('/update/status'))?.currentVersion === N1 ? true : null), 300_000, 1000);
+  const back = await waitFor(`Node on ${N1}`, async () => ((await getJson('/update/status'))?.currentVersion === N1 ? true : null), 300_000, 1000);
   if (!back.value) {
     r.monitor = await endMonitor(mon);
     evidence(r, t0, runStart);
-    throw new Stop('Node did not come back on 3.0.7');
+    throw new Stop(`Node did not come back on ${N1}`);
   }
   r.nodeBackT = Date.now() - t0;
   await nodeUp('after the app update');
@@ -545,7 +571,7 @@ async function rollbackRun(r, id, setup) {
   await goLive(r, zipOf('n'), env, 'n');
   await setup?.();
   const { t0, mon } = await apply(r);
-  const out = await waitFor('the rollback to 3.0.6', async () => {
+  const out = await waitFor(`the rollback to ${N}`, async () => {
     const st = readJson(STATE_FILE);
     if (st?.result === 'ok') return { bad: st };
     if (st?.result !== 'rolled-back') return null;
@@ -559,7 +585,7 @@ async function rollbackRun(r, id, setup) {
   r.rolledBackT = Date.now() - t0;
   await nodeUp('after the rollback');
   r.dashboardAtResult = await dashboard();
-  r.liveAgainMs = (await waitLive('live again on 3.0.6', 180_000)).ms;
+  r.liveAgainMs = (await waitLive(`live again on ${N}`, 180_000)).ms;
   r.liveAgainT = r.liveAgainMs === null ? null : Date.now() - t0;
   await sleep(20_000);
   r.readerAfter = gapStats(Date.now() - 20_000, Date.now());
@@ -650,10 +676,10 @@ async function bootstrap(r) {
   const tHook = Date.now();
   a.hook = (await api('POST', '/test/exit-75')).status;
   await waitFor('3.0.5 Node gone', async () => !(await nodeAnswers()), 30_000, 250);
-  const back = await waitFor('Node on 3.0.7', async () => ((await getJson('/update/status'))?.currentVersion === N1 ? true : null), 180_000, 1000);
-  if (!back.value) throw new Stop('3.0.5 did not come back as 3.0.7 after its app-only update');
+  const back = await waitFor(`Node on ${N1}`, async () => ((await getJson('/update/status'))?.currentVersion === N1 ? true : null), 180_000, 1000);
+  if (!back.value) throw new Stop(`3.0.5 did not come back as ${N1} after its app-only update`);
   a.nodeBackMs = Date.now() - tHook;
-  await nodeUp('3.0.7 after the app-only update');
+  await nodeUp(`${N1} after the app-only update`);
   a.attachMs = (await waitFor('the launcher to attach', async () => (await getJson('/status'))?.launcher === 'running', 60_000, 500)).ms;
   await sleep(15_000);
   a.supervisorPids = { before: pidsBefore, after: await supervisors() };
@@ -665,7 +691,7 @@ async function bootstrap(r) {
     consoleSaysTrampoline: (readText(join(OUT_ROOT, r.run, 'console-305.log')) ?? '').includes('Applying new launcher and restarting...'),
   };
   r.appStep = a;
-  note('3.0.5 app-only update to 3.0.7', a);
+  note(`3.0.5 app-only update to ${N1}`, a);
 
   const { t0, mon } = await apply(r);
   const out = await waitFor('the parts update to finish', async () => {
@@ -717,6 +743,62 @@ async function bootstrap(r) {
   };
 }
 
+const startBatWindows = async () => (await underInstall()).filter((p) => p.Name === 'cmd.exe' && /start\.bat/i.test(p.CommandLine ?? '')).length;
+
+/** Ends the second window with its tree (its cmd and the Node it restarts), as closing the window does. */
+async function closeSecondWindow() {
+  if (!secondBat) return null;
+  const b = secondBat;
+  secondBat = null;
+  if (b.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(b.pid)]);
+  return (await waitFor('the second window to close', async () => b.exitCode !== null, 15_000, 250)).ms;
+}
+
+/** A second START.bat window from the same install runs when Update is pressed: refused, nothing changes. */
+async function twoWindows(r) {
+  const runStart = Date.now();
+  const env = { STREAMLOOP_TEST_RELEASES: writeReleases(r.run, ['n', 'n1']) };
+  await goLive(r, zipOf('n'), env, 'n');
+  // Its Node finds 7654 taken and exits 1, so the window restarts it every ~13 s, as a real second window does.
+  secondBat = startBat(ROOT, 'second', env);
+  r.secondWindow = { pid: secondBat.pid, seenMs: (await waitFor('two START.bat windows', async () => ((await startBatWindows()) >= 2 ? true : null), 30_000, 500)).ms };
+  r.offer = await checkUpdate();
+  note('offer', r.offer);
+  writeFileSync(MARKER, randomBytes(16).toString('hex'));
+  r.before = await snapshot();
+  const t0 = Date.now();
+  const res = await api('POST', '/update/apply');
+  r.apply = { status: res.status, error: res.json?.error ?? null, ms: Date.now() - t0 };
+  note('apply with a second window', r.apply);
+  await sleep(15_000);
+  const u = await getJson('/update/status');
+  r.afterRefusal = { state: readJson(STATE_FILE), staged: existsSync(join(ROOT, '_update_tmp')), status: u?.status ?? null, updateAvailable: u?.updateAvailable ?? null };
+  r.secondWindow.closeMs = await closeSecondWindow();
+  await sleep(5000);
+  r.windowsAfterClose = await startBatWindows();
+  r.after = await snapshot();
+  r.gap = gapStats(t0 - 5000, Date.now());
+  evidence(r, t0, runStart);
+  r.dashboardAfter = await dashboard();
+  r.checks = {
+    secondWindowRan: r.secondWindow.seenMs !== null,
+    offeredFull: r.offer.kind === 'full' && r.offer.latestVersion === N1,
+    refusedWith409: r.apply.status === 409 && r.apply.error === ANOTHER_WINDOW,
+    nothingDownloaded: !fetched(r, zipName(N1, false)) && !fetched(r, zipName(N1, true)),
+    noStateWritten: r.afterRefusal.state === null,
+    nothingStaged: !r.afterRefusal.staged,
+    offerKept: r.afterRefusal.status === 'idle' && r.afterRefusal.updateAvailable === true,
+    sameSupervisorPid: r.before.supervisorPids.length === 1 && same(r.before.supervisorPids, r.after.supervisorPids),
+    sameEncoderGeneration: r.before.encoderGeneration !== null && r.before.encoderGeneration === r.after.encoderGeneration,
+    noDrop: r.gap.maxWallGapMs < 2000 && r.gap.readerReconnects === 0 && r.gap.packets > 0,
+    nothingPosted: !posted(runStart, UPDATING),
+    partsUnchanged: same(r.before.parts, r.after.parts),
+    configUnchanged: r.before.configSha256 === r.after.configSha256,
+    secondWindowClosed: r.secondWindow.closeMs !== null && r.windowsAfterClose === 1,
+    noLeftovers: leftovers(r.after).length === 0,
+  };
+}
+
 const RUNS = {
   'full-on': (r) => fullRun(r, true),
   'full-off': (r) => fullRun(r, false),
@@ -724,6 +806,7 @@ const RUNS = {
   locked,
   broken,
   bootstrap,
+  'two-windows': twoWindows,
 };
 
 // session
@@ -756,6 +839,8 @@ function endRun(r, fast = false) {
 }
 async function finishRun(r, fast) {
   stopReader();
+  // First: once the install's own Node exits, a second window's Node would take 7654 and launch a supervisor.
+  await closeSecondWindow();
   if (monitor) {
     const ended = await endMonitor(monitor);
     r.monitor ??= ended;
@@ -913,7 +998,7 @@ note('preflight: 7654, 4417, 4416, 4418, MediaMTX, release host and catcher port
 const summary = { at: iso(), dist: { full: basename(DIST_FULL), slim: basename(DIST_SLIM) }, swept, runs: {} };
 onInterrupt(async (signal) => {
   stopReader();
-  note('quick stop', await quickStop([bat], [S]));
+  note('quick stop', await quickStop([secondBat, bat], [S]));
   mediamtx?.kill();
   const r = current;
   if (r) {
