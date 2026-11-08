@@ -1,6 +1,6 @@
 // Counts the supervisor's download tries, and which of them used a PO token, from a copy of its logs (read-only).
 //   node token-report.mjs <logsDir> [--from ISO] [--to ISO]
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dailyFiles, EVENTS } from './lib.mjs';
@@ -106,6 +106,20 @@ export function splitPairs(rowsA, rowsB) {
   return out;
 }
 
+/** Reads a supervisor logs folder into the `files` shape tokenReport takes; a missing folder reads as empty. */
+export function readLogsDir(dir) {
+  if (!existsSync(dir)) return { downloadsCsv: [], ytdlpLog: [], events: [] };
+  const names = readdirSync(dir);
+  const read = (base, ext) => dailyFiles(names, base, ext).map((f) => readFileSync(join(dir, f), 'utf8'));
+  return { downloadsCsv: read('downloads', 'csv'), ytdlpLog: read('ytdlp', 'log'), events: read(EVENTS, 'jsonl') };
+}
+
+/** Only the events files of a logs folder, for callers that sample often. */
+export function readEventsDir(dir) {
+  if (!existsSync(dir)) return [];
+  return dailyFiles(readdirSync(dir), EVENTS, 'jsonl').map((f) => readFileSync(join(dir, f), 'utf8'));
+}
+
 function main() {
   const [dir, ...rest] = process.argv.slice(2);
   if (!dir) {
@@ -116,10 +130,7 @@ function main() {
     const i = rest.indexOf(name);
     return i >= 0 ? Date.parse(rest[i + 1]) : undefined;
   };
-  const names = readdirSync(dir);
-  const read = (base, ext) => dailyFiles(names, base, ext).map((f) => readFileSync(join(dir, f), 'utf8'));
-  const files = { downloadsCsv: read('downloads', 'csv'), ytdlpLog: read('ytdlp', 'log'), events: read(EVENTS, 'jsonl') };
-  console.log(JSON.stringify(tokenReport(files, flag('--from'), flag('--to')), null, 2));
+  console.log(JSON.stringify(tokenReport(readLogsDir(dir), flag('--from'), flag('--to')), null, 2));
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();

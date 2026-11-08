@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   parseArgs, parseSha256File, pairConfig, supervisorArgs, tsServerArgs, judgeIdentity, bgutilPlugins,
   lastSpawnPid, parsePrivateMb, memoryCsvRow, assembleReport, ownProcesses, removeTree, PORTS,
+  pingIdentity, judgeA, notePlaying, playingVerdict,
 } from './pair-session.mjs';
 
 const R403 = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
@@ -170,15 +171,19 @@ describe('assembleReport', () => {
     expect(r.pairs.list).toEqual([{ id: 'v1', a: 'done', b: 'refused' }]);
   });
 
-  it('drops the row lists when they are large but keeps the pairs list', () => {
-    const many = Array.from({ length: 5 }, (_, i) => row(`2026-11-08T10:3${i}:00.000Z`, `v${i}`, 'done')).join('\n') + '\n';
+  it('keeps every try row however many there are, with how the run ended', () => {
+    // Arrange
+    const many = Array.from({ length: 300 }, (_, i) => row(`2026-11-08T10:30:00.${String(i).padStart(3, '0')}Z`, `v${i}`, 'done')).join('\n') + '\n';
     const b = files(`${row('2026-11-08T10:30:00.000Z', 'v0', 'retry', 1000, R403)}\n`);
 
-    const r = assembleReport(files(many), b, from, to, 3);
+    // Act
+    const r = assembleReport(files(many), b, from, to, { endedBy: 'not-playing', identity: { a: 'bgutil 2.0.0', b: 'unknown' } });
 
-    expect(r.a.rows).toBeUndefined();
+    // Assert
+    expect(r.a.rows).toHaveLength(300);
     expect(r.b.rows).toHaveLength(1);
     expect(r.pairs.list).toHaveLength(1);
+    expect(r).toMatchObject({ endedBy: 'not-playing', identity: { a: 'bgutil 2.0.0', b: 'unknown' } });
   });
 });
 
@@ -192,11 +197,74 @@ describe('ownProcesses', () => {
   const base = 'C:\\Users\\x\\AppData\\Local\\Temp\\sl-pair-t';
 
   it('keeps processes the run started or that run from under its folder, whatever the slash style', () => {
-    expect(ownProcesses(procs, new Set([3]), base).map((p) => p.pid)).toEqual([1, 3, 4]);
+    expect(ownProcesses(procs, new Map([[3, 'mediamtx.exe']]), base).map((p) => p.pid)).toEqual([1, 3, 4]);
   });
 
   it('leaves out a process that is not the run\'s', () => {
-    expect(ownProcesses(procs, new Set(), base).map((p) => p.pid)).toEqual([1, 4]);
+    expect(ownProcesses(procs, new Map(), base).map((p) => p.pid)).toEqual([1, 4]);
+  });
+
+  it('does not take a started pid that now belongs to a process with another name', () => {
+    expect(ownProcesses(procs, new Map([[2, 'streamloop-supervisor.exe']]), base).map((p) => p.pid)).toEqual([1, 4]);
+  });
+
+  it('does not match a sibling folder that shares the prefix', () => {
+    const sibling = [
+      { pid: 5, name: 'node.exe', path: 'C:\\Users\\x\\AppData\\Local\\Temp\\sl-pair-t2\\a\\node\\node.exe', commandLine: '' },
+      { pid: 6, name: 'node.exe', path: '', commandLine: 'node C:/Users/x/AppData/Local/Temp/sl-pair-t2/a/pot/build/main.js' },
+    ];
+
+    expect(ownProcesses(sibling, new Map(), base)).toEqual([]);
+  });
+});
+
+describe('pingIdentity', () => {
+  it('names the implementation when /ping carries one', () => {
+    expect(pingIdentity(200, '{"version":"2.0.0","implementation":"streamloop-pot 0.1.0"}')).toBe('streamloop-pot 0.1.0');
+  });
+
+  it('names bgutil with the version when only the version is there', () => {
+    expect(pingIdentity(200, '{"server_uptime":3,"version":"2.0.0"}')).toBe('bgutil 2.0.0');
+  });
+
+  it('says unknown for a 200 that is not JSON or names nothing', () => {
+    expect(pingIdentity(200, 'pong')).toBe('unknown');
+    expect(pingIdentity(200, '{}')).toBe('unknown');
+  });
+
+  it('is null when nothing answered 200', () => {
+    expect(pingIdentity(500, '{"version":"2.0.0"}')).toBeNull();
+  });
+});
+
+describe('judgeA', () => {
+  it('accepts a bgutil server the supervisor owns', () => {
+    expect(judgeA('bgutil 2.0.0', 'owned', 4000)).toBe('ok');
+  });
+
+  it('waits for ownership and then calls an adopted bgutil server a mismatch at the limit', () => {
+    expect(judgeA('bgutil 2.0.0', 'adopted', 10_000)).toBe('wait');
+    expect(judgeA('bgutil 2.0.0', 'adopted', 60_000)).toBe('mismatch');
+  });
+
+  it('calls another server a mismatch at the limit', () => {
+    expect(judgeA('streamloop-pot 0.1.0', 'owned', 60_000)).toBe('mismatch');
+  });
+});
+
+describe('playing checks', () => {
+  it('records the first time a side said playing and keeps it', () => {
+    expect(notePlaying(null, { state: 'starting' }, 5)).toBeNull();
+    expect(notePlaying(null, { state: 'playing' }, 7)).toBe(7);
+    expect(notePlaying(7, { state: 'recovering' }, 9)).toBe(7);
+    expect(notePlaying(null, null, 9)).toBeNull();
+  });
+
+  it('fails only when a side has not played by the limit', () => {
+    expect(playingVerdict(1, 2, 999_999_999)).toBe('ok');
+    expect(playingVerdict(1, null, 599_000)).toBe('wait');
+    expect(playingVerdict(1, null, 600_000)).toBe('fail');
+    expect(playingVerdict(null, null, 600_000)).toBe('fail');
   });
 });
 

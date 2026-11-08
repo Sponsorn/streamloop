@@ -10,16 +10,16 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
   mkdirSync, rmSync, renameSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync,
-  lstatSync, rmdirSync, copyFileSync, openSync, closeSync, createReadStream,
+  lstatSync, rmdirSync, copyFileSync, openSync, closeSync, createReadStream, cpSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
-import { TOKEN_PORT, FFMPEG_BIN, dailyFiles, EVENTS } from './lib.mjs';
+import { TOKEN_PORT, FFMPEG_BIN } from './lib.mjs';
 import { makeDevRoot, SOURCES } from './dev-root.mjs';
-import { tokenReport, splitPairs } from './token-report.mjs';
+import { tokenReport, splitPairs, readLogsDir, readEventsDir } from './token-report.mjs';
 
 const SUP_DIR = fileURLToPath(new URL('..', import.meta.url));
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -34,8 +34,8 @@ const SAMPLE_EVERY_MS = 10 * 60_000;
 const TICK_MS = 60_000;
 const IDENTITY_LIMIT_MS = 60_000;
 const EXIT_WAIT_MS = 30_000;
-const MAX_REPORT_ROWS = 200;
-const WATCHED = ['streamloop-supervisor', 'streamloop-pot', 'node', 'ffmpeg', 'yt-dlp', 'mediamtx'];
+const NOT_PLAYING_LIMIT_MS = 10 * 60_000;
+const WATCHED = ['streamloop-supervisor', 'streamloop-pot', 'bgutil-pot', 'node', 'ffmpeg', 'yt-dlp', 'mediamtx', 'tail', 'grep'];
 const USAGE = 'usage: node pair-session.mjs NAME --playlist ID[,ID...] --hours H [--a-zip ZIP] [--b-pot EXE | --b-ts] [--b-plugin ZIP] [--b-expect TEXT] [--cookies SPEC] [--b-bin EXE]';
 
 
@@ -100,6 +100,32 @@ export function judgeIdentity(server, expect, elapsedMs, limitMs = IDENTITY_LIMI
   return elapsedMs >= limitMs ? 'mismatch' : 'wait';
 }
 
+/** A's server never reports `server` in /status (3.0.5): read /ping the way the supervisor does. null when nothing answered 200. */
+export function pingIdentity(httpStatus, body) {
+  if (httpStatus !== 200) return null;
+  let v = null;
+  try { v = JSON.parse(body); } catch { /* not JSON */ }
+  if (typeof v?.implementation === 'string') return v.implementation;
+  if (typeof v?.version === 'string') return `bgutil ${v.version}`;
+  return 'unknown';
+}
+
+/** A must run its own bgutil server: named bgutil and owned by the supervisor. */
+export function judgeA(identity, tokenState, elapsedMs, limitMs = IDENTITY_LIMIT_MS) {
+  const named = judgeIdentity(identity, 'bgutil', elapsedMs, limitMs);
+  if (named === 'ok' && tokenState !== 'owned') return elapsedMs >= limitMs ? 'mismatch' : 'wait';
+  return named;
+}
+
+/** First time a side's /status said `playing`; keeps the earlier time once set. */
+export const notePlaying = (first, status, nowMs) => first ?? (status?.state === 'playing' ? nowMs : null);
+
+/** 'fail' when either side has not played within the limit after launch. */
+export function playingVerdict(firstA, firstB, elapsedMs, limitMs = NOT_PLAYING_LIMIT_MS) {
+  if (firstA !== null && firstB !== null) return 'ok';
+  return elapsedMs >= limitMs ? 'fail' : 'wait';
+}
+
 export const bgutilPlugins = (names) => names.filter((n) => n.toLowerCase().startsWith('bgutil'));
 
 /** The pid of the newest `token-server-spawn` event; texts are whole daily files, oldest first. */
@@ -128,23 +154,23 @@ export function memoryCsvRow(ts, side, pid, mb) {
   return `${ts},${side},${pid ?? ''},${mb ?? ''}`;
 }
 
-/** report.json: both sides over [fromMs, toMs) and the videos only one side got. Row lists past `maxRows` stay out of the file. */
-export function assembleReport(filesA, filesB, fromMs, toMs, maxRows = MAX_REPORT_ROWS) {
+/** report.json: both sides over [fromMs, toMs) with every try, the videos only one side got, and how the run ended. */
+export function assembleReport(filesA, filesB, fromMs, toMs, { endedBy = null, identity = null } = {}) {
   const a = tokenReport(filesA, fromMs, toMs);
   const b = tokenReport(filesB, fromMs, toMs);
   const pairs = splitPairs(a.rows, b.rows);
-  const slim = (r) => (r.rows.length > maxRows ? { ...r, rows: undefined } : r);
-  return { window: { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }, a: slim(a), b: slim(b), pairs };
+  return { window: { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }, endedBy, identity, a, b, pairs };
 }
 
-/** Processes started by this run or running from under its folder; `procs` are {pid, name, path, commandLine}. */
-export function ownProcesses(procs, startedPids, baseDir) {
+/**
+ * Processes this run may kill: a started pid that still carries the name it was started with (a reused pid does not),
+ * or anything running from under its folder. `started` maps pid to lower-case exe name; `procs` are {pid, name, path, commandLine}.
+ */
+export function ownProcesses(procs, started, baseDir) {
   const norm = (s) => (s ?? '').replaceAll('\\', '/').toLowerCase();
-  const base = norm(baseDir);
-  return procs.filter((p) => startedPids.has(p.pid) || norm(p.path).startsWith(base) || norm(p.commandLine).includes(base));
+  const base = `${norm(baseDir).replace(/\/+$/, '')}/`;
+  return procs.filter((p) => started.get(p.pid) === p.name.toLowerCase() || norm(p.path).startsWith(base) || norm(p.commandLine).includes(base));
 }
-
-
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const portOpen = (port) => new Promise((resolve$) => {
@@ -168,14 +194,14 @@ export function removeTree(path) {
   rmdirSync(path);
 }
 
-const psJson = (command) => {
+const psText = (command) => {
   const r = spawnSync('powershell', ['-NoProfile', '-Command', command], { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
   return (r.stdout ?? '').trim();
 };
 
 function listWatched() {
   const names = WATCHED.map((n) => `'${n}.exe'`).join(',');
-  const out = psJson(`Get-CimInstance Win32_Process | Where-Object { $_.Name -in @(${names}) } | Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress`);
+  const out = psText(`Get-CimInstance Win32_Process | Where-Object { $_.Name -in @(${names}) } | Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress`);
   const rows = out ? [].concat(JSON.parse(out)) : [];
   return rows.map((r) => ({ pid: r.ProcessId, name: r.Name, path: r.ExecutablePath ?? '', commandLine: r.CommandLine ?? '' }));
 }
@@ -184,18 +210,10 @@ function privateMb(pids) {
   const good = pids.filter(Number.isInteger);
   if (!good.length) return new Map();
   const filter = good.map((p) => `IDProcess=${p}`).join(' OR ');
-  return parsePrivateMb(psJson(`Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "${filter}" | Select-Object IDProcess,WorkingSetPrivate | ConvertTo-Json -Compress`));
+  return parsePrivateMb(psText(`Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "${filter}" | Select-Object IDProcess,WorkingSetPrivate | ConvertTo-Json -Compress`));
 }
 
 const killTree = (pid) => spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true });
-
-function readLogs(dir) {
-  if (!existsSync(dir)) return { downloadsCsv: [], ytdlpLog: [], events: [] };
-  const names = readdirSync(dir);
-  const read = (base, ext) => dailyFiles(names, base, ext).map((f) => readFileSync(join(dir, f), 'utf8'));
-  return { downloadsCsv: read('downloads', 'csv'), ytdlpLog: read('ytdlp', 'log'), events: read(EVENTS, 'jsonl') };
-}
-
 
 async function preflight(o) {
   const problems = [];
@@ -235,8 +253,8 @@ async function main() {
   const aRoot = join(base, 'a');
   const bRoot = join(base, 'b');
   const children = new Map(); // label to { child, exited }
-  const started = new Set();
-  const pair = { name: o.name, args: { ...o, aZip: o.aZip }, roots: { a: aRoot, b: bRoot }, ports: PORTS, aDebugFaults: false, bDebugFaults: true, identity: { a: null, b: null } };
+  const started = new Map(); // pid to the exe name it was started with
+  const pair = { name: o.name, playing: { a: null, b: null }, args: o, roots: { a: aRoot, b: bRoot }, ports: PORTS, aDebugFaults: false, bDebugFaults: true, identity: { a: null, b: null } };
   const savePair = () => writeFileSync(join(out, 'pair.json'), JSON.stringify(pair, null, 2));
   let startMs = null;
   let ranMediaMtx = false;
@@ -251,9 +269,11 @@ async function main() {
     const exited = new Promise((r) => child.once('exit', (code) => r(code)));
     child.on('error', (err) => console.error(`${label} failed to start: ${err.message}`));
     children.set(label, { child, exited });
-    started.add(child.pid);
+    started.set(child.pid, basename(exe).toLowerCase());
     return child;
   };
+
+  const halt = () => { if (stopReason) throw new Error(`stopping before launch: ${stopReason}`); };
 
   async function stopChild(label, apiPort) {
     const entry = children.get(label);
@@ -275,16 +295,21 @@ async function main() {
       pair.endedBy = stopReason;
       pair.endedAt = new Date(endMs).toISOString();
       if (startMs !== null) {
+        for (const [side, root] of [['a', aRoot], ['b', bRoot]]) {
+          try { cpSync(join(root, 'data', 'logs'), join(out, `${side}-logs`), { recursive: true }); } catch (err) { console.error(`copying ${side} logs: ${err.message}`); exitCode ||= 1; }
+        }
         try {
-          const report = assembleReport(readLogs(join(aRoot, 'data', 'logs')), readLogs(join(bRoot, 'data', 'logs')), startMs, endMs);
+          const report = assembleReport(readLogsDir(join(aRoot, 'data', 'logs')), readLogsDir(join(bRoot, 'data', 'logs')), startMs, endMs, { endedBy: stopReason, identity: pair.identity });
           writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
         } catch (err) { console.error(`report: ${err.message}`); exitCode ||= 1; }
       }
       try {
-        const found = ownProcesses(listWatched(), started, base);
+        // a child seen exiting has a pid that may belong to someone else by now
+        const live = new Map([...started].filter(([pid]) => ![...children.values()].some((c) => c.child.pid === pid && c.child.exitCode !== null)));
+        const found = ownProcesses(listWatched(), live, base);
         for (const p of found) killTree(p.pid);
         if (found.length) await sleep(2000);
-        const remaining = found.length ? ownProcesses(listWatched(), started, base) : [];
+        const remaining = found.length ? ownProcesses(listWatched(), live, base) : [];
         pair.leftover = { found, remaining };
         console.log(found.length ? `leftover check: ${found.length} found, ${remaining.length} still running` : 'leftover check: none');
         if (remaining.length) { console.error(JSON.stringify(remaining, null, 2)); exitCode ||= 1; }
@@ -308,11 +333,13 @@ async function main() {
     mkdirSync(base, { recursive: true });
     mkdirSync(out, { recursive: true });
 
+    halt();
     const tar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'); // bsdtar reads ZIPs; git's tar does not
     const x = spawnSync(tar, ['-xf', o.aZip, '-C', base], { encoding: 'utf8', windowsHide: true });
     if (x.status !== 0) throw new Error(`extracting ${o.aZip} failed: ${x.stderr}`);
     renameSync(join(base, 'streamloop'), aRoot);
 
+    halt();
     makeDevRoot(bRoot, { potExe: o.bPot, pluginZip: o.bPlugin });
     // B's yt-dlp and deno are hard links into the main checkout: remove before copying, never write through them
     for (const rel of ['yt-dlp/yt-dlp.exe', 'yt-dlp/deno.exe']) {
@@ -325,14 +352,15 @@ async function main() {
       a: await sha256File(join(aRoot, 'yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip')).catch(() => null),
       b: await sha256File(join(bRoot, 'yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip')),
     };
+    if (pair.pluginSha256.a !== PLUGIN_SHA256) throw new Error(`the plugin in A is not the pinned 2.0.0 one (${pair.pluginSha256.a})`);
     const config = JSON.stringify(pairConfig({ playlists: o.playlists, cookies: o.cookies }), null, 2);
     for (const root of [aRoot, bRoot]) { mkdirSync(join(root, 'app'), { recursive: true }); writeFileSync(join(root, 'app', 'config.json'), config); }
     savePair();
 
     if (!(await portOpen(1935))) {
-      const mtx = spawn(join(TOOLS_DIR, 'mediamtx.exe'), [], { cwd: TOOLS_DIR, stdio: 'ignore', windowsHide: true });
-      children.set('mediamtx', { child: mtx, exited: new Promise((r) => mtx.once('exit', r)) });
-      started.add(mtx.pid);
+      halt();
+      const yml = join(TOOLS_DIR, 'mediamtx.yml');
+      launch('mediamtx', join(TOOLS_DIR, 'mediamtx.exe'), existsSync(yml) ? [yml] : []);
       ranMediaMtx = true;
       await sleep(3000);
       if (!(await portOpen(1935))) throw new Error('MediaMTX did not open :1935');
@@ -342,46 +370,62 @@ async function main() {
     const env = { ...process.env, PATH: (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d) && d.replaceAll('\\', '/') !== FFMPEG_BIN).join(';') };
     let tsServer = null;
     if (o.bTs) {
+      halt();
       tsServer = launch('ts-server-b', join(aRoot, 'node', 'node.exe'), tsServerArgs(aRoot), env);
       for (let i = 0; i < 30 && !(await portOpen(PORTS.bToken)); i += 1) await sleep(1000);
       if (!(await portOpen(PORTS.bToken))) throw new Error('the second TypeScript server did not open its port');
     }
+    halt();
     launch('supervisor-a', join(aRoot, 'supervisor', 'streamloop-supervisor.exe'), supervisorArgs('a', aRoot), env);
+    halt();
     launch('supervisor-b', o.bBin, supervisorArgs('b', bRoot), env);
     startMs = Date.now();
     pair.startedAt = new Date(startMs).toISOString();
     pair.pids = { a: children.get('supervisor-a').child.pid, b: children.get('supervisor-b').child.pid, tsServer: tsServer?.pid ?? null };
     savePair();
 
-    // B must have adopted or started the server the run claims to measure
+    // B must have adopted or started the server the run claims to measure, and A its own bgutil one.
     const statusOf = (port) => fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
-    let verdict = 'wait';
-    while (verdict === 'wait' && !stopReason) {
+    const pingA = () => fetch(`http://127.0.0.1:${PORTS.aToken}/ping`, { signal: AbortSignal.timeout(5000) })
+      .then(async (r) => pingIdentity(r.status, await r.text())).catch(() => null);
+    const notePlayingBoth = (sa, sb) => {
+      const now = Date.now();
+      for (const [side, st] of [['a', sa], ['b', sb]]) {
+        if (pair.playing[side] === null && notePlaying(null, st, now) !== null) pair.playing[side] = new Date(now).toISOString();
+      }
+    };
+    const exitedLabel = () => [...children].find(([label, c]) => label !== 'mediamtx' && c.child.exitCode !== null)?.[0] ?? null;
+    let verdictA = 'wait';
+    let verdictB = 'wait';
+    while ((verdictA === 'wait' || verdictB === 'wait') && !stopReason) {
       await sleep(2000);
       const elapsed = Date.now() - startMs;
-      const [sa, sb] = await Promise.all([statusOf(PORTS.aApi), statusOf(PORTS.bApi)]);
-      pair.identity.a = sa?.tokenServer?.server ?? pair.identity.a;
+      const [sa, sb, ia] = await Promise.all([statusOf(PORTS.aApi), statusOf(PORTS.bApi), pingA()]);
+      notePlayingBoth(sa, sb);
+      pair.identity.a = ia ?? pair.identity.a;
       pair.identity.b = sb?.tokenServer?.server ?? pair.identity.b;
-      verdict = judgeIdentity(sb?.tokenServer?.server, o.bExpect, elapsed);
-      for (const [label, c] of children) if (c.child.exitCode !== null && label.startsWith('supervisor')) throw new Error(`${label} exited during start-up (${c.child.exitCode})`);
+      verdictA = judgeA(ia, sa?.tokenServer?.state, elapsed);
+      verdictB = judgeIdentity(sb?.tokenServer?.server, o.bExpect, elapsed);
+      const dead = exitedLabel();
+      if (dead) throw new Error(`${dead} exited during start-up (${children.get(dead).child.exitCode})`);
     }
     savePair();
-    if (verdict === 'mismatch') {
-      console.error(`B's token server is ${JSON.stringify(pair.identity.b)}, expected ${JSON.stringify(o.bExpect)}. This run would not count.`);
+    if (verdictA === 'mismatch' || verdictB === 'mismatch') {
+      console.error(`Token servers: A ${JSON.stringify(pair.identity.a)} (want bgutil, owned), B ${JSON.stringify(pair.identity.b)} (want ${JSON.stringify(o.bExpect)}). This run would not count.`);
       exitCode = 1;
       stopReason ??= 'identity-mismatch';
-    } else {
+    } else if (!stopReason) {
       console.log(`identities: A ${pair.identity.a}, B ${pair.identity.b}`);
     }
 
     // Sample every 10 min until the hours run out or a stop arrives.
     const endAt = startMs + o.hours * 3_600_000;
     let nextSample = Date.now();
-    const sample = async () => {
+    const sampleOnce = async () => {
       const ts = new Date().toISOString();
       const pids = {
-        a: lastSpawnPid(readLogs(join(aRoot, 'data', 'logs')).events),
-        b: o.bTs ? tsServer.pid : lastSpawnPid(readLogs(join(bRoot, 'data', 'logs')).events),
+        a: lastSpawnPid(readEventsDir(join(aRoot, 'data', 'logs'))),
+        b: o.bTs ? tsServer.pid : lastSpawnPid(readEventsDir(join(bRoot, 'data', 'logs'))),
       };
       const [sa, sb] = await Promise.all([statusOf(PORTS.aApi), statusOf(PORTS.bApi)]);
       appendFileSync(join(out, 'status.jsonl'), `${JSON.stringify({ ts, side: 'a', status: sa })}\n${JSON.stringify({ ts, side: 'b', status: sb })}\n`);
@@ -389,13 +433,20 @@ async function main() {
       if (!existsSync(join(out, 'memory.csv'))) appendFileSync(join(out, 'memory.csv'), 'ts,side,pid,privateMb\n');
       for (const side of ['a', 'b']) appendFileSync(join(out, 'memory.csv'), `${memoryCsvRow(ts, side, pids[side], mb.get(pids[side]))}\n`);
     };
+    const sample = async () => {
+      try { await sampleOnce(); } catch (err) { appendFileSync(join(out, 'sample-errors.log'), `${new Date().toISOString()} ${err.stack ?? err}\n`); }
+    };
     while (!stopReason && Date.now() < endAt) {
       if (Date.now() >= nextSample) { await sample(); nextSample += SAMPLE_EVERY_MS; }
       const until = Math.min(Date.now() + TICK_MS, endAt);
       while (!stopReason && Date.now() < until) await sleep(1000);
       if (existsSync(join(out, 'stop'))) { stopReason = 'stop-file'; break; }
-      for (const label of ['supervisor-a', 'supervisor-b']) {
-        if (children.get(label).child.exitCode !== null) { stopReason ??= `${label}-exited`; exitCode ||= 1; }
+      const dead = exitedLabel();
+      if (dead) { stopReason ??= dead === 'ts-server-b' ? 'ts-server-exited' : `${dead}-exited`; exitCode ||= 1; }
+      if (!stopReason) {
+        notePlayingBoth(...(await Promise.all([statusOf(PORTS.aApi), statusOf(PORTS.bApi)])));
+        const first = (side) => (pair.playing[side] === null ? null : Date.parse(pair.playing[side]));
+        if (playingVerdict(first('a'), first('b'), Date.now() - startMs) === 'fail') { stopReason = 'not-playing'; exitCode ||= 1; }
       }
     }
     await shutdown(stopReason ?? 'hours-elapsed');

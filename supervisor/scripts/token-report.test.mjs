@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { tokenReport, splitPairs } from './token-report.mjs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { tokenReport, splitPairs, readLogsDir, readEventsDir } from './token-report.mjs';
 
 const R403 = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
 const csvRow = (ts, id, result, attempt, ms, reason = '', client = 'mweb') =>
@@ -212,5 +215,33 @@ describe('splitPairs', () => {
     // Assert
     expect(r).toMatchObject({ aDoneBRefused: 0, bDoneARefused: 1 });
     expect(r.list[0]).toEqual({ id: 'v1', a: 'refused', b: 'done' });
+  });
+});
+
+describe('readLogsDir', () => {
+  it('reads the daily files of a logs folder oldest first and leaves other files out', () => {
+    // Arrange
+    const dir = mkdtempSync(join(tmpdir(), 'tr-logs-'));
+    writeFileSync(join(dir, 'downloads-2026-11-02.csv'), 'two\n');
+    writeFileSync(join(dir, 'downloads-2026-11-01.csv'), 'one\n');
+    writeFileSync(join(dir, 'ytdlp-2026-11-01.log'), 'log\n');
+    writeFileSync(join(dir, 'supervisor-events-2026-11-01.jsonl'), 'ev\n');
+    writeFileSync(join(dir, 'encoder-20261101-010101-0.log'), 'x\n');
+
+    // Act
+    const files = readLogsDir(dir);
+    const events = readEventsDir(dir);
+
+    // Assert
+    expect(files).toEqual({ downloadsCsv: ['one\n', 'two\n'], ytdlpLog: ['log\n'], events: ['ev\n'] });
+    expect(events).toEqual(['ev\n']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reads a missing folder as empty', () => {
+    const dir = join(tmpdir(), 'tr-logs-does-not-exist');
+
+    expect(readLogsDir(dir)).toEqual({ downloadsCsv: [], ytdlpLog: [], events: [] });
+    expect(readEventsDir(dir)).toEqual([]);
   });
 });
