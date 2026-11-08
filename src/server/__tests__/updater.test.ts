@@ -677,6 +677,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
       baseline: vi.fn(async () => ({ encoder: 'h264_nvenc' as const, works: true })),
       stop: vi.fn(stop),
       resume: vi.fn(),
+      reportFailure: vi.fn(),
     };
   }
 
@@ -721,6 +722,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
       .toEqual(['START.bat', 'app', 'supervisor', 'yt-dlp']);
     expect(h.stop).toHaveBeenCalledWith(['supervisor', 'yt-dlp'], NEXT);
     expect(h.resume).not.toHaveBeenCalled();
+    expect(h.reportFailure).not.toHaveBeenCalled();
     expect(readState()).toMatchObject({
       from: `${major}.${minor}.${patch}`, to: NEXT, parts: ['supervisor'], folders: ['supervisor', 'yt-dlp'],
       step: 'swap', result: 'running', reason: null, baseline: { encoder: 'h264_nvenc', works: true },
@@ -762,6 +764,9 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(existsSync(join(root, '_update_old_ffmpeg', 'ffmpeg.exe'))).toBe(true);
     expect(h.stop).not.toHaveBeenCalled();
     expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
+    expect(h.reportFailure.mock.calls).toEqual([[
+      `The update to ${NEXT} failed at download: ffmpeg\\ is not whole, so _update_old_ffmpeg from an earlier update was kept. Still on ${major}.${minor}.${patch}.`,
+    ]]);
   });
 
   it('calls the update off and starts the services again when the stream cannot be stopped', async () => {
@@ -779,6 +784,9 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(existsSync(join(root, '_update_tmp'))).toBe(false);
     expect(h.resume).toHaveBeenCalledTimes(1);
     expect(updater.getStatus()).toMatchObject({ status: 'error', error: 'ffmpeg\\ffmpeg.exe is still running.' });
+    expect(h.reportFailure.mock.calls).toEqual([[
+      `The update to ${NEXT} failed at stop: ffmpeg\\ffmpeg.exe is still running. Still on ${major}.${minor}.${patch}.`,
+    ]]);
   });
 
   it('does not check for updates while one is being applied', async () => {

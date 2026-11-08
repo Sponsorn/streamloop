@@ -256,11 +256,42 @@ describe('START.bat', () => {
   it('marks the health check as due after a part swap, so a crash before Node writes the marker counts', () => {
     // Arrange
     const block = lines.slice(lines.indexOf('if %ERRORLEVEL% equ 75 ('), lines.indexOf('if %ERRORLEVEL% equ 0 (')).map((l) => l.trim());
-    const marked = block.indexOf('if "!NEXT_START!"=="update" type nul > "%CHECKING%"');
+    const swapped = block.indexOf('if "!PARTS_RESULT!"=="swapped" (');
+    const marked = block.indexOf('type nul > "%CHECKING%"');
 
     // Assert
-    expect(marked).toBeGreaterThan(-1);
+    expect(swapped).toBeGreaterThan(-1);
+    expect(block.slice(swapped, marked)).toContain('set "NEXT_START=update"');
+    expect(marked - swapped).toBeLessThan(5);
     expect(marked).toBeLessThan(block.indexOf('if exist "%ROOT%START.bat.new" ('));
+  });
+
+  it('writes update-checking before it removes update-swapping, so new parts are never left with neither marker', () => {
+    // Arrange
+    const block = lines.slice(lines.indexOf('if %ERRORLEVEL% equ 75 ('), lines.indexOf('if %ERRORLEVEL% equ 0 (')).map((l) => l.trim());
+    const marked = block.indexOf('type nul > "%CHECKING%"');
+    const unswapped = block.flatMap((l, i) => (l.includes('del /f /q "%SWAPPING%"') ? [i] : []));
+    const unmarkedForRollback = block.indexOf('if "!NEXT_START!"=="rollback" if exist "%CHECKING%" del /f /q "%CHECKING%"');
+
+    // Assert
+    expect(unswapped.length).toBeGreaterThan(0);
+    for (const i of unswapped) expect(marked).toBeLessThan(i);
+    // A rollback drops update-checking first, so the old version is never taken for unchecked new parts.
+    expect(unmarkedForRollback).toBeGreaterThan(-1);
+    expect(unmarkedForRollback).toBeLessThan(unswapped[unswapped.length - 1]);
+  });
+
+  it('drops update-checking before update-swapping when a part swap is put back', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':clear_leftovers')).map((l) => l.trim());
+    const restored = swapParts.indexOf('call :restore_parts');
+    const after = swapParts.slice(restored);
+
+    // Assert
+    expect(restored).toBeGreaterThan(-1);
+    expect(after.indexOf('if exist "%CHECKING%" del /f /q "%CHECKING%"')).toBeGreaterThan(-1);
+    expect(after.indexOf('if exist "%CHECKING%" del /f /q "%CHECKING%"'))
+      .toBeLessThan(after.indexOf('if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"'));
   });
 
   const psLines = lines.filter((l) => /powershell/i.test(l) && !/^\s*(::|rem\b)/i.test(l));

@@ -96,7 +96,12 @@ if %ERRORLEVEL% equ 75 (
         set "STREAMLOOP_START=rollback"
         goto loop
     )
-    if "!PARTS_RESULT!"=="swapped" set "NEXT_START=update"
+    if "!PARTS_RESULT!"=="swapped" (
+        set "NEXT_START=update"
+        rem Before update-swapping goes, so new parts always carry one of the two markers.
+        rem It also counts a new Node that crashes before its check toward a rollback.
+        type nul > "%CHECKING%"
+    )
 
     rem Swap app directory if a staged update exists
     if exist "%ROOT%_update_tmp\app" (
@@ -150,11 +155,10 @@ if %ERRORLEVEL% equ 75 (
             call :app_failed the app folder stayed in use
         )
     )
+    rem A rollback drops update-checking first, so the old version is never taken for unchecked new parts.
+    if "!NEXT_START!"=="rollback" if exist "%CHECKING%" del /f /q "%CHECKING%"
     rem A restore that failed keeps the marker, so heal tries again on the next start.
     if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"
-    rem Written here so a new Node that crashes before its check starts still counts toward a rollback.
-    if "!NEXT_START!"=="update" type nul > "%CHECKING%"
-    if "!NEXT_START!"=="rollback" if exist "%CHECKING%" del /f /q "%CHECKING%"
 
     rem If a new launcher was staged, hand off to a detached one-shot script that
     rem swaps START.bat and relaunches in a fresh window. The swapping script and
@@ -318,8 +322,8 @@ if "%SWAP_FAILED%"=="0" (
 echo [ERROR] An install part could not be replaced. Putting the previous version back...
 call :restore_parts
 if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
-if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"
 if exist "%CHECKING%" del /f /q "%CHECKING%"
+if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"
 set "PARTS_RESULT=failed"
 goto :eof
 

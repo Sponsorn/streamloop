@@ -175,8 +175,12 @@ export async function runHealthCheck(deps: CheckDeps, baseline: UpdateState['bas
   const exists = deps.exists ?? existsSync;
   const wait = deps.wait ?? sleep;
 
+  // Only files an update can change count; the overlay font is Windows' own.
+  const inRoot = resolve(deps.root).toLowerCase() + '\\';
   const missing = await threeTries(wait, async () => {
-    const gone = checkDependencies(deps.root, exists).filter((d) => !d.ok).map((d) => d.name);
+    const gone = checkDependencies(deps.root, exists)
+      .filter((d) => !d.ok && resolve(d.path).toLowerCase().startsWith(inRoot))
+      .map((d) => d.name);
     return gone.length > 0 ? `Missing from the install: ${gone.join(', ')}.` : null;
   });
   if (missing) return { ok: false, item: 'dependencies', reason: missing };
@@ -245,6 +249,12 @@ function removeOldCopies(root: string): void {
   }
 }
 
+/** The dashboard's failure copy, also posted to Discord once per update that did not go through. */
+export function failureMessage(state: UpdateState): string {
+  const reason = (state.reason ?? 'no reason was recorded').replace(/\.+$/, '');
+  return `The update to ${state.to} failed at ${state.step}: ${reason}. Still on ${state.from}.`;
+}
+
 export const RESTARTED = 'StreamLoop was restarted during the update.';
 export const CUT_OFF = 'The update was cut off, so the old version was put back.';
 const UNFINISHED_CHECK = 'The new version did not finish its check.';
@@ -303,8 +313,8 @@ export interface StartupDeps {
   autoStartStream: () => boolean;
   launcher: Pick<SupervisorLauncher, 'release' | 'isStoppedByUser'>;
   client: Pick<SupervisorClient, 'status'>;
-  /** A Discord info post. */
-  notify: (message: string) => void;
+  /** A Discord post. */
+  notify: (message: string, level: 'info' | 'warn') => void;
   check: (baseline: UpdateState['baseline']) => Promise<HealthResult>;
   /** Closes the server and exits 76, so START.bat puts the old version back. */
   rollBack: () => void;
@@ -334,8 +344,11 @@ export async function runStartup(deps: StartupDeps): Promise<void> {
 function markResult(deps: StartupDeps, result: 'failed' | 'rolled-back', reason: string): void {
   if (!deps.state) return;
   logger.warn({ result, reason, to: deps.state.to }, 'Recording how an earlier update ended');
+  const ended: UpdateState = { ...deps.state, result, reason };
   try {
-    writeUpdateState(deps.root, { ...deps.state, result, reason });
+    writeUpdateState(deps.root, ended);
+    // Only once recorded: an unrecorded end is recorded and posted by the next start.
+    deps.notify(failureMessage(ended), 'warn');
   } catch (err) {
     logger.error({ err }, 'Could not record how the update ended');
   }
@@ -421,5 +434,5 @@ async function reportOnAir(deps: StartupDeps): Promise<void> {
   } catch (err) {
     logger.warn({ err }, 'Could not record the update as done');
   }
-  deps.notify(`Back on air on ${deps.version}.`);
+  deps.notify(`Back on air on ${deps.version}.`, 'info');
 }

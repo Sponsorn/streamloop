@@ -146,6 +146,7 @@ async function main() {
           }, folders);
         },
         resume: () => resumeNode(),
+        reportFailure: (message) => void discord.send(message, 'warn'),
       }
       : undefined,
   });
@@ -263,7 +264,7 @@ async function main() {
         autoStartStream: () => config.autoStartStream,
         launcher,
         client,
-        notify: (message) => void discord.send(message, 'info'),
+        notify: (message, level) => void discord.send(message, level),
         check: (baseline) => runHealthCheck({ root, config: () => config, probe: probeEncoder, runCheck: () => supervisorCheck(root) }, baseline),
         rollBack,
       }).catch((err: unknown) => {

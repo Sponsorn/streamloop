@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { logger } from './logger.js';
 import { diffParts, foldersFor, PART_KEY_FILES, PARTS, type Part } from './components.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
-import { clearLeftovers, type StopResult } from './full-update.js';
+import { clearLeftovers, failureMessage, type StopResult } from './full-update.js';
 import { writeUpdateState, type UpdateState } from './update-state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -208,6 +208,8 @@ export interface FullUpdateHooks {
   stop: (folders: string[], version: string) => Promise<StopResult>;
   /** Starts Node's own services again after a stop that failed. */
   resume: () => void;
+  /** Posts the failure copy of an update this Node called off. */
+  reportFailure: (message: string) => void;
 }
 
 const IN_PROGRESS: readonly UpdateStatus[] = ['downloading', 'extracting', 'ready'];
@@ -467,8 +469,10 @@ export class Updater {
         if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
       } catch { /* best effort */ }
       if (!state) return;
+      const failed: UpdateState = { ...state, result: 'failed', reason: this.error };
       try {
-        writeUpdateState(rootDir, { ...state, result: 'failed', reason: this.error });
+        writeUpdateState(rootDir, failed);
+        full?.reportFailure(failureMessage(failed));
       } catch (writeErr) {
         logger.error({ err: writeErr }, 'Could not record the failed update');
       }

@@ -7,6 +7,7 @@ import {
   CUT_OFF,
   RESTARTED,
   decideStartup,
+  failureMessage,
   holdAtStart,
   listProcessesUnder,
   processesUnder,
@@ -309,6 +310,17 @@ describe('runHealthCheck', () => {
     expect(deps.probe).not.toHaveBeenCalled();
   });
 
+  it('does not fail an update over a missing overlay font, which no update changes', async () => {
+    // Arrange
+    const deps = fakeCheck({ exists: (p) => !p.toLowerCase().endsWith('malgun.ttf') });
+
+    // Act
+    const r = await runHealthCheck(deps, null);
+
+    // Assert
+    expect(r).toEqual({ ok: true });
+  });
+
   it('tests the configured encoder, never a fallback', async () => {
     // Arrange
     const deps = fakeCheck({ config: () => config('h264_amf') });
@@ -412,6 +424,16 @@ describe('decideStartup', () => {
   });
 });
 
+describe('failureMessage', () => {
+  it('uses the dashboard failure copy without doubling the reason full stop', () => {
+    // Act
+    const text = failureMessage(state({ step: 'stop', result: 'failed', reason: 'ffmpeg\\ffmpeg.exe is still running.' }));
+
+    // Assert
+    expect(text).toBe('The update to 3.0.6 failed at stop: ffmpeg\\ffmpeg.exe is still running. Still on 3.0.5.');
+  });
+});
+
 describe('holdAtStart', () => {
   it('holds while an update is checked or finished, and otherwise follows the start', () => {
     // Act + Assert
@@ -477,7 +499,7 @@ describe('runStartup', () => {
     expect(existsSync(marker)).toBe(false);
     expect(deps.launcher.release).toHaveBeenCalledTimes(1);
     expect(readUpdateState(ROOT)).toMatchObject({ result: 'ok', step: 'done', reason: null });
-    expect(vi.mocked(deps.notify).mock.calls).toEqual([['Back on air on 3.0.6.']]);
+    expect(vi.mocked(deps.notify).mock.calls).toEqual([['Back on air on 3.0.6.', 'info']]);
     expect(deps.rollBack).not.toHaveBeenCalled();
   });
 
@@ -566,6 +588,8 @@ describe('runStartup', () => {
     expect(existsSync(join(ROOT, '_update_old_supervisor'))).toBe(true);
     expect(deps.rollBack).toHaveBeenCalledTimes(1);
     expect(deps.launcher.release).not.toHaveBeenCalled();
+    // The old version posts the failure on its rollback start.
+    expect(deps.notify).not.toHaveBeenCalled();
   });
 
   it('rolls back instead of running unchecked when the check step cannot be written', async () => {
@@ -616,6 +640,7 @@ describe('runStartup', () => {
     expect(deps.check).not.toHaveBeenCalled();
     expect(deps.rollBack).toHaveBeenCalledTimes(1);
     expect(readUpdateState(ROOT)).toEqual(s);
+    expect(deps.notify).not.toHaveBeenCalled();
   });
 
   it('finishes an update whose check passed before a restart', async () => {
@@ -652,6 +677,9 @@ describe('runStartup', () => {
     expect(readUpdateState(ROOT)).toMatchObject({ step: 'download', result: 'failed', reason: 'StreamLoop was restarted during the update.' });
     expect(existsSync(join(ROOT, '_update_tmp'))).toBe(false);
     expect(deps.launcher.release).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.notify).mock.calls).toEqual([
+      ['The update to 3.0.6 failed at download: StreamLoop was restarted during the update. Still on 3.0.5.', 'warn'],
+    ]);
   });
 
   it('shows a rollback start as rolled back', async () => {
@@ -666,6 +694,37 @@ describe('runStartup', () => {
     // Assert
     expect(readUpdateState(ROOT)).toMatchObject({ step: 'check', result: 'rolled-back', reason: 'The new supervisor failed its check: boom' });
     expect(deps.rollBack).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.notify).mock.calls).toEqual([
+      ['The update to 3.0.6 failed at check: The new supervisor failed its check: boom. Still on 3.0.5.', 'warn'],
+    ]);
+  });
+
+  it('posts an update cut off during the swap once, as put back', async () => {
+    // Arrange
+    const s = state({ step: 'swap' });
+    writeUpdateState(ROOT, s);
+    const deps = fakeStartup(decideStartup('first', s, false), s);
+
+    // Act
+    await runStartup(deps);
+
+    // Assert
+    expect(vi.mocked(deps.notify).mock.calls).toEqual([
+      ['The update to 3.0.6 failed at swap: The update was cut off, so the old version was put back. Still on 3.0.5.', 'warn'],
+    ]);
+  });
+
+  it('posts nothing for an update that already has its result', async () => {
+    // Arrange
+    const s = state({ step: 'check', result: 'rolled-back', reason: 'x' });
+    writeUpdateState(ROOT, s);
+    const deps = fakeStartup(decideStartup('rollback', s, false), s);
+
+    // Act
+    await runStartup(deps);
+
+    // Assert
+    expect(deps.notify).not.toHaveBeenCalled();
   });
 
   it('survives a result it cannot write', async () => {
@@ -675,8 +734,9 @@ describe('runStartup', () => {
     mkdirSync(join(ROOT, 'data', 'update-state.json.tmp'));
     const deps = fakeStartup({ kind: 'mark', result: 'failed', reason: RESTARTED }, s);
 
-    // Act + Assert
+    // Act + Assert: unrecorded, the next start records and posts it, so it is posted once.
     await expect(runStartup(deps)).resolves.toBeUndefined();
     expect(JSON.parse(readFileSync(join(ROOT, 'data', 'update-state.json'), 'utf8'))).toMatchObject({ result: 'running' });
+    expect(deps.notify).not.toHaveBeenCalled();
   });
 });
