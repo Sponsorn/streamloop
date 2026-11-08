@@ -20,12 +20,14 @@ use crate::{
     app::{AppHandle, ToastKind},
     dashboard::TabView,
     logic::admin::{event_info, preview_colour, preview_title, render_template},
-    playback::SAVE_RESET,
     theme::{
         ACCENT, BG, BORDER, ERROR_TEXT, GREEN, MONO_FONT, MUTED, SURFACE, SURFACE_HOVER, WHITE,
         YELLOW,
     },
-    widgets::{btn, form_group, reload_warning, section, settings_panel, text_input},
+    widgets::{
+        SAVE_RESET, btn, form_group, put_area_text, put_text, reload_warning, reveal_on_focus,
+        section, settings_panel, text_input, text_of,
+    },
 };
 
 const SAVE_LABEL: &str = "Save Webhook Settings";
@@ -214,7 +216,7 @@ impl WebhooksView {
             let (min_rows, max_rows) = TEMPLATE_ROWS;
             let template =
                 cx.new(|cx| TextareaState::new(window, cx).auto_grow(min_rows, max_rows));
-            put_template(&template, text, window, cx);
+            put_area_text(&template, text, window, cx);
             self._typed
                 .push(cx.subscribe(&template, |_, _, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
@@ -293,7 +295,7 @@ impl WebhooksView {
         let Some(row) = self.rows.iter().find(|row| row.key == key) else {
             return;
         };
-        put_template(&row.template, &row.default, window, cx);
+        put_area_text(&row.template, &row.default, window, cx);
         cx.notify();
     }
 
@@ -422,7 +424,7 @@ impl WebhooksView {
                         "Discord Webhook URL",
                         false,
                     )))
-                    .child(test),
+                    .child(reveal_on_focus(test)),
             )
             .children(result);
         settings_panel()
@@ -475,7 +477,7 @@ impl WebhooksView {
                             )
                         }),
                 )
-                .child(
+                .child(reveal_on_focus(
                     Switch::new(format!("wh-evt-{key}"))
                         .checked(row.enabled)
                         .accessibility_label(row.label.clone())
@@ -485,7 +487,7 @@ impl WebhooksView {
                             }
                             cx.notify();
                         })),
-                )
+                ))
         }))
     }
 
@@ -526,7 +528,7 @@ impl WebhooksView {
                     )
                     .children(chips)
                     .child(
-                        div().id(format!("wh-tpl-{key}")).child(
+                        div().id(format!("wh-tpl-{key}")).child(reveal_on_focus(
                             // admin.css `.wh-template-input`.
                             Textarea::new(&row.template)
                                 .large()
@@ -535,7 +537,7 @@ impl WebhooksView {
                                 .font_family(MONO_FONT)
                                 .text_size(px(13.))
                                 .line_height(relative(1.6)),
-                        ),
+                        )),
                     )
             })
             .collect()
@@ -609,7 +611,7 @@ impl WebhooksView {
         let (bar, title, text) =
             self.preview(cx)
                 .unwrap_or((BAR_BEFORE, String::new(), String::new()));
-        let select = div().w_full().max_w(px(280.)).child(
+        let select = div().w_full().max_w(px(280.)).child(reveal_on_focus(
             Select::new(&self.preview_select)
                 .id("wh-preview-select")
                 .large()
@@ -618,7 +620,7 @@ impl WebhooksView {
                 .h(px(40.))
                 .px(px(12.))
                 .bg(rgb(BG)),
-        );
+        ));
         settings_panel()
             .child(form_group("Event Type", select, None))
             .child(
@@ -674,7 +676,7 @@ impl Render for WebhooksView {
             .child(section("Message Templates").children(self.render_templates(cx)))
             .child(section("Preview").child(self.render_preview(cx)))
             // As wide as its label, as the inline button in index.html.
-            .child(div().flex().child(save))
+            .child(div().flex().child(reveal_on_focus(save)))
     }
 }
 
@@ -690,27 +692,7 @@ fn outlined(button: Button, border: u32, radius: f32) -> Div {
         .rounded(px(radius))
         .border_1()
         .border_color(rgb(border))
-        .child(button)
-}
-
-fn text_of(input: &Entity<InputState>, cx: &App) -> String {
-    input.read(cx).value().to_string()
-}
-
-/// Sets an input's text with the cursor at its end, as a browser does when a script sets a value.
-fn put_text(input: &Entity<InputState>, text: &str, window: &mut Window, cx: &mut App) {
-    input.update(cx, |state, cx| {
-        state.set_value(SharedString::from(text.to_string()), window, cx);
-        state.set_selected_range(text.len()..text.len(), cx);
-    });
-}
-
-/// `put_text` for a template.
-fn put_template(template: &Entity<TextareaState>, text: &str, window: &mut Window, cx: &mut App) {
-    template.update(cx, |state, cx| {
-        state.set_value(SharedString::from(text.to_string()), window, cx);
-        state.set_selected_range(text.len()..text.len(), cx);
-    });
+        .child(reveal_on_focus(button))
 }
 
 #[cfg(test)]
@@ -747,7 +729,10 @@ impl WebhooksView {
 mod tests {
     use std::sync::Arc;
 
-    use gpui::{AnyWindowHandle, ElementId, Focusable, ScrollDelta, TestAppContext, point, px};
+    use gpui::{
+        AnyWindowHandle, Bounds, ElementId, Focusable, Pixels, ScrollDelta, TestAppContext, point,
+        px,
+    };
     use gpui_kit::test::TestWindowExt;
     use serde_json::{Map, Value, json};
 
@@ -757,8 +742,8 @@ mod tests {
         app::{AppView, TOAST_FOR},
         dashboard::Tab,
         logic::admin::render_template,
-        playback::SAVE_RESET,
         test_support::{answer_polls, config_json, count, open_app, saved_json, shows},
+        widgets::SAVE_RESET,
     };
 
     /// The server's event keys, in `DEFAULT_DISCORD_TEMPLATES` order.
@@ -975,7 +960,7 @@ mod tests {
         .unwrap()
     }
 
-    fn text_of(cx: &mut TestAppContext, template: &Entity<TextareaState>) -> String {
+    fn template_text(cx: &mut TestAppContext, template: &Entity<TextareaState>) -> String {
         template.read_with(cx, |state, _| state.value().to_string())
     }
 
@@ -1060,7 +1045,7 @@ mod tests {
         .unwrap();
         for key in KEYS {
             let template = view.read_with(cx, |view, _| view.template(key));
-            assert_eq!(text_of(cx, &template), default_template(key), "{key}");
+            assert_eq!(template_text(cx, &template), default_template(key), "{key}");
         }
         // The dropdown lists the events in the same order and starts on the first.
         assert_eq!(preview(cx, &view).1, "ℹ️ StreamLoop");
@@ -1087,8 +1072,8 @@ mod tests {
         }
         let error = view.read_with(cx, |view, _| view.template("error"));
         let skip = view.read_with(cx, |view, _| view.template("skip"));
-        assert_eq!(text_of(cx, &error), "Saved {videoId}");
-        assert_eq!(text_of(cx, &skip), default_template("skip"));
+        assert_eq!(template_text(cx, &error), "Saved {videoId}");
+        assert_eq!(template_text(cx, &skip), default_template("skip"));
         let fields = cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             ["wh-bot-name", "wh-avatar-url", "wh-role-ping"]
@@ -1214,7 +1199,7 @@ mod tests {
         click(cx, window, "wh-chip-error-videoId");
         cx.run_until_parked();
 
-        assert_eq!(text_of(cx, &error), "ab{videoId}cd");
+        assert_eq!(template_text(cx, &error), "ab{videoId}cd");
         let inserted_end = "ab{videoId}".len();
         assert_eq!(
             error.read_with(cx, |state, _| state.selected_range()),
@@ -1232,21 +1217,24 @@ mod tests {
         // Typing goes on after the inserted text.
         cx.update_window(window, |_, window, cx| window.input("!", cx))
             .unwrap();
-        assert_eq!(text_of(cx, &error), "ab{videoId}!cd");
+        assert_eq!(template_text(cx, &error), "ab{videoId}!cd");
 
         // A selection is replaced.
         cx.update_window(window, |_, window, cx| window.press("ctrl-a", cx))
             .unwrap();
         click(cx, window, "wh-chip-error-attempt");
         cx.run_until_parked();
-        assert_eq!(text_of(cx, &error), "{attempt}");
+        assert_eq!(template_text(cx, &error), "{attempt}");
         assert_eq!(preview(cx, &view).2, "2");
 
         // A template nobody clicked into has its cursor at the end, as a textarea after its value is set.
         let recovery = view.read_with(cx, |view, _| view.template("recovery"));
         click(cx, window, "wh-chip-recovery-step");
         cx.run_until_parked();
-        assert_eq!(text_of(cx, &recovery), "Recovery action: **{step}**{step}");
+        assert_eq!(
+            template_text(cx, &recovery),
+            "Recovery action: **{step}**{step}"
+        );
     }
 
     #[gpui::test]
@@ -1263,8 +1251,8 @@ mod tests {
         click(cx, window, "wh-reset-error");
         cx.run_until_parked();
 
-        assert_eq!(text_of(cx, &error), default_template("error"));
-        assert_eq!(text_of(cx, &skip), "Skip text");
+        assert_eq!(template_text(cx, &error), default_template("error"));
+        assert_eq!(template_text(cx, &skip), "Skip text");
         assert_eq!(
             preview(cx, &view).2,
             render_template(&default_template("error"))
@@ -1430,46 +1418,145 @@ mod tests {
         assert_eq!(count(&fake, "GET", "/api/config"), configs);
     }
 
+    /// A Tab stop: a control by its element id, or the template of an event.
+    #[derive(Clone, Debug)]
+    enum Stop {
+        Id(String),
+        Template(&'static str),
+    }
+
+    /// Every Tab stop after the URL field, in page order.
+    fn tab_stops() -> Vec<Stop> {
+        let mut stops: Vec<Stop> = [
+            "wh-test-btn",
+            "wh-bot-name",
+            "wh-avatar-url",
+            "wh-role-ping",
+        ]
+        .map(|id| Stop::Id(id.to_string()))
+        .to_vec();
+        for key in KEYS {
+            stops.push(Stop::Id(format!("wh-evt-{key}")));
+        }
+        for key in KEYS {
+            stops.push(Stop::Id(format!("wh-reset-{key}")));
+            for name in variables()[key].as_array().unwrap() {
+                stops.push(Stop::Id(format!(
+                    "wh-chip-{key}-{}",
+                    name.as_str().unwrap()
+                )));
+            }
+            stops.push(Stop::Template(key));
+        }
+        stops.push(Stop::Id("wh-preview-select".into()));
+        stops.push(Stop::Id("wh-save-btn".into()));
+        stops
+    }
+
+    /// Whether `stop` has the focus, and where it was drawn in the last frame.
+    fn stop_state(
+        window: &mut Window,
+        cx: &mut App,
+        view: &Entity<WebhooksView>,
+        stop: &Stop,
+    ) -> (bool, Bounds<Pixels>) {
+        match stop {
+            Stop::Id(id) => {
+                let element = window.find(id.clone());
+                (element.focused() == Some(true), element.bounds())
+            }
+            Stop::Template(key) => {
+                let template = view.read(cx).template(key);
+                let focused = template.read(cx).focus_handle(cx).is_focused(window);
+                let bounds = window
+                    .within(format!("wh-tpl-{key}"))
+                    .find("input-state")
+                    .bounds();
+                (focused, bounds)
+            }
+        }
+    }
+
     #[gpui::test]
     fn the_tab_key_reaches_every_control_in_page_order(cx: &mut TestAppContext) {
         let (_, window, app) = open_webhooks(cx, config_json());
         let view = webhooks(cx, &app);
         click(cx, window, "wh-url");
 
-        // An element id, or the template of an event.
-        let mut order: Vec<(String, bool)> = [
-            "wh-test-btn",
-            "wh-bot-name",
-            "wh-avatar-url",
-            "wh-role-ping",
-        ]
-        .map(|id| (id.to_string(), false))
-        .to_vec();
-        for key in KEYS {
-            order.push((format!("wh-evt-{key}"), false));
-        }
-        for key in KEYS {
-            order.push((format!("wh-reset-{key}"), false));
-            for name in variables()[key].as_array().unwrap() {
-                order.push((format!("wh-chip-{key}-{}", name.as_str().unwrap()), false));
-            }
-            order.push((key.to_string(), true));
-        }
-        order.push(("wh-preview-select".into(), false));
-        order.push(("wh-save-btn".into(), false));
-
-        for (stop, is_template) in order {
-            let template = is_template.then(|| view.read_with(cx, |view, _| view.template(&stop)));
+        for stop in tab_stops() {
             cx.update_window(window, |_, window, cx| {
                 window.press("tab", cx);
                 window.render_frame(cx);
-                let focused = match &template {
-                    Some(template) => template.read(cx).focus_handle(cx).is_focused(window),
-                    None => window.find(stop.clone()).focused() == Some(true),
-                };
-                assert!(focused, "{stop}");
+                assert!(stop_state(window, cx, &view, &stop).0, "{stop:?}");
             })
             .unwrap();
         }
+    }
+
+    #[gpui::test]
+    fn tab_scrolls_each_control_into_view_and_leaves_visible_ones_alone(cx: &mut TestAppContext) {
+        let (_, window, app) = open_webhooks(cx, config_json());
+        let view = webhooks(cx, &app);
+        let dashboard = app
+            .read_with(cx, |app, _| app.dashboard())
+            .expect("the dashboard shows");
+        click(cx, window, "wh-url");
+        assert_eq!(dashboard.read_with(cx, |d, _| d.scroll_offset()), px(0.));
+
+        let offset = |cx: &mut TestAppContext| dashboard.read_with(cx, |d, _| d.scroll_offset());
+        // Down to Save, then Shift-Tab back over three stops.
+        let stops = tab_stops();
+        let mut walk: Vec<(&str, Stop)> = stops.iter().map(|s| ("tab", s.clone())).collect();
+        for stop in stops.iter().rev().skip(1).take(3) {
+            walk.push(("shift-tab", stop.clone()));
+        }
+        let mut went_up = false;
+
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        for (key, stop) in walk {
+            let before = offset(cx);
+            cx.update_window(window, |_, window, cx| {
+                // Read from the frame the last step ended on.
+                let height = window.viewport_size().height;
+                let (_, was) = stop_state(window, cx, &view, &stop);
+                let was_in_view = was.top() >= px(0.) && was.bottom() <= height;
+
+                window.press(key, cx);
+                // The frame that sees the new focus scrolls; the next one draws it there.
+                window.render_frame(cx);
+                window.render_frame(cx);
+
+                let (focused, now) = stop_state(window, cx, &view, &stop);
+                assert!(focused, "{stop:?}");
+                assert!(
+                    now.top() >= px(0.) && now.bottom() <= height,
+                    "{stop:?} in view: {now:?}"
+                );
+                if was_in_view {
+                    let after = dashboard.read(cx).scroll_offset();
+                    assert_eq!(after, before, "{stop:?} was in view, so nothing scrolls");
+                }
+            })
+            .unwrap();
+            went_up |= offset(cx) < before;
+            if matches!(stop, Stop::Template("recovery")) {
+                // The wheel takes the page past the focus, and the focus does not pull it back.
+                // The next stop is then above the view.
+                let at = offset(cx);
+                cx.update_window(window, |_, window, cx| {
+                    let delta = ScrollDelta::Pixels(point(px(0.), px(-1500.)));
+                    window.scroll("wh-reset-recovery", delta, cx);
+                    // A key that keeps the focus: the input is the keyboard's again.
+                    window.press("right", cx);
+                    window.render_frame(cx);
+                    window.render_frame(cx);
+                })
+                .unwrap();
+                assert_eq!(offset(cx), at + px(1500.));
+            }
+        }
+        assert!(went_up, "a stop above the view brought the page back up");
+        assert!(offset(cx) > px(1000.), "Save is far down the page");
     }
 }

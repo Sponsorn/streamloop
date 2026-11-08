@@ -33,7 +33,7 @@ use crate::{
     logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
     videos::VideoList,
-    widgets::{ActionView, Busy, action_button, btn, run_action, section},
+    widgets::{ActionView, Busy, action_button, btn, reveal_on_focus, run_action, section},
 };
 
 const STOP_TITLE: &str = "Stop the stream?";
@@ -104,8 +104,12 @@ impl MonitorView {
                         div()
                             .flex()
                             .gap(px(8.))
-                            .when(show_start, |d| d.child(self.start_button(cx)))
-                            .when(show_stop, |d| d.child(self.stop_button(cx))),
+                            .when(show_start, |d| {
+                                d.child(reveal_on_focus(self.start_button(cx)))
+                            })
+                            .when(show_stop, |d| {
+                                d.child(reveal_on_focus(self.stop_button(cx)))
+                            }),
                     ),
             )
             .children(reason.map(|r| Label::new(r).mt(px(4.)).text_size(px(15.))))
@@ -208,9 +212,18 @@ impl MonitorView {
                     .flex_wrap()
                     .gap(px(8.))
                     .mb(px(12.))
-                    .child(self.player_button("btn-prev", "Previous", "prev", cx))
-                    .child(self.player_button("btn-restart", "Restart video", "restart", cx))
-                    .child(self.player_button("btn-next", "Next", "next", cx)),
+                    .child(reveal_on_focus(
+                        self.player_button("btn-prev", "Previous", "prev", cx),
+                    ))
+                    .child(reveal_on_focus(self.player_button(
+                        "btn-restart",
+                        "Restart video",
+                        "restart",
+                        cx,
+                    )))
+                    .child(reveal_on_focus(
+                        self.player_button("btn-next", "Next", "next", cx),
+                    )),
             )
             .child(self.videos.render_list(&self.busy, cx))
     }
@@ -394,7 +407,7 @@ fn video_link(id: &str) -> AnyElement {
         )
         .on_click(move |_, _, cx| cx.open_url(&url));
     // The row keeps the button as wide as its text, as an inline `<a>`.
-    div().flex().child(link).into_any_element()
+    div().flex().child(reveal_on_focus(link)).into_any_element()
 }
 
 /// admin.css `.event-empty`.

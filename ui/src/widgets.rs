@@ -1,18 +1,19 @@
 //! Controls the views share: the action button (admin.js `runAction`), the restart note, the
-//! config save's reload warning and the settings forms' layout.
+//! config save's reload warning, the settings forms' layout and inputs, and the focus reveal.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Div, ElementId, Entity, FontWeight, Global, IntoElement,
-    SharedString, Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
+    AnyElement, App, AppContext, Bounds, Context, Div, Element, ElementId, Entity, FontWeight,
+    Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, SharedString,
+    Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_kit::{
     base::TestSupportExt,
     component::{
         Disableable, Sizable,
         button::Button,
-        input::{Input, InputState},
+        input::{Input, InputState, TextareaState},
         label::Label,
     },
 };
@@ -23,6 +24,9 @@ use crate::{
     logic::is_benign_reload_error,
     theme::{BG, BORDER, MUTED, RED, SURFACE},
 };
+
+/// admin.js puts a save button's label back 1.5 s after a save.
+pub const SAVE_RESET: Duration = Duration::from_millis(1500);
 
 /// The action buttons of one view whose request is running.
 #[derive(Default)]
@@ -190,7 +194,7 @@ impl RestartNote {
             .bg(rgba(NOTE_BG))
             .rounded(px(8.))
             .child(Label::new(self.text).text_size(px(14.)))
-            .child(restart)
+            .child(reveal_on_focus(restart))
             .test_support();
         Some(note.into_any_element())
     }
@@ -247,12 +251,104 @@ pub fn text_input(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     invalid: bool,
-) -> Input {
-    Input::new(state)
-        .id(id)
-        .large()
-        .aria_label(label)
-        .h(px(40.))
-        .bg(rgb(BG))
-        .when(invalid, |input| input.border_color(rgb(RED)))
+) -> FocusReveal {
+    reveal_on_focus(
+        Input::new(state)
+            .id(id)
+            .large()
+            .aria_label(label)
+            .h(px(40.))
+            .bg(rgb(BG))
+            .when(invalid, |input| input.border_color(rgb(RED))),
+    )
+}
+
+pub fn text_of(input: &Entity<InputState>, cx: &App) -> String {
+    input.read(cx).value().to_string()
+}
+
+/// Sets an input's text with the cursor at its end, as a browser does when a script sets a value.
+pub fn put_text(input: &Entity<InputState>, text: &str, window: &mut Window, cx: &mut App) {
+    input.update(cx, |state, cx| {
+        state.set_value(SharedString::from(text.to_string()), window, cx);
+        state.set_selected_range(text.len()..text.len(), cx);
+    });
+}
+
+/// `put_text` for a multi-line input.
+pub fn put_area_text(area: &Entity<TextareaState>, text: &str, window: &mut Window, cx: &mut App) {
+    area.update(cx, |state, cx| {
+        state.set_value(SharedString::from(text.to_string()), window, cx);
+        state.set_selected_range(text.len()..text.len(), cx);
+    });
+}
+
+/// Wraps a control so the dashboard scrolls it into view when Tab gives it the focus.
+pub fn reveal_on_focus(control: impl IntoElement) -> FocusReveal {
+    FocusReveal(control.into_any_element())
+}
+
+/// A layout-transparent wrapper: when the focus lands inside its control, it asks the containing
+/// scroll view to show the control (`Window::request_autoscroll`), as GPUI's inputs do.
+pub struct FocusReveal(AnyElement);
+
+impl IntoElement for FocusReveal {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for FocusReveal {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // `prepaint` returns the focus when it was first assigned inside this control.
+        if self.0.prepaint(window, cx).is_some() {
+            // An input's own request (its caret line, with a margin) gives way to the whole control.
+            window.take_autoscroll();
+            window.request_autoscroll(bounds);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
+    }
 }

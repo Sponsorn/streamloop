@@ -19,7 +19,7 @@ use crate::{
     app::AppHandle,
     logic::admin::{format_bytes, local_date_time},
     theme::{BG, MONO_FONT, SURFACE},
-    widgets::btn,
+    widgets::{btn, reveal_on_focus},
 };
 
 const SELECT_A_FILE: &str = "Select a log file to view.";
@@ -327,7 +327,7 @@ impl Render for LogViewer {
                     .gap(px(8.))
                     .mb(px(8.))
                     .child(
-                        div().flex_1().min_w_0().child(
+                        div().flex_1().min_w_0().child(reveal_on_focus(
                             Select::new(&self.select)
                                 .id("log-select")
                                 .large()
@@ -337,19 +337,19 @@ impl Render for LogViewer {
                                 .h(px(40.))
                                 .px(px(12.))
                                 .bg(rgb(BG)),
-                        ),
+                        )),
                     )
-                    .child(
+                    .child(reveal_on_focus(
                         btn(Button::new("log-refresh").label("Refresh"))
                             .h(px(40.))
                             .on_click(
                                 cx.listener(|logs, _, window, cx| logs.load_list(window, cx)),
                             ),
-                    ),
+                    )),
             )
             .child(
                 // admin.css `.log-view`: 320 px of Consolas 11 px on the surface, lines wrapped.
-                div().id("log-view").child(
+                div().id("log-view").child(reveal_on_focus(
                     Textarea::new(&self.view)
                         .readonly(true)
                         .aria_label("Logs")
@@ -359,7 +359,7 @@ impl Render for LogViewer {
                         .text_size(px(11.))
                         // admin.css's body line height, which the <pre> inherits.
                         .line_height(relative(1.6)),
-                ),
+                )),
             )
     }
 }

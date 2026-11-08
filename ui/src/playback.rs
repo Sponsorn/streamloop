@@ -1,6 +1,6 @@
 //! The Playback tab (index.html `#panel-playback`): encoder and overlay, the system check, buffering and the watchdog.
 
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
 use gpui::{
     AnyElement, App, AppContext, Context, Div, Entity, IntoElement, Render, SharedString,
@@ -28,13 +28,10 @@ use crate::{
     setup_check::{CHECKING_LABEL, RUN_LABEL, ReportArea, SetupCheck, apply_setup},
     theme::{BG, MUTED},
     widgets::{
-        ActionView, Busy, RestartNote, btn, form_group, reload_warning, section, settings_panel,
-        text_input,
+        ActionView, Busy, RestartNote, SAVE_RESET, btn, form_group, put_text, reload_warning,
+        reveal_on_focus, section, settings_panel, text_input, text_of,
     },
 };
-
-/// admin.js resets the save button 1.5 s after a save.
-pub const SAVE_RESET: Duration = Duration::from_millis(1500);
 
 pub const NOTE: RestartNote = RestartNote {
     id: "pb-restart-note",
@@ -205,12 +202,12 @@ impl PlaybackView {
             s.silence_seconds,
         ];
         for (input, n) in self.numbers.iter().zip(numbers) {
-            set_text(input, n.to_string(), window, cx);
+            put_text(input, &n.to_string(), window, cx);
         }
-        set_text(&self.player_client, s.player_client.clone(), window, cx);
-        set_text(
+        put_text(&self.player_client, &s.player_client, window, cx);
+        put_text(
             &self.cookies,
-            settings.ytdl_cookies_from_browser.clone(),
+            &settings.ytdl_cookies_from_browser,
             window,
             cx,
         );
@@ -443,7 +440,7 @@ impl PlaybackView {
     }
 
     fn render_encoder(&self) -> Div {
-        div().w_full().max_w(px(280.)).child(
+        div().w_full().max_w(px(280.)).child(reveal_on_focus(
             Select::new(&self.encoder)
                 .id("pb-encoder")
                 .large()
@@ -452,7 +449,7 @@ impl PlaybackView {
                 .h(px(40.))
                 .px(px(12.))
                 .bg(rgb(BG)),
-        )
+        ))
     }
 
     /// index.html's `.toggle-row-plain` for the overlay.
@@ -472,7 +469,7 @@ impl PlaybackView {
                             .text_color(rgb(MUTED)),
                     ),
             )
-            .child(
+            .child(reveal_on_focus(
                 Switch::new("pb-overlay")
                     .checked(self.overlay)
                     .accessibility_label("Now-playing overlay")
@@ -480,7 +477,7 @@ impl PlaybackView {
                         this.overlay = *checked;
                         cx.notify();
                     })),
-            )
+            ))
     }
 
     fn render_check(&self, cx: &mut Context<Self>) -> Div {
@@ -510,8 +507,8 @@ impl PlaybackView {
                     .items_center()
                     .gap(px(12.))
                     .mb(px(12.))
-                    .child(run)
-                    .children(use_settings),
+                    .child(reveal_on_focus(run))
+                    .children(use_settings.map(reveal_on_focus)),
             )
     }
 
@@ -595,19 +592,9 @@ impl Render for PlaybackView {
                 ),
             )
             // As wide as its label, as the inline button in index.html.
-            .child(div().flex().child(save))
+            .child(div().flex().child(reveal_on_focus(save)))
             .children(NOTE.render(&self.app, &self.busy, cx))
     }
-}
-
-fn text_of(input: &Entity<InputState>, cx: &App) -> String {
-    input.read(cx).value().to_string()
-}
-
-fn set_text(input: &Entity<InputState>, text: String, window: &mut Window, cx: &mut App) {
-    input.update(cx, |state, cx| {
-        state.set_value(SharedString::from(text), window, cx)
-    });
 }
 
 /// A number as `JSON.stringify` writes it: a whole number without a fraction.
@@ -621,7 +608,7 @@ fn json_number(n: f64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use gpui::{AnyWindowHandle, AppContext, ScrollDelta, TestAppContext, point, px};
     use gpui_kit::test::TestWindowExt;

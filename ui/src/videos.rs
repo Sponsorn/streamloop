@@ -26,7 +26,7 @@ use crate::{
     },
     monitor::MonitorView,
     theme::{ACCENT, BG, BORDER, MUTED, TEXT, YELLOW},
-    widgets::{Busy, action_button, run_action},
+    widgets::{Busy, action_button, reveal_on_focus, run_action},
 };
 
 const HINT: &str = "This playlist is not playing. Press ▶ on a video to switch to this playlist.";
@@ -275,7 +275,7 @@ impl VideoList {
                     .text_color(rgb(MUTED)),
             )
             .child(
-                div().w_full().max_w(px(280.)).child(
+                div().w_full().max_w(px(280.)).child(reveal_on_focus(
                     Select::new(&self.select)
                         .id("playlist-select")
                         .large()
@@ -285,7 +285,7 @@ impl VideoList {
                         .h(px(40.))
                         .px(px(12.))
                         .bg(rgb(BG)),
-                ),
+                )),
             )
     }
 
@@ -354,7 +354,7 @@ impl VideoList {
             .child(number_cell().child(Label::new((index + 1).to_string())))
             .child(title_cell().child(Label::new(title)))
             .child(duration_cell().child(Label::new(video_duration(video.duration))))
-            .child(play_cell().child(play))
+            .child(play_cell().child(reveal_on_focus(play)))
             .test_support()
             .into_any_element()
     }
@@ -374,19 +374,23 @@ impl VideoList {
                     true => format!("{page}, current page"),
                     false => page.to_string(),
                 };
-                Button::new(("page", page))
-                    .label(page.to_string())
-                    .accessibility_label(name)
-                    .small()
-                    .custom(page_colors(current, cx))
-                    .selected(current)
-                    .h(px(21.))
-                    .px(px(8.))
-                    .border_1()
-                    .border_color(rgb(if current { ACCENT } else { BORDER }))
-                    .on_click(
-                        cx.listener(move |monitor, _, _, cx| monitor.videos.load_page(page, cx)),
-                    )
+                reveal_on_focus(
+                    Button::new(("page", page))
+                        .label(page.to_string())
+                        .accessibility_label(name)
+                        .small()
+                        .custom(page_colors(current, cx))
+                        .selected(current)
+                        .h(px(21.))
+                        .px(px(8.))
+                        .border_1()
+                        .border_color(rgb(if current { ACCENT } else { BORDER }))
+                        .on_click(
+                            cx.listener(move |monitor, _, _, cx| {
+                                monitor.videos.load_page(page, cx)
+                            }),
+                        ),
+                )
             }))
     }
 }
