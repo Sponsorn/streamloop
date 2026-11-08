@@ -3,6 +3,7 @@
 // GPUI's macros expand to `gpui::` paths; this resolves them through the Kit.
 extern crate gpui_kit as gpui;
 
+pub mod api;
 mod spike_api;
 mod spike_view;
 
