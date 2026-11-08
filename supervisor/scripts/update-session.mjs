@@ -23,7 +23,7 @@ import { dailyFiles, EVENTS, PLAYLIST, redact } from './lib.mjs';
 import {
   spawn, run, TAR, KEY, INGEST, READ_URL, NODE_API, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, supStatus, waitLive,
   packets, reconnects, runReader, stopReader, resetReader, gapStats, sha256File, grepTree, extract, quietConfig, tsxEval, portOpen,
-  allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted,
+  allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop,
 } from './install-kit.mjs';
 import { hashParts } from '../../src/server/components.js';
 import { updateOfferText, updateBannerView } from '../../src/admin/status-view.js';
@@ -808,7 +808,9 @@ async function finishRun(r, fast) {
   note('cleanup', c);
 }
 
+/** Once per run: the interrupt teardown and runOne can both reach it. */
 function judge(r) {
+  if (r.endedAt) return;
   r.failedChecks = Object.entries(r.checks ?? {}).filter(([, v]) => !v).map(([k]) => k);
   r.pass = !r.failed && r.checks !== undefined && r.failedChecks.length === 0 && r.cleanup?.ok === true;
   r.endedAt = iso();
@@ -909,6 +911,9 @@ note('preflight: 7654, 4417, 4416, 4418, MediaMTX, release host and catcher port
 
 const summary = { at: iso(), dist: { full: basename(DIST_FULL), slim: basename(DIST_SLIM) }, swept, runs: {} };
 onInterrupt(async (signal) => {
+  stopReader();
+  await quickStop([bat]);
+  mediamtx?.kill();
   const r = current;
   if (r) {
     r.failed ??= `interrupted by ${signal}`;
@@ -931,4 +936,5 @@ for (const name of names) {
   if (interrupted() || r.blocked || /YouTube breaker open/.test(r.failed ?? '')) { note('stopping the session'); break; }
 }
 const clean = await endSession();
-process.exit(names.every((n) => summary.runs[n]?.pass) && clean && !interrupted() ? 0 : 1);
+if (interrupted()) process.exit(130);
+process.exit(names.every((n) => summary.runs[n]?.pass) && clean ? 0 : 1);

@@ -271,6 +271,13 @@ export async function sweepLeftovers({ dirs, ascii = null, mediamtx }) {
   return report;
 }
 
+/** The first thing a teardown does: a tool that interrupts can end this process within seconds of the
+ *  signal. START.bat goes with its Node, so nothing relaunches the supervisor, which then takes its children. */
+export async function quickStop(bats) {
+  for (const b of bats) if (b && b.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(b.pid)]);
+  try { await fetch(`${SUP}/shutdown`, { method: 'POST', signal: AbortSignal.timeout(2000) }); } catch { /* none answering */ }
+}
+
 // SIGINT, SIGTERM or SIGBREAK runs every registered teardown, newest first, then exits 130. A second
 // signal exits at once and leaves the rest to the next start's sweep.
 const teardowns = [];

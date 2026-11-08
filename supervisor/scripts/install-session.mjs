@@ -24,7 +24,7 @@ import { dailyFiles, EVENTS, TOKEN_SERVER_PING, PLAYLIST, redact } from './lib.m
 import {
   spawn, run, KEY, INGEST, READ_URL, NODE_API, SUP, sleep, iso, Stop, useOut, note, ps, waitFor, startBat, token, nodeUp, api,
   nodeStatus, supStatus, waitLive, packets, reconnects, runReader, stopReader, gapStats, hashTree, sha256File, grepTree, extract, quietConfig,
-  tsxEval, portOpen, sweepLeftovers, onInterrupt,
+  tsxEval, portOpen, sweepLeftovers, onInterrupt, quickStop,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -519,6 +519,9 @@ function removeInstalls() {
 }
 
 onInterrupt(async () => {
+  stopReader();
+  await quickStop([bat3, bat2]);
+  mediamtx?.kill();
   await cleanupOnce();
   catcher?.close();
   removeInstalls();
