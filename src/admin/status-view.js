@@ -214,11 +214,10 @@ export function updateProgressText(progress, swapLog, nowMs) {
 const OK_BANNER_MS = 10 * 60 * 1000;
 
 /** What the update banner shows. keepText: the text is the update's own (progress or result), not the offer's.
- *  A failed result keeps its text and still offers the next update or a retry; ok gives way to the offer after
- *  10 minutes, and "Ready to stream" as soon as streamState (the /api/status stream state) is live. A finished
- *  update from and to other versions than the running one is history: a later update replaced it. */
+ *  A failed result keeps its text beside the offer; ok gives way to it after 10 minutes, "Ready" once streamState is live. */
 export function updateBannerView(status, nowMs, streamState = null) {
   const p = status.progress;
+  // From and to other versions than the running one: a later update replaced it.
   const history = p && p.result !== 'running' && p.from !== status.currentVersion && p.to !== status.currentVersion;
   const readyWhileLive = p && p.result === 'ok' && p.step !== 'done' && streamState === 'live';
   if (p && !history && !readyWhileLive) {

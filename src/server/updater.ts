@@ -332,7 +332,7 @@ export class Updater {
   }
 
   async checkForUpdate(): Promise<UpdateInfo> {
-    // A check resets the offer that an update being applied still reads, and a second check waits for the first.
+    // A check resets the offer that an update being applied still reads; a second check gets the first one's status.
     if (IN_PROGRESS.includes(this.status)) return this.getStatus();
     // 60-second cooldown
     const now = Date.now();

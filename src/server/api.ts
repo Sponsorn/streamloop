@@ -198,7 +198,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     next();
   }
 
-  /** An apply during a check would install from the offer the check is replacing. Only apply waits for a check. */
+  /** An apply during a check would install from the offer the check is replacing; Stop, Start and saves still go through. */
   function refuseApply(req: Request, res: Response, next: NextFunction): void {
     if (deps.updater.getStatus().status === 'checking') {
       res.status(409).json({ error: UPDATE_RUNNING });

@@ -83,7 +83,7 @@ export function parseCommandLines(json: string): CommandLineInfo[] {
     : []));
 }
 
-/** The cmd.exe processes with their command lines. No path goes to PowerShell; the matching is done here. */
+/** No path goes to PowerShell: the command lines are matched here. */
 export async function listCmdWindows(): Promise<CommandLineInfo[]> {
   const json = await new Promise<string>((res, rej) => {
     execFile(
@@ -264,7 +264,6 @@ const CHECK_TIMEOUT_MS = 60_000;
 const KILLED_CLOSE_MS = 10_000;
 const TASKKILL = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
 
-/** Ends a process and every process it started. */
 function killTree(pid: number): Promise<void> {
   return new Promise((res) => {
     execFile(TASKKILL, ['/T', '/F', '/PID', String(pid)], { cwd: SPAWN_CWD, windowsHide: true, timeout: 30_000 }, () => res());
