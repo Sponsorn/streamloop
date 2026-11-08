@@ -5,6 +5,8 @@ mod engine;
 mod google;
 #[allow(dead_code)]
 mod homepage;
+#[allow(dead_code)]
+mod session;
 
 fn main() {
     println!("streamloop-pot: PO-token server (not yet runnable)");
