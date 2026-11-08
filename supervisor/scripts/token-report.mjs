@@ -16,6 +16,9 @@ const EVENT_FIELDS = {
 };
 
 const lines = (text) => text.split(/\r?\n/).filter(Boolean);
+// A cancel is a download dropped because its video was switched away from; cookies is a yt-dlp call
+// that could not read the browser's cookies. Neither says anything about the video or the token.
+const NOT_TRIES = new Set(['cancel', 'cookies']);
 const isRefused = (row) => row.reason.includes('HTTP Error 403');
 
 /** Fields 0 to 5 are ts, id, result, attempt, bytes, ms; trailing lower-case words are the client list,
@@ -40,15 +43,17 @@ export function tokenReport(files, fromMs = -Infinity, toMs = Infinity) {
   const potAt = files.ytdlpLog.flatMap(lines).filter((l) => l.includes('[pot')).map((l) => Date.parse(l.slice(0, 24)));
 
   // A try is a download attempt that ran. The "skip" row of a failed size lookup runs nothing (ms 0).
-  const rows = files.downloadsCsv.flatMap(lines).map(parseRow)
-    .filter((r) => inWindow(r.ts) && !(r.result === 'skip' && r.ms === 0))
+  const written = files.downloadsCsv.flatMap(lines).map(parseRow).filter((r) => inWindow(r.ts));
+  const rows = written
+    .filter((r) => !NOT_TRIES.has(r.result) && !(r.result === 'skip' && r.ms === 0))
     .map((r) => {
       const end = Date.parse(r.ts);
       return { ...r, token: potAt.some((t) => t >= end - r.ms - TOKEN_LEAD_MS && t <= end) };
     });
 
   const out = {
-    tries: rows.length, tokenTries: 0, done: 0, refused403: 0, otherFailed: 0, doneShare: null,
+    tries: rows.length, cancelled: written.filter((r) => r.result === 'cancel').length,
+    cookieFailures: written.filter((r) => r.result === 'cookies').length, tokenTries: 0, done: 0, refused403: 0, otherFailed: 0, doneShare: null,
     videosRefusedTwice: 0, breakerOpens: 0, cacheClears: 0, serverDown: 0, serverRestart: 0,
     spawnFailed: 0, downloadsFailing: 0, rows,
   };
@@ -82,7 +87,7 @@ export function tokenReport(files, fromMs = -Infinity, toMs = Infinity) {
 export function splitPairs(rowsA, rowsB) {
   const firsts = (rows) => {
     const m = new Map();
-    for (const r of rows) if (!m.has(r.id)) m.set(r.id, r);
+    for (const r of rows) if (!NOT_TRIES.has(r.result) && !m.has(r.id)) m.set(r.id, r);
     return m;
   };
   const a = firsts(rowsA);

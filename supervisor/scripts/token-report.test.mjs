@@ -97,6 +97,33 @@ describe('tokenReport', () => {
     expect(r.refused403).toBe(1);
   });
 
+  it('leaves a cancel row inside a [pot window out of the tries and doneShare', () => {
+    // Arrange
+    const csv = [
+      csvRow('2026-11-01T08:00:20.000Z', 'v1', 'done', 0, 10000),
+      csvRow('2026-11-01T08:01:00.000Z', 'v2', 'cancel', 0, 10000),
+    ].join('\n') + '\n';
+    const log = '2026-11-01T08:00:15.000Z [pot:bgutil:http] token\n2026-11-01T08:00:55.000Z [pot:bgutil:http] token\n';
+
+    // Act
+    const r = tokenReport({ downloadsCsv: [csv], ytdlpLog: [log], events: [] });
+
+    // Assert
+    expect([r.tries, r.tokenTries, r.done, r.otherFailed, r.cancelled]).toEqual([1, 1, 1, 0, 1]);
+    expect(r.doneShare).toBe(1);
+  });
+
+  it('does not count a cookies row as a try', () => {
+    // Arrange
+    const csv = csvRow('2026-11-01T08:00:00.000Z', 'v1', 'cookies', 0, 3000, 'ERROR: Could not copy Chrome cookie database') + '\n';
+
+    // Act
+    const r = tokenReport({ downloadsCsv: [csv], ytdlpLog: [], events: [] });
+
+    // Assert
+    expect([r.tries, r.otherFailed, r.cookieFailures]).toEqual([0, 0, 1]);
+  });
+
   it('counts only rows from fromMs up to toMs', () => {
     // Arrange
     const csv = [
@@ -154,6 +181,18 @@ describe('splitPairs', () => {
     // Arrange: B's second try succeeds, which does not undo the first refusal
     const a = [row('v1', 'done')];
     const b = [row('v1', 'retry', true), row('v1', 'done')];
+
+    // Act
+    const r = splitPairs(a, b);
+
+    // Assert
+    expect(r.aDoneBRefused).toBe(1);
+  });
+
+  it("uses the first real try when a video's first row is a cancel", () => {
+    // Arrange
+    const a = [row('v1', 'done')];
+    const b = [row('v1', 'cancel'), row('v1', 'retry', true)];
 
     // Act
     const r = splitPairs(a, b);
