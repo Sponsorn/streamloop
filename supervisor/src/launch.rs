@@ -2,7 +2,7 @@
 //! and a tree kill of the caller cannot reach it; it also leaves the caller's job when allowed.
 
 use std::net::TcpStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -41,7 +41,7 @@ pub fn child_args(args: &[String]) -> Vec<String> {
 }
 
 fn spawn(args: &[String], flags: u32) -> std::io::Result<Child> {
-    let mut c = Command::new(std::env::current_exe()?);
+    let mut c = streamloop_common::procs::command(std::env::current_exe()?);
     c.args(child_args(args)).current_dir(std::env::temp_dir()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     {

@@ -7,17 +7,16 @@ mod launch;
 mod logs;
 mod media;
 mod overlay;
-mod paths;
 mod procs;
 mod rules;
-mod secret;
 mod watchdog;
 mod ytdlp;
 
 use config::Settings;
 use logs::Logs;
 use media::{Input, Live, Queue, Shared};
-use paths::Paths;
+use streamloop_common::paths::Layout as Paths;
+use streamloop_common::time::{iso, iso_now, unix_ms};
 use rules::{secs, ticks, Ladder, Seam, Source, Span, BASE, FRAME};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -27,7 +26,7 @@ use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use watchdog::{Detect, Heal, Verdict};
 use ytdlp::{Entry, Resolved, Ytdlp};
 
@@ -38,31 +37,6 @@ fn round2(x: f64) -> f64 {
 
 fn watchdog_cfg(s: &Settings) -> media::WatchdogCfg {
     media::WatchdogCfg { freeze_s: s.freeze_seconds, silence_s: s.silence_seconds }
-}
-
-fn unix_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
-}
-
-fn iso_now() -> String {
-    iso(unix_ms())
-}
-
-/// UTC ISO 8601 with milliseconds, without a date crate.
-fn iso(ms: u128) -> String {
-    let (secs, ms) = ((ms / 1000) as i64, ms % 1000);
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Howard Hinnant's civil_from_days
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms:03}Z", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
 
@@ -107,7 +81,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         // the exe sits in ROOT\supervisor\
         None => std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.to_path_buf())).ok_or("cannot find the install root; pass --root")?,
     };
-    let mut paths = paths::layout(&root);
+    let mut paths = Paths::new(&root);
     if let Some(d) = opt("data") {
         paths.data = cwd.join(d);
     }
@@ -151,7 +125,7 @@ fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Sn
 fn read_settings(args: &Args) -> Result<Settings, String> {
     let json = std::fs::read_to_string(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
     // --target brings its own key; the protected one is not needed.
-    let mut s = config::load(&json, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { secret::unprotect(b) })?;
+    let mut s = config::load(&json, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { streamloop_common::secret::unprotect(b) })?;
     if let Some(t) = &args.target {
         let (ingest, key) = t.rsplit_once('/').filter(|(_, k)| !k.is_empty()).ok_or("--target must end in /<key>")?;
         (s.ingest_url, s.stream_key) = (ingest.into(), key.into());
@@ -168,7 +142,7 @@ fn protect_stdin() -> Result<String, String> {
     if key.is_empty() {
         return Err("no stream key on stdin".into());
     }
-    secret::protect(key)
+    streamloop_common::secret::protect(key)
 }
 
 #[derive(Debug, PartialEq)]
@@ -550,7 +524,7 @@ struct Ctl {
     control_seq: u64,
     ever_played: bool,
     stopping: bool,
-    started_at: u128,
+    started_at: u64,
     deadline: Option<Instant>,
     cache_bytes: u64,
     max_cache: u64,
@@ -1056,7 +1030,7 @@ impl Ctl {
     }
 
     fn breaker_retry_iso(&self) -> Option<String> {
-        self.breaker.open.then(|| iso(unix_ms() + ((self.breaker.retry_at - self.now_s()).max(0.0) * 1000.0) as u128))
+        self.breaker.open.then(|| iso(unix_ms() + ((self.breaker.retry_at - self.now_s()).max(0.0) * 1000.0) as u64))
     }
 
     fn fresh_url(&self, i: usize) -> bool {
@@ -2231,7 +2205,7 @@ impl Ctl {
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
             "watchdog": {"last": self.watch.last},
             "playlistCount": list.len,
-            "hold": self.hold.holding(self.now_s()).then(|| json!({"reason": "every video in the playlist failed; the slate airs until the next try", "level": self.hold.level, "until": iso(unix_ms() + ((self.hold.until.unwrap_or(0.0) - self.now_s()).max(0.0) * 1000.0) as u128)})),
+            "hold": self.hold.holding(self.now_s()).then(|| json!({"reason": "every video in the playlist failed; the slate airs until the next try", "level": self.hold.level, "until": iso(unix_ms() + ((self.hold.until.unwrap_or(0.0) - self.now_s()).max(0.0) * 1000.0) as u64)})),
             "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures, "cookieProblem": self.cookie_problem},
         });
         if let (Some(h), Some(b)) = (head.as_object_mut(), body.as_object_mut()) {
@@ -2738,7 +2712,7 @@ mod tests {
     }
 
     fn exited_child() -> Child {
-        std::process::Command::new("cmd").args(["/c", "exit 1"]).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap()
+        procs::command("cmd").args(["/c", "exit 1"]).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap()
     }
 
     #[test]
@@ -3264,7 +3238,7 @@ mod tests {
 
     /// A process that stands in for a running encoder until the test kills it.
     fn running_child() -> Child {
-        std::process::Command::new("cmd").args(["/c", "ping -n 30 127.0.0.1 >nul"]).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap()
+        procs::command("cmd").args(["/c", "ping -n 30 127.0.0.1 >nul"]).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap()
     }
 
     fn event_lines(ctl: &Ctl, kind: &str) -> Vec<Value> {

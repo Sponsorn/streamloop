@@ -138,11 +138,11 @@ describe('checkDependencies', () => {
 });
 
 describe('ENCODER_ARGS', () => {
-  it('probes with the common tail of encoder_args in supervisor/src/media.rs', () => {
+  it('probes with PROBE_TAIL in crates/common/src/encoder.rs', () => {
     // Arrange
-    const rs = readFileSync(join(process.cwd(), 'supervisor', 'src', 'media.rs'), 'utf-8');
-    const start = rs.indexOf('a.extend([', rs.indexOf('pub fn encoder_args'));
-    const tail = rs.slice(start, rs.indexOf('"-vf"', start));
+    const rs = readFileSync(join(process.cwd(), 'crates', 'common', 'src', 'encoder.rs'), 'utf-8');
+    const start = rs.indexOf('pub const PROBE_TAIL');
+    const tail = rs.slice(start, rs.indexOf('];', start));
 
     // Act
     const parsed = [...tail.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
@@ -151,14 +151,15 @@ describe('ENCODER_ARGS', () => {
     expect(parsed).toEqual(PROBE_TAIL);
   });
 
-  it('matches video_set in supervisor/src/media.rs', () => {
+  it('matches video_set in crates/common/src/encoder.rs', () => {
     // Arrange
-    const rs = readFileSync(join(process.cwd(), 'supervisor', 'src', 'media.rs'), 'utf-8');
-    const body = rs.slice(rs.indexOf('fn video_set'), rs.indexOf('_ => return None'));
+    const rs = readFileSync(join(process.cwd(), 'crates', 'common', 'src', 'encoder.rs'), 'utf-8');
+    const body = rs.slice(rs.indexOf('pub fn video_set'), rs.indexOf('/// What follows'));
 
     // Act
+    const codec: Record<string, string> = { Nvenc: 'h264_nvenc', Amf: 'h264_amf', Qsv: 'h264_qsv', Libx264: 'libx264' };
     const parsed = Object.fromEntries(
-      [...body.matchAll(/"(\w+)" => &\[([^\]]*)\]/g)].map((m) => [m[1], [...m[2].matchAll(/"([^"]*)"/g)].map((a) => a[1])]),
+      [...body.matchAll(/Encoder::(\w+) => &\[([^\]]*)\]/g)].map((m) => [codec[m[1]], [...m[2].matchAll(/"([^"]*)"/g)].map((a) => a[1])]),
     );
 
     // Assert

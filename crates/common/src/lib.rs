@@ -1,1 +1,8 @@
+pub mod encoder;
+pub mod events;
+pub mod paths;
+pub mod playlist;
+pub mod procs;
+pub mod secret;
+pub mod time;
 pub mod version;

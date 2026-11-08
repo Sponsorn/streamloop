@@ -10,12 +10,17 @@ const { FULL_LAYOUT, UPDATE_LAYOUT, missingPaths } = await import(pathToFileURL(
 describe('release layout', () => {
   it('ships every path the supervisor resolves in the full ZIP', () => {
     // Arrange
-    const pathsRs = readFileSync(resolve(repo, 'supervisor', 'src', 'paths.rs'), 'utf-8');
+    const pathsRs = readFileSync(resolve(repo, 'crates', 'common', 'src', 'paths.rs'), 'utf-8');
     const supervisorPaths = [...pathsRs.matchAll(/\bat\("([^"]+)"\)/g)].map((m) => m[1]);
 
     // Act
     // Node creates app/config.json from the shipped example on first start
-    const absent = supervisorPaths.filter((p) => p !== 'app/config.json' && !FULL_LAYOUT.includes(p));
+    // The 3.0 release ships none of the R1 paths; Task 21 replaces this guard with the R1 layout.
+    const r1Only = [
+      'streamloop.exe', 'streamloop.exe.old', 'streamloop.exe.bad', '_update', '_update/streamloop.exe', '_update/landed',
+      'app', 'app/logs', 'data/stopped-by-user', 'data/update-rolled-back', 'data/setup-check.json',
+    ];
+    const absent = supervisorPaths.filter((p) => p !== 'app/config.json' && !r1Only.includes(p) && !FULL_LAYOUT.includes(p));
 
     // Assert
     expect(supervisorPaths.length).toBeGreaterThan(5);

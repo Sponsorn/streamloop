@@ -1,18 +1,8 @@
 //! Process handling: the kill-on-close Job Object, suspend for fault injection, tree kill.
 
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
 
-/// Children start outside the install folder (2.x spawn-cwd rule).
-pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut c = Command::new(program);
-    c.current_dir(std::env::temp_dir()).stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    c
-}
+pub use streamloop_common::procs::command;
 
 /// Put the supervisor itself in a kill-on-close job: children and grandchildren inherit it
 /// from their first instruction, and a supervisor crash takes them all down.

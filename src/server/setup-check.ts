@@ -27,7 +27,7 @@ export const ENCODER_ARGS: Record<Encoder, readonly string[]> = {
   libx264: ['-preset', 'veryfast', '-sc_threshold', '0', '-keyint_min', '60'],
 };
 
-/** The common part of encoder_args in media.rs after the per-vendor set; the same test guards it. */
+/** PROBE_TAIL in crates/common/src/encoder.rs, the part of every encode after the per-vendor set; the same test guards it. */
 export const PROBE_TAIL: readonly string[] = ['-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k', '-g', '60', '-pix_fmt', 'yuv420p'];
 
 const ORDER: Encoder[] = ['h264_nvenc', 'h264_amf', 'h264_qsv', 'libx264'];

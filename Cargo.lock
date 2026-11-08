@@ -111,6 +111,11 @@ dependencies = [
 [[package]]
 name = "streamloop-common"
 version = "3.1.0-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys",
+]
 
 [[package]]
 name = "streamloop-control"
@@ -122,6 +127,7 @@ version = "3.1.0-dev"
 dependencies = [
  "serde",
  "serde_json",
+ "streamloop-common",
  "tiny_http",
  "windows-sys",
 ]
