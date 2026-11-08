@@ -30,7 +30,6 @@ import type { AppConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Read version from package.json
 const pkgPath = resolve(__dirname, '..', '..', 'package.json');
 const appVersion = JSON.parse(readFileSync(pkgPath, 'utf-8')).version as string;
 
@@ -207,7 +206,7 @@ async function main() {
     server.close(() => {
       logger.info('Server closed for update restart');
     });
-    // Exit code 75 signals START.bat to restart
+    // Exit code 75 tells START.bat an update is staged.
     setTimeout(() => process.exit(75), 2000);
   };
 

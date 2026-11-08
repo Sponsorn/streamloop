@@ -429,9 +429,7 @@ describe('TwitchLivenessChecker', () => {
       await checker.check();
       await checker.check();
 
-      // 2 token + 1 streams = 3 total... wait no:
-      // check 1: token(1) + streams(2) = 2 calls
-      // check 2: no token (cached) + streams(3) = 1 call
+      // The first check fetches the token and the streams, the second only the streams.
       expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 

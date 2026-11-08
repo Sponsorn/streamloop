@@ -82,7 +82,7 @@ export interface UpdateInfo {
   status: UpdateStatus;
   error: string | null;
   isDevMode: boolean;
-  /** Set when the release bundles another Node than the running one. Updates never deliver node/. */
+  /** Set when a release without components.json bundles another Node than the running one: only the full ZIP brings it. */
   nodeNotice: string | null;
   /** Null until a check found something to install. */
   kind: UpdateKind | null;
@@ -92,12 +92,8 @@ export interface UpdateInfo {
   sameVersion: boolean;
 }
 
-/** Pick the best ZIP asset and its matching checksum from a release's assets.
- *  Prefers the slim "-update.zip" (much smaller) over the full bundle, falling
- *  back to any ".zip". The
- *  checksum is matched to the *chosen* ZIP by name so a release carrying both
- *  bundles can't cross the wires. Accepts either "<file>.zip.sha256" or
- *  "<file>.sha256", since both naming conventions have shipped. */
+/** The slim "-update.zip" for an app-only update (else any ".zip"), the full bundle for a full one.
+ *  The checksum is matched to the chosen ZIP by name, as "<file>.zip.sha256" or "<file>.sha256". */
 export function selectReleaseAssets(
   assets: Array<{ name: string; browser_download_url: string }>,
   kind: UpdateKind = 'app',
@@ -125,9 +121,8 @@ export function parseNodeVersion(text: string): string | null {
   return m ? m[1] : null;
 }
 
-/** Stage app/ and START.bat into _update_tmp, plus the listed part folders of a full update.
- *  START.bat swaps whatever lands there. An app-only update leaves the part folders out,
- *  since the supervisor holds yt-dlp/ and the token server holds node/. */
+/** Stages app/, START.bat and a full update's part folders into _update_tmp, for START.bat to swap.
+ *  An app-only update leaves the part folders out: the supervisor holds yt-dlp/ and the token server holds node/. */
 export function stageUpdate(extractDir: string, tmpDir: string, folders: string[] = []): void {
   // The ZIP holds streamloop/app/; older layouts may extract app/ directly.
   let root = join(extractDir, 'streamloop');
@@ -249,7 +244,6 @@ export class Updater {
     this.installParts = opts.installParts ?? (async () => null);
     this.full = opts.full ?? null;
     this.testReleases = opts.testReleases ?? null;
-    // Read version from package.json
     const require = createRequire(import.meta.url);
     const pkg = require('../../package.json');
     this.currentVersion = pkg.version;
@@ -346,8 +340,6 @@ export class Updater {
         return this.getStatus();
       }
 
-      // Pick the ZIP (slim -update.zip preferred) + its matching checksum,
-      // then validate URLs against allowed domains.
       if (this.updateAvailable) {
         // Dev mode has no install to compare and never applies updates.
         const decision = this.isDevMode ? null : await this.decideKind(release);
@@ -512,7 +504,6 @@ export class Updater {
         writeUpdateState(rootDir, state);
       }
 
-      // Download
       logger.info({ url: zipUrl, kind: this.kind }, 'Downloading update');
 
       const zipPath = join(tmpDir, 'update.zip');
@@ -540,7 +531,6 @@ export class Updater {
       }
       logger.info('Update checksum verified');
 
-      // Extract
       this.status = 'extracting';
       logger.info('Extracting update');
       const extractDir = join(tmpDir, 'extracted');
