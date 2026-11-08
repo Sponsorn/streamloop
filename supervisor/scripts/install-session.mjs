@@ -197,8 +197,7 @@ async function step2() {
   r.ytdlpUnchanged = r.ytdlpAfter.sha256 === r.ytdlpBefore.sha256 && r.ytdlpBefore.sha256 === results.ytdlpAtInstall.sha256;
   note('step 2 swap', r);
 
-  // The installed updater on GitHub's real release list (one read-only GET) plus a made-up 3.x prerelease
-  // one patch above the installed version, so it is newer than anything the install could already run.
+  // The installed updater on GitHub's real release list (one read-only GET) plus a made-up 3.x prerelease to offer.
   const real = await fetch(RELEASES_API, { headers: { 'User-Agent': 'streamloop-install-session', Accept: 'application/vnd.github.v3+json' }, signal: AbortSignal.timeout(15_000) });
   const list = await real.json();
   writeFileSync(join(OUT, 'releases-real.json'), JSON.stringify(list.map((x) => ({ tag_name: x.tag_name, draft: x.draft, prerelease: x.prerelease, assets: x.assets.map((a) => ({ name: a.name, browser_download_url: a.browser_download_url })) })), null, 2));
