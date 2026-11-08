@@ -343,6 +343,64 @@ describe.skipIf(process.platform !== 'win32')('START.bat, run for real', () => {
     expect(exists(root, 'data/update-swapping')).toBe(false);
   }, 60_000);
 
+  it('puts the parts back and starts the old app when app stays in use after a part swap', async () => {
+    // Arrange: a Node from outside the root holds app\ as its working directory, so it is not ended.
+    const root = makeRoot();
+    install(root);
+    stage(root, ['supervisor', 'ffmpeg']);
+    scenario(root, { exits: [75, 0] });
+    await startHolder(process.execPath, join(root, 'app'));
+
+    // Act
+    const { code, out } = await runStartBat(root, [], 80_000);
+
+    // Assert
+    expect(code, out).toBe(0);
+    expect(starts(root)).toEqual(['first old', 'rollback old']);
+    expect(swapLog(root)).toEqual([
+      'supervisor ok swapped', 'ffmpeg ok swapped', 'app failed the app folder stayed in use',
+      'supervisor restored the previous version', 'ffmpeg restored the previous version',
+    ]);
+    for (const f of SWAP_FOLDERS) {
+      expect(read(root, `${f}/version.txt`)).toBe('old');
+      expect(exists(root, `_update_old_${f}`)).toBe(false);
+      expect(exists(root, `_update_bad_${f}`)).toBe(false);
+    }
+    expect(read(root, 'app/version.txt')).toBe('old');
+    expect(exists(root, '_update_old')).toBe(false);
+    expect(exists(root, '_update_tmp')).toBe(false);
+    expect(exists(root, 'START.bat.new')).toBe(false);
+    expect(exists(root, 'data/update-swapping')).toBe(false);
+    expect(exists(root, 'data/update-checking')).toBe(false);
+  }, 90_000);
+
+  it('puts the old app back when the window closed between the app rename and the move', async () => {
+    // Arrange: the parts were swapped, app\ went to _update_old and the new app is still staged.
+    const root = makeRoot();
+    writeApp(join(root, '_update_old'), 'old');
+    for (const f of SWAP_FOLDERS) writePart(join(root, f), f, f === 'supervisor' ? 'new' : 'old');
+    writePart(join(root, '_update_old_supervisor'), 'supervisor', 'old');
+    writeApp(join(root, '_update_tmp', 'app'), 'new', SCENARIO_STUB, false);
+    writeFileSync(join(root, 'data', 'update-swapping'), '');
+    writeFileSync(join(root, 'data', 'update-checking'), '');
+    scenario(root, { exits: [0] });
+
+    // Act
+    const { code, out } = await runStartBat(root);
+
+    // Assert
+    expect(code, out).toBe(0);
+    expect(starts(root)).toEqual(['first old']);
+    expect(read(root, 'app/version.txt')).toBe('old');
+    expect(JSON.parse(read(root, 'app/config.json'))).toEqual({ app: 'old' });
+    for (const f of SWAP_FOLDERS) expect(read(root, `${f}/version.txt`)).toBe('old');
+    expect(exists(root, '_update_old')).toBe(false);
+    expect(exists(root, '_update_old_supervisor')).toBe(false);
+    expect(exists(root, '_update_tmp')).toBe(false);
+    expect(exists(root, 'data/update-swapping')).toBe(false);
+    expect(exists(root, 'data/update-checking')).toBe(false);
+  }, 60_000);
+
   it('passes update to a START.bat that replaced itself through the trampoline', async () => {
     // Arrange
     const root = makeRoot();
