@@ -25,6 +25,8 @@ pub struct Ytdlp {
     /// Per finished call while cookies are set: Some(yt-dlp's cookie error) when it went on without them.
     cookie_notes: Mutex<Vec<Option<String>>>,
     limit_rate: Option<String>,
+    /// The token server the plugin talks to: the one the supervisor watches.
+    token_port: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -95,8 +97,8 @@ pub struct Output {
 }
 
 impl Ytdlp {
-    pub fn new(paths: &Paths, player_client: &str, limit_rate: Option<String>) -> Ytdlp {
-        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), ffmpeg: paths.ffmpeg.clone(), player_client: Mutex::new(player_client.into()), cookies: Mutex::default(), cookie_notes: Mutex::default(), limit_rate }
+    pub fn new(paths: &Paths, player_client: &str, limit_rate: Option<String>, token_port: u16) -> Ytdlp {
+        Ytdlp { exe: paths.ytdlp.clone(), deno: paths.deno.clone(), plugins: paths.plugins.clone(), ffmpeg: paths.ffmpeg.clone(), player_client: Mutex::new(player_client.into()), cookies: Mutex::default(), cookie_notes: Mutex::default(), limit_rate, token_port }
     }
 
     pub fn note_cookies(&self, note: Option<String>) {
@@ -113,6 +115,8 @@ impl Ytdlp {
         let mut a = vec![
             "--no-warnings".into(),
             "--no-update".into(),
+            // only the install's plugin, never one from the user's yt-dlp folders
+            "--no-plugin-dirs".into(),
             "--plugin-dirs".into(),
             self.plugins.to_string_lossy().into_owned(),
             "--js-runtimes".into(),
@@ -122,6 +126,8 @@ impl Ytdlp {
             self.ffmpeg.to_string_lossy().into_owned(),
             "--extractor-args".into(),
             format!("youtube:player_client={}", client.map_or_else(|| self.player_client.lock().unwrap().clone(), String::from)),
+            "--extractor-args".into(),
+            format!("youtubepot-bgutilhttp:base_url=http://127.0.0.1:{}", self.token_port),
         ];
         // No shell between here and yt-dlp, so a profile path with spaces stays one argument.
         let cookies = self.cookies.lock().unwrap();
@@ -373,7 +379,7 @@ mod tests {
     #[test]
     fn every_call_gets_the_plugin_dir_and_an_absolute_deno() {
         let root = std::env::temp_dir().join("sl-root");
-        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None);
+        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None, 4416);
         let a = yt.base(None);
         let after = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone()).unwrap_or_default();
         assert_eq!(after("--plugin-dirs"), root.join("yt-dlp").join("plugins").to_string_lossy());
@@ -381,13 +387,23 @@ mod tests {
         let path = deno.strip_prefix("deno:").expect("deno: prefix");
         assert!(Path::new(path).is_absolute() && path.ends_with("deno.exe"), "{deno}");
         assert_eq!(after("--extractor-args"), "youtube:player_client=mweb");
+        let b = yt.base(None);
+        let at = |f: &str| b.iter().position(|x| x == f).unwrap();
+        assert!(at("--no-plugin-dirs") < at("--plugin-dirs"), "default plugin folders are cleared first");
+        assert!(b.windows(2).any(|w| w[0] == "--extractor-args" && w[1] == "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416"));
         let b = yt.base(Some("web_embedded"));
         assert_eq!(b[b.iter().position(|x| x == "--extractor-args").unwrap() + 1], "youtube:player_client=web_embedded");
     }
 
     #[test]
+    fn the_plugin_talks_to_the_token_port_it_is_given() {
+        let yt = Ytdlp::new(&crate::paths::layout(&std::env::temp_dir().join("sl-root")), "mweb", None, 4426);
+        assert!(yt.base(None).iter().any(|a| a == "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4426"));
+    }
+
+    #[test]
     fn cookies_go_in_as_one_separate_argument_only_when_set() {
-        let yt = Ytdlp::new(&crate::paths::layout(&std::env::temp_dir().join("sl-root")), "mweb", None);
+        let yt = Ytdlp::new(&crate::paths::layout(&std::env::temp_dir().join("sl-root")), "mweb", None, 4416);
         assert!(!yt.base(None).iter().any(|a| a.contains("cookies")), "{:?}", yt.base(None));
 
         *yt.cookies.lock().unwrap() = r"firefox:C:\Profiles\x y".into();
@@ -419,7 +435,7 @@ mod tests {
     #[test]
     fn every_call_names_the_bundled_ffmpeg_for_the_merge() {
         let root = std::env::temp_dir().join("sl-root");
-        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None);
+        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None, 4416);
         let a = yt.base(None);
         let at = a.iter().position(|x| x == "--ffmpeg-location").expect("--ffmpeg-location");
         assert_eq!(a[at + 1], root.join("ffmpeg").join("ffmpeg.exe").to_string_lossy());

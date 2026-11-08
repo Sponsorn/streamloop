@@ -2589,7 +2589,7 @@ fn main() {
     let cache = args.paths.data.join("cache");
     let kept = adopt_cache(&cache);
 
-    let yt = Arc::new(Ytdlp::new(&args.paths, &settings.player_client, args.dev.limit_rate.clone()));
+    let yt = Arc::new(Ytdlp::new(&args.paths, &settings.player_client, args.dev.limit_rate.clone(), args.token_port));
     *yt.cookies.lock().unwrap() = settings.cookies_from_browser.clone();
     let mut queue = Queue::new(192 * 1024 * 1024);
     queue.ahead = ticks(settings.read_ahead_seconds);
@@ -2659,7 +2659,7 @@ mod tests {
         let d = dir.to_string_lossy().into_owned();
         let args = parse_args(&["--root".into(), d.clone(), "--data".into(), d]).unwrap();
         let logs = Logs::new(dir.join("logs"), "");
-        let yt = Arc::new(Ytdlp::new(&args.paths, "web", None));
+        let yt = Arc::new(Ytdlp::new(&args.paths, "web", None, args.token_port));
         let shared = Arc::new(Shared { q: Mutex::new(Queue::new(1 << 20)), cv: Condvar::new() });
         let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false }));
         let (tx, _) = channel();
