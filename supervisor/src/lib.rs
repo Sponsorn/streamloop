@@ -2192,13 +2192,15 @@ impl Ctl {
         // One lock per statement: json! keeps its temporaries (and their guards) alive to the end.
         let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
         let generation = self.shared.q.lock().unwrap().generation;
+        let uptime_s = self.enc.child.is_some().then(|| self.enc.started.elapsed().as_secs());
         let mut body = json!({
+            "version": streamloop_common::version::VERSION,
             "playing": {"index": index - list.start, "playlistId": (!list.id.is_empty()).then(|| list.id.clone()), "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration), "spareReady": self.spare.as_ref().is_some_and(|s| s.index == index)},
             "timeline": secs(self.view_timeline()),
             "readAheadSeconds": (self.read_ahead() * 100.0).round() / 100.0,
             "cacheBytes": self.cache_bytes,
             "downloading": self.downloading.as_ref().map(|d| json!({"index": self.number(d.0), "percent": d.1})),
-            "encoder": {"alive": self.enc.child.is_some(), "restarts": self.enc.restarts, "generation": generation, "mediaTime": self.enc.media, "speed": self.enc.speed, "cpuPercent": round2(self.cpu.encoder)},
+            "encoder": {"alive": self.enc.child.is_some(), "restarts": self.enc.restarts, "generation": generation, "mediaTime": self.enc.media, "speed": self.enc.speed, "cpuPercent": round2(self.cpu.encoder), "uptimeS": uptime_s},
             "cpu": {"encoder": round2(self.cpu.encoder), "feeder": round2(self.cpu.feeder), "system": round2(self.cpu.system)},
             "tokenServer": token,
             "recovery": {"step": self.step, "retries": v.map_or(0, |v| v.retries)},
@@ -4435,5 +4437,87 @@ mod tests {
         ctl.downloading = Some((3, 10.0, Arc::new(AtomicBool::new(false))));
 
         assert_eq!(ctl.status()["downloading"]["index"], 1);
+    }
+
+    /// What the control process would send back after reading `v` through the shared types.
+    fn through_common<T: serde::de::DeserializeOwned + serde::Serialize>(v: &Value) -> Value {
+        serde_json::to_value(serde_json::from_value::<T>(v.clone()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn status_round_trips_through_the_common_types() {
+        let mut on_list = ring_ctl("api-status-list");
+        on_air(&mut on_list, 3, 12.0);
+        on_list.downloading = Some((3, 10.0, Arc::new(AtomicBool::new(false))));
+        let empty = test_ctl("api-status-empty", &[]);
+
+        for ctl in [&on_list, &empty] {
+            let status = ctl.status();
+
+            assert_eq!(through_common::<streamloop_common::api::SupervisorStatus>(&status), status);
+        }
+    }
+
+    #[test]
+    fn status_round_trips_through_the_common_types_with_an_encoder_running() {
+        let mut ctl = ring_ctl("api-status-encoder");
+        on_air(&mut ctl, 3, 12.0);
+        ctl.enc.child = Some(running_child());
+        ctl.enc.speed = Some(1.01);
+
+        let status = ctl.status();
+
+        ctl.enc.child.take().unwrap().kill().unwrap();
+        assert_eq!(through_common::<streamloop_common::api::SupervisorStatus>(&status), status);
+    }
+
+    #[test]
+    fn control_replies_round_trip_through_the_common_types() {
+        let mut ctl = test_ctl("api-control", &["a", "b", "c"]);
+        ctl.waiting_for_key = false;
+
+        let jump = send_control(&mut ctl, "jump", Some(2), None).unwrap();
+        let restart_encoder = send_control(&mut ctl, "restart-encoder", None, None).unwrap();
+
+        assert_eq!(through_common::<streamloop_common::api::ControlReply>(&jump), jump);
+        assert_eq!(restart_encoder, json!({"accepted": true, "alreadyRestarting": true}));
+        assert_eq!(through_common::<streamloop_common::api::ControlReply>(&restart_encoder), restart_encoder);
+    }
+
+    #[test]
+    fn reload_reply_round_trips_through_the_common_types() {
+        let mut ctl = reload_ctl("api-reload", "PLa");
+
+        let reply = ctl.reload(None, None, None).unwrap();
+
+        assert!(reply["streamKeyProblem"].is_string(), "the fixture has no key: {reply}");
+        assert_eq!(through_common::<streamloop_common::api::ReloadReply>(&reply), reply);
+    }
+
+    #[test]
+    fn status_reports_the_exe_version() {
+        let ctl = test_ctl("api-version", &["a"]);
+
+        assert_eq!(ctl.status()["version"], streamloop_common::version::VERSION);
+    }
+
+    #[test]
+    fn encoder_uptime_counts_from_the_encoder_start() {
+        let mut ctl = test_ctl("api-uptime", &["a"]);
+        ctl.enc.child = Some(running_child());
+        ctl.enc.started = Instant::now() - Duration::from_secs(90);
+
+        let status = ctl.status();
+
+        ctl.enc.child.take().unwrap().kill().unwrap();
+        assert_eq!(status["encoder"]["uptimeS"], json!(90));
+    }
+
+    #[test]
+    fn encoder_uptime_is_null_without_an_encoder() {
+        let mut ctl = test_ctl("api-no-uptime", &["a"]);
+        ctl.enc.started = Instant::now() - Duration::from_secs(90);
+
+        assert_eq!(ctl.status()["encoder"]["uptimeS"], Value::Null);
     }
 }
