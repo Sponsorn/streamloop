@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -619,5 +621,187 @@ describe('stageUpdate with part folders', () => {
     // Assert
     expect(stage).toThrow('The update archive has no ffmpeg/ffmpeg.exe');
     expect(readdirSync(tmpDir)).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
+  const HASH = (c: string) => c.repeat(64);
+  const parts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-full');
+  const zipName = `streamloop-v${NEXT}.zip`;
+  let zip: Buffer;
+
+  function buildZip(): Buffer {
+    const src = join(root, 'src');
+    const top = join(src, 'streamloop');
+    for (const [rel, text] of [
+      ['app/src/server/index.ts', ''], ['START.bat', '@echo off'],
+      ['supervisor/streamloop-supervisor.exe', 'new'], ['supervisor/slate.mp4', ''],
+      ['yt-dlp/yt-dlp.exe', ''], ['yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip', 'new'],
+    ]) {
+      mkdirSync(join(top, rel, '..'), { recursive: true });
+      writeFileSync(join(top, rel), text);
+    }
+    const out = join(root, zipName);
+    execFileSync('C:\\Windows\\System32\\tar.exe', ['-a', '-cf', out, '-C', src, 'streamloop']);
+    return readFileSync(out);
+  }
+
+  function install(): void {
+    for (const rel of ['supervisor/streamloop-supervisor.exe', 'ffmpeg/ffmpeg.exe', 'node/node.exe', 'pot/build/main.js', 'yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip']) {
+      mkdirSync(join(root, rel, '..'), { recursive: true });
+      writeFileSync(join(root, rel), 'old');
+    }
+  }
+
+  function stubRelease(): void {
+    const sha = createHash('sha256').update(zip).digest('hex');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: [
+          asset(`streamloop-v${NEXT}-update.zip`), asset(`streamloop-v${NEXT}-update.zip.sha256`),
+          asset(zipName), asset(`${zipName}.sha256`), asset('components.json'),
+        ] }]));
+      }
+      if (url.endsWith('components.json')) return new Response(JSON.stringify({ version: NEXT, node: '22.23.4', parts }));
+      if (url.endsWith(`${zipName}.sha256`)) return new Response(`${sha}  ${zipName}\n`);
+      if (url.endsWith(zipName)) return new Response(new Uint8Array(zip));
+      return new Response('', { status: 404 });
+    }));
+  }
+
+  type StopResult = { ok: true } | { ok: false; reason: string };
+
+  function hooks(stop: () => Promise<StopResult> = async () => ({ ok: true })) {
+    return {
+      baseline: vi.fn(async () => ({ encoder: 'h264_nvenc' as const, works: true })),
+      stop: vi.fn(stop),
+      resume: vi.fn(),
+    };
+  }
+
+  async function updaterWith(h: ReturnType<typeof hooks>): Promise<Updater> {
+    const updater = new Updater({
+      isDevMode: false,
+      installParts: async () => ({ ...parts, supervisor: HASH('9') }),
+      rootDir: root,
+      full: h,
+    });
+    const info = await updater.checkForUpdate();
+    expect(info.kind).toBe('full');
+    return updater;
+  }
+
+  const readState = () => JSON.parse(readFileSync(join(root, 'data', 'update-state.json'), 'utf8'));
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    zip = buildZip();
+    rmSync(join(root, 'src'), { recursive: true, force: true });
+    install();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('records the baseline, stages the parts, stops the stream and moves on to the swap', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks();
+    const updater = await updaterWith(h);
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert
+    expect(readdirSync(join(root, '_update_tmp')).filter((n) => !['extracted', 'update.zip'].includes(n)).sort())
+      .toEqual(['START.bat', 'app', 'supervisor', 'yt-dlp']);
+    expect(h.stop).toHaveBeenCalledWith(['supervisor', 'yt-dlp'], NEXT);
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(readState()).toMatchObject({
+      from: `${major}.${minor}.${patch}`, to: NEXT, parts: ['supervisor'], folders: ['supervisor', 'yt-dlp'],
+      step: 'swap', result: 'running', reason: null, baseline: { encoder: 'h264_nvenc', works: true },
+    });
+    expect(updater.getStatus().status).toBe('ready');
+  });
+
+  it('removes copies left by an earlier update before it starts', async () => {
+    // Arrange
+    stubRelease();
+    for (const dir of ['_update_old', '_update_old_ffmpeg', '_update_old_node', '_update_bad_pot']) {
+      mkdirSync(join(root, dir, 'x'), { recursive: true });
+    }
+    const updater = await updaterWith(hooks());
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert
+    for (const dir of ['_update_old', '_update_old_ffmpeg', '_update_old_node', '_update_bad_pot']) {
+      expect(existsSync(join(root, dir))).toBe(false);
+    }
+  });
+
+  it('keeps an earlier copy that is the only one of its part and calls the update off', async () => {
+    // Arrange
+    stubRelease();
+    rmSync(join(root, 'ffmpeg'), { recursive: true });
+    mkdirSync(join(root, '_update_old_ffmpeg'), { recursive: true });
+    writeFileSync(join(root, '_update_old_ffmpeg', 'ffmpeg.exe'), 'old');
+    const h = hooks();
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('_update_old_ffmpeg');
+    expect(existsSync(join(root, '_update_old_ffmpeg', 'ffmpeg.exe'))).toBe(true);
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
+  });
+
+  it('calls the update off and starts the services again when the stream cannot be stopped', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks(async () => ({ ok: false, reason: 'ffmpeg\\ffmpeg.exe is still running.' }));
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('ffmpeg\\ffmpeg.exe is still running.');
+    expect(readState()).toMatchObject({ step: 'stop', result: 'failed', reason: 'ffmpeg\\ffmpeg.exe is still running.' });
+    expect(existsSync(join(root, '_update_tmp'))).toBe(false);
+    expect(h.resume).toHaveBeenCalledTimes(1);
+    expect(updater.getStatus()).toMatchObject({ status: 'error', error: 'ffmpeg\\ffmpeg.exe is still running.' });
+  });
+
+  it('does not check for updates while one is being applied', async () => {
+    // Arrange
+    stubRelease();
+    let finishStop: (v: StopResult) => void = () => {};
+    const h = hooks(() => new Promise<StopResult>((r) => { finishStop = r; }));
+    const updater = await updaterWith(h);
+    const apply = updater.downloadAndApply();
+    await vi.waitFor(() => expect(h.stop).toHaveBeenCalled());
+    const fetchCalls = vi.mocked(fetch).mock.calls.length;
+    // Past the 60 s cooldown, as the 6-hourly check would be.
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, 'now').mockReturnValue(later);
+
+    // Act
+    const info = await updater.checkForUpdate();
+    vi.mocked(Date.now).mockRestore();
+
+    // Assert
+    expect(info).toMatchObject({ status: 'ready', kind: 'full', parts: ['supervisor'] });
+    expect(vi.mocked(fetch).mock.calls.length).toBe(fetchCalls);
+    finishStop({ ok: true });
+    await apply;
   });
 });

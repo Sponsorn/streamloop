@@ -17,10 +17,15 @@ import { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import { SupervisorClient } from './supervisor-client.js';
-import { SupervisorLauncher, installRoot, shouldHold, type StartKind } from './supervisor-launcher.js';
+import { SupervisorLauncher, installRoot, type StartKind } from './supervisor-launcher.js';
 import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent, withPlaylistNames } from './supervisor-events.js';
-import { launchGuard } from './setup-check.js';
+import { launchGuard, probeEncoder } from './setup-check.js';
 import { hashParts } from './components.js';
+import {
+  decideStartup, holdAtStart, killProcess, listProcessesUnder, runHealthCheck, runStartup, stopForSwap, supervisorCheck,
+  type StartupAction,
+} from './full-update.js';
+import { CHECKING_MARKER, readSwapLog, readUpdateState } from './update-state.js';
 import type { AppConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +85,13 @@ async function main() {
   // START.bat names this start; anything else counts as the first after the window opened.
   const startKinds: readonly StartKind[] = ['first', 'restart', 'update', 'rollback'];
   const startKind = startKinds.find((k) => k === process.env.STREAMLOOP_START) ?? 'first';
-  const holdForStart = shouldHold(startKind, config.autoStartStream, root !== null && existsSync(join(root, 'data', 'waiting-for-start')));
+  // A full update in progress decides this start: its check runs before the stream may start.
+  const updateState = root ? readUpdateState(root) : null;
+  const startup: StartupAction = root
+    ? decideStartup(startKind, updateState, existsSync(join(root, 'data', CHECKING_MARKER)), readSwapLog(root))
+    : { kind: 'none' };
+  if (startup.kind !== 'none') logger.info({ startKind, startup, to: updateState?.to }, 'Found a full update at start');
+  const holdForStart = holdAtStart(startup, startKind, config.autoStartStream, root !== null && existsSync(join(root, 'data', 'waiting-for-start')));
   if (holdForStart) logger.info({ startKind }, 'The stream waits for Start');
   const launcher = new SupervisorLauncher({
     root,
@@ -109,7 +120,35 @@ async function main() {
       return null;
     })
     : Promise.resolve(null);
-  const updater = new Updater({ installParts: () => installPartsPromise });
+  const updater = new Updater({
+    installParts: () => installPartsPromise,
+    // The root the startup above reads the update state from.
+    rootDir: root ?? undefined,
+    full: root
+      ? {
+        baseline: async () => {
+          const encoder = config.supervisor.encoder;
+          return { encoder, works: await probeEncoder(join(root, 'ffmpeg', 'ffmpeg.exe'), encoder) };
+        },
+        stop: async (folders, version) => {
+          stopNode();
+          // Flushed now: the 5 s batch would still be waiting when Node exits for the swap.
+          const notifier = discord;
+          void notifier.send(`Updating to ${version}, the stream is off air until it is done.`, 'info').then(() => notifier.flush());
+          return stopForSwap({
+            root,
+            client,
+            list: listProcessesUnder,
+            kill: killProcess,
+            selfPid: process.pid,
+            keepPids: [process.ppid],
+            wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+          }, folders);
+        },
+        resume: () => resumeNode(),
+      }
+      : undefined,
+  });
   const testHooks = process.env.STREAMLOOP_TEST_HOOKS === '1';
   if (testHooks) logger.warn('STREAMLOOP_TEST_HOOKS=1: POST /api/test/exit-75 is open');
 
@@ -139,6 +178,22 @@ async function main() {
     twitch.stop();
     launcher.stop();
     supervisorEvents?.stop();
+  };
+
+  // After a full update that could not stop the stream: the launcher brings the supervisor back.
+  const resumeNode = (): void => {
+    launcher.start();
+    supervisorEvents?.start();
+    twitch.start();
+    if (config.autoUpdateCheck) updater.startAutoCheck(config.updateCheckIntervalMs);
+  };
+
+  // Exit code 76 asks START.bat to put the previous version back.
+  const rollBack = (): void => {
+    logger.warn('Exiting so START.bat puts the previous version back');
+    stopNode();
+    server.close();
+    setTimeout(() => process.exit(76), 1000);
   };
 
   const triggerRestart = (): void => {
@@ -198,6 +253,25 @@ async function main() {
     logger.info(`Admin URL: ${adminUrl}`);
 
     startServices();
+
+    if (root) {
+      void runStartup({
+        root,
+        version: appVersion,
+        action: startup,
+        state: updateState,
+        autoStartStream: () => config.autoStartStream,
+        launcher,
+        client,
+        notify: (message) => void discord.send(message, 'info'),
+        check: (baseline) => runHealthCheck({ root, config: () => config, probe: probeEncoder, runCheck: () => supervisorCheck(root) }, baseline),
+        rollBack,
+      }).catch((err: unknown) => {
+        logger.error({ err }, 'The update step at start failed');
+        // New parts with no result yet: the old version is the safe side.
+        if (startup.kind === 'check' && readUpdateState(root)?.result === 'running') rollBack();
+      });
+    }
 
     if (config.autoUpdateCheck) {
       updater.startAutoCheck(config.updateCheckIntervalMs);

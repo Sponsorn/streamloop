@@ -8,6 +8,9 @@ import { createRequire } from 'module';
 import { z } from 'zod';
 import { logger } from './logger.js';
 import { diffParts, foldersFor, PART_KEY_FILES, PARTS, type Part } from './components.js';
+import { SPAWN_CWD } from './spawn-cwd.js';
+import { clearLeftovers, type StopResult } from './full-update.js';
+import { writeUpdateState, type UpdateState } from './update-state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -198,6 +201,17 @@ export function pickRelease(releases: GithubRelease[], currentVersion: string): 
   return best;
 }
 
+export interface FullUpdateHooks {
+  /** A test encode with the configured encoder on the installed ffmpeg; the health check compares against it. */
+  baseline: () => Promise<UpdateState['baseline']>;
+  /** Stops Node's own timers and the stream, and waits until nothing runs from the folders being replaced. */
+  stop: (folders: string[], version: string) => Promise<StopResult>;
+  /** Starts Node's own services again after a stop that failed. */
+  resume: () => void;
+}
+
+const IN_PROGRESS: readonly UpdateStatus[] = ['downloading', 'extracting', 'ready'];
+
 export class Updater {
   private currentVersion: string;
   private latestVersion: string | null = null;
@@ -215,9 +229,18 @@ export class Updater {
   private parts: Part[] = [];
   private sameVersion = false;
   private installParts: () => Promise<InstallParts | null>;
+  private rootDir: string;
+  private full: FullUpdateHooks | null;
 
-  constructor(opts: { isDevMode?: boolean; installParts?: () => Promise<InstallParts | null> } = {}) {
+  constructor(opts: {
+    isDevMode?: boolean;
+    installParts?: () => Promise<InstallParts | null>;
+    /** The install root that holds app\, _update_tmp\ and data\; the parent of app\ unless a test names one. */
+    rootDir?: string;
+    full?: FullUpdateHooks;
+  } = {}) {
     this.installParts = opts.installParts ?? (async () => null);
+    this.full = opts.full ?? null;
     // Read version from package.json
     const require = createRequire(import.meta.url);
     const pkg = require('../../package.json');
@@ -227,6 +250,7 @@ export class Updater {
     const appDir = resolve(__dirname, '..', '..');
     const nodeDir = resolve(appDir, '..', 'node');
     this.isDevMode = opts.isDevMode ?? !existsSync(nodeDir);
+    this.rootDir = opts.rootDir ?? resolve(appDir, '..');
   }
 
   getStatus(): UpdateInfo {
@@ -245,6 +269,8 @@ export class Updater {
   }
 
   async checkForUpdate(): Promise<UpdateInfo> {
+    // A check resets the offer that an update being applied still reads.
+    if (IN_PROGRESS.includes(this.status)) return this.getStatus();
     // 60-second cooldown
     const now = Date.now();
     if (now - this.lastCheckTime < 60_000 && this.latestVersion !== null) {
@@ -408,7 +434,7 @@ export class Updater {
       throw new Error('No update available to apply');
     }
 
-    if (this.status === 'downloading' || this.status === 'extracting' || this.status === 'ready') {
+    if (IN_PROGRESS.includes(this.status)) {
       throw new Error('Update already in progress');
     }
 
@@ -419,24 +445,59 @@ export class Updater {
       throw new Error(this.error);
     }
 
-    const appDir = resolve(__dirname, '..', '..');
-    const rootDir = resolve(appDir, '..');
+    // Read once: a check during the download must not change what is being installed.
+    const zipUrl = this.releaseAssetUrl;
+    const full = this.kind === 'full' ? this.full : null;
+    if (this.kind === 'full' && !full) throw new Error('A full update cannot run here');
+    const parts = [...this.parts];
+    const folders = full ? foldersFor(parts) : [];
+    const to = this.latestVersion ?? this.currentVersion;
+
+    const rootDir = this.rootDir;
     const tmpDir = join(rootDir, '_update_tmp');
     const oldDir = join(rootDir, '_update_old');
 
+    this.status = 'downloading';
+    this.error = null;
+    let state: UpdateState | null = null;
+    const fail = (err: unknown): void => {
+      this.status = 'error';
+      this.error = err instanceof Error ? err.message : String(err);
+      try {
+        if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+      } catch { /* best effort */ }
+      if (!state) return;
+      try {
+        writeUpdateState(rootDir, { ...state, result: 'failed', reason: this.error });
+      } catch (writeErr) {
+        logger.error({ err: writeErr }, 'Could not record the failed update');
+      }
+    };
+
     try {
+      if (full) {
+        const at = new Date().toISOString();
+        state = { from: this.currentVersion, to, parts, folders, step: 'download', result: 'running', reason: null, startedAt: at, stepStartedAt: at, baseline: null };
+        writeUpdateState(rootDir, state);
+      }
+
       // Clean up any previous update artifacts
       if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
       if (existsSync(oldDir)) rmSync(oldDir, { recursive: true, force: true });
+      if (full) clearLeftovers(rootDir);
       mkdirSync(tmpDir, { recursive: true });
 
+      // While the stream is still on air, so the check after the swap has something to compare with.
+      if (full && state) {
+        state = { ...state, baseline: await full.baseline() };
+        writeUpdateState(rootDir, state);
+      }
+
       // Download
-      this.status = 'downloading';
-      this.error = null;
-      logger.info({ url: this.releaseAssetUrl }, 'Downloading update');
+      logger.info({ url: zipUrl, kind: this.kind }, 'Downloading update');
 
       const zipPath = join(tmpDir, 'update.zip');
-      const res = await fetch(this.releaseAssetUrl, {
+      const res = await fetch(zipUrl, {
         headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
       });
       if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
@@ -465,20 +526,34 @@ export class Updater {
       logger.info('Extracting update');
       const extractDir = join(tmpDir, 'extracted');
       mkdirSync(extractDir, { recursive: true });
-      execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { timeout: 600_000 });
+      execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { cwd: SPAWN_CWD, windowsHide: true, timeout: 600_000 });
 
-      stageUpdate(extractDir, tmpDir, this.kind === 'full' ? foldersFor(this.parts) : []);
+      stageUpdate(extractDir, tmpDir, folders);
 
       this.status = 'ready';
-      logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');
+      logger.info({ from: this.currentVersion, to, folders }, 'Update staged, restart required');
     } catch (err) {
-      this.status = 'error';
-      this.error = err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'Update failed');
-      // Clean up partial download/extraction
-      try {
-        if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
-      } catch { /* best effort */ }
+      fail(err);
+      throw err;
+    }
+    if (!full || !state) return;
+
+    // The stream goes off air from here; until the swap nothing is replaced, so a failure keeps the old version running.
+    let stopping = false;
+    try {
+      state = { ...state, step: 'stop', stepStartedAt: new Date().toISOString() };
+      writeUpdateState(rootDir, state);
+      stopping = true;
+      const stopped = await full.stop(folders, to);
+      if (!stopped.ok) throw new Error(stopped.reason);
+      state = { ...state, step: 'swap', stepStartedAt: new Date().toISOString() };
+      writeUpdateState(rootDir, state);
+      logger.info({ to, folders }, 'Stream stopped for the swap');
+    } catch (err) {
+      logger.error({ err }, 'The full update was called off before the swap');
+      fail(err);
+      if (stopping) full.resume();
       throw err;
     }
   }
