@@ -430,7 +430,7 @@ describe('failureMessage', () => {
     const text = failureMessage(state({ step: 'stop', result: 'failed', reason: 'ffmpeg\\ffmpeg.exe is still running.' }));
 
     // Assert
-    expect(text).toBe('The update to 3.0.6 failed at stop: ffmpeg\\ffmpeg.exe is still running. Still on 3.0.5.');
+    expect(text).toBe('The update to 3.0.6 failed at stopping the stream: ffmpeg\\ffmpeg.exe is still running. Still on 3.0.5.');
   });
 });
 
@@ -678,7 +678,7 @@ describe('runStartup', () => {
     expect(existsSync(join(ROOT, '_update_tmp'))).toBe(false);
     expect(deps.launcher.release).not.toHaveBeenCalled();
     expect(vi.mocked(deps.notify).mock.calls).toEqual([
-      ['The update to 3.0.6 failed at download: StreamLoop was restarted during the update. Still on 3.0.5.', 'warn'],
+      ['The update to 3.0.6 failed at downloading: StreamLoop was restarted during the update. Still on 3.0.5.', 'warn'],
     ]);
   });
 
@@ -695,7 +695,7 @@ describe('runStartup', () => {
     expect(readUpdateState(ROOT)).toMatchObject({ step: 'check', result: 'rolled-back', reason: 'The new supervisor failed its check: boom' });
     expect(deps.rollBack).not.toHaveBeenCalled();
     expect(vi.mocked(deps.notify).mock.calls).toEqual([
-      ['The update to 3.0.6 failed at check: The new supervisor failed its check: boom. Still on 3.0.5.', 'warn'],
+      ['The update to 3.0.6 failed at checking the new version: The new supervisor failed its check: boom. Still on 3.0.5.', 'warn'],
     ]);
   });
 
@@ -710,7 +710,7 @@ describe('runStartup', () => {
 
     // Assert
     expect(vi.mocked(deps.notify).mock.calls).toEqual([
-      ['The update to 3.0.6 failed at swap: The update was cut off, so the old version was put back. Still on 3.0.5.', 'warn'],
+      ['The update to 3.0.6 failed at replacing files: The update was cut off, so the old version was put back. Still on 3.0.5.', 'warn'],
     ]);
   });
 

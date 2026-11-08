@@ -765,7 +765,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(h.stop).not.toHaveBeenCalled();
     expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
     expect(h.reportFailure.mock.calls).toEqual([[
-      `The update to ${NEXT} failed at download: ffmpeg\\ is not whole, so _update_old_ffmpeg from an earlier update was kept. Still on ${major}.${minor}.${patch}.`,
+      `The update to ${NEXT} failed at downloading: ffmpeg\\ is not whole, so _update_old_ffmpeg from an earlier update was kept. Still on ${major}.${minor}.${patch}.`,
     ]]);
   });
 
@@ -785,7 +785,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(h.resume).toHaveBeenCalledTimes(1);
     expect(updater.getStatus()).toMatchObject({ status: 'error', error: 'ffmpeg\\ffmpeg.exe is still running.' });
     expect(h.reportFailure.mock.calls).toEqual([[
-      `The update to ${NEXT} failed at stop: ffmpeg\\ffmpeg.exe is still running. Still on ${major}.${minor}.${patch}.`,
+      `The update to ${NEXT} failed at stopping the stream: ffmpeg\\ffmpeg.exe is still running. Still on ${major}.${minor}.${patch}.`,
     ]]);
   });
 

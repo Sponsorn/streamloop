@@ -8,6 +8,7 @@ import { checkDependencies, type Encoder } from './setup-check.js';
 import { shouldHold, type StartKind, type SupervisorLauncher } from './supervisor-launcher.js';
 import type { SupervisorClient } from './supervisor-client.js';
 import type { AppConfig } from './types.js';
+import { failureText } from '../admin/update-text.js';
 import { CHECKING_MARKER, setStep, writeUpdateState, type SwapLine, type UpdateState } from './update-state.js';
 
 /** A step that cannot finish gets this many tries before the update falls back. */
@@ -251,8 +252,7 @@ function removeOldCopies(root: string): void {
 
 /** The dashboard's failure copy, also posted to Discord once per update that did not go through. */
 export function failureMessage(state: UpdateState): string {
-  const reason = (state.reason ?? 'no reason was recorded').replace(/\.+$/, '');
-  return `The update to ${state.to} failed at ${state.step}: ${reason}. Still on ${state.from}.`;
+  return failureText(state);
 }
 
 export const RESTARTED = 'StreamLoop was restarted during the update.';

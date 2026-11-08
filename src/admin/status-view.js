@@ -1,5 +1,7 @@
 // Pure decisions for the dashboard, kept out of admin.js so vitest can import them.
 
+import { stepLabel, failureText } from './update-text.js';
+
 const STREAM_WORDS = {
   live: { word: 'Live', level: 'ok' },
   recovering: { word: 'Recovering', level: 'warn' },
@@ -162,4 +164,42 @@ export function savePatch(original, edited) {
   const patch = changedFields(original, edited);
   if (patch.supervisor && patch.supervisor.encoder) patch.supervisor.preferredEncoder = patch.supervisor.encoder;
   return patch;
+}
+
+/** "45 s", "1 min 20 s", "12 min": seconds only under 10 minutes. */
+export function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const min = Math.floor(total / 60);
+  const sec = total % 60;
+  if (min === 0) return `${sec} s`;
+  if (min >= 10 || sec === 0) return `${min} min`;
+  return `${min} min ${sec} s`;
+}
+
+const PART_LABELS = { node: 'Node', supervisor: 'Supervisor', ffmpeg: 'ffmpeg', pot: 'Token server', 'ytdlp-plugin': 'yt-dlp plugin' };
+
+/** The offer: the full update's banner, the same-version button copy, or today's app-only text. */
+export function updateOfferText(status) {
+  if (status.kind === 'full') {
+    if (status.sameVersion) return `Update parts to ${status.latestVersion}`;
+    const names = (status.parts || []).map((p) => PART_LABELS[p] || p).join(', ');
+    return `Full update: the stream goes off air while these parts are replaced: ${names}.`;
+  }
+  return `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
+}
+
+/** True while a full update owns the stream: the dashboard shows its progress instead of the stream status. */
+export function updateRunning(progress) {
+  return !!progress && progress.result === 'running';
+}
+
+/** The progress line: the step with its elapsed time while running, else the result. */
+export function updateProgressText(progress, swapLog, nowMs) {
+  if (progress.result === 'ok') return `Updated to ${progress.to}. Ready to stream.`;
+  if (progress.result !== 'running') return failureText(progress);
+  const since = Date.parse(progress.stepStartedAt);
+  let text = `${stepLabel(progress.step)}, ${formatElapsed(Number.isNaN(since) ? 0 : nowMs - since)}`;
+  const last = progress.step === 'swap' && swapLog && swapLog[swapLog.length - 1];
+  if (last && last.status === 'retry') text += ` (trying ${last.folder} again)`;
+  return text;
 }

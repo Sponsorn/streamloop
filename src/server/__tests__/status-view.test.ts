@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex, updateOfferText, updateProgressText, formatElapsed, updateRunning } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -282,5 +282,79 @@ describe('playingListIndex', () => {
 
   it('takes the first list when the one on air has left the config', () => {
     expect(playingListIndex(lists, 'PLgone')).toBe(0);
+  });
+});
+
+describe('formatElapsed', () => {
+  it('formats elapsed times', () => {
+    // Act + Assert
+    expect(formatElapsed(0)).toBe('0 s');
+    expect(formatElapsed(45_000)).toBe('45 s');
+    expect(formatElapsed(80_000)).toBe('1 min 20 s');
+    expect(formatElapsed(12 * 60_000 + 5_000)).toBe('12 min');
+    expect(formatElapsed(-5)).toBe('0 s');
+  });
+});
+
+describe('updateOfferText', () => {
+  const base = { currentVersion: '3.0.5', latestVersion: '3.0.6', kind: 'app', parts: [], sameVersion: false };
+
+  it('keeps the app-only text', () => {
+    expect(updateOfferText(base)).toBe('Version 3.0.6 is available (current: 3.0.5)');
+  });
+
+  it('names the parts of a full update', () => {
+    // Act
+    const text = updateOfferText({ ...base, kind: 'full', parts: ['node', 'ffmpeg', 'ytdlp-plugin'] });
+
+    // Assert
+    expect(text).toBe('Full update: the stream goes off air while these parts are replaced: Node, ffmpeg, yt-dlp plugin.');
+  });
+
+  it('offers a same-version parts update', () => {
+    expect(updateOfferText({ ...base, latestVersion: '3.0.5', kind: 'full', parts: ['pot'], sameVersion: true })).toBe('Update parts to 3.0.5');
+  });
+});
+
+describe('updateProgressText', () => {
+  const state = (over: Record<string, unknown> = {}) => ({
+    from: '3.0.5', to: '3.0.6', parts: ['node'], folders: ['node'], step: 'swap', result: 'running', reason: null,
+    startedAt: '2026-11-08T10:00:00.000Z', stepStartedAt: '2026-11-08T10:00:00.000Z', baseline: null, ...over,
+  });
+  const at = (s: number) => Date.parse('2026-11-08T10:00:00.000Z') + s * 1000;
+
+  it('shows the step and its elapsed time', () => {
+    expect(updateProgressText(state(), [], at(80))).toBe('Replacing files, 1 min 20 s');
+    expect(updateProgressText(state({ step: 'stop' }), [], at(5))).toBe('Stopping the stream, 5 s');
+    expect(updateProgressText(state({ step: 'download' }), [], at(0))).toBe('Downloading, 0 s');
+    expect(updateProgressText(state({ step: 'check' }), [], at(3))).toBe('Checking the new version, 3 s');
+    expect(updateProgressText(state({ step: 'start' }), [], at(3))).toBe('Starting the stream, 3 s');
+  });
+
+  it('mentions a swap retry', () => {
+    const log = [{ folder: 'node', status: 'retry', detail: 'in use' }];
+    expect(updateProgressText(state(), log, at(10))).toBe('Replacing files, 10 s (trying node again)');
+  });
+
+  it('shows the ready copy when the update went through', () => {
+    expect(updateProgressText(state({ step: 'done', result: 'ok' }), [], at(1))).toBe('Updated to 3.0.6. Ready to stream.');
+  });
+
+  it('shows the failure with step and reason', () => {
+    // Act
+    const failed = updateProgressText(state({ step: 'swap', result: 'failed', reason: 'ffmpeg is still running.' }), [], at(1));
+    const back = updateProgressText(state({ step: 'check', result: 'rolled-back', reason: 'No encoder works.' }), [], at(1));
+
+    // Assert
+    expect(failed).toBe('The update to 3.0.6 failed at replacing files: ffmpeg is still running. Still on 3.0.5.');
+    expect(back).toBe('The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5.');
+  });
+});
+
+describe('updateRunning', () => {
+  it('is true only while the result is running', () => {
+    expect(updateRunning({ result: 'running' })).toBe(true);
+    expect(updateRunning({ result: 'ok' })).toBe(false);
+    expect(updateRunning(null)).toBe(false);
   });
 });
