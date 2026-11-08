@@ -67,6 +67,7 @@ fn iso(ms: u128) -> String {
 
 
 pub const PORT: u16 = 4417;
+pub const TOKEN_PORT: u16 = 4416;
 
 /// Test knobs, honoured only with --debug-faults.
 #[derive(Default)]
@@ -85,10 +86,13 @@ pub struct Args {
     /// Dev override for local MediaMTX: replaces ingest and key.
     target: Option<String>,
     debug_faults: bool,
+    /// Test knobs: a second supervisor beside the production one needs other ports.
+    api_port: u16,
+    token_port: u16,
     dev: Dev,
 }
 
-const DEV_FLAGS: [&str; 6] = ["url-ttl-s", "url-refresh-margin-s", "limit-rate", "start", "max-videos", "hours"];
+const DEV_FLAGS: [&str; 8] = ["url-ttl-s", "url-refresh-margin-s", "limit-rate", "start", "max-videos", "hours", "api-port", "token-port"];
 const FLAGS: [&str; 5] = ["root", "config", "data", "target", "debug-faults"];
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -101,6 +105,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     if let Some(d) = DEV_FLAGS.iter().find(|d| opt(d).is_some()).filter(|_| !debug_faults) {
         return Err(format!("--{d} is a test flag and needs --debug-faults"));
     }
+    let port = |name: &str, default: u16| -> Result<u16, String> { opt(name).map_or(Ok(default), |v| v.parse::<u16>().map_err(|_| format!("--{name} {v}: not a port"))) };
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = match opt("root") {
         Some(r) => cwd.join(r),
@@ -116,6 +121,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         paths,
         target: opt("target"),
         debug_faults,
+        api_port: port("api-port", PORT)?,
+        token_port: port("token-port", TOKEN_PORT)?,
         dev: Dev {
             url_ttl: num("url-ttl-s")?.map(|v| v as u64),
             refresh_margin: num("url-refresh-margin-s")?.map(|v| v as u64),
@@ -1679,8 +1686,9 @@ impl Ctl {
                         let refusals = std::mem::take(&mut self.token_refusals);
                         self.token_cleared_at = Some(Instant::now());
                         let logs = self.logs.clone();
+                        let token_port = self.args.token_port;
                         std::thread::spawn(move || {
-                            let cleared = ytdlp::invalidate_token_caches(TOKEN_PORT);
+                            let cleared = ytdlp::invalidate_token_caches(token_port);
                             logs.event(if cleared { "info" } else { "warn" }, "token-caches-cleared", json!({"refusals": refusals, "ok": cleared}));
                         });
                     }
@@ -2453,12 +2461,10 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
     }
 }
 
-const TOKEN_PORT: u16 = 4416;
-
 /// Adopt a running PO-token server, or own one; replace it when it dies or hangs.
-fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
+fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: Logs) {
     let mut owned: Option<Child> = None;
-    let spawn = |logs: &Logs| match ytdlp::spawn_token_server(&paths.node, &paths.token_server, TOKEN_PORT, logs) {
+    let spawn = |logs: &Logs| match ytdlp::spawn_token_server(&paths.node, &paths.token_server, port, logs) {
         Ok(c) => {
             logs.event("info", "token-server-spawn", json!({"pid": c.id()}));
             Some(c)
@@ -2468,9 +2474,9 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
             None
         }
     };
-    if ytdlp::ping(TOKEN_PORT) {
+    if ytdlp::ping(port) {
         state.lock().unwrap().state = "adopted";
-        logs.event("info", "token-server-adopt", json!({"port": TOKEN_PORT}));
+        logs.event("info", "token-server-adopt", json!({"port": port}));
     } else {
         owned = spawn(&logs);
         state.lock().unwrap().state = if owned.is_some() { "owned" } else { "down" };
@@ -2497,7 +2503,7 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
                     procs::kill_tree(c.id());
                 }
                 None => {
-                    if let Some(pid) = procs::pid_on_port(TOKEN_PORT) {
+                    if let Some(pid) = procs::pid_on_port(port) {
                         procs::kill_tree(pid);
                     }
                 }
@@ -2505,7 +2511,7 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
         }
         let exited = owned.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))));
         if Instant::now() >= next_ping && restart_at.is_none() {
-            if ytdlp::ping(TOKEN_PORT) {
+            if ytdlp::ping(port) {
                 failed_pings = 0;
                 backoff_level = 0;
                 next_ping = Instant::now() + Duration::from_secs(15);
@@ -2573,7 +2579,7 @@ fn main() {
     });
     let (tx, rx) = channel::<Msg>();
     let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
-    let settings = bind_then_settings(&args, PORT, tx.clone(), snapshot.clone()).unwrap_or_else(|code| std::process::exit(code));
+    let settings = bind_then_settings(&args, args.api_port, tx.clone(), snapshot.clone()).unwrap_or_else(|code| std::process::exit(code));
     if let Err(e) = procs::enter_job() {
         logs::echo(&mut std::io::stderr().lock(), &format!("warning: {e}; children will not die with the supervisor"));
     }
@@ -2596,8 +2602,8 @@ fn main() {
         std::thread::spawn(move || media::writer(&s));
     }
     {
-        let (t, p, l) = (token.clone(), args.paths.clone(), logs.clone());
-        std::thread::spawn(move || token_watchdog(t, p, l));
+        let (t, p, l, port) = (token.clone(), args.paths.clone(), logs.clone(), args.token_port);
+        std::thread::spawn(move || token_watchdog(t, p, port, l));
     }
     {
         let (yt, l, tx, c) = (yt.clone(), logs.clone(), tx.clone(), cache.clone());
@@ -3613,6 +3619,16 @@ mod tests {
         let a = args(&["--root", "x", "--debug-faults", "--hours", "0.5", "--data", "d"]).unwrap();
         assert_eq!(a.dev.hours, Some(0.5));
         assert!(a.paths.data.ends_with("d") && a.config.ends_with("app/config.json"));
+    }
+
+    #[test]
+    fn ports_are_test_knobs_with_the_production_defaults() {
+        let args = |a: &[&str]| parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let a = args(&["--root", "x"]).unwrap();
+        assert_eq!((a.api_port, a.token_port), (4417, 4416));
+        assert!(args(&["--root", "x", "--token-port", "4426"]).err().unwrap().contains("--debug-faults"));
+        let b = args(&["--root", "x", "--debug-faults", "--api-port", "4427", "--token-port", "4426"]).unwrap();
+        assert_eq!((b.api_port, b.token_port), (4427, 4426));
     }
 
     fn write_config(ctl: &Ctl, ids: &[&str]) {
