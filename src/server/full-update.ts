@@ -206,13 +206,49 @@ export async function runHealthCheck(deps: CheckDeps, baseline: UpdateState['bas
 
 /** `streamloop-supervisor.exe check --root ROOT`: exit 0 passes, else its stderr line is the reason. */
 export function supervisorCheck(root: string): Promise<{ ok: boolean; reason: string }> {
-  const exe = join(root, 'supervisor', 'streamloop-supervisor.exe');
+  return runCheckProgram(join(root, 'supervisor', 'streamloop-supervisor.exe'), ['check', '--root', root]);
+}
+
+/** Well above the check's own worst case: up to 15 s for the token server, its last ping and ffmpeg -version. */
+const CHECK_TIMEOUT_MS = 60_000;
+/** After the tree kill, how long the check's output may take to close before the try is given up. */
+const KILLED_CLOSE_MS = 10_000;
+const TASKKILL = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+
+/** Ends a process and every process it started. */
+function killTree(pid: number): Promise<void> {
   return new Promise((res) => {
-    execFile(exe, ['check', '--root', root], { cwd: SPAWN_CWD, windowsHide: true, timeout: 60_000 }, (err, _stdout, stderr) => {
-      if (!err) return res({ ok: true, reason: '' });
+    execFile(TASKKILL, ['/T', '/F', '/PID', String(pid)], { cwd: SPAWN_CWD, windowsHide: true, timeout: 30_000 }, () => res());
+  });
+}
+
+/** Runs one try of the check. One that runs too long is ended with its tree: execFile's own timeout ends only
+ *  the check, and the token server it started would keep port 4418, so the next try would fail on the port. */
+export function runCheckProgram(exe: string, args: string[], timeoutMs = CHECK_TIMEOUT_MS): Promise<{ ok: boolean; reason: string }> {
+  return new Promise((res) => {
+    let settled = false;
+    let timedOut = false;
+    const finish = (r: { ok: boolean; reason: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      res(r);
+    };
+    const late = { ok: false, reason: `it did not finish within ${Math.round(timeoutMs / 1000)} s` };
+    const child = execFile(exe, args, { cwd: SPAWN_CWD, windowsHide: true }, (err, _stdout, stderr) => {
+      if (!err) return finish({ ok: true, reason: '' });
+      if (timedOut) return finish(late);
       const said = String(stderr).trim().split(/\r?\n/).pop()?.replace(/^streamloop-supervisor check:\s*/, '');
-      res({ ok: false, reason: said || ((err as { killed?: boolean }).killed ? 'it did not finish within 60 s' : errorText(err)) });
+      finish({ ok: false, reason: said || errorText(err) });
     });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      const pid = child.pid;
+      void (pid === undefined ? Promise.resolve() : killTree(pid)).then(() => {
+        if (child.exitCode === null) child.kill();
+        setTimeout(() => finish(late), KILLED_CLOSE_MS).unref();
+      });
+    }, timeoutMs);
   });
 }
 

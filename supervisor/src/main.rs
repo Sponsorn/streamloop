@@ -2597,25 +2597,45 @@ fn self_check(args: &Args) -> Result<(), String> {
         return Err(format!("port {CHECK_TOKEN_PORT} is already in use"));
     }
     let mut child = ytdlp::spawn_token_server(&p.node, &p.token_server, CHECK_TOKEN_PORT, &logs).map_err(|e| format!("the token server did not start: {e}"))?;
-    let mut answered = false;
-    let mut exited = None;
-    for i in 0..3 {
-        if i > 0 {
-            std::thread::sleep(Duration::from_secs(2));
-        }
-        exited = child.try_wait().ok().flatten().map(|s| s.to_string());
-        if exited.is_some() {
-            break;
-        }
-        if ytdlp::ping(CHECK_TOKEN_PORT) {
-            answered = true;
-            exited = child.try_wait().ok().flatten().map(|s| s.to_string());
-            break;
-        }
-    }
+    let spawned = Instant::now();
+    let (answered, exited) = {
+        let child = std::cell::RefCell::new(&mut child);
+        wait_for_token_server(
+            || spawned.elapsed(),
+            || child.borrow_mut().try_wait().ok().flatten().map(|s| s.to_string()),
+            || ytdlp::ping(CHECK_TOKEN_PORT),
+            std::thread::sleep,
+        )
+    };
     let _ = child.kill();
     let _ = child.wait();
     token_verdict(answered, exited)
+}
+
+/// A fresh token server gets as long as token_watchdog gives it before its first ping, so a slow
+/// first start (antivirus scanning a just-swapped node\ or pot\) does not fail the check.
+const CHECK_TOKEN_GRACE: Duration = Duration::from_secs(15);
+
+/// Pings every second until the token server answers or exits, or the grace from its spawn is over.
+/// Returns whether it answered and how it exited, if it did.
+fn wait_for_token_server(
+    since_spawn: impl Fn() -> Duration,
+    mut exited: impl FnMut() -> Option<String>,
+    mut ping: impl FnMut() -> bool,
+    mut sleep: impl FnMut(Duration),
+) -> (bool, Option<String>) {
+    loop {
+        if let Some(status) = exited() {
+            return (false, Some(status));
+        }
+        if ping() {
+            return (true, exited());
+        }
+        if since_spawn() >= CHECK_TOKEN_GRACE {
+            return (false, exited());
+        }
+        sleep(Duration::from_secs(1));
+    }
 }
 
 /// A ping only counts while the token server we started is still running.
@@ -4628,5 +4648,46 @@ mod tests {
     fn check_passes_only_on_an_answer_from_a_running_token_server() {
         assert!(token_verdict(true, None).is_ok());
         assert_eq!(token_verdict(false, None).unwrap_err(), "the token server did not answer");
+    }
+
+    /// A clock that moves only when the wait sleeps, and the pings it was asked for, by second.
+    fn token_wait(answer_at_s: Option<u64>, exit_at_s: Option<u64>) -> ((bool, Option<String>), Vec<u64>) {
+        let now = std::cell::Cell::new(Duration::ZERO);
+        let pings = std::cell::RefCell::new(Vec::new());
+        let r = wait_for_token_server(
+            || now.get(),
+            || exit_at_s.filter(|&s| now.get().as_secs() >= s).map(|_| "exit code: 1".to_string()),
+            || {
+                pings.borrow_mut().push(now.get().as_secs());
+                answer_at_s.is_some_and(|s| now.get().as_secs() >= s)
+            },
+            |d| now.set(now.get() + d),
+        );
+        (r, pings.into_inner())
+    }
+
+    #[test]
+    fn check_waits_for_a_slow_token_server_as_the_watchdog_does() {
+        let ((answered, exited), pings) = token_wait(Some(12), None);
+
+        assert!(answered && exited.is_none());
+        assert_eq!(pings.last(), Some(&12));
+    }
+
+    #[test]
+    fn check_pings_every_second_for_15_s_from_the_spawn_before_it_gives_up() {
+        let ((answered, exited), pings) = token_wait(None, None);
+
+        assert!(!answered && exited.is_none());
+        assert_eq!(pings, (0..=15).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn check_stops_waiting_when_the_token_server_exits() {
+        let ((answered, exited), pings) = token_wait(None, Some(5));
+
+        assert!(!answered);
+        assert_eq!(exited.as_deref(), Some("exit code: 1"));
+        assert_eq!(pings, (0..5).collect::<Vec<u64>>());
     }
 }

@@ -11,6 +11,7 @@ import {
   holdAtStart,
   listProcessesUnder,
   processesUnder,
+  runCheckProgram,
   runHealthCheck,
   runStartup,
   stopForSwap,
@@ -214,6 +215,44 @@ describe.skipIf(process.platform !== 'win32')('listProcessesUnder', () => {
     expect(found.map((p) => p.pid)).toContain(child?.pid);
     expect(found.find((p) => p.pid === child?.pid)?.path.toLowerCase()).toBe(join(dir, 'ffmpeg', 'holder.exe').toLowerCase());
     expect(elsewhere).toEqual([]);
+  }, 30_000);
+});
+
+describe.skipIf(process.platform !== 'win32')('runCheckProgram', () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let dir = '';
+  let grandchild = 0;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sl check Ö-'));
+  });
+
+  afterAll(() => {
+    if (grandchild && alive(grandchild)) process.kill(grandchild);
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  });
+
+  it('ends a check that does not finish in time together with the token server it started', async () => {
+    // Arrange: a check that starts a child sharing its output and then hangs. Detached keeps the child out of
+    // the check's own job, as the supervisor's token server is.
+    const pidFile = join(dir, 'token-server.pid');
+    const script = "const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { stdio: 'inherit', detached: true });"
+      + " require('fs').writeFileSync(process.argv[1], String(c.pid)); setInterval(() => {}, 1e9);";
+
+    // Act
+    const result = await runCheckProgram(process.execPath, ['-e', script, pidFile], 3000);
+
+    // Assert
+    grandchild = Number(readFileSync(pidFile, 'utf8'));
+    expect(result).toEqual({ ok: false, reason: 'it did not finish within 3 s' });
+    await vi.waitFor(() => expect(alive(grandchild)).toBe(false), { timeout: 5000 });
   }, 30_000);
 });
 
