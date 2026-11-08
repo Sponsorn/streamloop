@@ -245,7 +245,7 @@ describe.skipIf(process.platform !== 'win32')('START.bat, run for real', () => {
     expect(starts(root)).toEqual(['first old', 'update new']);
   }, 60_000);
 
-  it('ends a process holding a part folder and swaps on the second try', async () => {
+  it('ends a process holding a part folder and swaps on the first try', async () => {
     // Arrange
     const root = makeRoot();
     install(root);
@@ -261,9 +261,59 @@ describe.skipIf(process.platform !== 'win32')('START.bat, run for real', () => {
     expect(code, out).toBe(0);
     await waitFor(() => holder.exitCode !== null || holder.signalCode !== null, 5_000);
     expect(read(root, 'ffmpeg/version.txt')).toBe('new');
-    expect(statuses(root)).toEqual(['ffmpeg retry', 'ffmpeg killed', 'ffmpeg ok', 'app ok']);
+    expect(statuses(root)).toEqual(['ffmpeg killed', 'ffmpeg ok', 'app ok']);
     expect(swapLog(root)).toContain(`ffmpeg killed ffmpeg\\holder.exe pid ${holder.pid}`);
     expect(starts(root)).toEqual(['first old', 'update new']);
+  }, 60_000);
+
+  it('ends a process started from a part folder with its cwd outside the root before the first rename', async () => {
+    // Arrange: it does not hold the folder, so the rename alone would leave it running from _update_old_ffmpeg.
+    const root = makeRoot();
+    install(root);
+    stage(root, ['ffmpeg']);
+    scenario(root, { exits: [75, 0] });
+    linkNode(join(root, 'ffmpeg', 'holder.exe'));
+    const holder = await startHolder(join(root, 'ffmpeg', 'holder.exe'), cache);
+
+    // Act
+    const { code, out } = await runStartBat(root);
+
+    // Assert
+    expect(code, out).toBe(0);
+    await waitFor(() => holder.exitCode !== null || holder.signalCode !== null, 5_000);
+    expect(statuses(root)).toEqual(['ffmpeg killed', 'ffmpeg ok', 'app ok']);
+    expect(swapLog(root)).toContain(`ffmpeg killed ffmpeg\\holder.exe pid ${holder.pid}`);
+    expect(read(root, 'ffmpeg/version.txt')).toBe('new');
+  }, 60_000);
+
+  it('keeps the live part and starts the current version when a leftover from an earlier update cannot be removed', async () => {
+    // Arrange: a process running a copy (not a link, whose name rmdir could drop) from
+    // _update_old_ffmpeg keeps that exe there, so the leftover cannot go.
+    const root = makeRoot();
+    install(root);
+    writePart(join(root, '_update_old_ffmpeg'), 'ffmpeg', 'older');
+    copyFileSync(nodeExe, join(root, '_update_old_ffmpeg', 'holder.exe'));
+    await startHolder(join(root, '_update_old_ffmpeg', 'holder.exe'), cache);
+    stage(root, SWAP_FOLDERS);
+    scenario(root, { exits: [75, 0] });
+
+    // Act
+    const { code, out } = await runStartBat(root);
+
+    // Assert
+    expect(code, out).toBe(0);
+    expect(starts(root)).toEqual(['first old', 'rollback old']);
+    expect(exists(root, 'ffmpeg/ffmpeg.exe'), swapLog(root).join('\n')).toBe(true);
+    expect(statuses(root)).toEqual(['ffmpeg failed']);
+    for (const f of SWAP_FOLDERS) {
+      expect(read(root, `${f}/version.txt`)).toBe('old');
+      expect(exists(root, `${f}/${keyFile(f)}`)).toBe(true);
+      expect(exists(root, `_update_bad_${f}`)).toBe(false);
+    }
+    expect(exists(root, '_update_old_node')).toBe(false);
+    expect(exists(root, '_update_tmp')).toBe(false);
+    expect(exists(root, 'data/update-swapping')).toBe(false);
+    expect(exists(root, 'data/update-checking')).toBe(false);
   }, 60_000);
 
   it('rolls back every part and starts the old version when a folder stays locked', async () => {
@@ -364,6 +414,7 @@ describe.skipIf(process.platform !== 'win32')('START.bat, run for real', () => {
     expect(exists(root, '_update_old')).toBe(false);
     expect(exists(root, '_update_bad_app')).toBe(false);
     expect(exists(root, 'data/update-checking')).toBe(false);
+    expect(exists(root, 'data/update-swapping')).toBe(false);
     expect(swapLog(root).slice(-6)).toEqual([
       ...SWAP_FOLDERS.map((f) => `${f} restored the previous version`),
       'app restored the previous version',
@@ -461,6 +512,90 @@ describe.skipIf(process.platform !== 'win32')('START.bat, run for real', () => {
     expect(exists(root, '_update_old_supervisor')).toBe(false);
     expect(exists(root, '_update_tmp')).toBe(false);
     expect(exists(root, 'data/update-swapping')).toBe(false);
+  }, 60_000);
+
+  it('ends a new-version process running from a part folder before a rollback moves it away', async () => {
+    // Arrange: the state right after a part swap, with a process from the new ffmpeg\ whose cwd is outside.
+    const root = makeRoot();
+    writeApp(join(root, 'app'), 'new');
+    writeApp(join(root, '_update_old'), 'old');
+    for (const f of SWAP_FOLDERS) {
+      writePart(join(root, f), f, 'new');
+      writePart(join(root, `_update_old_${f}`), f, 'old');
+    }
+    linkNode(join(root, 'ffmpeg', 'holder.exe'));
+    const holder = await startHolder(join(root, 'ffmpeg', 'holder.exe'), cache);
+    scenario(root, { exits: [76, 0] });
+
+    // Act
+    const { code, out } = await runStartBat(root, ['update']);
+
+    // Assert
+    expect(code, out).toBe(0);
+    await waitFor(() => holder.exitCode !== null || holder.signalCode !== null, 5_000);
+    const log = swapLog(root);
+    expect(log.indexOf(`ffmpeg killed ffmpeg\\holder.exe pid ${holder.pid}`)).toBeGreaterThan(-1);
+    expect(log.indexOf(`ffmpeg killed ffmpeg\\holder.exe pid ${holder.pid}`)).toBeLessThan(log.indexOf('ffmpeg restored the previous version'));
+    expect(read(root, 'ffmpeg/version.txt')).toBe('old');
+    expect(exists(root, '_update_bad_ffmpeg')).toBe(false);
+  }, 60_000);
+
+  it('keeps the current part on exit 76 when its previous copy is incomplete', async () => {
+    // Arrange: the state right after a part swap, with ffmpeg.exe missing from the old copy.
+    const root = makeRoot();
+    writeApp(join(root, 'app'), 'new');
+    writeApp(join(root, '_update_old'), 'old');
+    for (const f of SWAP_FOLDERS) {
+      writePart(join(root, f), f, 'new');
+      writePart(join(root, `_update_old_${f}`), f, 'old');
+    }
+    rmSync(join(root, '_update_old_ffmpeg', 'ffmpeg.exe'));
+    scenario(root, { exits: [76, 0] });
+
+    // Act
+    const { code, out } = await runStartBat(root, ['update']);
+
+    // Assert
+    expect(code, out).toBe(0);
+    expect(starts(root)).toEqual(['update new', 'rollback old']);
+    expect(read(root, 'ffmpeg/ffmpeg.exe')).toBe('new ffmpeg');
+    expect(exists(root, '_update_bad_ffmpeg')).toBe(false);
+    expect(swapLog(root)).toContain('ffmpeg failed the previous version is incomplete so the current one stays');
+    for (const f of SWAP_FOLDERS.filter((x) => x !== 'ffmpeg')) expect(read(root, `${f}/version.txt`)).toBe('old');
+    expect(read(root, 'app/version.txt')).toBe('old');
+  }, 60_000);
+
+  it('finishes a rollback that was cut off after one part', async () => {
+    // Arrange: node\ is back, supervisor\ is moved out but not yet replaced, the rest and app\ are still new.
+    const root = makeRoot();
+    writeApp(join(root, 'app'), 'new');
+    writeApp(join(root, '_update_old'), 'old');
+    writePart(join(root, 'node'), 'node', 'old');
+    writePart(join(root, '_update_bad_supervisor'), 'supervisor', 'new');
+    writePart(join(root, '_update_old_supervisor'), 'supervisor', 'old');
+    for (const f of ['ffmpeg', 'pot', 'yt-dlp']) {
+      writePart(join(root, f), f, 'new');
+      writePart(join(root, `_update_old_${f}`), f, 'old');
+    }
+    writeFileSync(join(root, 'data', 'update-swapping'), '');
+    writeFileSync(join(root, 'data', 'update-checking'), '');
+    scenario(root, { exits: [0] });
+
+    // Act
+    const { code, out } = await runStartBat(root);
+
+    // Assert
+    expect(code, out).toBe(0);
+    expect(starts(root)).toEqual(['first old']);
+    for (const f of SWAP_FOLDERS) {
+      expect(read(root, `${f}/version.txt`)).toBe('old');
+      expect(exists(root, `_update_old_${f}`)).toBe(false);
+      expect(exists(root, `_update_bad_${f}`)).toBe(false);
+    }
+    expect(read(root, 'app/version.txt')).toBe('old');
+    expect(exists(root, '_update_old')).toBe(false);
+    expect(exists(root, 'data/update-swapping')).toBe(false);
+    expect(exists(root, 'data/update-checking')).toBe(false);
   }, 60_000);
 
   it('rolls back to an old app that knows nothing of update state', async () => {

@@ -87,6 +87,7 @@ if %ERRORLEVEL% equ 75 (
     echo.
     cd /d "%ROOT%"
     set "NEXT_START=restart"
+    set "RESTORE_FAILED=0"
 
     rem Parts first, app last. A part that fails puts every swapped part back and skips app.
     call :swap_parts
@@ -149,7 +150,8 @@ if %ERRORLEVEL% equ 75 (
             call :app_failed the app folder stayed in use
         )
     )
-    if exist "%SWAPPING%" del /f /q "%SWAPPING%"
+    rem A restore that failed keeps the marker, so heal tries again on the next start.
+    if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"
     rem Written here so a new Node that crashes before its check starts still counts toward a rollback.
     if "!NEXT_START!"=="update" type nul > "%CHECKING%"
     if "!NEXT_START!"=="rollback" if exist "%CHECKING%" del /f /q "%CHECKING%"
@@ -211,15 +213,19 @@ ping -n 11 127.0.0.1 >nul
 set "STREAMLOOP_START=%NEXT_START%"
 goto loop
 
-:: Put back every part and the app, carrying the newer config.json and logs into the restored app.
-:: The restored app may predate full updates, so nothing here relies on it.
+:: Put back every part and the app, carrying the newer config.json and logs over; the marker lets
+:: heal finish a rollback cut off half-way. Nothing here relies on the restored app's update code.
 :rollback
 echo.
 echo Putting the previous version back...
 cd /d "%ROOT%"
+if not exist "%ROOT%data" mkdir "%ROOT%data"
+type nul > "%SWAPPING%"
+set "RESTORE_FAILED=0"
 call :restore_parts
 call :restore_app
 if exist "%CHECKING%" del /f /q "%CHECKING%"
+if "!RESTORE_FAILED!"=="0" del /f /q "%SWAPPING%" 2>nul
 set "CHECK_CRASHES=0"
 echo Starting the previous version...
 ping -n 3 127.0.0.1 >nul
@@ -230,14 +236,17 @@ goto loop
 :: which would fail every start. Restore the old copy, or promote the staged one.
 :heal
 cd /d "%ROOT%"
-:: A swap cut off by a closed window or a power cut would mix old and new parts: put the old ones back.
+:: A swap or rollback cut off by a closed window or a power cut would mix old and new parts:
+:: put the old ones back.
 if exist "%SWAPPING%" (
-    echo [RECOVER] An update was cut off while it replaced files - putting the previous version back ...
+    echo [RECOVER] An update or rollback was cut off while it replaced files - putting the previous version back ...
+    set "RESTORE_FAILED=0"
     call :restore_parts
     call :restore_app
     if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
     if exist "%ROOT%START.bat.new" del /f /q "%ROOT%START.bat.new"
-    del /f /q "%SWAPPING%" 2>nul
+    if exist "%CHECKING%" del /f /q "%CHECKING%"
+    if "!RESTORE_FAILED!"=="0" del /f /q "%SWAPPING%" 2>nul
 )
 if not exist "%APP%\src\server\index.ts" (
     if exist "%ROOT%_update_old\src\server\index.ts" (
@@ -248,6 +257,10 @@ if not exist "%APP%\src\server\index.ts" (
         echo [RECOVER] app missing - promoting staged _update_tmp\app ...
         if exist "%APP%" rmdir /s /q "%APP%" 2>nul
         move "%ROOT%_update_tmp\app" "%APP%"
+    ) else if exist "%ROOT%_update_bad_app\src\server\index.ts" (
+        echo [RECOVER] app missing - taking back _update_bad_app ...
+        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
+        rename "%ROOT%_update_bad_app" app
     )
 )
 for %%F in (%PARTS%) do call :heal_part %%F
@@ -265,6 +278,12 @@ if exist "%ROOT%_update_tmp\%~1\!KEY_%~1!" (
     echo [RECOVER] %~1 missing - promoting staged _update_tmp\%~1 ...
     if exist "%ROOT%%~1" rmdir /s /q "%ROOT%%~1" 2>nul
     move "%ROOT%_update_tmp\%~1" "%ROOT%%~1" >nul
+    goto :eof
+)
+if exist "%ROOT%_update_bad_%~1\!KEY_%~1!" (
+    echo [RECOVER] %~1 missing - taking back _update_bad_%~1 ...
+    if exist "%ROOT%%~1" rmdir /s /q "%ROOT%%~1" 2>nul
+    rename "%ROOT%_update_bad_%~1" %~1
 )
 goto :eof
 
@@ -278,25 +297,20 @@ echo Replacing install parts:%STAGED%
 if not exist "%ROOT%data" mkdir "%ROOT%data"
 if exist "%SWAP_LOG%" del /f /q "%SWAP_LOG%"
 set "CHECK_CRASHES=0"
+call :clear_leftovers
+:: Nothing is renamed yet, so there is nothing to put back: the current version starts as it is.
+if "%REFUSED%"=="1" (
+    echo [ERROR] Copies left by an earlier update are in the way. The update is called off.
+    if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
+    if exist "%CHECKING%" del /f /q "%CHECKING%"
+    set "PARTS_RESULT=failed"
+    goto :eof
+)
+type nul > "%SWAPPING%"
+:: Nothing may run from a folder being replaced, whether it holds the folder or not.
+call :end_processes %STAGED%
 set "SWAP_FAILED=0"
-:: A rollback puts back every _update_old_ copy it finds, so copies left by an earlier update
-:: must go first. heal ran before this Node started, so the live folders are whole.
-for %%F in (%PARTS%) do (
-    if exist "%ROOT%_update_old_%%F" if exist "%ROOT%%%F\!KEY_%%F!" rmdir /s /q "%ROOT%_update_old_%%F" 2>nul
-    if exist "%ROOT%_update_old_%%F" (
-        call :log %%F failed an old copy from an earlier update is in the way
-        set "SWAP_FAILED=1"
-    )
-)
-if exist "%ROOT%_update_old" if exist "%APP%\src\server\index.ts" rmdir /s /q "%ROOT%_update_old" 2>nul
-if exist "%ROOT%_update_old" (
-    call :log app failed an old copy from an earlier update is in the way
-    set "SWAP_FAILED=1"
-)
-if "%SWAP_FAILED%"=="0" (
-    type nul > "%SWAPPING%"
-    for %%F in (%STAGED%) do if "!SWAP_FAILED!"=="0" call :swap_one %%F
-)
+for %%F in (%STAGED%) do if "!SWAP_FAILED!"=="0" call :swap_one %%F
 if "%SWAP_FAILED%"=="0" (
     set "PARTS_RESULT=swapped"
     goto :eof
@@ -304,9 +318,31 @@ if "%SWAP_FAILED%"=="0" (
 echo [ERROR] An install part could not be replaced. Putting the previous version back...
 call :restore_parts
 if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
-if exist "%SWAPPING%" del /f /q "%SWAPPING%"
+if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"
 if exist "%CHECKING%" del /f /q "%CHECKING%"
 set "PARTS_RESULT=failed"
+goto :eof
+
+:: A rollback puts back every _update_old_ copy it finds, so copies left by an earlier update
+:: must go first. heal ran before this Node started, so the live folders are whole. Sets REFUSED.
+:clear_leftovers
+set "REFUSED=0"
+for %%F in (%PARTS%) do (
+    for %%P in (_update_old_ _update_bad_) do (
+        if exist "%ROOT%%%P%%F" if exist "%ROOT%%%F\!KEY_%%F!" rmdir /s /q "%ROOT%%%P%%F" 2>nul
+        if exist "%ROOT%%%P%%F" (
+            call :log %%F failed %%P%%F from an earlier update could not be removed
+            set "REFUSED=1"
+        )
+    )
+)
+for %%P in (_update_old _update_bad_app) do (
+    if exist "%ROOT%%%P" if exist "%APP%\src\server\index.ts" rmdir /s /q "%ROOT%%%P" 2>nul
+    if exist "%ROOT%%%P" (
+        call :log app failed %%P from an earlier update could not be removed
+        set "REFUSED=1"
+    )
+)
 goto :eof
 
 :: ffmpeg and the supervisor are run by Node's health check, so only node.exe is run here.
@@ -352,7 +388,7 @@ for /L %%i in (1,1,3) do (
         if %%i gtr 1 (
             echo   %~3 is in use - ending what runs from it, try %%i of 3 ...
             call :log %~3 retry try %%i of 3 after a failed rename
-            call :end_processes "%~1" %~3
+            call :end_processes %~1
             ping -n 4 127.0.0.1 >nul
         )
         rename "%ROOT%%~1" %~2 2>nul
@@ -361,55 +397,75 @@ for /L %%i in (1,1,3) do (
 )
 goto :eof
 
-:: Paths go through the environment: in the command text a quote or non-ASCII letter would break it.
-:: No -WindowStyle Hidden, which would hide this window, since PowerShell shares it.
+:: Ends what runs from ROOT\<folder>\ for each folder named. Paths go through the environment, where
+:: a quote or a non-ASCII letter cannot break them. No -WindowStyle Hidden: it would hide this window.
 :end_processes
-set "SL_DIR=%ROOT%%~1"
+set "SL_DIRS=%*"
 set "SL_ROOT=%ROOT%"
 set "SL_LOG=%SWAP_LOG%"
-set "SL_PART=%~2"
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$dir = $env:SL_DIR + '\'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $p = $_; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; [IO.File]::AppendAllText($env:SL_LOG, $env:SL_PART + ' killed ' + $p.ExecutablePath.Substring($env:SL_ROOT.Length) + ' pid ' + $p.ProcessId + [Environment]::NewLine) } catch {} }" >nul 2>&1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$dirs = @($env:SL_DIRS -split ' ' | Where-Object { $_ }); Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath } | ForEach-Object { $p = $_; foreach ($d in $dirs) { if ($p.ExecutablePath.StartsWith($env:SL_ROOT + $d + '\', [StringComparison]::OrdinalIgnoreCase)) { $n = $d -replace '^_update_(old|bad)_', ''; if ($n -eq '_update_old') { $n = 'app' }; try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; Wait-Process -Id $p.ProcessId -Timeout 10 -ErrorAction SilentlyContinue; [IO.File]::AppendAllText($env:SL_LOG, $n + ' killed ' + $p.ExecutablePath.Substring($env:SL_ROOT.Length) + ' pid ' + $p.ProcessId + [Environment]::NewLine) } catch {}; break } } }" >nul 2>&1
 goto :eof
 
 :restore_parts
+set "AWAY="
+for %%F in (%PARTS%) do if exist "%ROOT%_update_old_%%F" if exist "%ROOT%%%F" set "AWAY=!AWAY! %%F"
+if defined AWAY call :end_processes %AWAY%
 for %%F in (%PARTS%) do if exist "%ROOT%_update_old_%%F" call :restore_one %%F
 goto :eof
 
+:: Sets RESTORE_FAILED when a folder stays in use, so the marker stays and heal tries again.
 :restore_one
-if exist "%ROOT%_update_bad_%~1" rmdir /s /q "%ROOT%_update_bad_%~1" 2>nul
 if exist "%ROOT%%~1" (
+    if exist "%ROOT%_update_bad_%~1" rmdir /s /q "%ROOT%_update_bad_%~1" 2>nul
     call :rename_tries "%~1" "_update_bad_%~1" %~1
     if "!RENAME_OK!"=="0" (
         call :log %~1 failed the new version stayed in use and could not be put back
+        set "RESTORE_FAILED=1"
         goto :eof
     )
 )
 call :rename_tries "_update_old_%~1" "%~1" %~1
 if exist "%ROOT%%~1\!KEY_%~1!" (
     call :log %~1 restored the previous version
-) else (
-    call :log %~1 failed could not put the previous version back
+    if exist "%ROOT%_update_bad_%~1" rmdir /s /q "%ROOT%_update_bad_%~1" 2>nul
+    goto :eof
 )
-if exist "%ROOT%_update_bad_%~1" rmdir /s /q "%ROOT%_update_bad_%~1" 2>nul
+:: The previous copy did not come back whole: keep the current one rather than none.
+if "!RENAME_OK!"=="0" (
+    call :log %~1 failed the previous version stayed in use and could not be put back
+    set "RESTORE_FAILED=1"
+) else (
+    call :log %~1 failed the previous version is incomplete so the current one stays
+    rename "%ROOT%%~1" _update_old_%~1 2>nul
+)
+if not exist "%ROOT%%~1" if exist "%ROOT%_update_bad_%~1" rename "%ROOT%_update_bad_%~1" %~1 2>nul
 goto :eof
 
+:: Puts back the app in _update_old, then carries the newer config.json and logs over from
+:: _update_bad_app, also when a rollback cut off after the rename left that step undone.
 :restore_app
-if not exist "%ROOT%_update_old\src\server\index.ts" goto :eof
-if exist "%ROOT%_update_bad_app" rmdir /s /q "%ROOT%_update_bad_app" 2>nul
-if exist "%APP%" (
-    call :rename_tries "app" "_update_bad_app" app
+if exist "%ROOT%_update_old\src\server\index.ts" (
+    if exist "%APP%" (
+        if exist "%ROOT%_update_bad_app" rmdir /s /q "%ROOT%_update_bad_app" 2>nul
+        call :end_processes app
+        call :rename_tries "app" "_update_bad_app" app
+        if "!RENAME_OK!"=="0" (
+            call :log app failed the new version stayed in use and could not be put back
+            set "RESTORE_FAILED=1"
+            goto :eof
+        )
+    )
+    call :rename_tries "_update_old" "app" app
     if "!RENAME_OK!"=="0" (
-        call :log app failed the new version stayed in use and could not be put back
+        call :log app failed the previous version stayed in use and could not be put back
+        set "RESTORE_FAILED=1"
+        if not exist "%APP%" if exist "%ROOT%_update_bad_app" rename "%ROOT%_update_bad_app" app 2>nul
         goto :eof
     )
 )
-call :rename_tries "_update_old" "app" app
-if not exist "%APP%\src\server\index.ts" (
-    call :log app failed could not put the previous version back
-    goto :eof
-)
-:: The new app holds the newest config.json and logs. When config.json cannot be carried
-:: over, _update_bad_app stays, so the newer settings are not lost.
+if not exist "%ROOT%_update_bad_app" goto :eof
+if not exist "%APP%\src\server\index.ts" goto :eof
+:: When config.json cannot be carried over, _update_bad_app stays, so the newer settings are not lost.
 if exist "%ROOT%_update_bad_app\config.json" (
     copy /y "%ROOT%_update_bad_app\config.json" "%APP%\config.json" >nul
     if errorlevel 1 (

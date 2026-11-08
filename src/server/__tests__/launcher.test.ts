@@ -81,20 +81,58 @@ describe('START.bat', () => {
     expect(healPart).toContain('if exist "%ROOT%_update_old_%~1\\!KEY_%~1!" (');
     expect(healPart).toContain('rename "%ROOT%_update_old_%~1" %~1');
     expect(healPart).toContain('move "%ROOT%_update_tmp\\%~1" "%ROOT%%~1"');
+    expect(healPart).toContain('rename "%ROOT%_update_bad_%~1" %~1');
   });
 
-  it('puts the previous version back when a swap was cut off before it finished', () => {
+  it('puts the previous version back when a swap or a rollback was cut off before it finished', () => {
     // Arrange
     const heal = lines.slice(lines.indexOf(':heal'), lines.indexOf(':heal_part'));
     const marker = heal.indexOf('if exist "%SWAPPING%" (');
+    const branch = heal.slice(marker, heal.indexOf(')', marker) + 1).map((l) => l.trim());
 
     // Assert
     expect(lines).toContain('set "SWAPPING=%ROOT%data\\update-swapping"');
     expect(marker).toBeGreaterThan(-1);
-    expect(heal.slice(marker, marker + 8).map((l) => l.trim())).toEqual(expect.arrayContaining([
+    expect(branch).toEqual(expect.arrayContaining([
       'call :restore_parts',
       'call :restore_app',
+      'if exist "%CHECKING%" del /f /q "%CHECKING%"',
     ]));
+  });
+
+  it('marks a rollback in progress until it is done, so heal can finish one that was cut off', () => {
+    // Arrange
+    const section = lines.slice(lines.indexOf(':rollback'), lines.indexOf(':heal')).map((l) => l.trim());
+    const marked = section.indexOf('type nul > "%SWAPPING%"');
+
+    // Assert
+    expect(marked).toBeGreaterThan(-1);
+    expect(marked).toBeLessThan(section.indexOf('call :restore_parts'));
+    expect(section.indexOf('if "!RESTORE_FAILED!"=="0" del /f /q "%SWAPPING%" 2>nul')).toBeGreaterThan(section.indexOf('call :restore_app'));
+  });
+
+  it('calls a swap off without restoring anything when an earlier leftover cannot be removed', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':swap_one')).map((l) => l.trim());
+    const refused = swapParts.indexOf('if "%REFUSED%"=="1" (');
+    const refusal = swapParts.slice(refused, swapParts.indexOf('goto :eof', refused) + 1);
+
+    // Assert
+    expect(swapParts.indexOf('call :clear_leftovers')).toBeLessThan(refused);
+    expect(refused).toBeLessThan(swapParts.indexOf('type nul > "%SWAPPING%"'));
+    expect(refusal).toContain('set "PARTS_RESULT=failed"');
+    expect(refusal).not.toContain('call :restore_parts');
+  });
+
+  it('keeps the current part when its previous copy cannot be put back whole', () => {
+    // Arrange
+    const restoreOne = lines.slice(lines.indexOf(':restore_one'), lines.indexOf(':restore_app')).map((l) => l.trim());
+    const restored = restoreOne.indexOf('call :log %~1 restored the previous version');
+
+    // Assert: _update_bad_ is only removed once the restored folder holds its key file.
+    expect(restoreOne.filter((l) => l.includes('rmdir /s /q "%ROOT%_update_bad_%~1"'))).toHaveLength(2);
+    expect(restoreOne[restored + 1]).toBe('if exist "%ROOT%_update_bad_%~1" rmdir /s /q "%ROOT%_update_bad_%~1" 2>nul');
+    expect(restoreOne).toContain('if not exist "%ROOT%%~1" if exist "%ROOT%_update_bad_%~1" rename "%ROOT%_update_bad_%~1" %~1 2>nul');
   });
 
   it('keeps the heal routine after the last goto loop, so it only runs via call', () => {
@@ -149,8 +187,21 @@ describe('START.bat', () => {
     expect(swapOne).toContain('"%ROOT%node\\node.exe" --version >nul 2>&1');
     expect(swapOne).toContain('copy /y "%ROOT%_update_old_yt-dlp\\yt-dlp.exe" "%ROOT%yt-dlp\\yt-dlp.exe"');
     expect(tries).toContain('for /L %%i in (1,1,3) do (');
-    expect(tries).toContain('call :end_processes "%~1" %~3');
+    expect(tries).toContain('call :end_processes %~1');
     expect(tries).toContain('ping -n 4 127.0.0.1 >nul');
+  });
+
+  it('ends what runs from a folder before its first rename, held or not', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':swap_one')).map((l) => l.trim());
+    const restoreParts = lines.slice(lines.indexOf(':restore_parts'), lines.indexOf(':restore_one')).map((l) => l.trim());
+    const restoreApp = lines.slice(lines.indexOf(':restore_app'), lines.indexOf(':app_failed')).map((l) => l.trim());
+
+    // Assert
+    expect(swapParts.indexOf('call :end_processes %STAGED%')).toBeGreaterThan(-1);
+    expect(swapParts.indexOf('call :end_processes %STAGED%')).toBeLessThan(swapParts.findIndex((l) => l.includes('call :swap_one')));
+    expect(restoreParts.indexOf('if defined AWAY call :end_processes %AWAY%')).toBeLessThan(restoreParts.findIndex((l) => l.includes('call :restore_one')));
+    expect(restoreApp.indexOf('call :end_processes app')).toBeLessThan(restoreApp.indexOf('call :rename_tries "app" "_update_bad_app" app'));
   });
 
   it('keeps the old app in _update_old after a part swap, for a rollback', () => {
@@ -183,7 +234,7 @@ describe('START.bat', () => {
     const restore = lines.slice(lines.indexOf(':restore_app'), lines.indexOf(':app_failed')).join('\n');
 
     // Assert
-    expect(restore).toContain('if not exist "%ROOT%_update_old\\src\\server\\index.ts" goto :eof');
+    expect(restore).toContain('if exist "%ROOT%_update_old\\src\\server\\index.ts" (');
     expect(restore).toContain('copy /y "%ROOT%_update_bad_app\\config.json" "%APP%\\config.json"');
     expect(restore).toContain('xcopy "%ROOT%_update_bad_app\\logs" "%APP%\\logs\\" /E /I /Y');
   });
@@ -221,8 +272,9 @@ describe('START.bat', () => {
     // Assert
     expect(ps.length).toBeGreaterThan(0);
     for (const l of ps) {
-      expect(l).not.toMatch(/%ROOT%|!ROOT!|%~dp0|%APP%|%~1|%~2|%%F|%SWAP_LOG%/);
-      expect(l).toContain('$env:SL_DIR');
+      expect(l).not.toMatch(/%ROOT%|!ROOT!|%~dp0|%APP%|%~1|%~2|%\*|%%F|%SWAP_LOG%/);
+      expect(l).toContain('$env:SL_DIRS');
+      expect(l).toContain('$env:SL_ROOT');
     }
   });
 
