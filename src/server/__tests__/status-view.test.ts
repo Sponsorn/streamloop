@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex, updateOfferText, updateProgressText, formatElapsed, updateRunning } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex, updateOfferText, updateProgressText, formatElapsed, updateRunning, updateBannerView } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -356,5 +356,47 @@ describe('updateRunning', () => {
     expect(updateRunning({ result: 'running' })).toBe(true);
     expect(updateRunning({ result: 'ok' })).toBe(false);
     expect(updateRunning(null)).toBe(false);
+  });
+});
+
+describe('updateBannerView', () => {
+  const T0 = Date.parse('2026-11-08T10:00:00.000Z');
+  const progress = (over: Record<string, unknown> = {}) => ({
+    from: '3.0.5', to: '3.0.6', parts: ['node'], folders: ['node'], step: 'swap', result: 'running', reason: 'boom',
+    startedAt: new Date(T0).toISOString(), stepStartedAt: new Date(T0).toISOString(), baseline: null, ...over,
+  });
+  const status = (over: Record<string, unknown> = {}) => ({ updateAvailable: false, status: 'idle', progress: null, swapLog: [], ...over });
+
+  it('hides the button while an update runs', () => {
+    // Act
+    const view = updateBannerView(status({ updateAvailable: true, progress: progress() }), T0 + 5000);
+
+    // Assert
+    expect(view).toEqual({ visible: true, text: 'Replacing files, 5 s', showButton: false, keepText: true });
+  });
+
+  it('keeps the failure text and still shows the button when an update is available', () => {
+    // Act
+    const view = updateBannerView(status({ updateAvailable: true, progress: progress({ result: 'failed' }) }), T0 + 3_600_000);
+
+    // Assert
+    expect(view.visible).toBe(true);
+    expect(view.text).toBe('The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.');
+    expect(view.showButton).toBe(true);
+    expect(view.keepText).toBe(true);
+  });
+
+  it('shows the failure without a button when no update is available', () => {
+    expect(updateBannerView(status({ progress: progress({ result: 'rolled-back' }) }), T0).showButton).toBe(false);
+  });
+
+  it('shows ok for 10 minutes and then falls back to the offer', () => {
+    // Arrange
+    const ok = progress({ result: 'ok', step: 'done' });
+
+    // Act + Assert
+    expect(updateBannerView(status({ progress: ok }), T0 + 9 * 60_000)).toMatchObject({ visible: true, text: 'Updated to 3.0.6. Ready to stream.', showButton: false });
+    expect(updateBannerView(status({ progress: ok }), T0 + 11 * 60_000)).toMatchObject({ visible: false, showButton: true, keepText: false });
+    expect(updateBannerView(status({ updateAvailable: true, progress: ok }), T0 + 11 * 60_000)).toMatchObject({ visible: true, showButton: true });
   });
 });

@@ -203,3 +203,21 @@ export function updateProgressText(progress, swapLog, nowMs) {
   if (last && last.status === 'retry') text += ` (trying ${last.folder} again)`;
   return text;
 }
+
+const OK_BANNER_MS = 10 * 60 * 1000;
+
+/** What the update banner shows. keepText: the text is the update's own (progress or result), not the offer's.
+ *  A failed result keeps its text and still offers the next update or a retry; ok gives way to the offer after 10 minutes. */
+export function updateBannerView(status, nowMs) {
+  const p = status.progress;
+  if (p) {
+    const text = updateProgressText(p, status.swapLog || [], nowMs);
+    if (p.result === 'running') return { visible: true, text, showButton: false, keepText: true };
+    if (p.result === 'failed' || p.result === 'rolled-back') {
+      return { visible: true, text, showButton: !!status.updateAvailable, keepText: true };
+    }
+    const since = Date.parse(p.stepStartedAt);
+    if (p.result === 'ok' && nowMs - since < OK_BANNER_MS) return { visible: true, text, showButton: false, keepText: true };
+  }
+  return { visible: !!status.updateAvailable, text: '', showButton: true, keepText: false };
+}

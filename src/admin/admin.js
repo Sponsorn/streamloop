@@ -1,7 +1,7 @@
 import {
   streamLine, youtubeNote, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
   encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, playingListIndex,
-  updateOfferText, updateProgressText, updateRunning,
+  updateOfferText, updateProgressText, updateRunning, updateBannerView,
 } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -727,9 +727,12 @@ async function pollOnce() {
     ]);
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
-    lastProgress = updateStatus ? updateStatus.progress : null;
-    lastSwapLog = updateStatus ? updateStatus.swapLog || [] : [];
-    renderStream(status, lastProgress);
+    if (updateStatus) {
+      lastProgress = updateStatus.progress;
+      lastSwapLog = updateStatus.swapLog || [];
+    }
+    const progress = updateStatus ? updateStatus.progress : lastProgress;
+    renderStream(status, progress);
     renderNowPlaying(status);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
@@ -737,7 +740,7 @@ async function pollOnce() {
     console.error('Poll error:', err);
     pollFailures++;
     if (pollFailures >= 2) $('#connection-lost').classList.remove('hidden');
-    if (pollFailures >= 2 && updateRunning(lastProgress) && !waitingForRestart) waitForRestart();
+    if (pollFailures >= 2 && updateRunning(lastProgress)) waitForRestart();
   }
 }
 
@@ -1334,8 +1337,6 @@ function showToast(message, type = 'error') {
 
 // Updates
 
-const OK_BANNER_MS = 10 * 60 * 1000;
-
 function renderUpdateBanner(status) {
   const banner = $('#update-banner');
   const text = $('#update-banner-text');
@@ -1343,41 +1344,30 @@ function renderUpdateBanner(status) {
   const notice = $('#update-node-notice');
   notice.textContent = status.nodeNotice || '';
   notice.classList.toggle('hidden', !status.nodeNotice);
-  const progress = status.progress;
-  if (progress) {
-    const since = Date.parse(progress.stepStartedAt);
-    const recentOk = progress.result === 'ok' && Date.now() - since < OK_BANNER_MS;
-    if (progress.result === 'running' || progress.result === 'failed' || progress.result === 'rolled-back' || recentOk) {
-      banner.classList.remove('hidden');
-      text.textContent = updateProgressText(progress, status.swapLog || [], Date.now());
-      btn.classList.add('hidden');
-      return;
-    }
-  }
-  btn.classList.remove('hidden');
-  if (!status.updateAvailable) {
-    banner.classList.add('hidden');
-    return;
-  }
-  banner.classList.remove('hidden');
+  const view = updateBannerView(status, Date.now());
+  banner.classList.toggle('hidden', !view.visible);
+  btn.classList.toggle('hidden', !view.showButton);
+  if (!view.visible) return;
+  if (view.keepText) text.textContent = view.text;
+  if (!view.showButton) return;
   if (status.status === 'downloading') {
-    text.textContent = `Downloading v${status.latestVersion}...`;
+    if (!view.keepText) text.textContent = `Downloading v${status.latestVersion}...`;
     btn.disabled = true;
     btn.textContent = 'Downloading...';
   } else if (status.status === 'extracting') {
-    text.textContent = `Installing v${status.latestVersion}...`;
+    if (!view.keepText) text.textContent = `Installing v${status.latestVersion}...`;
     btn.disabled = true;
     btn.textContent = 'Installing...';
   } else if (status.status === 'ready') {
-    text.textContent = 'Update installed. Restarting...';
+    if (!view.keepText) text.textContent = 'Update installed. Restarting...';
     btn.disabled = true;
     btn.textContent = 'Restarting...';
   } else if (status.status === 'error') {
-    text.textContent = `Update failed: ${status.error}`;
+    if (!view.keepText) text.textContent = `Update failed: ${status.error}`;
     btn.disabled = false;
     btn.textContent = 'Retry';
   } else {
-    text.textContent = updateOfferText(status);
+    if (!view.keepText) text.textContent = updateOfferText(status);
     btn.textContent = status.isDevMode ? 'Dev Mode' : status.kind === 'full' && status.sameVersion ? updateOfferText(status) : 'Update Now';
     btn.disabled = !!status.isDevMode;
   }
@@ -1421,7 +1411,12 @@ async function pollUpdateProgress() {
 
 /** Waits for the server with no limit: a full update can keep it down for minutes. Shows the last step seen meanwhile. */
 async function waitForRestart() {
+  if (waitingForRestart) return;
   waitingForRestart = true;
+  await restartLoop();
+}
+
+async function restartLoop() {
   try {
     await api('/api/status');
     window.location.reload();
@@ -1434,7 +1429,7 @@ async function waitForRestart() {
       $('#update-btn').classList.add('hidden');
     }
   }
-  setTimeout(waitForRestart, 2000);
+  setTimeout(restartLoop, 2000);
 }
 
 async function handleCheckUpdate() {
