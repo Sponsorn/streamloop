@@ -1,5 +1,9 @@
 // Wired up by the later server tasks.
 #[allow(dead_code)]
+mod engine;
+#[allow(dead_code)]
+mod google;
+#[allow(dead_code)]
 mod homepage;
 
 fn main() {
