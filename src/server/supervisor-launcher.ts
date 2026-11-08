@@ -6,7 +6,7 @@ import { SPAWN_CWD } from './spawn-cwd.js';
 import type { SupervisorClient } from './supervisor-client.js';
 import { supervisorEventsFile } from './supervisor-events.js';
 
-export type LauncherState = 'missing' | 'starting' | 'running' | 'stopped-by-user' | 'down';
+export type LauncherState = 'missing' | 'starting' | 'running' | 'stopped-by-user' | 'down' | 'ready';
 export type LauncherEvent = 'supervisor-launched' | 'supervisor-down' | 'supervisor-back' | 'supervisor-missing';
 
 export interface SupervisorLauncherOptions {
@@ -20,6 +20,23 @@ export interface SupervisorLauncherOptions {
   debugFaults?: boolean;
   /** Runs right before a spawn, never on attach. A string holds the launch with that reason until a later poll. */
   beforeLaunch?: () => Promise<string | null>;
+  /** Launch nothing until Start or release(); a supervisor that already answers is still attached. */
+  holdForStart?: boolean;
+}
+
+export type StartKind = 'first' | 'restart' | 'update' | 'rollback';
+
+/** Whether this Node start waits for Start. Recovery is not a start: a restart holds only if the last start still waits. */
+export function shouldHold(start: StartKind, autoStartStream: boolean, waitingMarker: boolean): boolean {
+  switch (start) {
+    case 'first':
+    case 'rollback':
+      return !autoStartStream;
+    case 'restart':
+      return waitingMarker;
+    case 'update':
+      return true;
+  }
 }
 
 const MISSES_BEFORE_LAUNCH = 3;
@@ -86,6 +103,7 @@ export class SupervisorLauncher {
   private lastSpawnAt = 0;
   private lastExit: { code: number | null; at: number; spawnedAt: number } | null = null;
   private held: string | null = null;
+  private waitingForStart = false;
   /** Why the last supervisor refused config.json (exit 3), until one answers. */
   private refused: string | null = null;
 
@@ -101,6 +119,35 @@ export class SupervisorLauncher {
     // A Stop survives a Node restart: the marker keeps the supervisor down until Start.
     const marker = this.marker();
     this.stoppedByUser = marker !== null && existsSync(marker);
+    this.waitingForStart = opts.holdForStart ?? false;
+    const waiting = this.waitingMarker();
+    if (this.waitingForStart && waiting) {
+      try {
+        mkdirSync(dirname(waiting), { recursive: true });
+        writeFileSync(waiting, '');
+      } catch {
+        // ponytail: the hold still works; only a restart in the same window would not know about it.
+      }
+    }
+  }
+
+  private waitingMarker(): string | null {
+    return this.root ? join(this.root, 'data', 'waiting-for-start') : null;
+  }
+
+  private endHold(): void {
+    this.waitingForStart = false;
+    const waiting = this.waitingMarker();
+    try {
+      if (waiting) rmSync(waiting, { force: true });
+    } catch {
+      // ponytail: the hold is over; a Node restart before the marker goes would wait for Start again.
+    }
+  }
+
+  /** Ends the hold; the next poll launches unless the stream was stopped by the user. */
+  release(): void {
+    this.endHold();
   }
 
   private marker(): string | null {
@@ -120,6 +167,7 @@ export class SupervisorLauncher {
 
   state(): LauncherState {
     if (this.phase !== 'running' && this.stoppedByUser) return 'stopped-by-user';
+    if (this.phase !== 'running' && this.waitingForStart) return 'ready';
     return this.phase;
   }
 
@@ -156,6 +204,7 @@ export class SupervisorLauncher {
 
   /** An operator Start: no backoff, and the spawn still goes through the one guarded poll. */
   launchNow(): void {
+    this.endHold();
     this.stoppedByUser = false;
     const marker = this.marker();
     try {
@@ -224,6 +273,10 @@ export class SupervisorLauncher {
     if (this.misses < MISSES_BEFORE_LAUNCH) return;
     if (this.stoppedByUser) {
       this.phase = 'stopped-by-user';
+      return;
+    }
+    if (this.waitingForStart) {
+      this.phase = 'down';
       return;
     }
     if (this.phase === 'running') {

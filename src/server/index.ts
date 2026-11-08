@@ -17,7 +17,7 @@ import { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import { SupervisorClient } from './supervisor-client.js';
-import { SupervisorLauncher, installRoot } from './supervisor-launcher.js';
+import { SupervisorLauncher, installRoot, shouldHold, type StartKind } from './supervisor-launcher.js';
 import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent, withPlaylistNames } from './supervisor-events.js';
 import { launchGuard } from './setup-check.js';
 import { hashParts } from './components.js';
@@ -77,10 +77,16 @@ async function main() {
 
   const debugFaults = process.env.STREAMLOOP_DEBUG_FAULTS === '1';
   if (debugFaults) logger.warn('STREAMLOOP_DEBUG_FAULTS=1: the supervisor starts with --debug-faults');
+  // START.bat names this start; anything else counts as the first after the window opened.
+  const startKinds: readonly StartKind[] = ['first', 'restart', 'update', 'rollback'];
+  const startKind = startKinds.find((k) => k === process.env.STREAMLOOP_START) ?? 'first';
+  const holdForStart = shouldHold(startKind, config.autoStartStream, root !== null && existsSync(join(root, 'data', 'waiting-for-start')));
+  if (holdForStart) logger.info({ startKind }, 'The stream waits for Start');
   const launcher = new SupervisorLauncher({
     root,
     client,
     debugFaults,
+    holdForStart,
     onEvent: (kind, detail) => onEvent(launcherEvent(kind, detail)),
     beforeLaunch: root
       ? launchGuard({

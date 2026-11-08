@@ -27,6 +27,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
     autoOpenAdmin: true,
+    autoStartStream: true,
     updateCheckIntervalMs: 21600000,
     twitchClientId: 'test-client-id',
     twitchClientSecret: 'test-client-secret',

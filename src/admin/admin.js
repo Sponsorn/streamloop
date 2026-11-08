@@ -817,6 +817,7 @@ async function loadSettings() {
     $('#set-twitch-client-secret').value = cfg.twitchClientSecret || '';
     $('#set-twitch-channel').value = cfg.twitchChannel || '';
     $('#auto-open-toggle').checked = cfg.autoOpenAdmin !== false;
+    $('#auto-start-stream-toggle').checked = cfg.autoStartStream !== false;
     settingsLoaded = true;
   } catch (err) {
     showToast('Could not load settings: ' + err.message);
@@ -924,6 +925,16 @@ async function handleAutoOpenToggle() {
   const input = $('#auto-open-toggle');
   try {
     await saveConfig({ autoOpenAdmin: input.checked });
+  } catch (err) {
+    showToast('Could not change the setting: ' + err.message);
+    input.checked = !input.checked;
+  }
+}
+
+async function handleAutoStartStreamToggle() {
+  const input = $('#auto-start-stream-toggle');
+  try {
+    await saveConfig({ autoStartStream: input.checked });
   } catch (err) {
     showToast('Could not change the setting: ' + err.message);
     input.checked = !input.checked;
@@ -1471,6 +1482,7 @@ async function boot() {
   $('#copy-redirect-btn').addEventListener('click', (e) => copyRedirectUrl(e.currentTarget));
   $('#autostart-toggle').addEventListener('change', handleAutostartToggle);
   $('#auto-open-toggle').addEventListener('change', handleAutoOpenToggle);
+  $('#auto-start-stream-toggle').addEventListener('change', handleAutoStartStreamToggle);
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
   $('#settings-update-btn').addEventListener('click', handleUpdate);
   $('#update-btn').addEventListener('click', handleUpdate);

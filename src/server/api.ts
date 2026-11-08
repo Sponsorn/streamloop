@@ -93,6 +93,7 @@ export function streamState(
   // So does a Start that waits for that old supervisor to exit.
   if (waitReason) return { state: 'starting', reason: waitReason };
   if (!sup) {
+    if (launcher === 'ready') return { state: 'stopped', reason: 'Ready to stream. Press Start.' };
     if (blockReason) return { state: 'off-air', reason: blockReason };
     if (launcher === 'starting') return { state: 'starting', reason: 'The supervisor is starting.' };
     if (launcher === 'missing') return { state: 'off-air', reason: 'The supervisor program was not found in the install folder.' };

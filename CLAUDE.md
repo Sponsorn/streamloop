@@ -148,3 +148,5 @@ The updater checks GitHub Releases for `Sponsorn/streamloop` and supports one-cl
 **Dev mode:** When the `node/` sibling directory doesn't exist (i.e., running via `npm start`), the updater operates in check-only mode — it can detect available updates but won't download or apply them.
 
 **Config options:** `autoUpdateCheck` (boolean, default true) and `updateCheckIntervalMs` (number, default 21600000 = 6 hours).
+
+**Start the stream when StreamLoop starts:** `autoStartStream` (boolean, default true). When it is off, the first Node start after `START.bat` opens comes up without launching the supervisor and the dashboard shows "Ready to stream. Press Start." (`START.bat` sets `STREAMLOOP_START`: `first`, or `restart` for a crash restart or an app-only update; `data\waiting-for-start` carries a wait across a restart). A supervisor that is already running is attached, never stopped, and a crashed one is still relaunched; a dashboard Stop wins over everything.

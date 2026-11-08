@@ -67,6 +67,7 @@ export interface AppConfig {
   updateCheckIntervalMs: number;
   autoUpdateYtdlp: boolean;
   autoOpenAdmin: boolean;
+  autoStartStream: boolean;
   twitchClientId: string;
   twitchClientSecret: string;
   twitchChannel: string;

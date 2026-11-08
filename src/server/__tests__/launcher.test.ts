@@ -128,6 +128,20 @@ describe('START.bat', () => {
     expect(text).toContain('ping -n 11 127.0.0.1 >nul');
   });
 
+  it('sets STREAMLOOP_START to first before the loop and restart before each goto loop', () => {
+    // Arrange
+    const loop = lines.indexOf(':loop');
+    const first = lines.indexOf('set "STREAMLOOP_START=first"');
+    const gotos = lines.map((l, i) => (l.trim() === 'goto loop' ? i : -1)).filter((i) => i >= 0);
+
+    // Assert
+    expect(first).toBeGreaterThan(-1);
+    expect(first).toBeLessThan(loop);
+    expect(gotos).toHaveLength(2);
+    for (const g of gotos) expect(lines[g - 1].trim()).toBe('set "STREAMLOOP_START=restart"');
+    expect(lines.filter((l) => l.includes('STREAMLOOP_START='))).toHaveLength(3);
+  });
+
   it('uses CRLF line endings, which cmd needs for labels and goto', () => {
     // Arrange
     const raw = readFileSync(launcherPath, 'utf-8');

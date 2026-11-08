@@ -53,6 +53,8 @@ if not exist "%ROOT%pot\build\main.js" (
 echo Starting server...
 echo.
 
+set "STREAMLOOP_START=first"
+
 :loop
 :: Heal again on every start: a rollback in the update block below can fail too.
 call :heal
@@ -136,6 +138,7 @@ if %ERRORLEVEL% equ 75 (
 
     echo Restarting server...
     ping -n 3 127.0.0.1 >nul
+    set "STREAMLOOP_START=restart"
     goto loop
 )
 
@@ -151,6 +154,7 @@ if %ERRORLEVEL% equ 0 (
 echo.
 echo Server crashed (exit code %ERRORLEVEL%). Restarting in 10 seconds...
 ping -n 11 127.0.0.1 >nul
+set "STREAMLOOP_START=restart"
 goto loop
 
 :: Self-heal: an interrupted swap or a failed rollback can leave app\ missing,

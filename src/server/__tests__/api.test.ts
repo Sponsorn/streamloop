@@ -28,7 +28,7 @@ function makeConfig(): AppConfig {
       ingestUrl: 'rtmp://live.twitch.tv/app', streamKeyProtected: BLOB, encoder: 'h264_nvenc', cacheBudgetMb: 300,
       readAheadSeconds: 20, playerClient: 'mweb,web_embedded', overlay: true, freezeSeconds: 20, silenceSeconds: 30,
     },
-    autoUpdateCheck: true, updateCheckIntervalMs: 21600000, autoUpdateYtdlp: true, autoOpenAdmin: true,
+    autoUpdateCheck: true, updateCheckIntervalMs: 21600000, autoUpdateYtdlp: true, autoOpenAdmin: true, autoStartStream: true,
     twitchClientId: 'id', twitchClientSecret: 'secret', twitchChannel: 'chan', twitchLivenessEnabled: false,
     twitchPollIntervalMs: 60000, ytdlCookiesFromBrowser: '',
   };
@@ -266,6 +266,14 @@ WshShell.Run """${bat}""", 1, False`;
       expect(body.stream.state).toBe('stopped');
       expect(body.stream.reason).toMatch(/stopped from the dashboard/i);
     expect(body.stream.reason).toMatch(/until you press Start/i);
+    });
+
+    it('shows Ready to stream while the launcher waits for Start', async () => {
+      h.launcherState.value = 'ready';
+
+      const body = await (await get('/status')).json();
+
+      expect(body.stream).toEqual({ state: 'stopped', reason: 'Ready to stream. Press Start.' });
     });
 
     it('is starting with the launcher reason while a Start waits for the stopped supervisor', async () => {
