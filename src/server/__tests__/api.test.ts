@@ -839,7 +839,7 @@ WshShell.Run """${bat}""", 1, False`;
     const refused: Array<[string, unknown]> = [
       ['/stream/stop', {}], ['/stream/start', {}], ['/player/next', {}], ['/player/prev', {}], ['/player/restart', {}],
       ['/player/jump', { index: 1 }], ['/playlist/switch', { playlistIndex: 1 }], ['/config', { autoOpenAdmin: false }],
-      ['/stream-key', { key: KEY }], ['/update/apply', {}],
+      ['/stream-key', { key: KEY }], ['/update/apply', {}], ['/yt-dlp/update', {}], ['/setup-check/run', {}],
     ];
 
     async function expectRefused(): Promise<void> {
@@ -855,6 +855,7 @@ WshShell.Run """${bat}""", 1, False`;
       expect(h.save).not.toHaveBeenCalled();
       expect(h.protect).not.toHaveBeenCalled();
       expect(h.update.apply).not.toHaveBeenCalled();
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
     }
 
     it('refuses Stop, Start, controls and config saves while an update runs', async () => {
@@ -874,6 +875,20 @@ WshShell.Run """${bat}""", 1, False`;
         // Act + Assert
         await expectRefused();
       }
+    });
+
+    it('refuses to apply while an update check runs, and still takes Stop', async () => {
+      // Arrange
+      h.update.value = { ...idleUpdate(), status: 'checking' };
+
+      // Act
+      const apply = await post('/update/apply');
+      const stop = await post('/stream/stop');
+
+      // Assert
+      expect([apply.status, (await apply.json()).error]).toEqual([409, 'An update is running. Try again when it is done.']);
+      expect(h.update.apply).not.toHaveBeenCalled();
+      expect(stop.status).toBe(200);
     });
 
     it('takes commands again once the update has a result', async () => {

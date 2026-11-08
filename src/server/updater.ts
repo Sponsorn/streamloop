@@ -267,7 +267,8 @@ export class UpdateRefusedError extends Error {
   }
 }
 
-const IN_PROGRESS: readonly UpdateStatus[] = ['downloading', 'extracting', 'ready'];
+/** No check and no apply starts beside these: an apply during a check would read an offer the check is replacing. */
+const IN_PROGRESS: readonly UpdateStatus[] = ['checking', 'downloading', 'extracting', 'ready'];
 
 export class Updater {
   private currentVersion: string;
@@ -331,7 +332,7 @@ export class Updater {
   }
 
   async checkForUpdate(): Promise<UpdateInfo> {
-    // A check resets the offer that an update being applied still reads.
+    // A check resets the offer that an update being applied still reads, and a second check waits for the first.
     if (IN_PROGRESS.includes(this.status)) return this.getStatus();
     // 60-second cooldown
     const now = Date.now();
@@ -345,6 +346,10 @@ export class Updater {
     this.kind = null;
     this.parts = [];
     this.sameVersion = false;
+    // The last check's offer goes too, so a failed check leaves nothing half-known to apply.
+    this.updateAvailable = false;
+    this.releaseAssetUrl = null;
+    this.releaseChecksumUrl = null;
 
     try {
       let releases: GithubRelease[];
@@ -506,12 +511,12 @@ export class Updater {
       throw new Error('Cannot apply updates in dev mode');
     }
 
-    if (!this.updateAvailable || !this.releaseAssetUrl) {
-      throw new Error('No update available to apply');
-    }
-
     if (IN_PROGRESS.includes(this.status)) {
       throw new Error('Update already in progress');
+    }
+
+    if (!this.updateAvailable || !this.releaseAssetUrl) {
+      throw new Error('No update available to apply');
     }
 
     const checksumUrl = this.releaseChecksumUrl;

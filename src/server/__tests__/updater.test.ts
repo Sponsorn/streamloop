@@ -408,6 +408,56 @@ describe('Updater checksum', () => {
   });
 });
 
+describe('Updater during a check', () => {
+  const names = [`streamloop-v${NEXT}-update.zip`, `streamloop-v${NEXT}-update.zip.sha256`, `streamloop-v${NEXT}.zip`, `streamloop-v${NEXT}.zip.sha256`];
+  const list = () => new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: names.map(asset) }]));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('refuses to apply while a check runs, and the check forgets the last offer', async () => {
+    // Arrange: a first check finds the update; a second one, past the cooldown, waits on GitHub.
+    let answer: (r: Response) => void = () => {};
+    const github = vi.fn(async () => list());
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('api.github.com') ? github() : new Response('', { status: 404 }))));
+    const updater = new Updater({ isDevMode: false });
+    await updater.checkForUpdate();
+    github.mockImplementationOnce(() => new Promise<Response>((r) => { answer = r; }));
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+
+    // Act
+    const check = updater.checkForUpdate();
+    const during = updater.getStatus();
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    expect(during).toMatchObject({ status: 'checking', updateAvailable: false });
+    await expect(apply).rejects.toThrow('Update already in progress');
+    answer(list());
+    expect(await check).toMatchObject({ status: 'idle', updateAvailable: true });
+  });
+
+  it('offers nothing to apply after a check that failed', async () => {
+    // Arrange
+    const github = vi.fn(async () => list());
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('api.github.com') ? github() : new Response('', { status: 404 }))));
+    const updater = new Updater({ isDevMode: false });
+    expect((await updater.checkForUpdate()).updateAvailable).toBe(true);
+    github.mockResolvedValueOnce(new Response('', { status: 500, statusText: 'Server Error' }));
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+
+    // Act
+    const failed = await updater.checkForUpdate();
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    expect(failed).toMatchObject({ status: 'error', updateAvailable: false });
+    await expect(apply).rejects.toThrow('No update available to apply');
+  });
+});
+
 describe('Updater part comparison', () => {
   const HASH = (c: string) => c.repeat(64);
   const sameParts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };

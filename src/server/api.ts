@@ -198,6 +198,15 @@ export function createApiRouter(deps: ApiDependencies): Router {
     next();
   }
 
+  /** An apply during a check would install from the offer the check is replacing. Only apply waits for a check. */
+  function refuseApply(req: Request, res: Response, next: NextFunction): void {
+    if (deps.updater.getStatus().status === 'checking') {
+      res.status(409).json({ error: UPDATE_RUNNING });
+      return;
+    }
+    refuseDuringUpdate(req, res, next);
+  }
+
   /** Saves, takes the new config in and asks the supervisor to read it. */
   async function saveAndReload(patch: Partial<AppConfig>) {
     const config = save(patch);
@@ -407,7 +416,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
-  router.post('/update/apply', refuseDuringUpdate, async (_req, res) => {
+  router.post('/update/apply', refuseApply, async (_req, res) => {
     // Answers once the update runs; the dashboard polls /update/status for its progress.
     try {
       const { done } = await deps.updater.startUpdate();
@@ -525,7 +534,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   // Recommendations are not applied here; the dashboard saves them through POST /config.
-  router.post('/setup-check/run', async (req, res) => {
+  router.post('/setup-check/run', refuseDuringUpdate, async (req, res) => {
     const root = deps.root;
     if (!root) return res.status(503).json({ error: NO_ROOT });
     // The wizard sends its playlist before it is saved; otherwise the one playing sizes the cache.
@@ -596,7 +605,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   // --- yt-dlp endpoints ---
 
-  router.post('/yt-dlp/update', async (_req, res) => {
+  router.post('/yt-dlp/update', refuseDuringUpdate, async (_req, res) => {
     const result = await updateYtdlp(deps.ytdlpPath);
     if (result.ok) {
       // A newer yt-dlp may resolve more playlist entries than the old one did,
