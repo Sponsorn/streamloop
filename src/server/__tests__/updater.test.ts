@@ -490,6 +490,44 @@ describe('Updater part comparison', () => {
     expect(info.latestVersion).toBe(current);
   });
 
+  it('makes no same-version offer when the current release lacks the full ZIP or its checksum', async () => {
+    // Arrange
+    const noZip = [asset(`streamloop-v${current}-update.zip`), asset(`streamloop-v${current}-update.zip.sha256`), asset('components.json')];
+    const noChecksum = [...noZip, asset(`streamloop-v${current}.zip`)];
+    for (const assets of [noZip, noChecksum]) {
+      stubFetch([{ tag: `v${current}`, assets }], components());
+      // Act
+      const info = await new Updater({ isDevMode: false, installParts: installOf({ ffmpeg: HASH('9') }) }).checkForUpdate();
+      // Assert
+      expect(info.updateAvailable).toBe(false);
+      expect(info.sameVersion).toBe(false);
+      expect(info.kind).toBeNull();
+    }
+  });
+
+  it('keeps a same-version offer and reads components.json once per check', async () => {
+    // Arrange
+    let componentsRequests = 0;
+    const assets = releaseAssets(current, true);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: `v${current}`, draft: false, prerelease: true, assets }]));
+      }
+      if (url.endsWith('components.json')) {
+        componentsRequests += 1;
+        return componentsRequests === 1 ? new Response(components()) : new Response('', { status: 500 });
+      }
+      return new Response('', { status: 404 });
+    }));
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ ffmpeg: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(componentsRequests).toBe(1);
+    expect(info.updateAvailable).toBe(true);
+    expect(info.sameVersion).toBe(true);
+    expect(info.kind).toBe('full');
+  });
+
   it("offers nothing when the current release's parts match", async () => {
     // Arrange
     stubFetch([{ tag: `v${current}`, assets: releaseAssets(current, true) }], components());

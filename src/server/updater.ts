@@ -288,10 +288,17 @@ export class Updater {
       // Nothing newer: the running version's own release may still carry parts this install lacks.
       if (!this.updateAvailable && !this.isDevMode) {
         const current = releases.find((r) => !r.draft && r.tag_name.replace(/^v/, '') === this.currentVersion);
-        const decision = current ? await this.decideKind(current) : null;
+        const full = current ? selectReleaseAssets(current.assets, 'full') : null;
+        // Only a release that can be installed is offered; one still uploading is not.
+        const installable = full !== null && full.zipUrl !== null && isAllowedDownloadUrl(full.zipUrl)
+          && full.checksumUrl !== null && isAllowedDownloadUrl(full.checksumUrl);
+        const decision = current && installable ? await this.decideKind(current) : null;
         if (current && decision && decision.kind === 'full') {
           this.applyFullOffer(current, decision.parts);
           this.sameVersion = true;
+          this.status = 'idle';
+          this.lastCheckTime = now;
+          return this.getStatus();
         }
       }
       if (!release) {
