@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -53,6 +53,18 @@ fn get_req(uri: &str) -> Request<Body> {
 
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<u8>>>);
+
+/// One process-wide capture at TRACE. A per-test subscriber is thread-local, and tracing caches each call site's
+/// interest from whichever subscriber (or none) the first thread to reach it had, so a parallel test could blind it.
+fn captured_logs() -> &'static Capture {
+    static LOGS: OnceLock<Capture> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let logs = Capture::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
+        tracing::subscriber::set_global_default(subscriber).expect("no other test installs a global subscriber");
+        logs
+    })
+}
 
 impl Write for Capture {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -126,9 +138,7 @@ async fn the_token_route_hands_out_the_process_token() {
 #[tokio::test]
 async fn malformed_json_is_400_and_never_echoed() {
     // Arrange
-    let logs = Capture::default();
-    let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let logs = captured_logs();
     // Act
     let r = call(app(), post_echo(Some("application/json"), Some(TOKEN), r#"{"key":live_TESTKEY}"#)).await;
     // Assert
@@ -136,7 +146,7 @@ async fn malformed_json_is_400_and_never_echoed() {
     assert_eq!(r.body, r#"{"error":"Invalid JSON"}"#);
     assert!(!r.body.contains("TESTKEY"));
     let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
-    assert!(logged.contains("API request failed"), "{logged}");
+    assert!(logged.contains("entity.parse.failed"), "{logged}");
     assert!(!logged.contains("TESTKEY"), "{logged}");
 }
 
@@ -268,4 +278,34 @@ async fn the_default_router_has_the_token_and_admin_routes() {
     let token = serde_json::from_str::<Value>(&r.body).unwrap()["token"].as_str().unwrap().to_string();
     assert_eq!(token.len(), 64);
     assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[tokio::test]
+async fn a_wrong_method_on_an_existing_path_gets_the_express_404_page() {
+    // Arrange
+    let post_token = Request::builder().method(Method::POST).uri("/api/token").header("x-api-token", TOKEN).body(Body::empty()).unwrap();
+    let post_admin = Request::builder().method(Method::POST).uri("/admin/").body(Body::empty()).unwrap();
+    let delete_ping = Request::builder().method(Method::DELETE).uri("/api/ping").body(Body::empty()).unwrap();
+    let put_script = Request::builder().method(Method::PUT).uri("/admin/admin.js").body(Body::empty()).unwrap();
+    // Act
+    let replies = [call(app(), post_token).await, call(app(), post_admin).await, call(app(), delete_ping).await, call(app(), put_script).await];
+    // Assert
+    let texts = ["POST /api/token", "POST /admin/", "DELETE /api/ping", "PUT /admin/admin.js"];
+    for (r, text) in replies.iter().zip(texts) {
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{text}");
+        assert_eq!(r.content_type, "text/html; charset=utf-8", "{text}");
+        assert!(r.body.contains(&format!("<pre>Cannot {text}</pre>")), "{text}: {}", r.body);
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_body_never_reaches_a_log_line_even_at_trace_level() {
+    // Arrange
+    let logs = captured_logs();
+    // Act
+    call(app(), post_echo(Some("application/json"), Some(TOKEN), r#"{"url":"https://discord.com/api/webhooks/1/SECRETHOOK","k":}"#)).await;
+    call(app(), post_echo(Some("application/json"), Some(TOKEN), r#"{"url":"https://discord.com/api/webhooks/1/SECRETHOOK"}"#)).await;
+    // Assert
+    let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(!logged.contains("SECRETHOOK"), "{logged}");
 }

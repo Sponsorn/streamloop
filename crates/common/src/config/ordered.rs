@@ -49,6 +49,13 @@ impl Value {
         write_pretty(self, 0, &mut out);
         out
     }
+
+    /// `JSON.stringify(value)`: no spaces, no newlines.
+    pub fn to_compact(&self) -> String {
+        let mut out = String::new();
+        write_compact(self, &mut out);
+        out
+    }
 }
 
 /// `Object.assign(target, entries)`: a key already in `target` keeps its place and takes the new value.
@@ -175,6 +182,34 @@ fn write_pretty(v: &Value, indent: usize, out: &mut String) {
     }
 }
 
+fn write_compact(v: &Value, out: &mut String) {
+    match v {
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_compact(item, out);
+            }
+            out.push(']');
+        }
+        Value::Object(entries) => {
+            out.push('{');
+            for (i, (key, value)) in entries.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                quote(key, out);
+                out.push(':');
+                write_compact(value, out);
+            }
+            out.push('}');
+        }
+        scalar => write_pretty(scalar, 0, out),
+    }
+}
+
 /// `JSON.stringify` of a string: only the quote, the backslash and control characters are escaped.
 fn quote(s: &str, out: &mut String) {
     out.push('"');
@@ -258,6 +293,16 @@ mod tests {
             // Assert
             assert_eq!(written, expected, "{x}");
         }
+    }
+
+    #[test]
+    fn compact_output_matches_json_stringify() {
+        // Arrange
+        let v = Value::parse(r#"{ "a": [1, {"b": null}, []], "c": "x\n", "d": {} }"#).unwrap();
+        // Act
+        let out = v.to_compact();
+        // Assert
+        assert_eq!(out, r#"{"a":[1,{"b":null},[]],"c":"x\n","d":{}}"#);
     }
 
     #[test]

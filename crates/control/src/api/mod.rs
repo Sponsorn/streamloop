@@ -61,6 +61,7 @@ pub fn router_with(state: Arc<AppState>, api_routes: Router<Arc<AppState>>) -> R
         .route("/token", get(token))
         .merge(api_routes)
         .fallback(not_found)
+        .method_not_allowed_fallback(not_found)
         .layer(middleware::from_fn_with_state(state.clone(), api_guard));
     Router::new()
         .nest("/api", api)
@@ -68,6 +69,7 @@ pub fn router_with(state: Arc<AppState>, api_routes: Router<Arc<AppState>>) -> R
         .route("/admin/", get(admin_index))
         .route("/admin/{*path}", get(admin_file))
         .fallback(not_found)
+        .method_not_allowed_fallback(not_found)
         .with_state(state)
 }
 

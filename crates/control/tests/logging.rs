@@ -2,10 +2,10 @@ use std::fs::{self, File};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use serde::de::{MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use streamloop_control::logging::{cleanup_old_files, format_line, format_line_ordered, LocalTime, LogValue};
+use streamloop_control::logging::{cleanup_old_files, format_line, format_line_ordered, LocalTime};
+use streamloop_common::config::ordered::Value as Ordered;
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -132,54 +132,6 @@ fn a_missing_directory_is_not_an_error() {
     // Assert: reaching this line without a panic is the check
 }
 
-/// Reads JSON keeping the order of every object, which serde_json's own map does not.
-struct Ordered(LogValue);
-
-impl<'de> Deserialize<'de> for Ordered {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = LogValue;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("JSON")
-            }
-            fn visit_unit<E>(self) -> Result<LogValue, E> {
-                Ok(LogValue::Null)
-            }
-            fn visit_bool<E>(self, b: bool) -> Result<LogValue, E> {
-                Ok(LogValue::Bool(b))
-            }
-            fn visit_i64<E>(self, n: i64) -> Result<LogValue, E> {
-                Ok(LogValue::Number(n.into()))
-            }
-            fn visit_u64<E>(self, n: u64) -> Result<LogValue, E> {
-                Ok(LogValue::Number(n.into()))
-            }
-            fn visit_f64<E>(self, n: f64) -> Result<LogValue, E> {
-                Ok(LogValue::Number(serde_json::Number::from_f64(n).unwrap()))
-            }
-            fn visit_str<E>(self, s: &str) -> Result<LogValue, E> {
-                Ok(LogValue::String(s.to_string()))
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut s: A) -> Result<LogValue, A::Error> {
-                let mut out = Vec::new();
-                while let Some(Ordered(v)) = s.next_element()? {
-                    out.push(v);
-                }
-                Ok(LogValue::Array(out))
-            }
-            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<LogValue, A::Error> {
-                let mut out = Vec::new();
-                while let Some((k, Ordered(v))) = m.next_entry::<String, Ordered>()? {
-                    out.push((k, v));
-                }
-                Ok(LogValue::Object(out))
-            }
-        }
-        d.deserialize_any(V).map(Ordered)
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FixtureTime {
@@ -217,12 +169,12 @@ fn matches_every_log_line_fixture() {
         let local = LocalTime { year: t.year, month: t.month, day: t.day, hour: t.hour, minute: t.minute, second: t.second, millisecond: t.millisecond };
         let mut level = 0u64;
         let mut msg = String::new();
-        let mut rest: Vec<(String, LogValue)> = Vec::new();
-        let LogValue::Object(fields) = case.input.fields.0 else { panic!("fields is an object") };
+        let mut rest: Vec<(String, Ordered)> = Vec::new();
+        let Ordered::Object(fields) = case.input.fields else { panic!("fields is an object") };
         for (k, v) in fields {
             match k.as_str() {
-                "level" => level = if let LogValue::Number(n) = v { n.as_u64().unwrap() } else { panic!("level") },
-                "msg" => msg = if let LogValue::String(s) = v { s } else { panic!("msg") },
+                "level" => level = if let Ordered::Number(n) = v { n as u64 } else { panic!("level") },
+                "msg" => msg = if let Ordered::String(s) = v { s } else { panic!("msg") },
                 "time" | "pid" | "hostname" | "v" => {}
                 _ => rest.push((k, v)),
             }

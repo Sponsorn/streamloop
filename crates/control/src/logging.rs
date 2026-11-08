@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use serde_json::{Map, Value};
+use serde_json::Map;
+use streamloop_common::config::ordered::Value;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, SubscriberExt};
@@ -48,85 +49,8 @@ fn level_label(level: u8) -> String {
     }
 }
 
-/// `JSON.stringify` of a number: shortest digits, no exponent between 1e-6 and 1e21, `e+21` otherwise.
-fn js_number(f: f64) -> String {
-    if f == 0.0 {
-        return "0".into();
-    }
-    let a = f.abs();
-    if (1e-6..1e21).contains(&a) {
-        return format!("{f}");
-    }
-    let s = format!("{f:e}");
-    match s.split_once('e') {
-        Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
-        _ => s,
-    }
-}
-
-/// A JSON value whose objects keep the order they are written in. `serde_json::Value` sorts object keys
-/// (`preserve_order` stays off), and a log line keeps the order of the fields it was given.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LogValue {
-    Null,
-    Bool(bool),
-    Number(serde_json::Number),
-    String(String),
-    Array(Vec<LogValue>),
-    Object(Vec<(String, LogValue)>),
-}
-
-impl From<&Value> for LogValue {
-    fn from(v: &Value) -> Self {
-        match v {
-            Value::Null => LogValue::Null,
-            Value::Bool(b) => LogValue::Bool(*b),
-            Value::Number(n) => LogValue::Number(n.clone()),
-            Value::String(s) => LogValue::String(s.clone()),
-            Value::Array(a) => LogValue::Array(a.iter().map(LogValue::from).collect()),
-            Value::Object(m) => LogValue::Object(m.iter().map(|(k, x)| (k.clone(), LogValue::from(x))).collect()),
-        }
-    }
-}
-
-fn write_js_json(v: &LogValue, out: &mut String) {
-    match v {
-        LogValue::Null => out.push_str("null"),
-        LogValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        LogValue::Number(n) => match (n.as_i64(), n.as_u64(), n.as_f64()) {
-            (Some(i), _, _) => out.push_str(&i.to_string()),
-            (_, Some(u), _) => out.push_str(&u.to_string()),
-            (_, _, Some(f)) => out.push_str(&js_number(f)),
-            _ => out.push_str("null"),
-        },
-        LogValue::String(s) => out.push_str(&serde_json::to_string(s).unwrap()),
-        LogValue::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_js_json(x, out);
-            }
-            out.push(']');
-        }
-        LogValue::Object(m) => {
-            out.push('{');
-            for (i, (k, x)) in m.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&serde_json::to_string(k).unwrap());
-                out.push(':');
-                write_js_json(x, out);
-            }
-            out.push('}');
-        }
-    }
-}
-
 /// `[YYYY-MM-DD HH:mm:ss.SSS] LEVEL: msg {extras}`, extras in the order given.
-pub fn format_line_ordered(level: u8, msg: &str, extras: &[(String, LogValue)], local: LocalTime) -> String {
+pub fn format_line_ordered(level: u8, msg: &str, extras: &[(String, Value)], local: LocalTime) -> String {
     let mut line = format!(
         "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}] {}: {}",
         local.year,
@@ -145,9 +69,9 @@ pub fn format_line_ordered(level: u8, msg: &str, extras: &[(String, LogValue)], 
             if i > 0 {
                 line.push(',');
             }
-            line.push_str(&serde_json::to_string(k).unwrap());
+            line.push_str(&Value::String(k.clone()).to_compact());
             line.push(':');
-            write_js_json(v, &mut line);
+            line.push_str(&v.to_compact());
         }
         line.push('}');
     }
@@ -155,8 +79,8 @@ pub fn format_line_ordered(level: u8, msg: &str, extras: &[(String, LogValue)], 
 }
 
 /// As `format_line_ordered` for a map, whose keys come out sorted.
-pub fn format_line(level: u8, msg: &str, extras: Option<&Map<String, Value>>, local: LocalTime) -> String {
-    let list: Vec<(String, LogValue)> = extras.map(|m| m.iter().map(|(k, v)| (k.clone(), LogValue::from(v))).collect()).unwrap_or_default();
+pub fn format_line(level: u8, msg: &str, extras: Option<&Map<String, serde_json::Value>>, local: LocalTime) -> String {
+    let list: Vec<(String, Value)> = extras.map(|m| m.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect()).unwrap_or_default();
     format_line_ordered(level, msg, &list, local)
 }
 
@@ -179,7 +103,7 @@ pub fn cleanup_old_files(dir: &Path, prefix: &str, days: u64, now: SystemTime) {
 #[derive(Default)]
 struct FieldCollector {
     msg: String,
-    extras: Vec<(String, LogValue)>,
+    extras: Vec<(String, Value)>,
 }
 
 impl Visit for FieldCollector {
@@ -187,7 +111,7 @@ impl Visit for FieldCollector {
         if field.name() == "message" {
             self.msg = format!("{value:?}");
         } else {
-            self.extras.push((field.name().to_string(), LogValue::String(format!("{value:?}"))));
+            self.extras.push((field.name().to_string(), Value::String(format!("{value:?}"))));
         }
     }
 
@@ -195,24 +119,24 @@ impl Visit for FieldCollector {
         if field.name() == "message" {
             self.msg = value.to_string();
         } else {
-            self.extras.push((field.name().to_string(), LogValue::String(value.to_string())));
+            self.extras.push((field.name().to_string(), Value::String(value.to_string())));
         }
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.extras.push((field.name().to_string(), LogValue::Number(value.into())));
+        self.extras.push((field.name().to_string(), Value::Number(value as f64)));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.extras.push((field.name().to_string(), LogValue::Number(value.into())));
+        self.extras.push((field.name().to_string(), Value::Number(value as f64)));
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.extras.push((field.name().to_string(), serde_json::Number::from_f64(value).map_or(LogValue::Null, LogValue::Number)));
+        self.extras.push((field.name().to_string(), Value::Number(value)));
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.extras.push((field.name().to_string(), LogValue::Bool(value)));
+        self.extras.push((field.name().to_string(), Value::Bool(value)));
     }
 }
 
@@ -263,13 +187,48 @@ impl<S: Subscriber> Layer<S> for LineLayer {
     }
 }
 
-/// Installs the global subscriber: lines to the console and to `logs_dir`, seven days kept, level from `LOG_LEVEL` (default info).
-/// A second call leaves the first subscriber in place.
+/// Which targets log at which level: our own crates at `level`, every library (hyper, tokio, rustls, reqwest, h2, tower)
+/// at WARN, so a library's debug logging cannot carry a URL or a key into the log.
+pub fn target_filter(level: tracing::level_filters::LevelFilter) -> tracing_subscriber::filter::Targets {
+    use tracing::level_filters::LevelFilter;
+    tracing_subscriber::filter::Targets::new()
+        .with_default(LevelFilter::WARN)
+        .with_target("streamloop", level)
+        .with_target("streamloop_control", level)
+        .with_target("streamloop_common", level)
+        .with_target("streamloop_supervisor", level)
+}
+
+/// Installs the global subscriber: lines to the console and to `logs_dir`, seven days kept, level from `LOG_LEVEL`
+/// (default info) for our own targets. A second call leaves the first subscriber in place.
+///
+/// Convention for errors: log the error's `Display` text as an `err` field, `warn!(err = %e, "Discord post failed")`,
+/// and never the `Debug` of a request, a URL with a token in it, or a body.
 pub fn init(logs_dir: &Path) {
     let _ = fs::create_dir_all(logs_dir);
     cleanup_old_files(logs_dir, FILE_PREFIX, RETENTION_DAYS, SystemTime::now());
     let level = std::env::var("LOG_LEVEL").ok().and_then(|v| v.parse::<tracing::level_filters::LevelFilter>().ok()).unwrap_or(tracing::level_filters::LevelFilter::INFO);
     let layer = LineLayer { file: Mutex::new(DailyFile { dir: logs_dir.to_path_buf(), day: String::new(), file: None }) };
-    let subscriber = tracing_subscriber::registry().with(layer.with_filter(level));
+    let subscriber = tracing_subscriber::registry().with(layer.with_filter(target_filter(level)));
     let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::level_filters::LevelFilter;
+
+    #[test]
+    fn libraries_log_at_warn_while_our_crates_follow_the_level() {
+        // Arrange
+        let filter = target_filter(LevelFilter::DEBUG);
+        // Act
+        let hyper_debug = filter.would_enable("hyper::proto", &Level::DEBUG);
+        let hyper_warn = filter.would_enable("hyper::proto", &Level::WARN);
+        let ours = filter.would_enable("streamloop_control::api", &Level::DEBUG);
+        // Assert
+        assert!(!hyper_debug);
+        assert!(hyper_warn);
+        assert!(ours);
+    }
 }

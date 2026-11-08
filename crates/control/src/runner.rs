@@ -47,6 +47,8 @@ impl RunOutput {
 pub enum RunErrorKind {
     /// The program could not be started.
     Spawn,
+    /// The process started but waiting for it or reading its output failed.
+    Wait,
     /// The process outlived its timeout and was killed.
     Timeout,
 }
@@ -95,7 +97,7 @@ impl Runner for ProcessRunner {
         // Dropping the wait on timeout drops the child, and kill_on_drop ends it.
         match tokio::time::timeout(spec.timeout, child.wait_with_output()).await {
             Ok(Ok(out)) => Ok(RunOutput { code: out.status.code(), stdout: out.stdout, stderr: out.stderr }),
-            Ok(Err(e)) => Err(RunError { kind: RunErrorKind::Spawn, message: format!("{}: {e}", spec.program) }),
+            Ok(Err(e)) => Err(RunError { kind: RunErrorKind::Wait, message: format!("{}: {e}", spec.program) }),
             Err(_) => Err(RunError { kind: RunErrorKind::Timeout, message: format!("{} timed out after {} s", spec.program, spec.timeout.as_secs()) }),
         }
     }
@@ -181,11 +183,16 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn process_runner_kills_a_child_that_outlives_its_timeout() {
-        // Arrange
-        let spec = RunSpec::new("ping", &["-n", "30", "127.0.0.1"], Duration::from_millis(300));
+        // Arrange: the marker file appears only if the shell lives on to its second command
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!("ping -n 4 127.0.0.1 >nul & type nul > \"{}\"", marker.display());
+        let spec = RunSpec::new("cmd", &["/C", &script], Duration::from_millis(300));
         // Act
         let err = ProcessRunner.run(spec).await.unwrap_err();
+        tokio::time::sleep(Duration::from_secs(5)).await;
         // Assert
         assert_eq!(err.kind, RunErrorKind::Timeout);
+        assert!(!marker.exists(), "the child kept running after its timeout");
     }
 }
