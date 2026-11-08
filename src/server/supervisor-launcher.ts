@@ -121,7 +121,9 @@ export class SupervisorLauncher {
     this.stoppedByUser = marker !== null && existsSync(marker);
     this.waitingForStart = opts.holdForStart ?? false;
     const waiting = this.waitingMarker();
-    if (this.waitingForStart && waiting) {
+    if (!this.waitingForStart) {
+      this.endHold();
+    } else if (waiting) {
       try {
         mkdirSync(dirname(waiting), { recursive: true });
         writeFileSync(waiting, '');
@@ -148,6 +150,8 @@ export class SupervisorLauncher {
   /** Ends the hold; the next poll launches unless the stream was stopped by the user. */
   release(): void {
     this.endHold();
+    this.misses = MISSES_BEFORE_LAUNCH;
+    if (this.timer) void this.poll();
   }
 
   private marker(): string | null {
@@ -249,6 +253,8 @@ export class SupervisorLauncher {
       return;
     }
     if (answered) {
+      // A supervisor that is up is not waiting for Start; if it dies later, it is relaunched like any outage.
+      if (this.waitingForStart) this.endHold();
       this.misses = 0;
       this.held = null;
       this.refused = null;
@@ -275,10 +281,7 @@ export class SupervisorLauncher {
       this.phase = 'stopped-by-user';
       return;
     }
-    if (this.waitingForStart) {
-      this.phase = 'down';
-      return;
-    }
+    if (this.waitingForStart) return;
     if (this.phase === 'running') {
       this.phase = 'down';
       if (!this.inOutage) this.onEvent('supervisor-down');

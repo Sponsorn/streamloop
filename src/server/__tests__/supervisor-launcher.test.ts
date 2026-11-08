@@ -575,7 +575,7 @@ describe('hold for start', () => {
     // Act
     free.launcher.release();
     stopped.launcher.release();
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(3_000);
     free.launcher.stop();
     stopped.launcher.stop();
 
@@ -598,6 +598,75 @@ describe('hold for start', () => {
 
     // Assert
     expect(whileHeld).toBe(true);
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('removes the waiting marker on attach', async () => {
+    // Arrange
+    const { launcher } = setup({ holdForStart: true, answering: true });
+    const before = existsSync(waiting());
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    launcher.stop();
+
+    // Assert
+    expect(before).toBe(true);
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('relaunches a supervisor that dies after it was attached while held', async () => {
+    // Arrange
+    const { launcher, spawnImpl, events, setAnswering } = setup({ holdForStart: true, answering: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    // Act
+    setAnswering(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    launcher.stop();
+
+    // Assert
+    expect(events).toContain('supervisor-down');
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes a waiting marker left by an earlier window when this start does not hold', () => {
+    // Arrange
+    mkdirSync(join(root, 'data'), { recursive: true });
+    writeFileSync(waiting(), '');
+
+    // Act
+    setup({ holdForStart: false });
+
+    // Assert
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('release launches on the next poll', async () => {
+    // Arrange
+    const { launcher, spawnImpl } = setup({ holdForStart: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Act
+    launcher.release();
+    await vi.advanceTimersByTimeAsync(100);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('release removes the waiting marker', () => {
+    // Arrange
+    const { launcher } = setup({ holdForStart: true });
+
+    // Act
+    launcher.release();
+
+    // Assert
     expect(existsSync(waiting())).toBe(false);
   });
 
