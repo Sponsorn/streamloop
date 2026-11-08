@@ -483,6 +483,8 @@ pub struct TokenState {
     restarts: u32,
     kill: bool,
     stop: bool,
+    /// Which server answers: its `implementation`, or `bgutil VERSION`; set on adopt and on the first ping after a spawn.
+    server: Option<String>,
 }
 
 struct Ctl {
@@ -2225,7 +2227,7 @@ impl Ctl {
         let v = self.videos.get(index);
         let list = self.list_of(index);
         // One lock per statement: json! keeps its temporaries (and their guards) alive to the end.
-        let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
+        let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts, "server": t.server}) };
         let generation = self.shared.q.lock().unwrap().generation;
         let mut body = json!({
             "playing": {"index": index - list.start, "playlistId": (!list.id.is_empty()).then(|| list.id.clone()), "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()), "source": source.name(), "position": (pos * 1000.0).round() / 1000.0, "duration": v.and_then(|v| v.entry.duration), "spareReady": self.spare.as_ref().is_some_and(|s| s.index == index)},
@@ -2333,7 +2335,7 @@ impl Ctl {
 
     fn save_run(&self) {
         let (a, d, st) = (&self.args, &self.args.dev, &self.settings);
-        let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts}) };
+        let token = { let t = self.token.lock().unwrap(); json!({"state": t.state, "restarts": t.restarts, "server": t.server}) };
         let v = json!({
             "startedAt": self.started_at, "endedAt": if self.stopping { Some(unix_ms()) } else { None },
             "root": a.paths.root, "data": a.paths.data, "config": a.config,
@@ -2464,22 +2466,36 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
 /// Adopt a running PO-token server, or own one; replace it when it dies or hangs.
 fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: Logs) {
     let mut owned: Option<Child> = None;
-    let spawn = |logs: &Logs| match ytdlp::spawn_token_server(&paths.node, &paths.token_server, port, logs) {
-        Ok(c) => {
-            logs.event("info", "token-server-spawn", json!({"pid": c.id()}));
-            Some(c)
-        }
-        Err(e) => {
-            logs.event("critical", "token-server-spawn-failed", json!({"error": e.to_string()}));
-            None
+    let spawn = |logs: &Logs| {
+        let Some(cmd) = ytdlp::token_server_command(&paths, port) else {
+            logs.event("critical", "token-server-spawn-failed", json!({"error": "The token server is missing. Install the full ZIP."}));
+            return None;
+        };
+        match ytdlp::spawn_token_server(&cmd, logs) {
+            Ok(c) => {
+                logs.event("info", "token-server-spawn", json!({"pid": c.id(), "exe": cmd.0.to_string_lossy()}));
+                Some(c)
+            }
+            Err(e) => {
+                logs.event("critical", "token-server-spawn-failed", json!({"error": e.to_string()}));
+                None
+            }
         }
     };
+    // Set after a spawn: the next ping that answers also asks who answered.
+    let mut identify = false;
     if ytdlp::ping(port) {
-        state.lock().unwrap().state = "adopted";
-        logs.event("info", "token-server-adopt", json!({"port": port}));
+        let server = ytdlp::server_identity(port);
+        let mut s = state.lock().unwrap();
+        s.state = "adopted";
+        s.server = server.clone();
+        logs.event("info", "token-server-adopt", json!({"port": port, "server": server}));
     } else {
         owned = spawn(&logs);
-        state.lock().unwrap().state = if owned.is_some() { "owned" } else { "down" };
+        identify = owned.is_some();
+        let mut s = state.lock().unwrap();
+        s.state = if owned.is_some() { "owned" } else { "down" };
+        s.server = None;
     }
     let mut next_ping = Instant::now() + Duration::from_secs(15);
     let mut failed_pings = 0;
@@ -2512,6 +2528,9 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: 
         let exited = owned.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))));
         if Instant::now() >= next_ping && restart_at.is_none() {
             if ytdlp::ping(port) {
+                if std::mem::take(&mut identify) {
+                    state.lock().unwrap().server = ytdlp::server_identity(port);
+                }
                 failed_pings = 0;
                 backoff_level = 0;
                 next_ping = Instant::now() + Duration::from_secs(15);
@@ -2536,9 +2555,11 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: 
             backoff_level += 1;
             failed_pings = 0;
             owned = spawn(&logs);
+            identify = owned.is_some();
             let mut s = state.lock().unwrap();
             s.restarts += 1;
             s.state = if owned.is_some() { "owned" } else { "down" };
+            s.server = None;
             logs.event("warn", "token-server-restart", json!({"restarts": s.restarts}));
             next_ping = Instant::now() + Duration::from_secs(15);
         }
@@ -2594,7 +2615,7 @@ fn main() {
     let mut queue = Queue::new(192 * 1024 * 1024);
     queue.ahead = ticks(settings.read_ahead_seconds);
     let shared = Arc::new(Shared { q: Mutex::new(queue), cv: Condvar::new() });
-    let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false }));
+    let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false, server: None }));
     let (jobs_tx, jobs_rx) = channel::<Job>();
 
     {
@@ -2661,7 +2682,7 @@ mod tests {
         let logs = Logs::new(dir.join("logs"), "");
         let yt = Arc::new(Ytdlp::new(&args.paths, "web", None, args.token_port));
         let shared = Arc::new(Shared { q: Mutex::new(Queue::new(1 << 20)), cv: Condvar::new() });
-        let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false }));
+        let token = Arc::new(Mutex::new(TokenState { state: "down", restarts: 0, kill: false, stop: false, server: None }));
         let (tx, _) = channel();
         let (jobs, _) = channel();
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());

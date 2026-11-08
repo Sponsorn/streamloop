@@ -10,7 +10,6 @@ pub struct Paths {
     pub deno: PathBuf,
     pub plugins: PathBuf,
     pub token_server: PathBuf,
-    pub node: PathBuf,
     pub slate: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
@@ -24,10 +23,21 @@ pub fn layout(root: &Path) -> Paths {
         ytdlp: at("yt-dlp/yt-dlp.exe"),
         deno: at("yt-dlp/deno.exe"),
         plugins: at("yt-dlp/plugins"),
-        token_server: at("pot/build/main.js"),
-        node: at("node/node.exe"),
+        token_server: at("supervisor/streamloop-pot.exe"),
         slate: at("supervisor/slate.mp4"),
         config: at("app/config.json"),
         data: at("data"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_token_server_is_an_exe_beside_the_supervisor() {
+        let root = Path::new(r"R:\sl");
+
+        assert_eq!(layout(root).token_server, root.join("supervisor").join("streamloop-pot.exe"));
     }
 }

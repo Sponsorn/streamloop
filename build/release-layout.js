@@ -15,6 +15,7 @@ export const FULL_LAYOUT = [
   ...APP,
   'node/node.exe',
   'supervisor/streamloop-supervisor.exe',
+  'supervisor/streamloop-pot.exe',
   'supervisor/slate.mp4',
   'ffmpeg/ffmpeg.exe',
   'yt-dlp/yt-dlp.exe',

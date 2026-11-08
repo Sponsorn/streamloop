@@ -313,8 +313,50 @@ pub fn invalidate_token_caches(port: u16) -> bool {
     s.read_exact(&mut buf).is_ok() && buf.starts_with(b"HTTP/1.") && buf[9] == b'2'
 }
 
-pub fn spawn_token_server(node: &Path, script: &Path, port: u16, logs: &Logs) -> std::io::Result<Child> {
-    let mut child = command(node).arg(script).args(["-H", "127.0.0.1", "-p", &port.to_string()]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+/// The arguments of `streamloop-pot.exe`: loopback only, its snapshot and cache under `data\pot`.
+pub fn token_server_args(port: u16, data: &Path) -> Vec<String> {
+    ["server", "--host", "127.0.0.1", "--port", &port.to_string(), "--data", &data.join("pot").to_string_lossy()].map(String::from).to_vec()
+}
+
+/// The program and arguments of the token server to run: `streamloop-pot.exe` when it is installed, else the TypeScript
+/// server when `node\` and `pot\` are still there (an install that took the exe through the updater, not the full ZIP).
+/// The fallback paths are not in `layout()`: the full ZIP no longer ships them.
+pub fn token_server_command(paths: &Paths, port: u16) -> Option<(PathBuf, Vec<String>)> {
+    if paths.token_server.is_file() {
+        return Some((paths.token_server.clone(), token_server_args(port, &paths.data)));
+    }
+    let node = paths.root.join("node").join("node.exe");
+    let script = paths.root.join("pot").join("build").join("main.js");
+    if node.is_file() && script.is_file() {
+        let args = [script.to_string_lossy().into_owned(), "-H".into(), "127.0.0.1".into(), "-p".into(), port.to_string()];
+        return Some((node, args.to_vec()));
+    }
+    None
+}
+
+/// Which server answers `/ping`: its `implementation`, else `bgutil VERSION`, else `unknown`. `None` when nothing answers 200.
+pub fn server_identity(port: u16) -> Option<String> {
+    let mut s = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(2)).ok()?;
+    let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+    s.write_all(b"GET /ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").ok()?;
+    // HTTP/1.0 ends the body at EOF; the cap keeps a server that never stops from filling memory.
+    let mut raw = Vec::new();
+    let _ = s.take(64 * 1024).read_to_end(&mut raw);
+    if !(raw.starts_with(b"HTTP/1.") && raw.len() >= 12 && &raw[9..12] == b"200") {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&raw);
+    let body = text.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    Some(match (v["implementation"].as_str(), v["version"].as_str()) {
+        (Some(i), _) => i.to_string(),
+        (None, Some(ver)) => format!("bgutil {ver}"),
+        _ => "unknown".into(),
+    })
+}
+
+pub fn spawn_token_server(cmd: &(PathBuf, Vec<String>), logs: &Logs) -> std::io::Result<Child> {
+    let mut child = command(&cmd.0).args(&cmd.1).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)].into_iter().flatten() {
         let logs = logs.clone();
         std::thread::spawn(move || {
@@ -374,6 +416,88 @@ mod tests {
         assert!(cleared);
         assert!(server.join().unwrap().starts_with("POST /invalidate_caches HTTP/1.0"));
         assert!(!invalidate_token_caches(1), "nothing listens on port 1");
+    }
+
+    /// Serves one `HTTP/1.0 200 OK` answer with `body` on a free port and returns what `server_identity` makes of it.
+    fn identity_for(body: &'static str) -> Option<String> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            // Closing with request bytes unread resets the connection on Windows, and the reset can beat the reply.
+            let (mut req, mut chunk) = (vec![], [0u8; 64]);
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = c.read(&mut chunk).unwrap();
+                assert!(n > 0, "the request ended before its headers did");
+                req.extend_from_slice(&chunk[..n]);
+            }
+            c.write_all(format!("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}").as_bytes()).unwrap();
+        });
+        let identity = server_identity(port);
+        server.join().unwrap();
+        identity
+    }
+
+    fn root_with(name: &str, files: &[&str]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("sl-token-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for f in files {
+            let p = f.split('/').fold(root.clone(), |p, part| p.join(part));
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn the_token_server_binds_loopback_and_keeps_its_state_in_data() {
+        let a = token_server_args(4416, Path::new(r"R:\sl\data"));
+
+        assert_eq!(a[..5], ["server", "--host", "127.0.0.1", "--port", "4416"]);
+        assert_eq!(a[5..], ["--data".to_string(), Path::new(r"R:\sl\data").join("pot").to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn server_identity_prefers_the_implementation_then_the_version() {
+        assert_eq!(identity_for(r#"{"server_uptime":1,"version":"2.0.0","implementation":"streamloop-pot 0.1.0"}"#), Some("streamloop-pot 0.1.0".into()));
+        assert_eq!(identity_for(r#"{"server_uptime":1,"version":"2.0.0"}"#), Some("bgutil 2.0.0".into()));
+        assert_eq!(identity_for("not json"), Some("unknown".into()));
+        assert_eq!(server_identity(1), None, "nothing listens on port 1");
+    }
+
+    #[test]
+    fn prefers_the_rust_token_server() {
+        let root = root_with("rust", &["supervisor/streamloop-pot.exe", "node/node.exe", "pot/build/main.js"]);
+        let paths = crate::paths::layout(&root);
+
+        let (exe, args) = token_server_command(&paths, 4416).unwrap();
+
+        assert_eq!(exe, root.join("supervisor").join("streamloop-pot.exe"));
+        assert_eq!(args[0], "server");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn falls_back_to_the_typescript_server_when_only_it_is_installed() {
+        let root = root_with("ts", &["node/node.exe", "pot/build/main.js"]);
+        let paths = crate::paths::layout(&root);
+
+        let (exe, args) = token_server_command(&paths, 4416).unwrap();
+
+        assert_eq!(exe, root.join("node").join("node.exe"));
+        assert_eq!(args[0], root.join("pot").join("build").join("main.js").to_string_lossy());
+        assert_eq!(args[1..], ["-H", "127.0.0.1", "-p", "4416"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn names_no_token_server_when_neither_is_installed() {
+        let root = root_with("none", &["node/node.exe"]);
+        let paths = crate::paths::layout(&root);
+
+        assert!(token_server_command(&paths, 4416).is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
