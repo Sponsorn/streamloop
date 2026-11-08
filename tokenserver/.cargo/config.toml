@@ -1,0 +1,4 @@
+# rusty_v8's prebuilt library is built against the static C runtime (/MT); linking it into a
+# dynamic-CRT binary mixes two runtimes (LNK4098).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

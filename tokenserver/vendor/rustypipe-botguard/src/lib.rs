@@ -20,6 +20,8 @@ mod protobuf;
 mod runtime;
 
 pub use crate::error::Error;
+// streamloop: lets the caller stop JavaScript that never returns, from another thread.
+pub use deno_core::v8::IsolateHandle;
 
 enum Rt {
     FromSnapshot(JsRuntime),
@@ -56,6 +58,8 @@ pub struct BotguardBuilder<'a> {
     challenge: Option<CallerChallenge<'a>>,
     // streamloop: an object whose keys are set on globalThis before BotGuard runs.
     globals: Option<&'a serde_json::Value>,
+    // streamloop: receives the handle of each isolate init creates.
+    isolate_slot: Option<&'a std::sync::Mutex<Option<IsolateHandle>>>,
 }
 
 // streamloop: the parts of a BotGuard challenge the caller has already fetched.
@@ -209,6 +213,22 @@ impl<'a> BotguardBuilder<'a> {
         self
     }
 
+    // streamloop: added.
+    /// Store the thread-safe handle of each isolate `init` creates in `slot`, the latest
+    /// replacing the last, so another thread can stop it with `terminate_execution`.
+    #[must_use]
+    pub fn isolate_slot(mut self, slot: &'a std::sync::Mutex<Option<IsolateHandle>>) -> Self {
+        self.isolate_slot = Some(slot);
+        self
+    }
+
+    // streamloop: added.
+    fn publish_isolate(&self, rt: &mut JsRuntime) {
+        if let Some(Ok(mut slot)) = self.isolate_slot.map(|s| s.lock()) {
+            *slot = Some(rt.v8_isolate().thread_safe_handle());
+        }
+    }
+
     /// Initialize a new [`Botguard`] instance
     ///
     /// If a recent snapshot is found, the Botguard instance is recreated from the snapshot.
@@ -230,12 +250,15 @@ impl<'a> BotguardBuilder<'a> {
             }
 
             if let Some(snapshot) = SNAPSHOT_DATA.get() {
+                let mut rt = JsRuntime::try_new(RuntimeOptions {
+                    extensions: rt_extensions(true),
+                    startup_snapshot: Some(&snapshot.data),
+                    ..Default::default()
+                })?;
+                // streamloop: the restored isolate's handle, as for a new one in try_init.
+                self.publish_isolate(&mut rt);
                 return Ok(Botguard {
-                    rt: Rt::FromSnapshot(JsRuntime::try_new(RuntimeOptions {
-                        extensions: rt_extensions(true),
-                        startup_snapshot: Some(&snapshot.data),
-                        ..Default::default()
-                    })?),
+                    rt: Rt::FromSnapshot(rt),
                     snapshot_path: self.snapshot_path.map(Path::to_owned),
                     created_at: snapshot.info.created_at,
                     lifetime: snapshot.info.lifetime,
@@ -247,6 +270,10 @@ impl<'a> BotguardBuilder<'a> {
             .user_agent(self.user_agent.unwrap_or(DEFAULT_UA))
             .gzip(true)
             .brotli(true)
+            // streamloop: no proxy, https only, and a limit on every request.
+            .no_proxy()
+            .https_only(true)
+            .timeout(std::time::Duration::from_secs(15))
             .build()?;
 
         let mut last_err = Error::InvalidChallenge("cannot init".into());
@@ -278,6 +305,8 @@ impl<'a> BotguardBuilder<'a> {
                 ..Default::default()
             })?)
         };
+        // streamloop: added.
+        self.publish_isolate(&mut rt);
 
         rt.load_code().await?;
 
@@ -295,10 +324,9 @@ impl<'a> BotguardBuilder<'a> {
             }
         };
 
-        // streamloop: the caller's globals, set before runBotguard runs the program.
-        if let Some(globals) = self.globals {
-            rt.set_globals(globals)?;
-        }
+        // streamloop: the caller's globals and user agent, set before runBotguard runs the program.
+        let user_agent = self.user_agent.unwrap_or(DEFAULT_UA);
+        rt.prepare_window(self.globals, user_agent)?;
 
         // globalThis.runBotguard = async (interpreterJavascript, program, globalName, userAgent)
         let bg_response = rt
@@ -308,7 +336,8 @@ impl<'a> BotguardBuilder<'a> {
                     &challenge_data.interpreter_js,
                     &challenge_data.program,
                     &challenge_data.global_name,
-                    DEFAULT_UA,
+                    // streamloop: the builder's user agent, not always DEFAULT_UA.
+                    user_agent,
                 ],
             )
             .await?;
@@ -509,31 +538,48 @@ impl Rt {
         Ok(())
     }
 
-    // streamloop: added. runBotguard assigns its jsdom `window` just before the program runs;
-    // a one-shot setter copies the globals onto it, then leaves a plain data property.
-    fn set_globals(&mut self, globals: &serde_json::Value) -> Result<(), Error> {
-        if !globals.is_object() {
-            return Err(Error::Js("globals must be a JSON object".into()));
-        }
-        // streamloop: JSON.parse of a string literal, since an object literal treats `__proto__`
-        // differently. In the snapshotting runtime V8 aborts on a literal over 128 KB.
-        let json = serde_json::to_string(&globals.to_string())
-            .map_err(|e| Error::Js(e.to_string().into()))?;
-        let code = format!(
-            r#"((g) => {{
+    // streamloop: added. A one-shot setter catches the jsdom `window` runBotguard assigns and gives
+    // it the globals and the user agent (jsdom-minimal ignores its `userAgent` option).
+    fn prepare_window(&mut self, globals: Option<&serde_json::Value>, user_agent: &str) -> Result<(), Error> {
+        const PREPARE: &str = r#"(json, ua) => {
+  const g = JSON.parse(json);
   Object.assign(globalThis, g);
-  Object.defineProperty(globalThis, "window", {{
+  Object.defineProperty(globalThis, "window", {
     configurable: true,
     enumerable: true,
-    get() {{ return undefined; }},
-    set(w) {{
-      Object.defineProperty(globalThis, "window", {{ value: w, writable: true, enumerable: true, configurable: true }});
-      if (w !== null && typeof w === "object") Object.assign(w, g);
-    }},
-  }});
-}})(JSON.parse({json}));"#
-        );
-        self.execute_script("[streamloop:globals]", code)?;
+    get() { return undefined; },
+    set(w) {
+      Object.defineProperty(globalThis, "window", { value: w, writable: true, enumerable: true, configurable: true });
+      if (w === null || typeof w !== "object") return;
+      Object.assign(w, g);
+      const nav = w.navigator;
+      if (nav === null || typeof nav !== "object") return;
+      for (const s of Object.getOwnPropertySymbols(nav)) {
+        const impl = nav[s];
+        if (impl !== null && typeof impl === "object" && Object.hasOwn(impl, "userAgent")) impl.userAgent = ua;
+      }
+    },
+  });
+}"#;
+        let json = match globals {
+            Some(g) if g.is_object() => g.to_string(),
+            Some(_) => return Err(Error::Js("globals must be a JSON object".into())),
+            None => "{}".to_owned(),
+        };
+        let prepare = self.execute_script("[streamloop:prepare-window]", PREPARE)?;
+        let scope = &mut self.handle_scope();
+        let prepare = v8::Local::new(scope, prepare);
+        let prepare = v8::Local::<v8::Function>::try_from(prepare)
+            .map_err(|_| Error::Js("prepare-window is not a function".into()))?;
+        // streamloop: an argument, not a script literal: one over 128 KB aborts V8 when snapshotting.
+        let json = v8::String::new(scope, &json).ok_or(Error::Js("could not create the globals string".into()))?;
+        let ua = v8::String::new(scope, user_agent).ok_or(Error::Js("could not create the user agent string".into()))?;
+        let recv = v8::undefined(scope).into();
+        let tc = &mut v8::TryCatch::new(scope);
+        if prepare.call(tc, recv, &[json.into(), ua.into()]).is_none() {
+            let msg = tc.exception().map(|e| e.to_rust_string_lossy(tc)).unwrap_or_default();
+            return Err(Error::Js(format!("prepare-window: {msg}").into()));
+        }
         Ok(())
     }
 }

@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, ClientBuilder, Response};
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE};
 use reqwest::redirect::Policy;
 use serde_json::{json, Value};
@@ -37,23 +37,28 @@ pub struct GoogleWeb {
 impl GoogleWeb {
     pub fn new() -> Result<Self, String> {
         Ok(Self {
-            client: client(Policy::default())?,
-            interpreter_client: client(Policy::none())?,
+            client: https_only(builder(Policy::default()))?,
+            interpreter_client: https_only(interpreter_builder())?,
         })
     }
 }
 
-fn client(redirects: Policy) -> Result<Client, String> {
+fn builder(redirects: Policy) -> ClientBuilder {
     Client::builder()
         .use_rustls_tls()
-        .https_only(true)
         .no_proxy()
         .user_agent(USER_AGENT)
         .connect_timeout(TIMEOUT)
         .timeout(TIMEOUT)
         .redirect(redirects)
-        .build()
-        .map_err(|e| format!("could not set up the HTTP client: {e}"))
+}
+
+fn interpreter_builder() -> ClientBuilder {
+    builder(Policy::none())
+}
+
+fn https_only(builder: ClientBuilder) -> Result<Client, String> {
+    builder.https_only(true).build().map_err(|e| format!("could not set up the HTTP client: {e}"))
 }
 
 impl Web for GoogleWeb {
@@ -68,8 +73,7 @@ impl Web for GoogleWeb {
     }
 
     fn interpreter(&self, url: &str) -> Result<String, String> {
-        let url = interpreter_fetch_url(url)?;
-        text_of(self.interpreter_client.get(url).send(), "interpreter script")
+        fetch_interpreter(&self.interpreter_client, &interpreter_fetch_url(url)?)
     }
 
     fn att_get(&self, innertube_context: Option<&Value>) -> Result<Challenge, String> {
@@ -89,6 +93,10 @@ impl Web for GoogleWeb {
             .and_then(challenge_from_json)
             .ok_or_else(|| "att/get: no bgChallenge in the answer".to_owned())
     }
+}
+
+fn fetch_interpreter(client: &Client, url: &str) -> Result<String, String> {
+    text_of(client.get(url).send(), "interpreter script")
 }
 
 /// The body of a 2xx answer. Anything else, a redirect included, is an error.
@@ -147,6 +155,47 @@ mod tests {
         ] {
             let err = web.interpreter(url).unwrap_err();
             assert!(err.contains("refusing"), "{url}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_interpreter_client_does_not_follow_a_redirect() {
+        use std::io::{ErrorKind, Read, Write};
+        use std::net::TcpListener;
+
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let target_url = format!("http://{}/js/th/abc.js", target.local_addr().unwrap());
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/js/th/abc.js", server.local_addr().unwrap());
+        let one_shot = std::thread::spawn(move || {
+            let (mut conn, _) = server.accept().unwrap();
+            let _ = conn.read(&mut [0u8; 4096]);
+            let answer = format!("HTTP/1.1 302 Found
+Location: {target_url}
+Content-Length: 0
+Connection: close
+
+");
+            conn.write_all(answer.as_bytes()).unwrap();
+        });
+        // The production client minus https_only, since this server speaks plain http.
+        let client = interpreter_builder().build().unwrap();
+
+        let err = fetch_interpreter(&client, &url).unwrap_err();
+
+        one_shot.join().unwrap();
+        assert!(err.contains("HTTP 302"), "{err}");
+        let followed = target.accept();
+        assert!(matches!(&followed, Err(e) if e.kind() == ErrorKind::WouldBlock), "followed: {followed:?}");
+    }
+
+    #[test]
+    fn the_production_clients_refuse_plain_http_without_a_request() {
+        let web = GoogleWeb::new().unwrap();
+        for client in [&web.client, &web.interpreter_client] {
+            let err = fetch_interpreter(client, "http://127.0.0.1:9/js/th/abc.js").unwrap_err();
+            assert!(err.contains("builder error"), "{err}");
         }
     }
 

@@ -1,5 +1,6 @@
 // Port of bgutil-ytdlp-pot-provider 2.0.0's session_manager.ts homepage parsing.
 // Copyright (c) Brainicism and contributors, GPL-3.0.
+// parse_loose_json and its helpers port bgutils-js's parseLooseJSON: Copyright (c) 2024 LuanRT, MIT License.
 
 use serde_json::Value;
 
