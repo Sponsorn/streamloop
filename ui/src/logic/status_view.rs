@@ -246,6 +246,18 @@ pub fn dependency_rows(report: &SetupReport) -> Vec<DependencyRow> {
         .collect()
 }
 
+/// Equality as JSON.stringify sees it: 300 and 300.0 print the same, so they match.
+fn same_json(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y || x.as_f64() == y.as_f64(),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_json(p, q)),
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_json(v, w)))
+        }
+        _ => a == b,
+    }
+}
+
 /// The part of `edited` that differs from `original`, as a POST /api/config patch: objects key by key, arrays whole.
 /// A save then never resends a value the server set on its own, such as a fallback encoder.
 pub fn changed_fields(original: &Value, edited: &Value) -> Value {
@@ -261,7 +273,7 @@ pub fn changed_fields(original: &Value, edited: &Value) -> Value {
             if inner.as_object().is_some_and(|o| !o.is_empty()) {
                 out.insert(key.clone(), inner);
             }
-        } else if before != Some(value) {
+        } else if !before.is_some_and(|b| same_json(b, value)) {
             out.insert(key.clone(), value.clone());
         }
     }
@@ -621,6 +633,22 @@ mod tests {
         fn sends_a_changed_array_whole() {
             let edited = json!({ "playlists": [{ "id": "PL2" }, { "id": "PL1" }] });
             assert_eq!(changed_fields(&loaded(), &edited), edited);
+        }
+
+        #[test]
+        fn treats_an_integral_float_as_the_same_number() {
+            let original = json!({ "supervisor": { "cacheBudgetMb": 300 } });
+            let edited = json!({ "supervisor": { "cacheBudgetMb": 300.0 } });
+            assert_eq!(changed_fields(&original, &edited), json!({}));
+            let in_array = changed_fields(&json!({ "xs": [1, 2] }), &json!({ "xs": [1.0, 2.0] }));
+            assert_eq!(in_array, json!({}));
+        }
+
+        #[test]
+        fn sends_a_real_number_change() {
+            let original = json!({ "supervisor": { "cacheBudgetMb": 300 } });
+            let edited = json!({ "supervisor": { "cacheBudgetMb": 300.5 } });
+            assert_eq!(changed_fields(&original, &edited), edited);
         }
 
         #[test]
