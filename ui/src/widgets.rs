@@ -4,19 +4,24 @@
 use std::collections::HashSet;
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Div, ElementId, FontWeight, Global, IntoElement,
+    AnyElement, App, AppContext, Context, Div, ElementId, Entity, FontWeight, Global, IntoElement,
     SharedString, Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_kit::{
     base::TestSupportExt,
-    component::{Disableable, Sizable, button::Button, label::Label},
+    component::{
+        Disableable, Sizable,
+        button::Button,
+        input::{Input, InputState},
+        label::Label,
+    },
 };
 
 use crate::{
     api::{ApiError, client::Client, types::SaveResult},
     app::{AppHandle, ToastKind},
     logic::is_benign_reload_error,
-    theme::{BORDER, MUTED, SURFACE},
+    theme::{BG, BORDER, MUTED, RED, SURFACE},
 };
 
 /// The action buttons of one view whose request is running.
@@ -234,4 +239,20 @@ pub fn form_group(label: &str, control: impl IntoElement, hint: Option<&str>) ->
                 .text_size(px(11.))
                 .text_color(rgb(MUTED))
         }))
+}
+
+/// admin.css `.form-group input`; `.invalid` turns the border red.
+pub fn text_input(
+    state: &Entity<InputState>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    invalid: bool,
+) -> Input {
+    Input::new(state)
+        .id(id)
+        .large()
+        .aria_label(label)
+        .h(px(40.))
+        .bg(rgb(BG))
+        .when(invalid, |input| input.border_color(rgb(RED)))
 }

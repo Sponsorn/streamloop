@@ -9,7 +9,7 @@ use gpui::{
 use gpui_kit::component::{
     Disableable, IndexPath, Sizable,
     button::{Button, ButtonVariants},
-    input::{Input, InputState},
+    input::InputState,
     label::Label,
     select::{Select, SelectItem, SelectState},
     switch::Switch,
@@ -26,9 +26,10 @@ use crate::{
         save_patch,
     },
     setup_check::{CHECKING_LABEL, RUN_LABEL, ReportArea, SetupCheck, apply_setup},
-    theme::{BG, MUTED, RED},
+    theme::{BG, MUTED},
     widgets::{
         ActionView, Busy, RestartNote, btn, form_group, reload_warning, section, settings_panel,
+        text_input,
     },
 };
 
@@ -597,22 +598,6 @@ impl Render for PlaybackView {
             .child(div().flex().child(save))
             .children(NOTE.render(&self.app, &self.busy, cx))
     }
-}
-
-/// admin.css `.form-group input`; `.invalid` turns the border red.
-fn text_input(
-    state: &Entity<InputState>,
-    id: &'static str,
-    label: &'static str,
-    invalid: bool,
-) -> Input {
-    Input::new(state)
-        .id(id)
-        .large()
-        .aria_label(label)
-        .h(px(40.))
-        .bg(rgb(BG))
-        .when(invalid, |input| input.border_color(rgb(RED)))
 }
 
 fn text_of(input: &Entity<InputState>, cx: &App) -> String {

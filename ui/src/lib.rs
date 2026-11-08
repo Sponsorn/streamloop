@@ -15,6 +15,7 @@ pub mod setup_check;
 mod test_support;
 pub mod theme;
 pub mod videos;
+pub mod webhooks;
 pub mod widgets;
 
 use std::sync::Arc;

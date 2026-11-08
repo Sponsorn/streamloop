@@ -157,16 +157,70 @@ function maskedConfig() {
 // The config a save changes, as Node keeps config.json.
 const config = maskedConfig();
 
-/** `POST /api/config`: merges the patch one level deep, as Node's saveAndReload. An encoder
- *  change answers restartRequired, as the supervisor's /reload does. */
+// The saved webhook URL, kept apart from `config` so every answer masks it as Node does.
+let webhookUrl = 'https://discord.com/api/webhooks/0/stub';
+
+/** `GET /api/config`, with the webhook URL masked. */
+function servedConfig() {
+  return { ...config, discord: { ...config.discord, webhookUrl: webhookUrl ? '********' : '' } };
+}
+
+/** `POST /api/config`: merges the patch as Node's saveAndReload (discord's events and templates one
+ *  level deeper, `********` keeps the URL). An encoder change answers restartRequired. */
 function saveConfig(patch) {
   const before = config.supervisor.encoder;
+  if (patch.discord) {
+    const { webhookUrl: url, ...discord } = patch.discord;
+    if (url !== undefined && url !== '********') webhookUrl = url;
+    patch = {
+      ...patch,
+      discord: {
+        ...discord,
+        events: { ...config.discord.events, ...discord.events },
+        templates: { ...config.discord.templates, ...discord.templates },
+      },
+    };
+  }
   for (const [key, value] of Object.entries(patch)) {
     const nested = value && typeof value === 'object' && !Array.isArray(value) && config[key] && typeof config[key] === 'object';
     config[key] = nested ? { ...config[key], ...value } : value;
   }
   const restartRequired = config.supervisor.encoder !== before;
-  return [200, { ok: true, config, restartRequired, reloadError: null, reloadErrorCode: null }];
+  return [200, { ok: true, config: servedConfig(), restartRequired, reloadError: null, reloadErrorCode: null }];
+}
+
+// src/server/config.ts DEFAULT_DISCORD_TEMPLATES and DISCORD_TEMPLATE_VARIABLES.
+const DISCORD_DEFAULTS = {
+  templates: {
+    error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
+    skip: 'Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}',
+    recovery: 'Recovery action: **{step}**',
+    critical: '**CRITICAL:** {message}',
+    resume: 'Playback resumed at video #{videoIndex} (`{videoId}`)',
+    streamDrop: 'Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})',
+    streamRestart: 'Stream restarted successfully after {attempts} attempt(s)',
+    outputFrozen: 'Output frozen ({kind}) on video #{videoIndex}',
+    twitchMismatch: 'Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.',
+    twitchRestart: 'Stream restarted after Twitch liveness mismatch on **{channel}**',
+  },
+  variables: {
+    error: ['videoIndex', 'videoId', 'errorCode', 'attempt'],
+    skip: ['videoIndex', 'videoId', 'reason'],
+    recovery: ['step'],
+    critical: ['message'],
+    resume: ['videoIndex', 'videoId'],
+    streamDrop: ['attempt', 'maxAttempts'],
+    streamRestart: ['attempts'],
+    outputFrozen: ['kind', 'videoIndex'],
+    twitchMismatch: ['channel'],
+    twitchRestart: ['channel'],
+  },
+};
+
+/** `POST /api/discord/test`: Node's answer, without sending anything to Discord. */
+function discordTest() {
+  if (!webhookUrl) return [400, { error: 'No Discord webhook URL configured' }];
+  return [200, { ok: true }];
 }
 
 // No check has run until the first POST /api/setup-check/run, as on a fresh install.
@@ -216,10 +270,10 @@ const GETS = {
   '/api/status': () => [200, status()],
   '/api/events': () => [200, events],
   '/api/update/status': () => [200, { currentVersion: '3.0.5', latestVersion: '3.0.5', updateAvailable: false, status: 'idle', isDevMode: true, nodeNotice: null }],
-  '/api/config': () => [200, config],
+  '/api/config': () => [200, servedConfig()],
   '/api/autostart': () => [200, { enabled: true, target: 'C:\\StreamLoop3\\streamloop\\START.bat', thisInstall: true }],
   '/api/setup-check': () => [200, setupReport],
-  '/api/discord/defaults': () => [200, { templates: example.discord.templates, variables: {} }],
+  '/api/discord/defaults': () => [200, DISCORD_DEFAULTS],
   '/api/logs': () => [200, logFiles.map(({ source, name, text, mtime }) => ({ name, size: Buffer.byteLength(text), mtime, source }))],
 };
 
@@ -239,6 +293,7 @@ const POSTS = {
   },
   '/api/config': saveConfig,
   '/api/setup-check/run': runSetupCheck,
+  '/api/discord/test': discordTest,
 };
 
 function seek(index) {
