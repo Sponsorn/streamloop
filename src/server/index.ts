@@ -20,6 +20,7 @@ import { SupervisorClient } from './supervisor-client.js';
 import { SupervisorLauncher, installRoot } from './supervisor-launcher.js';
 import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent, withPlaylistNames } from './supervisor-events.js';
 import { launchGuard } from './setup-check.js';
+import { hashParts } from './components.js';
 import type { AppConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -95,7 +96,14 @@ async function main() {
   const supervisorEvents = root ? new SupervisorEvents({ logsDir: join(root, 'data', 'logs'), onEvent }) : null;
   if (!root) logger.warn('No install root (set STREAMLOOP_ROOT in dev): the supervisor cannot be launched');
 
-  const updater = new Updater();
+  // Hashed once in the background; the updater's check awaits it. A failure leaves the app-only update.
+  const installPartsPromise = root
+    ? hashParts(root).catch((err: unknown) => {
+      logger.error({ err }, 'Could not hash the installed parts');
+      return null;
+    })
+    : Promise.resolve(null);
+  const updater = new Updater({ installParts: () => installPartsPromise });
   const testHooks = process.env.STREAMLOOP_TEST_HOOKS === '1';
   if (testHooks) logger.warn('STREAMLOOP_TEST_HOOKS=1: POST /api/test/exit-75 is open');
 

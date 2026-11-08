@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, type GithubRelease,
+  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, type GithubRelease, parseComponents, updateKind,
 } from '../updater.js';
 
 function asset(name: string) {
@@ -401,5 +401,185 @@ describe('Updater checksum', () => {
     await expect(apply).rejects.toThrow('This release has no checksum file, so it was not installed.');
     expect(download).not.toHaveBeenCalled();
     expect(updater.getStatus().status).toBe('error');
+  });
+});
+
+describe('Updater part comparison', () => {
+  const HASH = (c: string) => c.repeat(64);
+  const sameParts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };
+  const components = (parts: Record<string, string> = sameParts) =>
+    JSON.stringify({ version: NEXT, node: '22.23.4', parts });
+  const current = `${major}.${minor}.${patch}`;
+
+  function releaseAssets(version: string, withComponents: boolean) {
+    const base = [asset(`streamloop-v${version}-update.zip`), asset(`streamloop-v${version}-update.zip.sha256`),
+      asset(`streamloop-v${version}.zip`), asset(`streamloop-v${version}.zip.sha256`)];
+    return withComponents ? [...base, asset('components.json')] : base;
+  }
+
+  function stubFetch(releases: Array<{ tag: string; assets: ReturnType<typeof asset>[] }>, componentsText: string | null) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify(releases.map((r) => ({ tag_name: r.tag, draft: false, prerelease: true, assets: r.assets }))));
+      }
+      if (url.endsWith('components.json') && componentsText !== null) return new Response(componentsText);
+      return new Response('', { status: 404 });
+    }));
+  }
+
+  const installOf = (over: Record<string, string | null> = {}) => async () => ({ ...sameParts, ...over }) as never;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('takes the update ZIP when every part matches the release', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf() }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+    expect(info.parts).toEqual([]);
+    expect(info.sameVersion).toBe(false);
+  });
+
+  it('takes the full ZIP and names the parts when the supervisor differs', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.kind).toBe('full');
+    expect(info.parts).toEqual(['supervisor']);
+    expect(info.nodeNotice).toBeNull();
+  });
+
+  it('falls back to the update ZIP when the release has no components.json', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, false) }], null);
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+  });
+
+  it('falls back to the update ZIP when components.json is malformed', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], '{"parts": [');
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+    expect(info.parts).toEqual([]);
+  });
+
+  it('offers a same-version full update when the installed parts differ from the current release', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${current}`, assets: releaseAssets(current, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ ffmpeg: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.sameVersion).toBe(true);
+    expect(info.kind).toBe('full');
+    expect(info.parts).toEqual(['ffmpeg']);
+    expect(info.latestVersion).toBe(current);
+  });
+
+  it("offers nothing when the current release's parts match", async () => {
+    // Arrange
+    stubFetch([{ tag: `v${current}`, assets: releaseAssets(current, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf() }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(false);
+    expect(info.sameVersion).toBe(false);
+    expect(info.kind).toBeNull();
+  });
+
+  it('dev mode never offers a full update', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: true, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+  });
+});
+
+describe('parseComponents and updateKind', () => {
+  it('returns null for anything that is not a components file', () => {
+    expect(parseComponents('')).toBeNull();
+    expect(parseComponents('{}')).toBeNull();
+    expect(parseComponents('{"version":"1.0.0","node":"22.0.0","parts":"x"}')).toBeNull();
+  });
+
+  it('keeps the part hashes of a valid file', () => {
+    const text = JSON.stringify({ version: '3.0.6', node: '22.23.4', parts: { node: 'a', supervisor: 'b' } });
+    expect(parseComponents(text)).toEqual({ version: '3.0.6', node: '22.23.4', parts: { node: 'a', supervisor: 'b' } });
+  });
+
+  it('stays app-only without an install or a release', () => {
+    expect(updateKind(null, null)).toEqual({ kind: 'app', parts: [] });
+  });
+});
+
+describe('selectReleaseAssets for a full update', () => {
+  it('selectReleaseAssets with full picks the full ZIP and its own checksum', () => {
+    // Arrange
+    const assets = [
+      asset('streamloop-v3.0.6.zip'), asset('streamloop-v3.0.6.zip.sha256'),
+      asset('streamloop-v3.0.6-update.zip'), asset('streamloop-v3.0.6-update.zip.sha256'),
+    ];
+    // Act
+    const { zipUrl, checksumUrl } = selectReleaseAssets(assets, 'full');
+    // Assert
+    expect(zipUrl).toMatch(/streamloop-v3\.0\.6\.zip$/);
+    expect(checksumUrl).toMatch(/streamloop-v3\.0\.6\.zip\.sha256$/);
+  });
+});
+
+describe('stageUpdate with part folders', () => {
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-parts');
+  const extractDir = join(root, 'extracted');
+  const tmpDir = join(root, 'tmp');
+  const top = join(extractDir, 'streamloop');
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(join(top, 'app', 'src'), { recursive: true });
+    mkdirSync(join(top, 'supervisor'), { recursive: true });
+    mkdirSync(join(top, 'yt-dlp', 'plugins'), { recursive: true });
+    writeFileSync(join(top, 'supervisor', 'streamloop-supervisor.exe'), '');
+    writeFileSync(join(top, 'yt-dlp', 'plugins', 'bgutil-ytdlp-pot-provider.zip'), '');
+    writeFileSync(join(top, 'START.bat'), '@echo off');
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('stageUpdate moves the listed folders and app into the staging folder', () => {
+    // Act
+    stageUpdate(extractDir, tmpDir, ['supervisor', 'yt-dlp']);
+    // Assert
+    expect(readdirSync(tmpDir).sort()).toEqual(['START.bat', 'app', 'supervisor', 'yt-dlp']);
+    expect(existsSync(join(tmpDir, 'supervisor', 'streamloop-supervisor.exe'))).toBe(true);
+  });
+
+  it("stageUpdate refuses an archive missing a part's key file", () => {
+    // Arrange
+    mkdirSync(join(top, 'ffmpeg'), { recursive: true });
+    // Act
+    const stage = () => stageUpdate(extractDir, tmpDir, ['supervisor', 'ffmpeg']);
+    // Assert
+    expect(stage).toThrow('The update archive has no ffmpeg/ffmpeg.exe');
+    expect(readdirSync(tmpDir)).toEqual([]);
   });
 });

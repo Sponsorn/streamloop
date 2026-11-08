@@ -5,7 +5,9 @@ import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { pipeline } from 'stream/promises';
 import { createRequire } from 'module';
+import { z } from 'zod';
 import { logger } from './logger.js';
+import { diffParts, foldersFor, PART_KEY_FILES, PARTS, type Part } from './components.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +25,49 @@ function isAllowedDownloadUrl(url: string): boolean {
   }
 }
 
+export type UpdateKind = 'app' | 'full';
+
+export type InstallParts = Record<Part, string | null>;
+
+export interface ReleaseComponents {
+  version: string;
+  node: string;
+  parts: Partial<Record<Part, string>>;
+}
+
+const componentsSchema = z.object({
+  version: z.string(),
+  node: z.string(),
+  parts: z.object(Object.fromEntries(PARTS.map((p) => [p, z.string().optional()]))),
+});
+
+/** A release's components.json, or null when it is not valid JSON of the expected shape. */
+export function parseComponents(text: string): ReleaseComponents | null {
+  try {
+    const parsed = componentsSchema.safeParse(JSON.parse(text));
+    if (!parsed.success) return null;
+    const raw = parsed.data.parts as Record<string, string | undefined>;
+    const parts: Partial<Record<Part, string>> = {};
+    for (const p of PARTS) {
+      const hash = raw[p];
+      if (hash !== undefined) parts[p] = hash;
+    }
+    return { version: parsed.data.version, node: parsed.data.node, parts };
+  } catch {
+    return null;
+  }
+}
+
+/** App-only unless both sides are known and a part's hash differs; the differing parts name the full update. */
+export function updateKind(
+  install: InstallParts | null,
+  release: ReleaseComponents | null,
+): { kind: UpdateKind; parts: Part[] } {
+  if (!install || !release) return { kind: 'app', parts: [] };
+  const parts = diffParts(install, release.parts);
+  return parts.length > 0 ? { kind: 'full', parts } : { kind: 'app', parts: [] };
+}
+
 export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'extracting' | 'ready' | 'error';
 
 export interface UpdateInfo {
@@ -34,6 +79,12 @@ export interface UpdateInfo {
   isDevMode: boolean;
   /** Set when the release bundles another Node than the running one. Updates never deliver node/. */
   nodeNotice: string | null;
+  /** Null until a check found something to install. */
+  kind: UpdateKind | null;
+  /** Parts a full update replaces. */
+  parts: Part[];
+  /** The offer is the running version with its parts reinstalled. */
+  sameVersion: boolean;
 }
 
 /** Pick the best ZIP asset and its matching checksum from a release's assets.
@@ -44,10 +95,12 @@ export interface UpdateInfo {
  *  "<file>.sha256", since both naming conventions have shipped. */
 export function selectReleaseAssets(
   assets: Array<{ name: string; browser_download_url: string }>,
+  kind: UpdateKind = 'app',
 ): { zipUrl: string | null; checksumUrl: string | null } {
-  const zipAsset =
-    assets.find((a) => a.name.endsWith('-update.zip')) ??
-    assets.find((a) => a.name.endsWith('.zip'));
+  const zipAsset = kind === 'full'
+    ? assets.find((a) => a.name.endsWith('.zip') && !a.name.endsWith('-update.zip'))
+    : assets.find((a) => a.name.endsWith('-update.zip')) ??
+      assets.find((a) => a.name.endsWith('.zip'));
   if (!zipAsset) return { zipUrl: null, checksumUrl: null };
 
   const zipName = zipAsset.name;
@@ -67,14 +120,22 @@ export function parseNodeVersion(text: string): string | null {
   return m ? m[1] : null;
 }
 
-/** Stage only app/ and START.bat into _update_tmp. START.bat swaps whatever lands
- *  there, and the supervisor holds yt-dlp/ and the token server holds node/. */
-export function stageUpdate(extractDir: string, tmpDir: string): void {
+/** Stage app/ and START.bat into _update_tmp, plus the listed part folders of a full update.
+ *  START.bat swaps whatever lands there. An app-only update leaves the part folders out,
+ *  since the supervisor holds yt-dlp/ and the token server holds node/. */
+export function stageUpdate(extractDir: string, tmpDir: string, folders: string[] = []): void {
   // The ZIP holds streamloop/app/; older layouts may extract app/ directly.
   let root = join(extractDir, 'streamloop');
   if (!existsSync(join(root, 'app'))) root = extractDir;
   if (!existsSync(join(root, 'app'))) {
     throw new Error('Could not find app/ directory in update archive');
+  }
+
+  for (const folder of folders) {
+    const keyFile = PART_KEY_FILES[folder];
+    if (keyFile && !existsSync(join(root, keyFile))) {
+      throw new Error(`The update archive has no ${keyFile}`);
+    }
   }
 
   // config.json and logs\ are copied by START.bat after the server exits,
@@ -89,6 +150,7 @@ export function stageUpdate(extractDir: string, tmpDir: string): void {
   // The live app/ can't be renamed while the server runs (EBUSY on Windows),
   // so START.bat swaps the staged copy in after the process exits.
   renameSync(join(root, 'app'), join(tmpDir, 'app'));
+  for (const folder of folders) renameSync(join(root, folder), join(tmpDir, folder));
 }
 
 /** Numeric X.Y.Z compare. A suffixed version such as "3.0.0-dev" sorts below its release. */
@@ -149,8 +211,13 @@ export class Updater {
   private releaseAssetUrl: string | null = null;
   private releaseChecksumUrl: string | null = null;
   private nodeNotice: string | null = null;
+  private kind: UpdateKind | null = null;
+  private parts: Part[] = [];
+  private sameVersion = false;
+  private installParts: () => Promise<InstallParts | null>;
 
-  constructor(opts: { isDevMode?: boolean } = {}) {
+  constructor(opts: { isDevMode?: boolean; installParts?: () => Promise<InstallParts | null> } = {}) {
+    this.installParts = opts.installParts ?? (async () => null);
     // Read version from package.json
     const require = createRequire(import.meta.url);
     const pkg = require('../../package.json');
@@ -171,6 +238,9 @@ export class Updater {
       error: this.error,
       isDevMode: this.isDevMode,
       nodeNotice: this.nodeNotice,
+      kind: this.kind,
+      parts: this.parts,
+      sameVersion: this.sameVersion,
     };
   }
 
@@ -184,6 +254,9 @@ export class Updater {
     this.status = 'checking';
     this.error = null;
     this.nodeNotice = null;
+    this.kind = null;
+    this.parts = [];
+    this.sameVersion = false;
 
     try {
       const res = await fetch(GITHUB_API_URL, {
@@ -207,31 +280,41 @@ export class Updater {
         throw new Error(`GitHub API returned ${res.status}: ${res.statusText}`);
       }
 
-      const release = pickRelease(await res.json() as GithubRelease[], this.currentVersion);
+      const releases = await res.json() as GithubRelease[];
+      const release = pickRelease(releases, this.currentVersion);
+      this.latestVersion = release ? release.tag_name.replace(/^v/, '') : this.currentVersion;
+      this.updateAvailable = release !== null && compareVersions(this.latestVersion, this.currentVersion) > 0;
+
+      // Nothing newer: the running version's own release may still carry parts this install lacks.
+      if (!this.updateAvailable && !this.isDevMode) {
+        const current = releases.find((r) => !r.draft && r.tag_name.replace(/^v/, '') === this.currentVersion);
+        const decision = current ? await this.decideKind(current) : null;
+        if (current && decision && decision.kind === 'full') {
+          this.applyFullOffer(current, decision.parts);
+          this.sameVersion = true;
+        }
+      }
       if (!release) {
-        this.latestVersion = this.currentVersion;
-        this.updateAvailable = false;
         this.status = 'idle';
         this.lastCheckTime = now;
         return this.getStatus();
       }
-      this.latestVersion = release.tag_name.replace(/^v/, '');
-      this.updateAvailable = compareVersions(this.latestVersion, this.currentVersion) > 0;
 
       // Pick the ZIP (slim -update.zip preferred) + its matching checksum,
       // then validate URLs against allowed domains.
       if (this.updateAvailable) {
-        const { zipUrl, checksumUrl } = selectReleaseAssets(release.assets);
-        if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
-          throw new Error(`Untrusted download URL domain: ${zipUrl}`);
-        }
-        this.releaseAssetUrl = zipUrl;
-        this.releaseChecksumUrl =
-          checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
-        // Dev mode runs the system Node, which no release bundles.
-        const releaseNode = this.isDevMode ? null : await this.fetchReleaseNodeVersion(release);
-        if (releaseNode && releaseNode !== process.versions.node) {
-          this.nodeNotice = `This release bundles Node ${releaseNode}. Install the full ZIP to get it.`;
+        // Dev mode has no install to compare and never applies updates.
+        const decision = this.isDevMode ? null : await this.decideKind(release);
+        if (decision && decision.kind === 'full') {
+          this.applyFullOffer(release, decision.parts);
+        } else {
+          this.selectAssets(release, 'app');
+          // Dev mode runs the system Node, which no release bundles. A release with
+          // components.json names its changed parts instead of a Node notice.
+          const releaseNode = this.isDevMode || decision?.hasComponents ? null : await this.fetchReleaseNodeVersion(release);
+          if (releaseNode && releaseNode !== process.versions.node) {
+            this.nodeNotice = `This release bundles Node ${releaseNode}. Install the full ZIP to get it.`;
+          }
         }
       }
 
@@ -247,6 +330,51 @@ export class Updater {
     }
 
     return this.getStatus();
+  }
+
+  private selectAssets(release: GithubRelease, kind: UpdateKind): void {
+    const { zipUrl, checksumUrl } = selectReleaseAssets(release.assets, kind);
+    if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
+      throw new Error(`Untrusted download URL domain: ${zipUrl}`);
+    }
+    this.releaseAssetUrl = zipUrl;
+    this.releaseChecksumUrl = checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
+    this.kind = kind;
+  }
+
+  private applyFullOffer(release: GithubRelease, parts: Part[]): void {
+    this.selectAssets(release, 'full');
+    this.parts = parts;
+    this.updateAvailable = true;
+    this.latestVersion = release.tag_name.replace(/^v/, '');
+  }
+
+  private async decideKind(
+    release: GithubRelease,
+  ): Promise<{ kind: UpdateKind; parts: Part[]; hasComponents: boolean }> {
+    let install: InstallParts | null = null;
+    try {
+      install = await this.installParts();
+    } catch (err) {
+      logger.warn({ err }, 'Could not read the installed parts');
+    }
+    const components = await this.fetchComponents(release);
+    return { ...updateKind(install, components), hasComponents: components !== null };
+  }
+
+  private async fetchComponents(release: GithubRelease): Promise<ReleaseComponents | null> {
+    const url = release.assets.find((a) => a.name === 'components.json')?.browser_download_url;
+    if (!url || !isAllowedDownloadUrl(url)) return null;
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      return res.ok ? parseComponents(await res.text()) : null;
+    } catch (err) {
+      logger.warn({ err }, 'Could not read the release components');
+      return null;
+    }
   }
 
   private async fetchReleaseNodeVersion(release: GithubRelease): Promise<string | null> {
@@ -332,7 +460,7 @@ export class Updater {
       mkdirSync(extractDir, { recursive: true });
       execFileSync('C:\\Windows\\System32\\tar.exe', ['-xf', zipPath, '-C', extractDir], { timeout: 600_000 });
 
-      stageUpdate(extractDir, tmpDir);
+      stageUpdate(extractDir, tmpDir, this.kind === 'full' ? foldersFor(this.parts) : []);
 
       this.status = 'ready';
       logger.info({ from: this.currentVersion, to: this.latestVersion }, 'Update staged, restart required');
