@@ -7,6 +7,7 @@ import {
   setStep,
   clearUpdateState,
   readSwapLog,
+  renameWithRetry,
   type UpdateState,
 } from '../update-state.js';
 
@@ -76,6 +77,55 @@ describe('update state', () => {
     clearUpdateState(ROOT);
     expect(readUpdateState(ROOT)).toBeNull();
     expect(setStep(ROOT, 'done')).toBeNull();
+  });
+
+  it('retries a rename that a transient lock refuses, 200 ms apart', () => {
+    // Arrange: an antivirus scan holds the file for the first two tries.
+    const tries: string[] = [];
+    const pauses: number[] = [];
+    const rename = (from: string, to: string): void => {
+      tries.push(`${from} -> ${to}`);
+      if (tries.length <= 2) throw Object.assign(new Error('locked'), { code: tries.length === 1 ? 'EPERM' : 'EBUSY' });
+    };
+
+    // Act
+    renameWithRetry('a.tmp', 'a', rename, (ms) => pauses.push(ms));
+
+    // Assert
+    expect(tries).toEqual(['a.tmp -> a', 'a.tmp -> a', 'a.tmp -> a']);
+    expect(pauses).toEqual([200, 200]);
+  });
+
+  it('gives up after three retries and throws the last error', () => {
+    // Arrange
+    let tries = 0;
+    const rename = (): void => {
+      tries += 1;
+      throw Object.assign(new Error(`locked ${tries}`), { code: 'EPERM' });
+    };
+
+    // Act
+    const act = () => renameWithRetry('a.tmp', 'a', rename, () => {});
+
+    // Assert
+    expect(act).toThrow('locked 4');
+    expect(tries).toBe(4);
+  });
+
+  it('does not retry an error a lock does not cause', () => {
+    // Arrange
+    let tries = 0;
+    const rename = (): void => {
+      tries += 1;
+      throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    };
+
+    // Act
+    const act = () => renameWithRetry('a.tmp', 'a', rename, () => {});
+
+    // Assert
+    expect(act).toThrow('gone');
+    expect(tries).toBe(1);
   });
 
   it('readSwapLog parses each status and skips unknown lines', () => {

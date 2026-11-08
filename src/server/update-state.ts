@@ -54,12 +54,39 @@ export function readUpdateState(root: string): UpdateState | null {
   }
 }
 
+const RENAME_RETRIES = 3;
+const RENAME_PAUSE_MS = 200;
+
+/** Blocks the thread, as the state writes are synchronous. */
+function pauseSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** An antivirus scan or an indexer can hold a file for a moment; a step must not fail over that. */
+export function renameWithRetry(
+  from: string,
+  to: string,
+  rename: (from: string, to: string) => void = renameSync,
+  pause: (ms: number) => void = pauseSync,
+): void {
+  for (let retry = 0; ; retry++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (retry === RENAME_RETRIES || (code !== 'EPERM' && code !== 'EBUSY')) throw err;
+      pause(RENAME_PAUSE_MS);
+    }
+  }
+}
+
 export function writeUpdateState(root: string, s: UpdateState): void {
   const dir = dataDir(root);
   mkdirSync(dir, { recursive: true });
   const tmp = join(dir, `${STATE_FILE}.tmp`);
   writeFileSync(tmp, JSON.stringify(s, null, 2));
-  renameSync(tmp, join(dir, STATE_FILE));
+  renameWithRetry(tmp, join(dir, STATE_FILE));
 }
 
 export function setStep(root: string, step: UpdateStep, patch: Partial<UpdateState> = {}): UpdateState | null {
