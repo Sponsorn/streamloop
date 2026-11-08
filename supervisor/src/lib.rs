@@ -123,9 +123,8 @@ fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Sn
 
 /// Startup and POST /reload read the config the same way.
 fn read_settings(args: &Args) -> Result<Settings, String> {
-    let json = std::fs::read_to_string(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
     // --target brings its own key; the protected one is not needed.
-    let mut s = config::load(&json, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { streamloop_common::secret::unprotect(b) })?;
+    let mut s = config::load(&args.config, &|b: &str| if args.target.is_some() { Ok(String::new()) } else { streamloop_common::secret::unprotect(b) })?;
     if let Some(t) = &args.target {
         let (ingest, key) = t.rsplit_once('/').filter(|(_, k)| !k.is_empty()).ok_or("--target must end in /<key>")?;
         (s.ingest_url, s.stream_key) = (ingest.into(), key.into());
@@ -3486,6 +3485,32 @@ mod tests {
         assert_eq!(ev.len(), 1, "{ev:?}");
         assert_eq!(ev[0]["level"], "critical");
         assert!(ev[0]["reason"].as_str().unwrap().contains("ytdlCookiesFromBrowser"), "{}", ev[0]);
+    }
+
+    #[test]
+    fn unknown_encoder_is_still_refused() {
+        let args = startup_args("unknown-encoder", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "h265"}}));
+        let (tx, _rx) = channel();
+
+        let r = bind_then_settings(&args, free_port(), tx, Arc::default());
+
+        assert_eq!(r.err(), Some(CONFIG_REFUSED_EXIT));
+        let ev = refused_events(&args);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["reason"], "unknown encoder \"h265\" (h264_nvenc, h264_amf, h264_qsv, libx264)");
+    }
+
+    #[test]
+    fn bad_cookie_value_is_still_refused() {
+        let args = startup_args("bad-cookies", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "fire\u{7}fox"}));
+        let (tx, _rx) = channel();
+
+        let r = bind_then_settings(&args, free_port(), tx, Arc::default());
+
+        assert_eq!(r.err(), Some(CONFIG_REFUSED_EXIT));
+        let ev = refused_events(&args);
+        assert_eq!(ev.len(), 1, "{ev:?}");
+        assert_eq!(ev[0]["reason"], "config.json: ytdlCookiesFromBrowser contains a control character");
     }
 
     #[test]

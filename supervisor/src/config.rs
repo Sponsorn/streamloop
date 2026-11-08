@@ -1,6 +1,8 @@
-//! Supervisor settings from the `config.json` the Node backend owns.
+//! Supervisor settings from the `config.json` the control process owns.
 
-use serde_json::Value;
+use std::path::Path;
+
+use streamloop_common::config::ConfigError;
 
 #[derive(Clone, PartialEq, Default)]
 pub struct Settings {
@@ -23,71 +25,59 @@ pub struct Settings {
     pub key_error: Option<String>,
 }
 
-/// A missing (or null) key takes the default; a key of the wrong type is an error.
-fn field<T>(s: &Value, key: &str, default: T, get: impl Fn(&Value) -> Option<T>) -> Result<T, String> {
-    match s.get(key) {
-        None | Some(Value::Null) => Ok(default),
-        Some(v) => get(v).ok_or(format!("config.json: supervisor.{key} has the wrong type")),
-    }
-}
-
-fn text(v: &Value) -> Option<String> {
-    v.as_str().map(String::from)
-}
-
-pub fn load(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> Result<Settings, String> {
-    let v: Value = serde_json::from_str(json).map_err(|e| format!("config.json is not valid JSON: {e}"))?;
-    let playlist_id = v["playlists"][0]["id"].as_str().filter(|id| !id.is_empty()).ok_or("config.json: playlists is empty (need playlists[0].id)")?;
+/// Reads `config.json` through the same schema as the control process, never writing it.
+pub fn load(path: &Path, unprotect: &dyn Fn(&str) -> Result<String, String>) -> Result<Settings, String> {
+    let c = streamloop_common::config::read(path).map_err(|e| refusal(&e))?;
     let mut playlist_ids: Vec<String> = vec![];
-    for id in v["playlists"].as_array().into_iter().flatten().filter_map(|p| p["id"].as_str()).filter(|id| !id.is_empty()) {
-        if !playlist_ids.iter().any(|known| known == id) {
-            playlist_ids.push(id.into());
+    for p in &c.playlists {
+        if !playlist_ids.contains(&p.id) {
+            playlist_ids.push(p.id.clone());
         }
     }
-    let s = v.get("supervisor").filter(|s| s.is_object()).ok_or("config.json: no supervisor object")?;
+    let s = &c.supervisor;
     // An unusable key is not a config error: the supervisor stays up and waits for a working one.
-    let (stream_key, key_error) = match field(s, "streamKeyProtected", None, |v| v.as_str().map(|b| Some(b.to_string())))?.map(|b| unprotect(&b)) {
-        Some(Ok(key)) => (key, None),
-        Some(Err(e)) => (String::new(), Some(format!("config.json: supervisor.streamKeyProtected cannot be read: {e}"))),
-        None => (String::new(), None),
+    let (stream_key, key_error) = match s.stream_key_protected.as_str() {
+        "" => (String::new(), None),
+        blob => match unprotect(blob) {
+            Ok(key) => (key, None),
+            Err(e) => (String::new(), Some(format!("config.json: supervisor.streamKeyProtected cannot be read: {e}"))),
+        },
     };
-    let out = Settings {
-        playlist_id: playlist_id.into(),
+    Ok(Settings {
+        // The schema refuses an empty playlists list and an empty id.
+        playlist_id: c.playlists[0].id.clone(),
         playlist_ids,
-        ingest_url: field(s, "ingestUrl", "rtmp://live.twitch.tv/app".into(), text)?,
+        ingest_url: s.ingest_url.clone(),
         stream_key,
-        encoder: field(s, "encoder", "h264_nvenc".into(), text)?,
-        cache_budget_mb: field(s, "cacheBudgetMb", 300, Value::as_u64)?,
-        read_ahead_seconds: field(s, "readAheadSeconds", 20.0, Value::as_f64)?,
-        player_client: field(s, "playerClient", "mweb,web_embedded".into(), text)?,
-        overlay: field(s, "overlay", true, Value::as_bool)?,
-        freeze_seconds: field(s, "freezeSeconds", 20.0, Value::as_f64)?,
-        silence_seconds: field(s, "silenceSeconds", 30.0, Value::as_f64)?,
-        cookies_from_browser: cookies(&v)?,
+        encoder: s.encoder.as_str().into(),
+        cache_budget_mb: s.cache_budget_mb,
+        read_ahead_seconds: s.read_ahead_seconds,
+        player_client: s.player_client.clone(),
+        overlay: s.overlay,
+        freeze_seconds: s.freeze_seconds,
+        silence_seconds: s.silence_seconds,
+        cookies_from_browser: cookies(&c.ytdl_cookies_from_browser)?,
         key_error,
-    };
-    // Values that load but would stall the stream: a starved encoder, a freeze or silence
-    // verdict on every cut, no look-ahead.
-    for (key, value, min) in [
-        ("readAheadSeconds", out.read_ahead_seconds, 2.0),
-        ("freezeSeconds", out.freeze_seconds, 5.0),
-        ("silenceSeconds", out.silence_seconds, 5.0),
-        ("cacheBudgetMb", out.cache_budget_mb as f64, 50.0),
-    ] {
-        if !(value.is_finite() && value >= min) {
-            return Err(format!("config.json: supervisor.{key} must be at least {min} (got {value})"));
-        }
-    }
-    Ok(out)
+    })
 }
 
-/// The dashboard's cookie setting, shared with Node's playlist fetch. It goes to yt-dlp as one argument.
-fn cookies(v: &Value) -> Result<String, String> {
+/// The `config-refused` reason: an unknown encoder name keeps the words it had before the shared
+/// schema, other field problems follow `config.json: `.
+fn refusal(e: &ConfigError) -> String {
+    match e {
+        ConfigError::Invalid(issues) => match issues.as_slice() {
+            [only] if only.path == "supervisor.encoder" && only.message.starts_with("unknown encoder") => only.message.clone(),
+            _ => format!("config.json: {e}"),
+        },
+        ConfigError::File { .. } => e.to_string(),
+    }
+}
+
+/// The dashboard's cookie setting, shared with the control process's playlist fetch. It goes to
+/// yt-dlp as one argument.
+fn cookies(value: &str) -> Result<String, String> {
     let bad = |why: &str| format!("config.json: ytdlCookiesFromBrowser {why}");
-    let s = match v.get("ytdlCookiesFromBrowser") {
-        None | Some(Value::Null) => return Ok(String::new()),
-        Some(s) => s.as_str().ok_or_else(|| bad("has the wrong type"))?.trim(),
-    };
+    let s = value.trim();
     if s.chars().count() > 200 {
         return Err(bad("is longer than 200 characters"));
     }
@@ -173,9 +163,22 @@ mod tests {
         Ok(format!("live_{blob}"))
     }
 
+    /// `load` of a `config.json` holding `json`, in a folder of its own.
+    fn load_json(json: &str, unprotect: &dyn Fn(&str) -> Result<String, String>) -> Result<Settings, String> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sl-supervisor-config-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, json).unwrap();
+        let r = load(&path, unprotect);
+        let _ = std::fs::remove_dir_all(&dir);
+        r
+    }
+
     #[test]
     fn load_fills_defaults() {
-        let s = load(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{}}"#, &no_key).unwrap();
+        let s = load_json(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{}}"#, &no_key).unwrap();
         assert_eq!(s.playlist_id, "PLabc");
         assert_eq!(s.ingest_url, "rtmp://live.twitch.tv/app");
         assert_eq!(s.stream_key, "");
@@ -191,7 +194,7 @@ mod tests {
     fn load_reads_camel_case_keys_and_unprotects_the_key() {
         let json = r#"{"playlists":[{"id":"PLx"},{"id":"PLy"}],"supervisor":{"ingestUrl":"rtmp://a/app","streamKeyProtected":"blob",
             "encoder":"libx264","cacheBudgetMb":500,"readAheadSeconds":12.5,"playerClient":"tv","overlay":false,"freezeSeconds":8,"silenceSeconds":9}}"#;
-        let s = load(json, &fake).unwrap();
+        let s = load_json(json, &fake).unwrap();
         assert_eq!((s.playlist_id.as_str(), s.ingest_url.as_str(), s.stream_key.as_str(), s.encoder.as_str()), ("PLx", "rtmp://a/app", "live_blob", "libx264"));
         assert_eq!((s.cache_budget_mb, s.read_ahead_seconds, s.player_client.as_str(), s.overlay), (500, 12.5, "tv", false));
         assert_eq!((s.freeze_seconds, s.silence_seconds), (8.0, 9.0));
@@ -200,21 +203,21 @@ mod tests {
 
     #[test]
     fn load_rejects_bad_config_naming_the_field() {
-        let e = load(r#"{"playlists":[{"id":"PLabc"}]}"#, &no_key).unwrap_err();
+        let e = load_json(r#"{"playlists":[{"id":"PLabc"}],"supervisor":5}"#, &no_key).unwrap_err();
         assert!(e.contains("supervisor"), "{e}");
-        let e = load(r#"{"playlists":[],"supervisor":{}}"#, &no_key).unwrap_err();
+        let e = load_json(r#"{"playlists":[],"supervisor":{}}"#, &no_key).unwrap_err();
         assert!(e.contains("playlists"), "{e}");
-        let e = load(r#"{"supervisor":{}}"#, &no_key).unwrap_err();
+        let e = load_json(r#"{"supervisor":{}}"#, &no_key).unwrap_err();
         assert!(e.contains("playlists"), "{e}");
-        let e = load(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{"#, &no_key).unwrap_err();
+        let e = load_json(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{"#, &no_key).unwrap_err();
         assert!(e.contains("config.json") && e.contains("JSON"), "{e}");
-        let e = load(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{"cacheBudgetMb":"big"}}"#, &no_key).unwrap_err();
+        let e = load_json(r#"{"playlists":[{"id":"PLabc"}],"supervisor":{"cacheBudgetMb":"big"}}"#, &no_key).unwrap_err();
         assert!(e.contains("supervisor.cacheBudgetMb"), "{e}");
     }
 
     #[test]
     fn load_rejects_numbers_that_would_stall_the_stream_naming_the_field() {
-        let with = |k: &str, v: &str| load(&format!(r#"{{"playlists":[{{"id":"P"}}],"supervisor":{{"{k}":{v}}}}}"#), &no_key);
+        let with = |k: &str, v: &str| load_json(&format!(r#"{{"playlists":[{{"id":"P"}}],"supervisor":{{"{k}":{v}}}}}"#), &no_key);
         for (k, bad, good) in [("readAheadSeconds", "1.9", "2"), ("freezeSeconds", "4", "5"), ("silenceSeconds", "0", "5"), ("cacheBudgetMb", "49", "50")] {
             let e = with(k, bad).unwrap_err();
             assert!(e.contains(&format!("supervisor.{k}")) && e.contains("at least"), "{k}: {e}");
@@ -226,8 +229,8 @@ mod tests {
 
     #[test]
     fn load_reads_the_cookie_browser_trimmed_and_empty_as_none() {
-        let with = |v: &str| load(&format!(r#"{{"playlists":[{{"id":"P"}}],"supervisor":{{}},"ytdlCookiesFromBrowser":{v}}}"#), &no_key);
-        assert_eq!(load(r#"{"playlists":[{"id":"P"}],"supervisor":{}}"#, &no_key).unwrap().cookies_from_browser, "");
+        let with = |v: &str| load_json(&format!(r#"{{"playlists":[{{"id":"P"}}],"supervisor":{{}},"ytdlCookiesFromBrowser":{v}}}"#), &no_key);
+        assert_eq!(load_json(r#"{"playlists":[{"id":"P"}],"supervisor":{}}"#, &no_key).unwrap().cookies_from_browser, "");
         assert_eq!(with(r#""  firefox  ""#).unwrap().cookies_from_browser, "firefox");
         assert_eq!(with(r#""   ""#).unwrap().cookies_from_browser, "");
         assert_eq!(with(r#""brave:Profile 1""#).unwrap().cookies_from_browser, "brave:Profile 1");
@@ -240,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_new_cookie_browser_applies_live() {
-        let old = load(r#"{"playlists":[{"id":"PLa"}],"supervisor":{}}"#, &no_key).unwrap();
+        let old = load_json(r#"{"playlists":[{"id":"PLa"}],"supervisor":{}}"#, &no_key).unwrap();
         assert_eq!(reload_plan(&old, &Settings { cookies_from_browser: "firefox".into(), ..old.clone() }), Reload::Live);
     }
 
@@ -256,7 +259,7 @@ mod tests {
     #[test]
     fn an_unreadable_key_means_needs_stream_key_with_the_reason() {
         let json = r#"{"playlists":[{"id":"P"}],"supervisor":{"streamKeyProtected":"b"}}"#;
-        let s = load(json, &|_: &str| Err("DPAPI: key not valid for use in specified state".to_string())).unwrap();
+        let s = load_json(json, &|_: &str| Err("DPAPI: key not valid for use in specified state".to_string())).unwrap();
         let (kind, reason) = stream_ready(&s).unwrap_err();
         assert_eq!(kind, "stream-key-unreadable");
         assert!(reason.contains("streamKeyProtected") && reason.contains("not valid"), "{reason}");
@@ -264,11 +267,11 @@ mod tests {
 
     #[test]
     fn a_missing_key_means_needs_stream_key() {
-        let s = load(r#"{"playlists":[{"id":"P"}],"supervisor":{}}"#, &no_key).unwrap();
+        let s = load_json(r#"{"playlists":[{"id":"P"}],"supervisor":{}}"#, &no_key).unwrap();
         let (kind, reason) = stream_ready(&s).unwrap_err();
         assert_eq!(kind, "stream-key-missing");
         assert!(reason.contains("streamKeyProtected"), "{reason}");
-        assert_eq!(stream_ready(&load(r#"{"playlists":[{"id":"P"}],"supervisor":{"streamKeyProtected":"b"}}"#, &fake).unwrap()), Ok(()));
+        assert_eq!(stream_ready(&load_json(r#"{"playlists":[{"id":"P"}],"supervisor":{"streamKeyProtected":"b"}}"#, &fake).unwrap()), Ok(()));
     }
 
     #[test]
@@ -280,7 +283,7 @@ mod tests {
 
     #[test]
     fn reload_plan_sorts_changes() {
-        let old = load(r#"{"playlists":[{"id":"PLa"}],"supervisor":{}}"#, &no_key).unwrap();
+        let old = load_json(r#"{"playlists":[{"id":"PLa"}],"supervisor":{}}"#, &no_key).unwrap();
         assert_eq!(reload_plan(&old, &old.clone()), Reload::Nothing);
         assert_eq!(reload_plan(&old, &Settings { playlist_id: "PLb".into(), ..old.clone() }), Reload::Live);
         assert_eq!(reload_plan(&old, &Settings { read_ahead_seconds: 10.0, ..old.clone() }), Reload::Live);
@@ -293,7 +296,7 @@ mod tests {
 
     #[test]
     fn every_configured_playlist_is_read_in_order() {
-        let s = load(r#"{"playlists":[{"id":"PLx"},{"id":"PLy","name":"second"},{"id":"PLz"}],"supervisor":{}}"#, &no_key).unwrap();
+        let s = load_json(r#"{"playlists":[{"id":"PLx"},{"id":"PLy","name":"second"},{"id":"PLz"}],"supervisor":{}}"#, &no_key).unwrap();
 
         assert_eq!(s.playlist_ids, ["PLx", "PLy", "PLz"]);
         assert_eq!(s.playlist_id, "PLx");
@@ -301,8 +304,39 @@ mod tests {
 
     #[test]
     fn a_playlist_listed_twice_counts_once() {
-        let s = load(r#"{"playlists":[{"id":"PLx"},{"id":"PLy"},{"id":"PLx"}],"supervisor":{}}"#, &no_key).unwrap();
+        let s = load_json(r#"{"playlists":[{"id":"PLx"},{"id":"PLy"},{"id":"PLx"}],"supervisor":{}}"#, &no_key).unwrap();
 
         assert_eq!(s.playlist_ids, ["PLx", "PLy"]);
+    }
+
+    #[test]
+    fn blank_ingest_url_means_the_default() {
+        // Act
+        let s = load_json(r#"{"playlists":[{"id":"P"}],"supervisor":{"ingestUrl":"   ","playerClient":""}}"#, &no_key).unwrap();
+
+        // Assert
+        assert_eq!(s.ingest_url, "rtmp://live.twitch.tv/app");
+        assert_eq!(s.player_client, "mweb,web_embedded");
+    }
+
+    #[test]
+    fn missing_supervisor_section_means_defaults() {
+        // Act
+        let s = load_json(r#"{"playlists":[{"id":"P"}]}"#, &no_key).unwrap();
+
+        // Assert
+        assert_eq!((s.ingest_url.as_str(), s.encoder.as_str(), s.cache_budget_mb), ("rtmp://live.twitch.tv/app", "h264_nvenc", 300));
+        assert_eq!((s.read_ahead_seconds, s.freeze_seconds, s.silence_seconds), (20.0, 20.0, 30.0));
+        assert_eq!((s.player_client.as_str(), s.overlay), ("mweb,web_embedded", true));
+    }
+
+    #[test]
+    fn empty_stream_key_means_no_key() {
+        // Act
+        let s = load_json(r#"{"playlists":[{"id":"P"}],"supervisor":{"streamKeyProtected":""}}"#, &no_key).unwrap();
+
+        // Assert
+        assert_eq!(s.key_error, None);
+        assert_eq!(stream_ready(&s).unwrap_err().0, "stream-key-missing");
     }
 }

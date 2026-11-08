@@ -1,3 +1,4 @@
+pub mod config;
 pub mod encoder;
 pub mod events;
 pub mod paths;
