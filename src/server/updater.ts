@@ -11,7 +11,7 @@ import { logger } from './logger.js';
 import { diffParts, foldersFor, PART_KEY_FILES, PARTS, type Part } from './components.js';
 import { SPAWN_CWD } from './spawn-cwd.js';
 import { clearLeftovers, failureMessage, type StopResult } from './full-update.js';
-import { writeUpdateState, type UpdateState } from './update-state.js';
+import { CHECKING_MARKER, writeUpdateState, type UpdateState } from './update-state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -185,6 +185,16 @@ export function stageUpdate(extractDir: string, tmpDir: string, folders: string[
   // so START.bat swaps the staged copy in after the process exits.
   renameSync(join(root, 'app'), join(tmpDir, 'app'));
   for (const folder of folders) renameSync(join(root, folder), join(tmpDir, folder));
+}
+
+/** A marker an earlier update could not remove would count this update's crashes toward a rollback. */
+function clearStaleChecking(root: string): void {
+  try {
+    rmSync(join(root, 'data', CHECKING_MARKER), { force: true });
+  } catch (err) {
+    logger.warn({ err }, 'Could not remove a stale update-checking');
+    throw new Error('data\\update-checking from an earlier update could not be removed.');
+  }
 }
 
 /** Numeric X.Y.Z compare. A suffixed version such as "3.0.0-dev" sorts below its release. */
@@ -585,7 +595,10 @@ export class Updater {
       // Clean up any previous update artifacts
       if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
       if (existsSync(oldDir)) rmSync(oldDir, { recursive: true, force: true });
-      if (full) clearLeftovers(rootDir);
+      if (full) {
+        clearLeftovers(rootDir);
+        clearStaleChecking(rootDir);
+      }
       mkdirSync(tmpDir, { recursive: true });
 
       // While the stream is still on air, so the check after the swap has something to compare with.

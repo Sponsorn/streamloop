@@ -373,8 +373,10 @@ export function decideStartup(
   // START.bat keeps update-checking from a part swap until the check passes, also across a reboot.
   if (start === 'update' || checking) {
     if (state?.result === 'ok') return { kind: 'finish' };
-    if (state?.result === 'failed' && checking) return { kind: 'roll-back' };
-    return { kind: 'check' };
+    // An update at download or stop swapped nothing, so a marker then is one an earlier update left.
+    const swapped = !state || state.step === 'swap' || state.step === 'check';
+    if (swapped && state?.result === 'failed' && checking) return { kind: 'roll-back' };
+    if (swapped) return { kind: 'check' };
   }
   if (state?.result !== 'running') return { kind: 'none' };
   // Nothing was swapped yet, so the old version is in place.
@@ -404,6 +406,7 @@ export interface StartupDeps {
   /** Closes the server and exits 76, so START.bat puts the old version back. */
   rollBack: () => void;
   wait?: (ms: number) => Promise<void>;
+  removeOldCopies?: (root: string) => void;
 }
 
 export async function runStartup(deps: StartupDeps): Promise<void> {
@@ -491,13 +494,14 @@ async function finishUpdate(deps: StartupDeps, current: UpdateState | null): Pro
     deps.rollBack();
     return;
   }
-  removeOldCopies(deps.root);
-  // Only after the result is written: a start that finds the marker with no result checks again.
+  // Only after the result is written: a start that finds the marker with no result checks again. And before
+  // the old copies go: with the marker, three crashes would roll back onto whatever copies are left.
   try {
     rmSync(join(deps.root, 'data', CHECKING_MARKER), { force: true });
   } catch (err) {
     logger.warn({ err }, 'Could not remove update-checking');
   }
+  (deps.removeOldCopies ?? removeOldCopies)(deps.root);
   logger.info({ version: deps.version }, 'The update passed its check');
 
   if (!deps.autoStartStream() || deps.launcher.isStoppedByUser()) return;

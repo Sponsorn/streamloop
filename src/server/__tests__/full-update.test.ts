@@ -519,6 +519,16 @@ describe('decideStartup', () => {
     expect(decideStartup('update', state({ step: 'start', result: 'ok' }), true)).toEqual({ kind: 'finish' });
   });
 
+  it('does not take a stale update-checking for new parts while nothing was swapped', () => {
+    // Act + Assert: a marker an earlier update could not remove, then an update cut off before its swap.
+    for (const start of ['first', 'restart', 'update'] as const) {
+      expect(decideStartup(start, state({ step: 'download' }), true)).toEqual({ kind: 'mark', result: 'failed', reason: RESTARTED });
+      expect(decideStartup(start, state({ step: 'stop' }), true)).toEqual({ kind: 'mark', result: 'failed', reason: RESTARTED });
+    }
+    expect(decideStartup('first', state({ step: 'stop', result: 'failed', reason: 'x' }), true)).toEqual({ kind: 'none' });
+    expect(decideStartup('first', null, true)).toEqual({ kind: 'check' });
+  });
+
   it('leaves a finished or settled update alone', () => {
     // Act + Assert
     expect(decideStartup('first', state({ step: 'done', result: 'ok' }), false)).toEqual({ kind: 'none' });
@@ -604,6 +614,22 @@ describe('runStartup', () => {
     expect(readUpdateState(ROOT)).toMatchObject({ result: 'ok', step: 'done', reason: null });
     expect(vi.mocked(deps.notify).mock.calls).toEqual([['Back on air on 3.0.6.', 'info']]);
     expect(deps.rollBack).not.toHaveBeenCalled();
+  });
+
+  it('removes update-checking before the old copies, so later crashes cannot roll a passed update back', async () => {
+    // Arrange
+    swapped(state());
+    const markerWhenCopiesGo: boolean[] = [];
+    const deps = fakeStartup({ kind: 'check' }, state(), {
+      removeOldCopies: vi.fn(() => { markerWhenCopiesGo.push(existsSync(marker)); }),
+    });
+
+    // Act
+    await runStartup(deps);
+
+    // Assert
+    expect(markerWhenCopiesGo).toEqual([false]);
+    expect(readUpdateState(ROOT)).toMatchObject({ result: 'ok' });
   });
 
   it('writes the check step before the check runs', async () => {

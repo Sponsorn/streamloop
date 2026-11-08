@@ -782,6 +782,37 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     }
   });
 
+  it('removes an update-checking left by an earlier update before it starts', async () => {
+    // Arrange
+    stubRelease();
+    mkdirSync(join(root, 'data'), { recursive: true });
+    writeFileSync(join(root, 'data', 'update-checking'), '');
+    const updater = await updaterWith(hooks());
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert
+    expect(existsSync(join(root, 'data', 'update-checking'))).toBe(false);
+    expect(readState()).toMatchObject({ step: 'swap', result: 'running' });
+  });
+
+  it('calls the update off at the download when a stale update-checking cannot be removed', async () => {
+    // Arrange: a folder in the marker's place cannot be removed as a file.
+    stubRelease();
+    mkdirSync(join(root, 'data', 'update-checking', 'x'), { recursive: true });
+    const h = hooks();
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('data\\update-checking from an earlier update could not be removed.');
+    expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
+    expect(h.stop).not.toHaveBeenCalled();
+  });
+
   it('keeps an earlier copy that is the only one of its part and calls the update off', async () => {
     // Arrange
     stubRelease();
