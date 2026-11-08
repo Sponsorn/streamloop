@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream, createReadStream } from 'fs';
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync, createWriteStream, createReadStream, readFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, resolve, dirname } from 'path';
@@ -19,9 +19,11 @@ const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases?per
 const FETCH_TIMEOUT_MS = 10_000;
 const ALLOWED_DOWNLOAD_HOSTS = new Set(['github.com', 'objects.githubusercontent.com']);
 
-function isAllowedDownloadUrl(url: string): boolean {
+/** GitHub over https; with a test release list (STREAMLOOP_TEST_RELEASES), only http://127.0.0.1:<port>/ instead. */
+function isAllowedDownloadUrl(url: string, testReleases = false): boolean {
   try {
     const parsed = new URL(url);
+    if (testReleases) return parsed.protocol === 'http:' && parsed.hostname === '127.0.0.1' && parsed.port !== '';
     return parsed.protocol === 'https:' && ALLOWED_DOWNLOAD_HOSTS.has(parsed.hostname);
   } catch {
     return false;
@@ -233,6 +235,7 @@ export class Updater {
   private installParts: () => Promise<InstallParts | null>;
   private rootDir: string;
   private full: FullUpdateHooks | null;
+  private testReleases: string | null;
 
   constructor(opts: {
     isDevMode?: boolean;
@@ -240,9 +243,12 @@ export class Updater {
     /** The install root that holds app\, _update_tmp\ and data\; the parent of app\ unless a test names one. */
     rootDir?: string;
     full?: FullUpdateHooks;
+    /** Test runs only (STREAMLOOP_TEST_RELEASES): the release list is read from this file, never from GitHub. */
+    testReleases?: string | null;
   } = {}) {
     this.installParts = opts.installParts ?? (async () => null);
     this.full = opts.full ?? null;
+    this.testReleases = opts.testReleases ?? null;
     // Read version from package.json
     const require = createRequire(import.meta.url);
     const pkg = require('../../package.json');
@@ -287,28 +293,33 @@ export class Updater {
     this.sameVersion = false;
 
     try {
-      const res = await fetch(GITHUB_API_URL, {
-        headers: {
-          'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': `streamloop/${this.currentVersion}`,
-        },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      });
+      let releases: GithubRelease[];
+      if (this.testReleases) {
+        releases = JSON.parse(readFileSync(this.testReleases, 'utf8')) as GithubRelease[];
+      } else {
+        const res = await fetch(GITHUB_API_URL, {
+          headers: {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': `streamloop/${this.currentVersion}`,
+          },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
 
-      if (res.status === 404) {
-        // No releases yet
-        this.latestVersion = this.currentVersion;
-        this.updateAvailable = false;
-        this.status = 'idle';
-        this.lastCheckTime = now;
-        return this.getStatus();
+        if (res.status === 404) {
+          // No releases yet
+          this.latestVersion = this.currentVersion;
+          this.updateAvailable = false;
+          this.status = 'idle';
+          this.lastCheckTime = now;
+          return this.getStatus();
+        }
+
+        if (!res.ok) {
+          throw new Error(`GitHub API returned ${res.status}: ${res.statusText}`);
+        }
+
+        releases = await res.json() as GithubRelease[];
       }
-
-      if (!res.ok) {
-        throw new Error(`GitHub API returned ${res.status}: ${res.statusText}`);
-      }
-
-      const releases = await res.json() as GithubRelease[];
       const release = pickRelease(releases, this.currentVersion);
       this.latestVersion = release ? release.tag_name.replace(/^v/, '') : this.currentVersion;
       this.updateAvailable = release !== null && compareVersions(this.latestVersion, this.currentVersion) > 0;
@@ -318,8 +329,8 @@ export class Updater {
         const current = releases.find((r) => !r.draft && r.tag_name.replace(/^v/, '') === this.currentVersion);
         const full = current ? selectReleaseAssets(current.assets, 'full') : null;
         // Only a release that can be installed is offered; one still uploading is not.
-        const installable = full !== null && full.zipUrl !== null && isAllowedDownloadUrl(full.zipUrl)
-          && full.checksumUrl !== null && isAllowedDownloadUrl(full.checksumUrl);
+        const installable = full !== null && full.zipUrl !== null && this.allowed(full.zipUrl)
+          && full.checksumUrl !== null && this.allowed(full.checksumUrl);
         const decision = current && installable ? await this.decideKind(current) : null;
         if (current && decision && decision.kind === 'full') {
           this.applyFullOffer(current, decision.parts);
@@ -367,13 +378,17 @@ export class Updater {
     return this.getStatus();
   }
 
+  private allowed(url: string): boolean {
+    return isAllowedDownloadUrl(url, this.testReleases !== null);
+  }
+
   private selectAssets(release: GithubRelease, kind: UpdateKind): void {
     const { zipUrl, checksumUrl } = selectReleaseAssets(release.assets, kind);
-    if (zipUrl && !isAllowedDownloadUrl(zipUrl)) {
+    if (zipUrl && !this.allowed(zipUrl)) {
       throw new Error(`Untrusted download URL domain: ${zipUrl}`);
     }
     this.releaseAssetUrl = zipUrl;
-    this.releaseChecksumUrl = checksumUrl && isAllowedDownloadUrl(checksumUrl) ? checksumUrl : null;
+    this.releaseChecksumUrl = checksumUrl && this.allowed(checksumUrl) ? checksumUrl : null;
     this.kind = kind;
   }
 
@@ -399,7 +414,7 @@ export class Updater {
 
   private async fetchComponents(release: GithubRelease): Promise<ReleaseComponents | null> {
     const url = release.assets.find((a) => a.name === 'components.json')?.browser_download_url;
-    if (!url || !isAllowedDownloadUrl(url)) return null;
+    if (!url || !this.allowed(url)) return null;
     try {
       const res = await fetch(url, {
         headers: { 'User-Agent': `streamloop/${this.currentVersion}` },
@@ -414,7 +429,7 @@ export class Updater {
 
   private async fetchReleaseNodeVersion(release: GithubRelease): Promise<string | null> {
     const url = release.assets.find((a) => a.name === 'node-version.txt')?.browser_download_url;
-    if (!url || !isAllowedDownloadUrl(url)) return null;
+    if (!url || !this.allowed(url)) return null;
     try {
       const res = await fetch(url, {
         headers: { 'User-Agent': `streamloop/${this.currentVersion}` },

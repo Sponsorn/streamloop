@@ -35,6 +35,7 @@ Test-only environment variables, never set by `config.json` or a release:
 - `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`). The flag belongs to the supervisor process, not to Node: a Node restarted without the variable attaches to the running supervisor, and `/debug/fault` stays open until that supervisor is restarted.
 - `STREAMLOOP_TEST_HOOKS=1`: adds `POST /api/test/exit-75`, the update restart without an update.
 - `STREAMLOOP_TEST_HLS_URL`: the Twitch read-back reads this HLS instead of the channel's, and the channel counts as live, so no request reaches Twitch and Helix credentials are not needed.
+- `STREAMLOOP_TEST_RELEASES=<file>`: the updater reads its release list from this JSON file (GitHub's shape) instead of GitHub, and takes asset URLs only from `http://127.0.0.1:<port>/`.
 
 ## Commands
 
@@ -49,6 +50,7 @@ node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout
 cargo build --release       # in supervisor/: the supervisor binary
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
+node supervisor/scripts/update-session.mjs all|<run>    # full update, rollback and bootstrap proof: N and N+1 repacked from the dist/ ZIPs
 ```
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.

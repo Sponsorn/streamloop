@@ -120,8 +120,12 @@ async function main() {
       return null;
     })
     : Promise.resolve(null);
+  // STREAMLOOP_TEST_RELEASES is for the update runs against a local release list; config.json cannot set it.
+  const testReleases = process.env.STREAMLOOP_TEST_RELEASES || null;
+  if (testReleases) logger.warn({ testReleases }, 'STREAMLOOP_TEST_RELEASES is set: updates come from this file and 127.0.0.1, never from GitHub');
   const updater = new Updater({
     installParts: () => installPartsPromise,
+    testReleases,
     // The root the startup above reads the update state from.
     rootDir: root ?? undefined,
     full: root

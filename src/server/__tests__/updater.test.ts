@@ -813,3 +813,50 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     await apply;
   });
 });
+
+describe('Updater test release list', () => {
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-test-releases');
+  const file = join(root, 'releases.json');
+  const names = [`streamloop-v${NEXT}-update.zip`, `streamloop-v${NEXT}-update.sha256`, `streamloop-v${NEXT}.zip`, `streamloop-v${NEXT}.sha256`];
+  const release = (base: string): GithubRelease => ({
+    tag_name: `v${NEXT}`, draft: false, prerelease: true,
+    assets: names.map((name) => ({ name, browser_download_url: `${base}/v${NEXT}/${name}` })),
+  });
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reads releases from the test file and allows only local asset URLs while it is set', async () => {
+    // Arrange
+    const calls: string[] = [];
+    let githubList: GithubRelease[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes('api.github.com')) return new Response(JSON.stringify(githubList));
+      return new Response('', { status: 404 });
+    }));
+    const check = (testReleases: string | null) => new Updater({ isDevMode: false, testReleases }).checkForUpdate();
+
+    // Act
+    writeFileSync(file, JSON.stringify([release('http://127.0.0.1:8791')]));
+    const local = await check(file);
+    writeFileSync(file, JSON.stringify([release('https://github.com/Sponsorn/streamloop/releases/download')]));
+    const githubInFile = await check(file);
+    const githubCalls = calls.filter((u) => u.includes('api.github.com')).length;
+    githubList = [release('http://127.0.0.1:8791')];
+    const localWithoutFile = await check(null);
+
+    // Assert
+    expect(local).toMatchObject({ status: 'idle', updateAvailable: true, latestVersion: NEXT, kind: 'app' });
+    expect(githubInFile).toMatchObject({ status: 'error', error: expect.stringContaining('Untrusted download URL domain') });
+    expect(githubCalls).toBe(0);
+    expect(localWithoutFile).toMatchObject({ status: 'error', error: expect.stringContaining('Untrusted download URL domain: http://127.0.0.1:8791') });
+  });
+});
