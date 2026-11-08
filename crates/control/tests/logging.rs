@@ -93,7 +93,7 @@ fn deletes_log_files_older_than_the_retention_period() {
     touch(dir.path(), "streamloop-2025-01-01.log", 30 * DAY, now);
     touch(dir.path(), "streamloop-2025-02-15.log", Duration::ZERO, now);
     // Act
-    cleanup_old_files(dir.path(), "streamloop-", 7, now);
+    cleanup_old_files(dir.path(), "streamloop-", ".log", 7, now);
     // Assert
     assert_eq!(names(dir.path()), vec!["streamloop-2025-02-15.log"]);
 }
@@ -105,7 +105,7 @@ fn keeps_log_files_within_the_retention_period() {
     let now = SystemTime::now();
     touch(dir.path(), "streamloop-2025-02-15.log", 6 * DAY, now);
     // Act
-    cleanup_old_files(dir.path(), "streamloop-", 7, now);
+    cleanup_old_files(dir.path(), "streamloop-", ".log", 7, now);
     // Assert
     assert_eq!(names(dir.path()), vec!["streamloop-2025-02-15.log"]);
 }
@@ -118,7 +118,7 @@ fn leaves_files_that_do_not_match_the_prefix_and_extension() {
     touch(dir.path(), "other-file.txt", 30 * DAY, now);
     touch(dir.path(), "streamloop-2025-01-01.txt", 30 * DAY, now);
     // Act
-    cleanup_old_files(dir.path(), "streamloop-", 7, now);
+    cleanup_old_files(dir.path(), "streamloop-", ".log", 7, now);
     // Assert
     assert_eq!(names(dir.path()), vec!["other-file.txt", "streamloop-2025-01-01.txt"]);
 }
@@ -128,7 +128,7 @@ fn a_missing_directory_is_not_an_error() {
     // Arrange
     let dir = tempfile::tempdir().unwrap();
     // Act
-    cleanup_old_files(&dir.path().join("nonexistent"), "streamloop-", 7, SystemTime::now());
+    cleanup_old_files(&dir.path().join("nonexistent"), "streamloop-", ".log", 7, SystemTime::now());
     // Assert: reaching this line without a panic is the check
 }
 

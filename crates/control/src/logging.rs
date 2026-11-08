@@ -84,14 +84,14 @@ pub fn format_line(level: u8, msg: &str, extras: Option<&Map<String, serde_json:
     format_line_ordered(level, msg, &list, local)
 }
 
-/// Deletes `<prefix>*.log` files in `dir` last written more than `days` before `now`. A missing folder or a
+/// Deletes `<prefix>*<suffix>` files in `dir` last written more than `days` before `now`. A missing folder or a
 /// file that will not go is skipped.
-pub fn cleanup_old_files(dir: &Path, prefix: &str, days: u64, now: SystemTime) {
+pub fn cleanup_old_files(dir: &Path, prefix: &str, suffix: &str, days: u64, now: SystemTime) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     let Some(cutoff) = now.checked_sub(Duration::from_secs(days * 24 * 60 * 60)) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(prefix) || !name.ends_with(".log") {
+        if !name.starts_with(prefix) || !name.ends_with(suffix) {
             continue;
         }
         if entry.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < cutoff) {
@@ -151,7 +151,7 @@ impl DailyFile {
         let day = streamloop_common::time::local_date(now);
         if day != self.day || self.file.is_none() {
             if day != self.day {
-                cleanup_old_files(&self.dir, FILE_PREFIX, RETENTION_DAYS, now);
+                cleanup_old_files(&self.dir, FILE_PREFIX, ".log", RETENTION_DAYS, now);
             }
             self.day = day;
             self.file = OpenOptions::new().create(true).append(true).open(self.dir.join(format!("{FILE_PREFIX}{}.log", self.day))).ok();
@@ -206,7 +206,7 @@ pub fn target_filter(level: tracing::level_filters::LevelFilter) -> tracing_subs
 /// and never the `Debug` of a request, a URL with a token in it, or a body.
 pub fn init(logs_dir: &Path) {
     let _ = fs::create_dir_all(logs_dir);
-    cleanup_old_files(logs_dir, FILE_PREFIX, RETENTION_DAYS, SystemTime::now());
+    cleanup_old_files(logs_dir, FILE_PREFIX, ".log", RETENTION_DAYS, SystemTime::now());
     let level = std::env::var("LOG_LEVEL").ok().and_then(|v| v.parse::<tracing::level_filters::LevelFilter>().ok()).unwrap_or(tracing::level_filters::LevelFilter::INFO);
     let layer = LineLayer { file: Mutex::new(DailyFile { dir: logs_dir.to_path_buf(), day: String::new(), file: None }) };
     let subscriber = tracing_subscriber::registry().with(layer.with_filter(target_filter(level)));

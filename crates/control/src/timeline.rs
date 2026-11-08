@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use streamloop_common::time::{iso, local_date};
 
 use crate::clock::Clock;
+use crate::logging::cleanup_old_files;
 
 const FILE_PREFIX: &str = "events-";
 const RETENTION_DAYS: u64 = 7;
@@ -42,7 +43,7 @@ impl EventStore {
     /// Creates `dir` and deletes `events-*.jsonl` files last written more than 7 days ago.
     pub fn new(dir: &Path, clock: Arc<dyn Clock>) -> EventStore {
         let _ = fs::create_dir_all(dir);
-        cleanup_old_files(dir, clock.now());
+        cleanup_old_files(dir, FILE_PREFIX, ".jsonl", RETENTION_DAYS, clock.now());
         let (tx, rx) = mpsc::channel::<Job>();
         std::thread::spawn(move || {
             for job in rx {
@@ -104,20 +105,6 @@ impl EventStore {
         }
         let skip = entries.len().saturating_sub(limit);
         entries.split_off(skip)
-    }
-}
-
-fn cleanup_old_files(dir: &Path, now: SystemTime) {
-    let Ok(read) = fs::read_dir(dir) else { return };
-    let Some(cutoff) = now.checked_sub(DAY * RETENTION_DAYS as u32) else { return };
-    for entry in read.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(FILE_PREFIX) || !name.ends_with(".jsonl") {
-            continue;
-        }
-        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < cutoff) {
-            let _ = fs::remove_file(entry.path());
-        }
     }
 }
 

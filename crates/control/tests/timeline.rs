@@ -75,6 +75,19 @@ fn construction_deletes_timeline_files_older_than_seven_days() {
 }
 
 #[test]
+fn construction_keeps_a_recent_timeline_file() {
+    // Arrange
+    let dir = tempfile::tempdir().unwrap();
+    let recent = dir.path().join("events-2026-11-08.jsonl");
+    std::fs::write(&recent, "{\"timestamp\":\"t\",\"message\":\"new\"}
+").unwrap();
+    // Act
+    let _ = EventStore::new(dir.path(), Arc::new(TestClock::new(SystemTime::now())));
+    // Assert
+    assert!(recent.exists());
+}
+
+#[test]
 fn load_recent_is_empty_when_no_files_exist() {
     // Arrange
     let dir = tempfile::tempdir().unwrap();
