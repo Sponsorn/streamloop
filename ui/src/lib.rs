@@ -4,6 +4,7 @@
 extern crate gpui_kit as gpui;
 
 pub mod api;
+pub mod logic;
 mod spike_api;
 mod spike_view;
 
