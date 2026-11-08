@@ -302,10 +302,12 @@ async fn a_wrong_method_on_an_existing_path_gets_the_express_404_page() {
 async fn a_malformed_body_never_reaches_a_log_line_even_at_trace_level() {
     // Arrange
     let logs = captured_logs();
+    let before = logs.0.lock().unwrap().len();
     // Act
     call(app(), post_echo(Some("application/json"), Some(TOKEN), r#"{"url":"https://discord.com/api/webhooks/1/SECRETHOOK","k":}"#)).await;
     call(app(), post_echo(Some("application/json"), Some(TOKEN), r#"{"url":"https://discord.com/api/webhooks/1/SECRETHOOK"}"#)).await;
     // Assert
     let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(logged[before..].contains("entity.parse.failed"), "the capture saw no parse failure: {logged}");
     assert!(!logged.contains("SECRETHOOK"), "{logged}");
 }

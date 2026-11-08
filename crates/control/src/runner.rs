@@ -180,19 +180,34 @@ mod tests {
         assert_eq!(out.stdout_text().trim(), "xyz");
     }
 
+    /// Runs a shell that creates a marker file about 3 s in; the temp path has no spaces, so the script needs no quotes.
+    #[cfg(windows)]
+    async fn run_marker_script(timeout: Duration) -> (Result<RunOutput, RunError>, bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!("ping -n 4 127.0.0.1 >nul & type nul > {}", marker.display());
+        let result = ProcessRunner.run(RunSpec::new("cmd", &["/C", &script], timeout)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        (result, marker.exists())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_marker_script_creates_its_file_when_left_to_finish() {
+        // Act
+        let (result, marker_exists) = run_marker_script(Duration::from_secs(20)).await;
+        // Assert: the control for the kill test below
+        assert_eq!(result.unwrap().code, Some(0));
+        assert!(marker_exists, "the script does not work on this machine");
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn process_runner_kills_a_child_that_outlives_its_timeout() {
-        // Arrange: the marker file appears only if the shell lives on to its second command
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("survived");
-        let script = format!("ping -n 4 127.0.0.1 >nul & type nul > \"{}\"", marker.display());
-        let spec = RunSpec::new("cmd", &["/C", &script], Duration::from_millis(300));
         // Act
-        let err = ProcessRunner.run(spec).await.unwrap_err();
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        let (result, marker_exists) = run_marker_script(Duration::from_millis(300)).await;
         // Assert
-        assert_eq!(err.kind, RunErrorKind::Timeout);
-        assert!(!marker.exists(), "the child kept running after its timeout");
+        assert_eq!(result.unwrap_err().kind, RunErrorKind::Timeout);
+        assert!(!marker_exists, "the child kept running after its timeout");
     }
 }
