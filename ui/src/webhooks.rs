@@ -108,6 +108,8 @@ pub struct WebhooksView {
     /// `webhookSettingsLoaded`.
     loaded: bool,
     loading: bool,
+    /// A load has filled the form. A save clears `loaded` but not this.
+    filled: bool,
     /// What a failed load puts where the event switches go.
     load_error: Option<SharedString>,
     preview_select: Entity<SelectState<Vec<EventOption>>>,
@@ -141,6 +143,7 @@ impl WebhooksView {
             rows: Vec::new(),
             loaded: false,
             loading: false,
+            filled: false,
             load_error: None,
             preview_select,
             save_label: SAVE_LABEL,
@@ -251,6 +254,7 @@ impl WebhooksView {
         self.rows = rows;
         self.load_error = None;
         self.loaded = true;
+        self.filled = true;
     }
 
     /// The preview's colour bar, title and text (admin.js `updatePreview`), or `None` before an
@@ -332,6 +336,14 @@ impl WebhooksView {
     /// saved one.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.save_disabled {
+            return;
+        }
+        if !self.filled {
+            // An unfilled form would blank the name, avatar, role ping, events and templates.
+            match &self.load_error {
+                Some(error) => self.app.toast(error.clone(), ToastKind::Error, cx),
+                None => self.load(window, cx),
+            }
             return;
         }
         let url = text_of(&self.url, cx).trim().to_string();
@@ -742,7 +754,7 @@ mod tests {
         app::{AppView, TOAST_FOR},
         dashboard::Tab,
         logic::admin::render_template,
-        test_support::{answer_polls, config_json, count, open_app, saved_json, shows},
+        test_support::{answer_polls, config_json, count, open_app, painted, saved_json, shows},
         widgets::SAVE_RESET,
     };
 
@@ -1138,6 +1150,51 @@ mod tests {
             "Could not load webhook settings: Can't reach the server."
         ));
         assert_eq!(checked(cx, window, "error"), Some(true));
+    }
+
+    #[gpui::test]
+    fn a_save_before_the_settings_load_sends_nothing(cx: &mut TestAppContext) {
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        fake.reply("GET", "/api/config", Ok(config_json()));
+        fake.reply("POST", "/api/config", Ok(saved_json(false)));
+        let (app, window) = open_app(cx, fake.clone());
+        let view = webhooks(cx, &app);
+        click(cx, window, "tab-webhooks");
+        cx.run_until_parked();
+        let why = "Could not load webhook settings: Can't reach the server.";
+        let painted_why =
+            |cx: &mut TestAppContext| painted(cx, window).iter().filter(|t| *t == why).count();
+        // Where the event switches go.
+        assert_eq!(painted_why(cx), 1);
+
+        type_into(cx, window, "wh-bot-name", "Loop Bot");
+        click(cx, window, "wh-save-btn");
+        cx.run_until_parked();
+
+        // A save now would blank the name, avatar, role ping, events and templates.
+        assert!(config_posts(&fake).is_empty());
+        assert_eq!(painted_why(cx), 2);
+        assert_eq!(
+            button(cx, window, "wh-save-btn"),
+            (Some(SAVE_LABEL.into()), false)
+        );
+
+        // With no load error to show, Save loads the settings again instead.
+        fake.reply("GET", "/api/discord/defaults", Ok(defaults_json()));
+        let reads = count(&fake, "GET", "/api/discord/defaults");
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.load_error = None;
+                view.save(window, cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert!(config_posts(&fake).is_empty());
+        assert_eq!(count(&fake, "GET", "/api/discord/defaults"), reads + 1);
+        assert_eq!(view.read_with(cx, |view, _| view.keys()).len(), 10);
     }
 
     #[gpui::test]

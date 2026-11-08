@@ -96,6 +96,8 @@ pub struct SettingsView {
     /// Counts form loads; an answer to an older one is dropped.
     form_loads: usize,
     form_loading: bool,
+    /// The last form load's error, until a load works.
+    load_error: Option<SharedString>,
     save_label: &'static str,
     save_disabled: bool,
     autostart: bool,
@@ -142,6 +144,7 @@ impl SettingsView {
             form_loaded: false,
             form_loads: 0,
             form_loading: false,
+            load_error: None,
             save_label: SAVE_LABEL,
             save_disabled: false,
             autostart: false,
@@ -168,12 +171,19 @@ impl SettingsView {
                 }
                 this.form_loading = false;
                 match answer {
-                    Ok(config) => this.fill(config, window, cx),
-                    Err(err) => this.app.toast(
-                        format!("Could not load settings: {err}"),
-                        ToastKind::Error,
-                        cx,
-                    ),
+                    Ok(config) => {
+                        this.load_error = None;
+                        this.fill(config, window, cx);
+                    }
+                    Err(err) => {
+                        let error = SharedString::from(err.to_string());
+                        this.load_error = Some(error.clone());
+                        this.app.toast(
+                            format!("Could not load settings: {error}"),
+                            ToastKind::Error,
+                            cx,
+                        );
+                    }
                 }
             })
             .ok();
@@ -254,6 +264,19 @@ impl SettingsView {
     /// admin.js `handleSettingsSave`.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.save_disabled {
+            return;
+        }
+        if !self.form_loaded {
+            // Measured against no config, every field would go out and blank the saved settings.
+            match &self.load_error {
+                Some(error) => self.app.toast(
+                    format!("Could not load settings: {error}"),
+                    ToastKind::Error,
+                    cx,
+                ),
+                None if !self.form_loading => self.load_form(window, cx),
+                None => {}
+            }
             return;
         }
         let Ok(playlists) = self.playlists.update(cx, |rows, cx| rows.collect(cx)) else {
@@ -1347,6 +1370,49 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(count(&fake, "GET", "/api/config"), 6);
         assert_eq!(count(&fake, "GET", "/api/autostart"), 1);
+    }
+
+    #[gpui::test]
+    fn a_save_before_the_form_loads_sends_nothing(cx: &mut TestAppContext) {
+        let why = "config.json is not valid JSON";
+        let (fake, window, app) = open_settings_with(
+            cx,
+            Err(ApiError::Server(why.into())),
+            autostart_json(false, None, false),
+        );
+        let view = settings(cx, &app);
+        click(cx, window, "set-add-playlist");
+        let key = row_key(cx, &view, 0);
+        type_into(cx, window, ("set-pl-id", key), "PLnew");
+        cx.executor().advance_clock(TOAST_FOR);
+        let reads = count(&fake, "GET", "/api/config");
+
+        save(cx, window);
+
+        // A blank form measured against nothing would blank every saved setting.
+        assert!(config_posts(&fake).is_empty());
+        let toast = format!("Could not load settings: {why}");
+        assert_eq!(painted_count(cx, window, &toast), 1);
+        assert_eq!(count(&fake, "GET", "/api/config"), reads);
+        assert_eq!(
+            button(cx, window, "set-btn"),
+            (Some("Save Settings".into()), false)
+        );
+
+        // With no load error to show, Save loads the form again instead.
+        fake.reply("GET", "/api/config", Ok(config_json()));
+        cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.load_error = None;
+                view.save(window, cx);
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert!(config_posts(&fake).is_empty());
+        assert_eq!(count(&fake, "GET", "/api/config"), reads + 1);
+        assert_eq!(row_values(cx, &view).len(), 2);
     }
 
     #[gpui::test]
