@@ -100,8 +100,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "streamloop"
+version = "3.1.0-dev"
+dependencies = [
+ "streamloop-common",
+ "streamloop-control",
+ "streamloop-supervisor",
+]
+
+[[package]]
+name = "streamloop-common"
+version = "3.1.0-dev"
+
+[[package]]
+name = "streamloop-control"
+version = "3.1.0-dev"
+
+[[package]]
 name = "streamloop-supervisor"
-version = "3.0.5"
+version = "3.1.0-dev"
 dependencies = [
  "serde",
  "serde_json",

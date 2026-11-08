@@ -1,0 +1,10 @@
+[package]
+name = "streamloop"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+streamloop-common = { path = "../common" }
+streamloop-control = { path = "../control" }
+streamloop-supervisor = { path = "../../supervisor" }

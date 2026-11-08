@@ -1,4 +1,4 @@
-//! Spike 5 supervisor (Notion: "Spike 5: supervisor (Rust)"). The control loop owns all state;
+//! The supervisor, one mode of streamloop.exe (from spike 5, Notion: "Spike 5: supervisor (Rust)"). The control loop owns all state;
 //! the API, downloader, resolves, pumps and encoder progress reach it over one channel.
 
 mod api;
@@ -135,11 +135,11 @@ const CONFIG_REFUSED_EXIT: i32 = 3;
 /// A refused config.json is a critical `config-refused` event (Node tails it) and exit 3.
 fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Snapshot) -> Result<Settings, i32> {
     if let Err(e) = api::serve(port, args.debug_faults, tx, snapshot) {
-        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop supervisor: {e}"));
         return Err(2);
     }
     read_settings(args).map_err(|e| {
-        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
+        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop supervisor: {e}"));
         let logs = Logs::new(args.paths.data.join("logs"), "");
         let _ = std::fs::create_dir_all(&logs.dir);
         logs.event("critical", "config-refused", json!({"reason": e}));
@@ -160,7 +160,7 @@ fn read_settings(args: &Args) -> Result<Settings, String> {
     Ok(s)
 }
 
-/// `streamloop-supervisor.exe protect`: plain key on stdin, DPAPI blob on stdout.
+/// Reads a plain key from stdin and returns its DPAPI blob.
 fn protect_stdin() -> Result<String, String> {
     let mut key = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut key).map_err(|e| format!("cannot read stdin: {e}"))?;
@@ -2539,41 +2539,49 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
     }
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-    if argv.first().is_some_and(|a| a == "protect") {
-        match protect_stdin() {
-            Ok(blob) => {
-                // Node reads the blob from stdout: a failed write is a failed protect.
-                if writeln!(std::io::stdout().lock(), "{blob}").is_err() {
-                    std::process::exit(1);
-                }
+/// `streamloop.exe protect`: plain key on stdin, DPAPI blob on stdout. Returns the exit code.
+pub fn protect_main() -> i32 {
+    match protect_stdin() {
+        Ok(blob) => {
+            // Node reads the blob from stdout: a failed write is a failed protect.
+            if writeln!(std::io::stdout().lock(), "{blob}").is_err() {
+                return 1;
             }
-            Err(e) => {
-                logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor protect: {e}"));
-                std::process::exit(1);
-            }
+            0
         }
-        return;
+        Err(e) => {
+            logs::echo(&mut std::io::stderr().lock(), &format!("streamloop protect: {e}"));
+            1
+        }
     }
-    if argv.first().is_some_and(|a| a == "launch") {
-        let rest = &argv[1..];
-        let logs = parse_args(rest).ok().map(|a| a.paths.data.join("logs"));
-        let code = launch::run(rest, PORT, |breakaway, pid| {
-            if let Some(dir) = &logs {
-                let _ = std::fs::create_dir_all(dir);
-                Logs::new(dir.clone(), "").event("info", "launched", json!({"breakaway": breakaway, "pid": pid}));
-            }
-        });
-        std::process::exit(code);
-    }
-    let args = parse_args(&argv).unwrap_or_else(|e| {
-        logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor: {e}"));
-        std::process::exit(CONFIG_REFUSED_EXIT);
-    });
+}
+
+/// `streamloop.exe launch ARGS`: `args` are the supervisor's own arguments. Returns the exit code.
+pub fn launch_main(args: Vec<String>) -> i32 {
+    let logs = parse_args(&args).ok().map(|a| a.paths.data.join("logs"));
+    launch::run(&args, PORT, |breakaway, pid| {
+        if let Some(dir) = &logs {
+            let _ = std::fs::create_dir_all(dir);
+            Logs::new(dir.clone(), "").event("info", "launched", json!({"breakaway": breakaway, "pid": pid}));
+        }
+    })
+}
+
+/// `streamloop.exe supervisor ARGS`: runs until killed; returns only an exit code for a start that failed.
+pub fn run(argv: Vec<String>) -> i32 {
+    let args = match parse_args(&argv) {
+        Ok(a) => a,
+        Err(e) => {
+            logs::echo(&mut std::io::stderr().lock(), &format!("streamloop supervisor: {e}"));
+            return CONFIG_REFUSED_EXIT;
+        }
+    };
     let (tx, rx) = channel::<Msg>();
     let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
-    let settings = bind_then_settings(&args, PORT, tx.clone(), snapshot.clone()).unwrap_or_else(|code| std::process::exit(code));
+    let settings = match bind_then_settings(&args, PORT, tx.clone(), snapshot.clone()) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     if let Err(e) = procs::enter_job() {
         logs::echo(&mut std::io::stderr().lock(), &format!("warning: {e}; children will not die with the supervisor"));
     }

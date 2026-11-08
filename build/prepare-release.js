@@ -109,9 +109,9 @@ async function main() {
 
   if (!SLIM) {
     console.log('supervisor\\...');
-    execSync('cargo build --release', { cwd: join(ROOT, 'supervisor'), stdio: 'inherit', windowsHide: true });
+    execSync('cargo build --release -p streamloop', { cwd: ROOT, stdio: 'inherit', windowsHide: true });
     mkdirSync(join(RELEASE, 'supervisor'));
-    cpSync(join(ROOT, 'supervisor', 'target', 'release', 'streamloop-supervisor.exe'), join(RELEASE, 'supervisor', 'streamloop-supervisor.exe'));
+    cpSync(join(ROOT, 'target', 'release', 'streamloop.exe'), join(RELEASE, 'supervisor', 'streamloop-supervisor.exe'));
     cpSync(join(ROOT, 'spikes', 'buffer', 'media', 'slate.mp4'), join(RELEASE, 'supervisor', 'slate.mp4'));
 
     console.log('ffmpeg\\...');

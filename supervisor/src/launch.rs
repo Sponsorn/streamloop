@@ -35,9 +35,14 @@ pub fn relay(code: Option<i32>) -> i32 {
     }
 }
 
+/// The child is this same exe in supervisor mode.
+pub fn child_args(args: &[String]) -> Vec<String> {
+    std::iter::once("supervisor".to_string()).chain(args.iter().cloned()).collect()
+}
+
 fn spawn(args: &[String], flags: u32) -> std::io::Result<Child> {
     let mut c = Command::new(std::env::current_exe()?);
-    c.args(args).current_dir(std::env::temp_dir()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.args(child_args(args)).current_dir(std::env::temp_dir()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -63,7 +68,7 @@ pub fn run(args: &[String], port: u16, report: impl Fn(bool, u32)) -> i32 {
             Ok(c) => break c,
             Err(e) if retry_without_breakaway(&e, breakaway) => breakaway = false,
             Err(e) => {
-                crate::logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor launch: {e}"));
+                crate::logs::echo(&mut std::io::stderr().lock(), &format!("streamloop launch: {e}"));
                 return 1;
             }
         }
@@ -87,6 +92,13 @@ pub fn run(args: &[String], port: u16, report: impl Fn(bool, u32)) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_args_start_with_the_supervisor_word() {
+        let args = ["--root".to_string(), "R".to_string()];
+
+        assert_eq!(child_args(&args), ["supervisor", "--root", "R"]);
+    }
 
     #[test]
     fn breakaway_flag_is_added_only_when_asked() {

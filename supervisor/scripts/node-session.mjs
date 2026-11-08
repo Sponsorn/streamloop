@@ -29,7 +29,7 @@ const run = (cmd, args, opts = {}) => new Promise((resolve) => {
 const RUN = process.argv[2];
 if (!['A', 'B', 'C', 'freeze', 'treekill', 'smoke'].includes(RUN)) { console.error('usage: node node-session.mjs A|B|C|freeze|treekill|smoke'); process.exit(2); }
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
-const BIN = join(REPO, 'supervisor', 'target', 'release', 'streamloop-supervisor.exe');
+const BIN = join(REPO, 'target', 'release', 'streamloop.exe');
 const TOOLS = join(REPO, 'spikes', 'tools');
 const KEY = 'live_DUMMYKEY_stage3';
 const NODE_API = 'http://127.0.0.1:7654/api';

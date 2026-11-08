@@ -19,7 +19,7 @@ import { makeDevRoot } from './dev-root.mjs';
 const SUP_DIR = fileURLToPath(new URL('..', import.meta.url));
 const TOOLS_DIR = fileURLToPath(new URL('../../spikes/tools', import.meta.url));
 const CONTINUITY_CHECK = fileURLToPath(new URL('../../spikes/continuity/check.mjs', import.meta.url));
-const BIN = fileURLToPath(new URL('../target/release/streamloop-supervisor.exe', import.meta.url));
+const BIN = fileURLToPath(new URL('../../target/release/streamloop.exe', import.meta.url));
 const node = process.execPath;
 
 const [name, ...rest] = process.argv.slice(2);
@@ -92,7 +92,7 @@ const log = (file, row) => appendFileSync(`${SUP_DIR}/logs/${file}`, `${row.join
 const noFfmpegPath = (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
 const console$ = createWriteStream(`${SUP_DIR}/logs/supervisor-console.log`, { flags: 'a' });
 function launchSupervisor(args) {
-  const child = spawn(BIN, ['--root', root, ...args], { cwd: SUP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: noFfmpegPath } });
+  const child = spawn(BIN, ['supervisor', '--root', root, ...args], { cwd: SUP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: noFfmpegPath } });
   child.stdout.pipe(console$, { end: false });
   child.stderr.pipe(console$, { end: false });
   child.on('error', (err) => console.error(`supervisor failed to start: ${err.message}`));

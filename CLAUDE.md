@@ -46,7 +46,8 @@ npm run test:watch   # Run tests in watch mode (vitest)
 npm run build:release       # full ZIP in the install layout (node, app, supervisor, ffmpeg, yt-dlp, pot, data, START.bat)
 npm run build:release:slim  # update ZIP: app + START.bat only (streamloop-vX.Y.Z-update.zip)
 node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout.js (both builds run it)
-cargo build --release       # in supervisor/: the supervisor binary
+cargo build --release       # at the repo root: targetelease\streamloop.exe (supervisor, launch and protect modes)
+cargo test --workspace      # all Rust tests: supervisor, common, control, the exe's CLI
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
 ```
