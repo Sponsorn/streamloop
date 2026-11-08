@@ -2592,20 +2592,39 @@ fn self_check(args: &Args) -> Result<(), String> {
     }
     let logs = Logs::new(p.data.join("logs"), &settings.stream_key);
     let _ = std::fs::create_dir_all(&logs.dir);
+    // Something else on the port would answer for a token server that never started.
+    if ytdlp::ping(CHECK_TOKEN_PORT) {
+        return Err(format!("port {CHECK_TOKEN_PORT} is already in use"));
+    }
     let mut child = ytdlp::spawn_token_server(&p.node, &p.token_server, CHECK_TOKEN_PORT, &logs).map_err(|e| format!("the token server did not start: {e}"))?;
     let mut answered = false;
+    let mut exited = None;
     for i in 0..3 {
         if i > 0 {
             std::thread::sleep(Duration::from_secs(2));
         }
+        exited = child.try_wait().ok().flatten().map(|s| s.to_string());
+        if exited.is_some() {
+            break;
+        }
         if ytdlp::ping(CHECK_TOKEN_PORT) {
             answered = true;
+            exited = child.try_wait().ok().flatten().map(|s| s.to_string());
             break;
         }
     }
     let _ = child.kill();
     let _ = child.wait();
-    if answered { Ok(()) } else { Err("the token server did not answer".into()) }
+    token_verdict(answered, exited)
+}
+
+/// A ping only counts while the token server we started is still running.
+fn token_verdict(answered: bool, exited: Option<String>) -> Result<(), String> {
+    match (exited, answered) {
+        (Some(status), _) => Err(format!("the token server exited ({status})")),
+        (None, true) => Ok(()),
+        (None, false) => Err("the token server did not answer".into()),
+    }
 }
 
 fn main() {
@@ -4592,5 +4611,22 @@ mod tests {
         let r = self_check(&args);
 
         assert_eq!(r.unwrap_err(), reason);
+    }
+    #[test]
+    fn check_fails_when_the_token_server_exited_even_if_something_answered() {
+        let r = token_verdict(true, Some("exit code: 1".into()));
+
+        assert_eq!(r.unwrap_err(), "the token server exited (exit code: 1)");
+    }
+
+    #[test]
+    fn check_names_a_token_server_that_exited_before_answering() {
+        assert!(token_verdict(false, Some("exit code: 1".into())).unwrap_err().contains("exited"));
+    }
+
+    #[test]
+    fn check_passes_only_on_an_answer_from_a_running_token_server() {
+        assert!(token_verdict(true, None).is_ok());
+        assert_eq!(token_verdict(false, None).unwrap_err(), "the token server did not answer");
     }
 }
