@@ -14,6 +14,7 @@ use crate::{
     api::types::{Event, Status, UpdateStatus},
     app::AppHandle,
     logic::admin::format_duration,
+    monitor::MonitorView,
     theme::{BORDER, MAX_WIDTH, MUTED, RED, SURFACE, SURFACE_HOVER, TEXT, WHITE},
 };
 
@@ -143,7 +144,7 @@ fn build_tab(
     cx: &mut Context<DashboardView>,
 ) -> Box<dyn AnyTab> {
     match tab {
-        Tab::Monitor => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
+        Tab::Monitor => Box::new(cx.new(|cx| MonitorView::new(app.clone(), window, cx))),
         Tab::Playback => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
         Tab::Webhooks => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
         Tab::Settings => Box::new(cx.new(|_| EmptyPanel::new(app, window))),

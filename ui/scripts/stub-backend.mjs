@@ -7,7 +7,7 @@ import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freemem, totalmem } from 'node:os';
 
-const PORT = 7654;
+const PORT = Number(process.env.STUB_PORT) || 7654;
 const TOKEN = 'stub-token';
 const SEAM_EVERY_S = 120;
 const EXTRA_EVENT_EVERY_S = 15;

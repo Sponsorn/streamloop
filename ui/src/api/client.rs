@@ -23,7 +23,7 @@ fn parse<T: DeserializeOwned>(value: Value) -> Result<T, ApiError> {
 }
 
 /// Escapes like JavaScript's `encodeURIComponent`.
-fn encode_component(s: &str) -> String {
+pub(crate) fn encode_component(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {

@@ -5,6 +5,8 @@ use std::rc::Rc;
 use gpui::{App, SharedString};
 use gpui_kit::component::{Theme, ThemeConfig, ThemeMode};
 
+use crate::logic::Level;
+
 pub const BG: u32 = 0x0f1117;
 pub const SURFACE: u32 = 0x1a1d27;
 pub const SURFACE_HOVER: u32 = 0x222633;
@@ -33,6 +35,16 @@ pub const TOAST_SUCCESS_BORDER: u32 = 0x0b433d;
 pub const MAX_WIDTH: f32 = 960.;
 pub const FONT: &str = "Segoe UI";
 pub const MONO_FONT: &str = "Consolas";
+
+/// admin.css `.ok`, `.warn`, `.err` and `.muted`.
+pub fn level_color(level: Level) -> u32 {
+    match level {
+        Level::Ok => GREEN,
+        Level::Warn => YELLOW,
+        Level::Err => ERROR_TEXT,
+        Level::Muted => MUTED,
+    }
+}
 
 fn hex(color: u32) -> Option<SharedString> {
     Some(format!("#{color:06x}").into())

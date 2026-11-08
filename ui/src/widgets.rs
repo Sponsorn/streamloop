@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
-use gpui::{AppContext, Context, ElementId, SharedString, Window};
-use gpui_kit::component::{Disableable, button::Button};
+use gpui::{AppContext, Context, ElementId, SharedString, Styled, Window, px};
+use gpui_kit::component::{Disableable, Sizable, button::Button};
 
 use crate::{
     api::{ApiError, client::Client},
@@ -34,6 +34,11 @@ pub fn action_button(
     let id = id.into();
     let disabled = busy.contains(&id);
     Button::new(id).label(label).disabled(disabled)
+}
+
+/// admin.css `.btn`: 14 px text, 20 px side padding, about 38 px tall.
+pub fn btn(button: Button) -> Button {
+    button.large().h(px(38.)).px(px(20.))
 }
 
 /// admin.js `runAction`: disables button `id` while `request` runs, toasts its error, enables it again and polls once.
