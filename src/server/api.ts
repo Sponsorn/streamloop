@@ -7,7 +7,7 @@ import { saveConfig as saveConfigFile, isFirstRun, getConfigPath, DEFAULT_DISCOR
 import { logger } from './logger.js';
 import type { AppConfig } from './types.js';
 import type { PlaylistMetadataCache } from './playlist-metadata.js';
-import type { Updater } from './updater.js';
+import { UpdateRefusedError, type Updater } from './updater.js';
 import type { DiscordNotifier } from './discord.js';
 import type { TwitchLivenessChecker } from './twitch.js';
 import { protectStreamKey, type SupervisorClient, type SupervisorStatus } from './supervisor-client.js';
@@ -407,10 +407,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
-  router.post('/update/apply', refuseDuringUpdate, (_req, res) => {
-    // Respond immediately — the dashboard polls /update/status for progress
+  router.post('/update/apply', refuseDuringUpdate, async (_req, res) => {
+    // Answers once the update runs; the dashboard polls /update/status for its progress.
     try {
-      deps.updater.downloadAndApply()
+      const { done } = await deps.updater.startUpdate();
+      done
         .then(() => {
           setTimeout(() => deps.triggerRestart(), 1000);
         })
@@ -419,6 +420,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
         });
       res.json({ ok: true, message: 'Update started' });
     } catch (err) {
+      if (err instanceof UpdateRefusedError) return res.status(409).json({ error: err.message });
       logger.error({ err }, 'Failed to start update');
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

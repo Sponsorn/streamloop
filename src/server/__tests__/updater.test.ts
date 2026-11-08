@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, type GithubRelease, parseComponents, updateKind,
+  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, UpdateRefusedError, type GithubRelease, parseComponents, updateKind,
 } from '../updater.js';
 
 function asset(name: string) {
@@ -672,12 +672,14 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
 
   type StopResult = { ok: true } | { ok: false; reason: string };
 
-  function hooks(stop: () => Promise<StopResult> = async () => ({ ok: true })) {
+  function hooks(stop: () => Promise<StopResult> = async () => ({ ok: true }), windows: number[] = [1]) {
+    let call = 0;
     return {
       baseline: vi.fn(async () => ({ encoder: 'h264_nvenc' as const, works: true })),
       stop: vi.fn(stop),
       resume: vi.fn(),
       reportFailure: vi.fn(),
+      windows: vi.fn(async () => windows[Math.min(call++, windows.length - 1)]),
     };
   }
 
@@ -787,6 +789,77 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(h.reportFailure.mock.calls).toEqual([[
       `The update to ${NEXT} failed at stopping the stream: ffmpeg\\ffmpeg.exe is still running. Still on ${major}.${minor}.${patch}.`,
     ]]);
+  });
+
+  it('refuses a full update while a second START.bat window runs, before anything is downloaded or written', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks(undefined, [2]);
+    const updater = await updaterWith(h);
+    const calls = vi.mocked(fetch).mock.calls.length;
+
+    // Act
+    const start = updater.startUpdate();
+
+    // Assert
+    await expect(start).rejects.toThrow(new UpdateRefusedError('Close the other StreamLoop window first.'));
+    expect(vi.mocked(fetch).mock.calls.length).toBe(calls);
+    expect(h.baseline).not.toHaveBeenCalled();
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(existsSync(join(root, 'data', 'update-state.json'))).toBe(false);
+    expect(existsSync(join(root, '_update_tmp'))).toBe(false);
+    expect(updater.getStatus()).toMatchObject({ status: 'idle', error: null, updateAvailable: true });
+  });
+
+  it('fails at stop with nothing stopped when a second window opened during the download', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks(undefined, [1, 2]);
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('another StreamLoop window is open');
+    expect(h.windows).toHaveBeenCalledTimes(2);
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(readState()).toMatchObject({ step: 'stop', result: 'failed', reason: 'another StreamLoop window is open' });
+    expect(existsSync(join(root, '_update_tmp'))).toBe(false);
+    expect(h.reportFailure.mock.calls).toEqual([[
+      `The update to ${NEXT} failed at stopping the stream: another StreamLoop window is open. Still on ${major}.${minor}.${patch}.`,
+    ]]);
+  });
+
+  it('refuses a full update when the windows cannot be counted', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks();
+    h.windows.mockRejectedValueOnce(new Error('powershell failed'));
+    const updater = await updaterWith(h);
+
+    // Act
+    const start = updater.startUpdate();
+
+    // Assert
+    await expect(start).rejects.toThrow(new UpdateRefusedError('The running programs could not be listed. Try again.'));
+    expect(existsSync(join(root, 'data', 'update-state.json'))).toBe(false);
+  });
+
+  it('counts no windows for an app-only update', async () => {
+    // Arrange: every part matches, so the update ZIP is taken; the stub serves none, so the download fails.
+    stubRelease();
+    const h = hooks(undefined, [2]);
+    const updater = new Updater({ isDevMode: false, installParts: async () => parts, rootDir: root, full: h });
+    expect((await updater.checkForUpdate()).kind).toBe('app');
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('Download failed: 404');
+    expect(h.windows).not.toHaveBeenCalled();
   });
 
   it('does not check for updates while one is being applied', async () => {

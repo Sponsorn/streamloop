@@ -10,7 +10,7 @@ import { logger } from '../logger.js';
 import type { AppConfig } from '../types.js';
 import type { SupervisorStatus } from '../supervisor-client.js';
 import type { LauncherState } from '../supervisor-launcher.js';
-import type { UpdateInfo } from '../updater.js';
+import { UpdateRefusedError, type UpdateInfo } from '../updater.js';
 import { writeUpdateState, type UpdateState } from '../update-state.js';
 
 const TOKEN = 'test-token';
@@ -84,7 +84,7 @@ function harness(): Harness {
   });
   const applyConfig = vi.fn((c: AppConfig) => { config.value = c; });
   const protect = vi.fn(async () => BLOB);
-  const update = { value: idleUpdate(), apply: vi.fn(async () => {}) };
+  const update = { value: idleUpdate(), apply: vi.fn(async (): Promise<{ done: Promise<void> }> => ({ done: Promise.resolve() })) };
   const deps = {
     getConfig: () => config.value,
     applyConfig,
@@ -97,7 +97,7 @@ function harness(): Harness {
     protect,
     playlistCache: { fetch: vi.fn(async () => ({ videos: [{ id: 'v1' }, { id: 'v2' }] })), clear: vi.fn() },
     ytdlpPath: 'yt-dlp.exe',
-    updater: { getStatus: () => update.value, downloadAndApply: update.apply },
+    updater: { getStatus: () => update.value, startUpdate: update.apply },
     triggerRestart: vi.fn(),
     triggerShutdown: vi.fn(),
     getDiscord: () => ({}),
@@ -886,6 +886,27 @@ WshShell.Run """${bat}""", 1, False`;
       // Assert
       expect(res.status).toBe(200);
       expect(h.launcher.launchNow).toHaveBeenCalledOnce();
+    });
+
+    it('answers 409 with the reason when the update is refused, and restarts nothing', async () => {
+      // Arrange
+      h.update.apply.mockRejectedValueOnce(new UpdateRefusedError('Close the other StreamLoop window first.'));
+
+      // Act
+      const res = await post('/update/apply');
+
+      // Assert
+      expect([res.status, (await res.json()).error]).toEqual([409, 'Close the other StreamLoop window first.']);
+      expect(h.deps.triggerRestart).not.toHaveBeenCalled();
+    });
+
+    it('answers once the update runs and restarts when it is staged', async () => {
+      // Act
+      const res = await post('/update/apply');
+
+      // Assert
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(h.deps.triggerRestart).toHaveBeenCalledOnce(), { timeout: 3000 });
     });
 
     it('GET /update/status adds the progress and the swap log', async () => {

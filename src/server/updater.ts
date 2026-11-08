@@ -207,6 +207,20 @@ export interface FullUpdateHooks {
   resume: () => void;
   /** Posts the failure copy of an update this Node called off. */
   reportFailure: (message: string) => void;
+  /** How many START.bat windows of this install run. */
+  windows: () => Promise<number>;
+}
+
+export const ANOTHER_WINDOW = 'Close the other StreamLoop window first.';
+export const ANOTHER_WINDOW_AT_STOP = 'another StreamLoop window is open';
+const WINDOWS_UNLISTED = 'The running programs could not be listed. Try again.';
+
+/** An update that did not start, because of something the user can change; the dashboard shows the message. */
+export class UpdateRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UpdateRefusedError';
+  }
 }
 
 const IN_PROGRESS: readonly UpdateStatus[] = ['downloading', 'extracting', 'ready'];
@@ -435,6 +449,13 @@ export class Updater {
   }
 
   async downloadAndApply(): Promise<void> {
+    const { done } = await this.startUpdate();
+    await done;
+  }
+
+  /** Resolves once the update runs, with `done` for its end; rejects when it does not start.
+   *  An UpdateRefusedError means nothing was downloaded or written. */
+  async startUpdate(): Promise<{ done: Promise<void> }> {
     if (this.isDevMode) {
       throw new Error('Cannot apply updates in dev mode');
     }
@@ -462,12 +483,43 @@ export class Updater {
     const folders = full ? foldersFor(parts) : [];
     const to = this.latestVersion ?? this.currentVersion;
 
+    // Taken before the first await, so a second press or a check cannot start beside this one.
+    const before = { status: this.status, error: this.error };
+    this.status = 'downloading';
+    this.error = null;
+    if (full) {
+      const why = await this.windowsRefusal(full, ANOTHER_WINDOW, WINDOWS_UNLISTED);
+      if (why) {
+        this.status = before.status;
+        this.error = before.error;
+        throw new UpdateRefusedError(why);
+      }
+    }
+    return { done: this.run(zipUrl, checksumUrl, full, parts, folders, to) };
+  }
+
+  /** A second START.bat window would run its heal beside the swap and roll the new parts back under it. */
+  private async windowsRefusal(full: FullUpdateHooks, open: string, unlisted: string): Promise<string | null> {
+    try {
+      return (await full.windows()) > 1 ? open : null;
+    } catch (err) {
+      logger.warn({ err }, 'Could not count the StreamLoop windows');
+      return unlisted;
+    }
+  }
+
+  private async run(
+    zipUrl: string,
+    checksumUrl: string,
+    full: FullUpdateHooks | null,
+    parts: Part[],
+    folders: string[],
+    to: string,
+  ): Promise<void> {
     const rootDir = this.rootDir;
     const tmpDir = join(rootDir, '_update_tmp');
     const oldDir = join(rootDir, '_update_old');
 
-    this.status = 'downloading';
-    this.error = null;
     let state: UpdateState | null = null;
     const fail = (err: unknown): void => {
       this.status = 'error';
@@ -553,6 +605,9 @@ export class Updater {
     try {
       state = { ...state, step: 'stop', stepStartedAt: new Date().toISOString() };
       writeUpdateState(rootDir, state);
+      // Again before anything is stopped: a window opened during the download counts too.
+      const window = await this.windowsRefusal(full, ANOTHER_WINDOW_AT_STOP, 'the running programs could not be listed');
+      if (window) throw new Error(window);
       stopping = true;
       const stopped = await full.stop(folders, to);
       if (!stopped.ok) throw new Error(stopped.reason);

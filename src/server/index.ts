@@ -22,7 +22,7 @@ import { AlertGate, SupervisorEvents, launcherEvent, type SupervisorEvent, withP
 import { launchGuard, probeEncoder } from './setup-check.js';
 import { hashParts } from './components.js';
 import {
-  decideStartup, holdAtStart, killProcess, listProcessesUnder, runHealthCheck, runStartup, stopForSwap, supervisorCheck,
+  countStartBatWindows, decideStartup, holdAtStart, killProcess, listProcessesUnder, runHealthCheck, runStartup, stopForSwap, supervisorCheck,
   type StartupAction,
 } from './full-update.js';
 import { CHECKING_MARKER, readSwapLog, readUpdateState } from './update-state.js';
@@ -150,6 +150,7 @@ async function main() {
         },
         resume: () => resumeNode(),
         reportFailure: (message) => void discord.send(message, 'warn'),
+        windows: () => countStartBatWindows(root),
       }
       : undefined,
   });

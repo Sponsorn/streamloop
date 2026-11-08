@@ -65,6 +65,55 @@ export async function listProcessesUnder(dirs: string[]): Promise<ProcessInfo[]>
   return processesUnder(json, dirs);
 }
 
+export interface CommandLineInfo {
+  pid: number;
+  name: string;
+  commandLine: string;
+}
+
+const LIST_CMD_WINDOWS = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; '
+  + "Get-CimInstance Win32_Process -Filter \"Name='cmd.exe'\" | Select-Object ProcessId, Name, CommandLine | ConvertTo-Json -Compress";
+
+export function parseCommandLines(json: string): CommandLineInfo[] {
+  if (!json.trim()) return [];
+  const parsed: unknown = JSON.parse(json);
+  const rows = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ ProcessId?: unknown; Name?: unknown; CommandLine?: unknown }>;
+  return rows.flatMap((row) => (typeof row?.ProcessId === 'number' && typeof row.Name === 'string' && typeof row.CommandLine === 'string'
+    ? [{ pid: row.ProcessId, name: row.Name, commandLine: row.CommandLine }]
+    : []));
+}
+
+/** The cmd.exe processes with their command lines. No path goes to PowerShell; the matching is done here. */
+export async function listCmdWindows(): Promise<CommandLineInfo[]> {
+  const json = await new Promise<string>((res, rej) => {
+    execFile(
+      POWERSHELL,
+      ['-NoProfile', '-NonInteractive', '-Command', LIST_CMD_WINDOWS],
+      { cwd: SPAWN_CWD, windowsHide: true, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => (err ? rej(err) : res(stdout)),
+    );
+  });
+  return parseCommandLines(json);
+}
+
+/** A path character on either side means another file, such as START.bat.new or D:\x\<root>\START.bat. */
+const BAT_EDGE = /[^\s"]/;
+
+/** How many cmd.exe windows run ROOT\START.bat. A second one would heal, and so roll back, beside the swap. */
+export async function countStartBatWindows(root: string, list: () => Promise<CommandLineInfo[]> = listCmdWindows): Promise<number> {
+  const needle = `${resolve(root).replace(/\\+$/, '')}\\start.bat`.toLowerCase();
+  return (await list()).filter((p) => {
+    if (p.name.toLowerCase() !== 'cmd.exe') return false;
+    const line = p.commandLine.toLowerCase();
+    for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + 1)) {
+      const before = line[at - 1] ?? ' ';
+      const after = line[at + needle.length] ?? ' ';
+      if (!BAT_EDGE.test(before) && !BAT_EDGE.test(after)) return true;
+    }
+    return false;
+  }).length;
+}
+
 /** Ends a process at once; on Windows that is TerminateProcess. One that is already gone is fine. */
 export async function killProcess(pid: number): Promise<void> {
   try {
