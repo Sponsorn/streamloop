@@ -1,0 +1,6 @@
+{
+  "name": "throws on a fractional port",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"port\":7654.5}",
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"int\",\n    \"format\": \"safeint\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"port\"\n    ],\n    \"message\": \"Invalid input: expected int, received number\"\n  }\n]"
+}

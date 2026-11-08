@@ -1,0 +1,6 @@
+{
+  "name": "rejects an unknown encoder",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"supervisor\":{\"encoder\":\"h265\"}}",
+  "after": null,
+  "error": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"h264_nvenc\",\n      \"h264_amf\",\n      \"h264_qsv\",\n      \"libx264\"\n    ],\n    \"path\": [\n      \"supervisor\",\n      \"encoder\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"h264_nvenc\\\"|\\\"h264_amf\\\"|\\\"h264_qsv\\\"|\\\"libx264\\\"\"\n  }\n]"
+}

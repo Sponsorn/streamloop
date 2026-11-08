@@ -1,0 +1,290 @@
+[
+  {
+    "name": "names the list a list moved on to",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-advance",
+        "to": "PLa"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLa",
+      "name": "first"
+    }
+  },
+  {
+    "name": "leaves a list with no name to be shown by its id",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-advance",
+        "to": "PLb"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLb"
+    }
+  },
+  {
+    "name": "names the list a failed load was for",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-failed",
+        "playlistId": "PLa"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-failed",
+      "playlistId": "PLa",
+      "name": "first"
+    }
+  },
+  {
+    "name": "names the lists that could not load, by id where they have no name",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-restart",
+        "missing": [
+          "PLa",
+          "PLb",
+          "PLgone"
+        ]
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-restart",
+      "missing": [
+        "first",
+        "PLb",
+        "PLgone"
+      ]
+    }
+  },
+  {
+    "name": "a restart names no list of its own, only its missing ones",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-restart",
+        "playlistId": "PLa",
+        "missing": [
+          "PLa"
+        ]
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-restart",
+      "playlistId": "PLa",
+      "missing": [
+        "first"
+      ],
+      "name": "first"
+    }
+  },
+  {
+    "name": "takes the advance name from to, not from",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-advance",
+        "from": "PLa",
+        "to": "PLb"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "from": "PLa",
+      "to": "PLb"
+    }
+  },
+  {
+    "name": "looks up a failed load by playlistId, not by to",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-failed",
+        "to": "PLa",
+        "playlistId": "PLb"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-failed",
+      "to": "PLa",
+      "playlistId": "PLb"
+    }
+  },
+  {
+    "name": "an unknown list gets no name",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-advance",
+        "to": "PLgone"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLgone"
+    }
+  },
+  {
+    "name": "leaves every other event as it is",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "skip",
+        "to": "PLa",
+        "playlistId": "PLa"
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "skip",
+      "to": "PLa",
+      "playlistId": "PLa"
+    }
+  },
+  {
+    "name": "keeps the other fields of a named event",
+    "input": {
+      "event": {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "playlist-advance",
+        "to": "PLa",
+        "count": 5,
+        "finished": true
+      },
+      "playlists": [
+        {
+          "id": "PLa",
+          "name": "first"
+        },
+        {
+          "id": "PLb"
+        }
+      ]
+    },
+    "output": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLa",
+      "count": 5,
+      "finished": true,
+      "name": "first"
+    }
+  }
+]

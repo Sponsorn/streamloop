@@ -1,0 +1,6 @@
+{
+  "name": "rejects cacheBudgetMb below its minimum, naming the field",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"supervisor\":{\"cacheBudgetMb\":49}}",
+  "after": null,
+  "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 50,\n    \"inclusive\": true,\n    \"path\": [\n      \"supervisor\",\n      \"cacheBudgetMb\"\n    ],\n    \"message\": \"Too small: expected number to be >=50\"\n  }\n]"
+}

@@ -1,0 +1,510 @@
+[
+  {
+    "name": "a basic info line with a local timestamp",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "Server listening on port 7654",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: Server listening on port 7654"
+  },
+  {
+    "name": "extra fields are appended as JSON",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "Server listening",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "port": 7654
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: Server listening {\"port\":7654}"
+  },
+  {
+    "name": "warn level with several extras",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 6,
+        "millisecond": 456
+      },
+      "fields": {
+        "level": 40,
+        "msg": "Player stalled",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "stalledHeartbeats": 2,
+        "videoIndex": 5
+      }
+    },
+    "output": "[2025-02-16 14:03:06.456] WARN: Player stalled {\"stalledHeartbeats\":2,\"videoIndex\":5}"
+  },
+  {
+    "name": "error level",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 7,
+        "millisecond": 789
+      },
+      "fields": {
+        "level": 50,
+        "msg": "Discord webhook failed",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "status": 429
+      }
+    },
+    "output": "[2025-02-16 14:03:07.789] ERROR: Discord webhook failed {\"status\":429}"
+  },
+  {
+    "name": "a missing msg gives an empty message",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: "
+  },
+  {
+    "name": "an unknown level number",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 25,
+        "msg": "custom level",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] LVL25: custom level"
+  },
+  {
+    "name": "trace level",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 10,
+        "msg": "t",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] TRACE: t"
+  },
+  {
+    "name": "debug level",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 20,
+        "msg": "d",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] DEBUG: d"
+  },
+  {
+    "name": "fatal level",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 60,
+        "msg": "f",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] FATAL: f"
+  },
+  {
+    "name": "a level above fatal",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 70,
+        "msg": "x",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] LVL70: x"
+  },
+  {
+    "name": "level zero is unknown",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 0,
+        "msg": "x",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] LVL0: x"
+  },
+  {
+    "name": "single digit month, day, hour, minute, second and millisecond are padded",
+    "input": {
+      "localTime": {
+        "year": 2026,
+        "month": 1,
+        "day": 2,
+        "hour": 3,
+        "minute": 4,
+        "second": 5,
+        "millisecond": 6
+      },
+      "fields": {
+        "level": 30,
+        "msg": "padded",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2026-01-02 03:04:05.006] INFO: padded"
+  },
+  {
+    "name": "end of the year",
+    "input": {
+      "localTime": {
+        "year": 2026,
+        "month": 12,
+        "day": 31,
+        "hour": 23,
+        "minute": 59,
+        "second": 59,
+        "millisecond": 999
+      },
+      "fields": {
+        "level": 30,
+        "msg": "new year soon",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2026-12-31 23:59:59.999] INFO: new year soon"
+  },
+  {
+    "name": "extras keep the order of the object",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "order",
+        "zeta": 1,
+        "alpha": 2,
+        "mid": 3
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: order {\"zeta\":1,\"alpha\":2,\"mid\":3}"
+  },
+  {
+    "name": "extras with nested objects and arrays",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "nested",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "detail": {
+          "a": [
+            1,
+            2,
+            {
+              "b": null
+            }
+          ],
+          "c": "x"
+        }
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: nested {\"detail\":{\"a\":[1,2,{\"b\":null}],\"c\":\"x\"}}"
+  },
+  {
+    "name": "extras with non-ASCII text and escapes",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "Strøm ✓ 😀",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "text": "q\"\\\n\t é"
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: Strøm ✓ 😀 {\"text\":\"q\\\"\\\\\\n\\t é\"}"
+  },
+  {
+    "name": "an extra named err holds an error object",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 50,
+        "msg": "Failed",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "err": {
+          "type": "Error",
+          "message": "boom",
+          "stack": "Error: boom\n    at x"
+        }
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] ERROR: Failed {\"err\":{\"type\":\"Error\",\"message\":\"boom\",\"stack\":\"Error: boom\\n    at x\"}}"
+  },
+  {
+    "name": "extras that are null, false and zero",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "falsy",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "a": null,
+        "b": false,
+        "c": 0,
+        "d": ""
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: falsy {\"a\":null,\"b\":false,\"c\":0,\"d\":\"\"}"
+  },
+  {
+    "name": "extras with a fractional and an exponent number",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "numbers",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1,
+        "a": 1.5,
+        "b": 1e+21,
+        "c": 20,
+        "d": -0.5
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: numbers {\"a\":1.5,\"b\":1e+21,\"c\":20,\"d\":-0.5}"
+  },
+  {
+    "name": "the standard fields in another order are still consumed",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "v": 1,
+        "hostname": "h",
+        "msg": "order of consumed",
+        "pid": 9,
+        "level": 30
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: order of consumed"
+  },
+  {
+    "name": "a msg that is an empty string",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "msg": "",
+        "pid": 1234,
+        "hostname": "test",
+        "v": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO: "
+  },
+  {
+    "name": "only a level and one extra",
+    "input": {
+      "localTime": {
+        "year": 2025,
+        "month": 2,
+        "day": 16,
+        "hour": 14,
+        "minute": 3,
+        "second": 5,
+        "millisecond": 123
+      },
+      "fields": {
+        "level": 30,
+        "a": 1
+      }
+    },
+    "output": "[2025-02-16 14:03:05.123] INFO:  {\"a\":1}"
+  }
+]

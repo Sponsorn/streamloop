@@ -1,0 +1,919 @@
+[
+  {
+    "name": "meanAbsDiff: the average absolute difference per pixel",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        0,
+        10,
+        200,
+        255
+      ],
+      "b": [
+        4,
+        10,
+        190,
+        255
+      ]
+    },
+    "output": 3.5
+  },
+  {
+    "name": "meanAbsDiff: identical frames",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        0,
+        10,
+        200,
+        255
+      ],
+      "b": [
+        0,
+        10,
+        200,
+        255
+      ]
+    },
+    "output": 0
+  },
+  {
+    "name": "meanAbsDiff: frames of different sizes count as different",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "b": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "output": "Infinity"
+  },
+  {
+    "name": "meanAbsDiff: two empty frames count as different",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [],
+      "b": []
+    },
+    "output": "Infinity"
+  },
+  {
+    "name": "meanAbsDiff: a full swing per pixel",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        255,
+        255
+      ]
+    },
+    "output": 255
+  },
+  {
+    "name": "meanAbsDiff: a difference that does not divide evenly",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        0,
+        0,
+        0
+      ],
+      "b": [
+        1,
+        0,
+        0
+      ]
+    },
+    "output": 0.3333333333333333
+  },
+  {
+    "name": "meanAbsDiff: one grey level per pixel",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        10,
+        20,
+        30,
+        40
+      ],
+      "b": [
+        11,
+        21,
+        31,
+        41
+      ]
+    },
+    "output": 1
+  },
+  {
+    "name": "meanAbsDiff: one pixel of 104 changed",
+    "input": {
+      "fn": "meanAbsDiff",
+      "a": [
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40
+      ],
+      "b": [
+        90,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40
+      ]
+    },
+    "output": 0.4807692307692308
+  },
+  {
+    "name": "timerRegion: 1920x1080",
+    "input": {
+      "fn": "timerRegion",
+      "width": 1920,
+      "height": 1080
+    },
+    "output": {
+      "x": 16,
+      "y": 62,
+      "w": 104,
+      "h": 32
+    }
+  },
+  {
+    "name": "timerRegion: 1280x720",
+    "input": {
+      "fn": "timerRegion",
+      "width": 1280,
+      "height": 720
+    },
+    "output": {
+      "x": 11,
+      "y": 41,
+      "w": 69,
+      "h": 21
+    }
+  },
+  {
+    "name": "timerRegion: 854x480",
+    "input": {
+      "fn": "timerRegion",
+      "width": 854,
+      "height": 480
+    },
+    "output": {
+      "x": 7,
+      "y": 28,
+      "w": 46,
+      "h": 14
+    }
+  },
+  {
+    "name": "timerRegion: 640x360",
+    "input": {
+      "fn": "timerRegion",
+      "width": 640,
+      "height": 360
+    },
+    "output": {
+      "x": 5,
+      "y": 21,
+      "w": 35,
+      "h": 11
+    }
+  },
+  {
+    "name": "timerRegion: 1366x768",
+    "input": {
+      "fn": "timerRegion",
+      "width": 1366,
+      "height": 768
+    },
+    "output": {
+      "x": 11,
+      "y": 44,
+      "w": 74,
+      "h": 23
+    }
+  },
+  {
+    "name": "timerRegion: 3840x2160",
+    "input": {
+      "fn": "timerRegion",
+      "width": 3840,
+      "height": 2160
+    },
+    "output": {
+      "x": 32,
+      "y": 124,
+      "w": 208,
+      "h": 64
+    }
+  },
+  {
+    "name": "timerRegion: 32x18",
+    "input": {
+      "fn": "timerRegion",
+      "width": 32,
+      "height": 18
+    },
+    "output": {
+      "x": 0,
+      "y": 1,
+      "w": 2,
+      "h": 1
+    }
+  },
+  {
+    "name": "timerRegion: 1x1",
+    "input": {
+      "fn": "timerRegion",
+      "width": 1,
+      "height": 1
+    },
+    "output": {
+      "x": 0,
+      "y": 0,
+      "w": 0,
+      "h": 0
+    }
+  },
+  {
+    "name": "timerRegion: 1000x1000",
+    "input": {
+      "fn": "timerRegion",
+      "width": 1000,
+      "height": 1000
+    },
+    "output": {
+      "x": 8,
+      "y": 57,
+      "w": 54,
+      "h": 30
+    }
+  },
+  {
+    "name": "liveRendition: picks the source rendition from the master playlist",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"720p30\",NAME=\"720p\",AUTOSELECT=YES,DEFAULT=YES\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS=\"avc1.4D401F,mp4a.40.2\",VIDEO=\"720p30\",FRAME-RATE=30.000\nhttps://video.example/720p30/index.m3u8\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"chunked\",NAME=\"1080p30 (source)\",AUTOSELECT=YES,DEFAULT=YES\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.64002A,mp4a.40.2\",VIDEO=\"chunked\",FRAME-RATE=30.000\nhttps://video.example/chunked/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",VIDEO=\"audio_only\"\nhttps://video.example/audio_only/index.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/chunked/index.m3u8",
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "name": "liveRendition: falls back to the highest resolution when no rendition is marked chunked",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"720p30\",NAME=\"720p\",AUTOSELECT=YES,DEFAULT=YES\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS=\"avc1.4D401F,mp4a.40.2\",VIDEO=\"720p30\",FRAME-RATE=30.000\nhttps://video.example/720p30/index.m3u8\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"1080p30\",NAME=\"1080p30 (source)\",AUTOSELECT=YES,DEFAULT=YES\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.64002A,mp4a.40.2\",VIDEO=\"1080p30\",FRAME-RATE=30.000\nhttps://video.example/1080p30/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",VIDEO=\"audio_only\"\nhttps://video.example/audio_only/index.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/1080p30/index.m3u8",
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "name": "liveRendition: assumes 1920x1080 when the playlist gives no resolution",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,VIDEO=\"chunked\"\nhttps://video.example/s.m3u8\n"
+    },
+    "output": {
+      "url": "https://video.example/s.m3u8",
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "name": "liveRendition: the channel is offline",
+    "input": {
+      "fn": "liveRendition",
+      "master": null
+    },
+    "output": null
+  },
+  {
+    "name": "liveRendition: an empty master playlist",
+    "input": {
+      "fn": "liveRendition",
+      "master": ""
+    },
+    "output": null
+  },
+  {
+    "name": "liveRendition: only an audio_only rendition",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=160000,VIDEO=\"audio_only\"\nhttps://video.example/audio_only/index.m3u8\n"
+    },
+    "output": null
+  },
+  {
+    "name": "liveRendition: a chunked rendition beats a larger one that is not chunked",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=2560x1440,VIDEO=\"1440p60\"\nhttps://video.example/1440/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,VIDEO=\"chunked\"\nhttps://video.example/chunked/index.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/chunked/index.m3u8",
+      "width": 1280,
+      "height": 720
+    }
+  },
+  {
+    "name": "liveRendition: the larger of two chunked renditions wins",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,VIDEO=\"chunked\"\nhttps://video.example/a.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080,VIDEO=\"chunked\"\nhttps://video.example/b.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/b.m3u8",
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "name": "liveRendition: the first of two equal renditions wins",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,VIDEO=\"a\"\nhttps://video.example/first.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2,RESOLUTION=1280x720,VIDEO=\"b\"\nhttps://video.example/second.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/first.m3u8",
+      "width": 1280,
+      "height": 720
+    }
+  },
+  {
+    "name": "liveRendition: a later chunked rendition replaces a larger one",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1920x1080,VIDEO=\"a\"\nhttps://video.example/big.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=640x360,VIDEO=\"chunked\"\nhttps://video.example/small-chunked.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/small-chunked.m3u8",
+      "width": 640,
+      "height": 360
+    }
+  },
+  {
+    "name": "liveRendition: CRLF line endings",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\r\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"720p30\",NAME=\"720p\",AUTOSELECT=YES,DEFAULT=YES\r\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS=\"avc1.4D401F,mp4a.40.2\",VIDEO=\"720p30\",FRAME-RATE=30.000\r\nhttps://video.example/720p30/index.m3u8\r\n#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"chunked\",NAME=\"1080p30 (source)\",AUTOSELECT=YES,DEFAULT=YES\r\n#EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.64002A,mp4a.40.2\",VIDEO=\"chunked\",FRAME-RATE=30.000\r\nhttps://video.example/chunked/index.m3u8\r\n#EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",VIDEO=\"audio_only\"\r\nhttps://video.example/audio_only/index.m3u8"
+    },
+    "output": {
+      "url": "https://video.example/chunked/index.m3u8",
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  {
+    "name": "liveRendition: a stream-inf followed by a comment line is skipped",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,VIDEO=\"chunked\"\n#EXT-X-MEDIA:TYPE=VIDEO\nhttps://video.example/x.m3u8\n"
+    },
+    "output": null
+  },
+  {
+    "name": "liveRendition: a stream-inf with a blank URL line is skipped",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,VIDEO=\"chunked\"\n\nhttps://video.example/x.m3u8\n"
+    },
+    "output": null
+  },
+  {
+    "name": "liveRendition: a stream-inf on the last line has no URL",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720,VIDEO=\"chunked\""
+    },
+    "output": null
+  },
+  {
+    "name": "liveRendition: a URL with surrounding spaces is trimmed",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=1280x720\n  https://video.example/x.m3u8  \n"
+    },
+    "output": {
+      "url": "https://video.example/x.m3u8",
+      "width": 1280,
+      "height": 720
+    }
+  },
+  {
+    "name": "liveRendition: a resolution after other attributes",
+    "input": {
+      "fn": "liveRendition",
+      "master": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"a,b\",RESOLUTION=852x480,FRAME-RATE=30\nhttps://video.example/x.m3u8\n"
+    },
+    "output": {
+      "url": "https://video.example/x.m3u8",
+      "width": 852,
+      "height": 480
+    }
+  },
+  {
+    "name": "isAdPlaylist: plain live segments",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000,live\nhttps://video.example/seg1.ts\n#EXTINF:2.000,live\nhttps://video.example/seg2.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: a stitched-ad date range",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-DATERANGE:ID=\"stitched-ad-1\",CLASS=\"twitch-stitched-ad\",START-DATE=\"2026-10-25T10:00:00.000Z\",DURATION=30.000\n#EXTINF:2.000,live\nhttps://video.example/seg1.ts"
+    },
+    "output": true
+  },
+  {
+    "name": "isAdPlaylist: a segment not titled live",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000,live\nhttps://video.example/seg1.ts\n#EXTINF:2.000,Amazon\nhttps://video.example/ad.ts"
+    },
+    "output": true
+  },
+  {
+    "name": "isAdPlaylist: an untitled segment is live",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000,\nhttps://video.example/seg1.ts\n#EXTINF:2.000,\nhttps://video.example/seg2.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: a title of only spaces is live",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000,   \nhttps://video.example/seg1.ts\n#EXTINF:2.000,   \nhttps://video.example/seg2.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: a title of live with spaces around it is live",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000, live \nhttps://video.example/seg1.ts\n#EXTINF:2.000, live \nhttps://video.example/seg2.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: a title of Live in capitals is not live",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000,Live\nhttps://video.example/seg1.ts\n#EXTINF:2.000,Live\nhttps://video.example/seg2.ts"
+    },
+    "output": true
+  },
+  {
+    "name": "isAdPlaylist: a date range of another class is not an ad",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-DATERANGE:ID=\"x\",CLASS=\"other\"\n#EXTINF:2.000,live\nu.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: a date range with the ad class before the id",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-DATERANGE:CLASS=\"twitch-stitched-ad\",ID=\"x\"\n#EXTINF:2.000,live\nu.ts"
+    },
+    "output": true
+  },
+  {
+    "name": "isAdPlaylist: a date range that is not at the start of a line",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n #EXT-X-DATERANGE:ID=\"x\",CLASS=\"twitch-stitched-ad\"\n#EXTINF:2.000,live\nu.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: an empty playlist",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": ""
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: a title with a comma in it",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\n#EXTINF:2.000,live\nhttps://video.example/seg1.ts\n#EXTINF:2.000,live, extra\nhttps://video.example/seg2.ts"
+    },
+    "output": true
+  },
+  {
+    "name": "isAdPlaylist: CRLF line endings on live segments",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\r\n#EXT-X-TARGETDURATION:2\r\n#EXT-X-PROGRAM-DATE-TIME:2026-10-25T10:00:00.000Z\r\n#EXTINF:2.000,live\r\nhttps://video.example/seg1.ts\r\n#EXTINF:2.000,live\r\nhttps://video.example/seg2.ts"
+    },
+    "output": false
+  },
+  {
+    "name": "isAdPlaylist: CRLF line endings on a stitched-ad date range",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\r\n#EXT-X-DATERANGE:ID=\"x\",CLASS=\"twitch-stitched-ad\"\r\n#EXTINF:2.000,live"
+    },
+    "output": true
+  },
+  {
+    "name": "isAdPlaylist: a segment with no comma after the duration",
+    "input": {
+      "fn": "isAdPlaylist",
+      "media": "#EXTM3U\n#EXTINF:2.000\nhttps://video.example/seg1.ts\n"
+    },
+    "output": false
+  },
+  {
+    "name": "grabGrayRegion: crops a region",
+    "input": {
+      "fn": "grabGrayRegion",
+      "region": {
+        "x": 1,
+        "y": 2,
+        "w": 4,
+        "h": 2
+      },
+      "returnedBytes": 8
+    },
+    "output": {
+      "args": [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "https://x/s.m3u8",
+        "-frames:v",
+        "1",
+        "-vf",
+        "crop=4:2:1:2,format=gray",
+        "-f",
+        "rawvideo",
+        "-"
+      ],
+      "length": 8
+    }
+  },
+  {
+    "name": "grabGrayRegion: crops the 1080p clock region",
+    "input": {
+      "fn": "grabGrayRegion",
+      "region": {
+        "x": 16,
+        "y": 62,
+        "w": 104,
+        "h": 32
+      },
+      "returnedBytes": 3328
+    },
+    "output": {
+      "args": [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "https://x/s.m3u8",
+        "-frames:v",
+        "1",
+        "-vf",
+        "crop=104:32:16:62,format=gray",
+        "-f",
+        "rawvideo",
+        "-"
+      ],
+      "length": 3328
+    }
+  },
+  {
+    "name": "grabGrayRegion: scales the whole frame to 32x18 without a region",
+    "input": {
+      "fn": "grabGrayRegion",
+      "region": null,
+      "returnedBytes": 576
+    },
+    "output": {
+      "args": [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "https://x/s.m3u8",
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=32:18,format=gray",
+        "-f",
+        "rawvideo",
+        "-"
+      ],
+      "length": 576
+    }
+  },
+  {
+    "name": "grabGrayRegion: a short frame is null",
+    "input": {
+      "fn": "grabGrayRegion",
+      "region": null,
+      "returnedBytes": 10
+    },
+    "output": {
+      "args": [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "https://x/s.m3u8",
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=32:18,format=gray",
+        "-f",
+        "rawvideo",
+        "-"
+      ],
+      "length": null
+    }
+  },
+  {
+    "name": "grabGrayRegion: a long frame is null",
+    "input": {
+      "fn": "grabGrayRegion",
+      "region": {
+        "x": 1,
+        "y": 2,
+        "w": 4,
+        "h": 2
+      },
+      "returnedBytes": 9
+    },
+    "output": {
+      "args": [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "https://x/s.m3u8",
+        "-frames:v",
+        "1",
+        "-vf",
+        "crop=4:2:1:2,format=gray",
+        "-f",
+        "rawvideo",
+        "-"
+      ],
+      "length": null
+    }
+  },
+  {
+    "name": "grabGrayRegion: ffmpeg failing is null",
+    "input": {
+      "fn": "grabGrayRegion",
+      "region": null,
+      "returnedBytes": "throws"
+    },
+    "output": {
+      "args": [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "https://x/s.m3u8",
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=32:18,format=gray",
+        "-f",
+        "rawvideo",
+        "-"
+      ],
+      "length": null
+    }
+  }
+]

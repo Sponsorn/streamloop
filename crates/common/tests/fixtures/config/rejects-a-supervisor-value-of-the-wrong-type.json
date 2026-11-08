@@ -1,0 +1,6 @@
+{
+  "name": "rejects a supervisor value of the wrong type",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"supervisor\":{\"overlay\":\"yes\"}}",
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"supervisor\",\n      \"overlay\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received string\"\n  }\n]"
+}

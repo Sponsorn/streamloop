@@ -1,0 +1,318 @@
+[
+  {
+    "name": "recommendCacheMb: 100 GB free and no durations",
+    "input": {
+      "freeMb": 102400
+    },
+    "output": {
+      "mb": 4096,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: 10 GB free and no durations",
+    "input": {
+      "freeMb": 10240
+    },
+    "output": {
+      "mb": 1024,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: 3 GB free and no durations",
+    "input": {
+      "freeMb": 3072
+    },
+    "output": {
+      "mb": 500,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: below 2 GB free is the minimum with a warning",
+    "input": {
+      "freeMb": 1536
+    },
+    "output": {
+      "mb": 50,
+      "warning": "Less than 2 GB free on this drive. The download cache is set to its minimum."
+    }
+  },
+  {
+    "name": "recommendCacheMb: exactly 2 GB free",
+    "input": {
+      "freeMb": 2048
+    },
+    "output": {
+      "mb": 50,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: one MB under 2 GB free",
+    "input": {
+      "freeMb": 2047
+    },
+    "output": {
+      "mb": 50,
+      "warning": "Less than 2 GB free on this drive. The download cache is set to its minimum."
+    }
+  },
+  {
+    "name": "recommendCacheMb: zero free",
+    "input": {
+      "freeMb": 0
+    },
+    "output": {
+      "mb": 50,
+      "warning": "Less than 2 GB free on this drive. The download cache is set to its minimum."
+    }
+  },
+  {
+    "name": "recommendCacheMb: 2 GB and one MB free and no durations",
+    "input": {
+      "freeMb": 2049
+    },
+    "output": {
+      "mb": 50,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: 5 GB free and no durations",
+    "input": {
+      "freeMb": 5120
+    },
+    "output": {
+      "mb": 512,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: 41 GB free and no durations",
+    "input": {
+      "freeMb": 41984
+    },
+    "output": {
+      "mb": 4096,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: 1 TB free and no durations",
+    "input": {
+      "freeMb": 1048576
+    },
+    "output": {
+      "mb": 4096,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: the two longest videos of the box fit",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        30474,
+        26953,
+        600
+      ]
+    },
+    "output": {
+      "mb": 28714,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: only short videos keep at least 500 MB",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        120,
+        90
+      ]
+    },
+    "output": {
+      "mb": 500,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: 40 GB free caps at half and warns",
+    "input": {
+      "freeMb": 40960,
+      "durationsS": [
+        30474,
+        26953
+      ]
+    },
+    "output": {
+      "mb": 20480,
+      "warning": "The two longest videos need about 28 GB, but only 20 GB can be spared on this drive. Long videos play from YouTube while they download."
+    }
+  },
+  {
+    "name": "recommendCacheMb: a single duration",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        3600
+      ]
+    },
+    "output": {
+      "mb": 1800,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: a single long duration",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        30474
+      ]
+    },
+    "output": {
+      "mb": 15237,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: zero and negative durations are ignored",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        0,
+        -5,
+        600
+      ]
+    },
+    "output": {
+      "mb": 500,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: only zero durations act as none",
+    "input": {
+      "freeMb": 102400,
+      "durationsS": [
+        0,
+        0
+      ]
+    },
+    "output": {
+      "mb": 4096,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: an empty durations list acts as none",
+    "input": {
+      "freeMb": 102400,
+      "durationsS": []
+    },
+    "output": {
+      "mb": 4096,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: durations in any order use the two longest",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        600,
+        30474,
+        26953,
+        100
+      ]
+    },
+    "output": {
+      "mb": 28714,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: need exactly equal to the spare space",
+    "input": {
+      "freeMb": 4096,
+      "durationsS": [
+        4096
+      ]
+    },
+    "output": {
+      "mb": 2048,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: need one MB over the spare space warns",
+    "input": {
+      "freeMb": 4096,
+      "durationsS": [
+        4097
+      ]
+    },
+    "output": {
+      "mb": 2048,
+      "warning": "The two longest videos need about 2 GB, but only 2 GB can be spared on this drive. Long videos play from YouTube while they download."
+    }
+  },
+  {
+    "name": "recommendCacheMb: spare is free minus 2 GB when that is under half",
+    "input": {
+      "freeMb": 3072,
+      "durationsS": [
+        10000,
+        10000
+      ]
+    },
+    "output": {
+      "mb": 1024,
+      "warning": "The two longest videos need about 10 GB, but only 1 GB can be spared on this drive. Long videos play from YouTube while they download."
+    }
+  },
+  {
+    "name": "recommendCacheMb: a fractional need rounds up",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        1001
+      ]
+    },
+    "output": {
+      "mb": 501,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: two videos of 3000 s",
+    "input": {
+      "freeMb": 409600,
+      "durationsS": [
+        3000,
+        3000
+      ]
+    },
+    "output": {
+      "mb": 3000,
+      "warning": null
+    }
+  },
+  {
+    "name": "recommendCacheMb: a warning rounds GB to the nearest",
+    "input": {
+      "freeMb": 30720,
+      "durationsS": [
+        20000,
+        20000
+      ]
+    },
+    "output": {
+      "mb": 15360,
+      "warning": "The two longest videos need about 20 GB, but only 15 GB can be spared on this drive. Long videos play from YouTube while they download."
+    }
+  }
+]

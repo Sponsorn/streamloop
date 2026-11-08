@@ -1,0 +1,795 @@
+[
+  {
+    "name": "live while the encoder is up and nothing recovers",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
+    "name": "recovering during a retry",
+    "input": {
+      "sup": {
+        "state": "recovering",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "retry"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "Recovering the current video."
+    }
+  },
+  {
+    "name": "recovering while the encoder restarts",
+    "input": {
+      "sup": {
+        "state": "recovering",
+        "reason": null,
+        "encoder": {
+          "alive": false
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "The encoder is restarting."
+    }
+  },
+  {
+    "name": "recovering during a hold on the slate",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": {
+          "reason": "every video failed",
+          "level": 1
+        }
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "Every video failed, so the slate airs until the next try."
+    }
+  },
+  {
+    "name": "starting while the supervisor starts",
+    "input": {
+      "sup": {
+        "state": "starting",
+        "reason": null,
+        "encoder": {
+          "alive": false
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "starting",
+      "reason": "The stream is starting."
+    }
+  },
+  {
+    "name": "off-air without a stream key",
+    "input": {
+      "sup": {
+        "state": "needs-stream-key",
+        "reason": null,
+        "encoder": {
+          "alive": false
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The stream key is missing or cannot be read. Set it again in Settings."
+    }
+  },
+  {
+    "name": "off-air without a playlist",
+    "input": {
+      "sup": {
+        "state": "waiting-for-playlist",
+        "reason": null,
+        "encoder": {
+          "alive": false
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The playlist could not be loaded."
+    }
+  },
+  {
+    "name": "off-air while the supervisor stops on its own",
+    "input": {
+      "sup": {
+        "state": "stopping",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor is shutting down."
+    }
+  },
+  {
+    "name": "off-air when playing with the encoder down",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": false
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The encoder is not running."
+    }
+  },
+  {
+    "name": "off-air when the supervisor does not answer",
+    "input": {
+      "sup": null,
+      "launcher": "down",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor is not answering."
+    }
+  },
+  {
+    "name": "off-air when the supervisor is missing",
+    "input": {
+      "sup": null,
+      "launcher": "missing",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor program was not found in the install folder."
+    }
+  },
+  {
+    "name": "starting while the launcher starts it",
+    "input": {
+      "sup": null,
+      "launcher": "starting",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "starting",
+      "reason": "The supervisor is starting."
+    }
+  },
+  {
+    "name": "stopped wins while the old supervisor still answers",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": true,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "stopped",
+      "reason": "The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start."
+    }
+  },
+  {
+    "name": "stopped wins over a wait reason",
+    "input": {
+      "sup": {
+        "state": "stopping",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "starting",
+      "stoppedByUser": true,
+      "waitReason": "Waiting for the stopped supervisor to exit before starting it again.",
+      "blockReason": null
+    },
+    "output": {
+      "state": "stopped",
+      "reason": "The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start."
+    }
+  },
+  {
+    "name": "stopped wins over a block reason with no supervisor",
+    "input": {
+      "sup": null,
+      "launcher": "stopped-by-user",
+      "stoppedByUser": true,
+      "waitReason": null,
+      "blockReason": "OBS is running."
+    },
+    "output": {
+      "state": "stopped",
+      "reason": "The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start."
+    }
+  },
+  {
+    "name": "starting with the launcher reason while a Start waits for the stopped supervisor",
+    "input": {
+      "sup": {
+        "state": "stopping",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "starting",
+      "stoppedByUser": false,
+      "waitReason": "Waiting for the stopped supervisor to exit before starting it again.",
+      "blockReason": null
+    },
+    "output": {
+      "state": "starting",
+      "reason": "Waiting for the stopped supervisor to exit before starting it again."
+    }
+  },
+  {
+    "name": "a wait reason wins over a live supervisor",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": "Waiting for the stopped supervisor to exit before starting it again.",
+      "blockReason": null
+    },
+    "output": {
+      "state": "starting",
+      "reason": "Waiting for the stopped supervisor to exit before starting it again."
+    }
+  },
+  {
+    "name": "a wait reason wins over a block reason",
+    "input": {
+      "sup": null,
+      "launcher": "starting",
+      "stoppedByUser": false,
+      "waitReason": "Waiting.",
+      "blockReason": "OBS is running."
+    },
+    "output": {
+      "state": "starting",
+      "reason": "Waiting."
+    }
+  },
+  {
+    "name": "off-air with the launcher block reason",
+    "input": {
+      "sup": null,
+      "launcher": "starting",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": "OBS is running."
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "OBS is running."
+    }
+  },
+  {
+    "name": "a block reason wins over a missing supervisor program",
+    "input": {
+      "sup": null,
+      "launcher": "missing",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": "OBS is running."
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "OBS is running."
+    }
+  },
+  {
+    "name": "a block reason is ignored while the supervisor answers",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": "OBS is running."
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
+    "name": "an empty wait reason does not count",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": "",
+      "blockReason": null
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
+    "name": "an empty block reason does not count",
+    "input": {
+      "sup": null,
+      "launcher": "down",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": ""
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor is not answering."
+    }
+  },
+  {
+    "name": "the stopped-by-user launcher state without the flag is not answering",
+    "input": {
+      "sup": null,
+      "launcher": "stopped-by-user",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor is not answering."
+    }
+  },
+  {
+    "name": "live with the recovery step missing",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
+    "name": "live with recovery step none",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
+    "name": "recovering with a recovery step while playing",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "restart-feeder"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "Recovering the current video."
+    }
+  },
+  {
+    "name": "live with an empty recovery step",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": ""
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
+    "name": "off-air when the encoder object is missing",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The encoder is not running."
+    }
+  },
+  {
+    "name": "off-air when encoder.alive is missing",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {},
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The encoder is not running."
+    }
+  },
+  {
+    "name": "recovering state with the encoder alive",
+    "input": {
+      "sup": {
+        "state": "recovering",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "Recovering the current video."
+    }
+  },
+  {
+    "name": "recovering state with the encoder object missing",
+    "input": {
+      "sup": {
+        "state": "recovering",
+        "reason": null,
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "The encoder is restarting."
+    }
+  },
+  {
+    "name": "a hold wins over a recovery step",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "retry"
+        },
+        "hold": {
+          "reason": "r"
+        }
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "recovering",
+      "reason": "Every video failed, so the slate airs until the next try."
+    }
+  },
+  {
+    "name": "the encoder is checked before a hold",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": false
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": {
+          "reason": "r"
+        }
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The encoder is not running."
+    }
+  },
+  {
+    "name": "an unknown supervisor state",
+    "input": {
+      "sup": {
+        "state": "weird",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor reports an unknown state: weird."
+    }
+  },
+  {
+    "name": "a missing supervisor state",
+    "input": {
+      "sup": {
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "running",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "off-air",
+      "reason": "The supervisor reports an unknown state: undefined."
+    }
+  },
+  {
+    "name": "starting ignores the launcher state",
+    "input": {
+      "sup": {
+        "state": "starting",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "missing",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "starting",
+      "reason": "The stream is starting."
+    }
+  }
+]

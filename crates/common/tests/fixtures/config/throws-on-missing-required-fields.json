@@ -1,0 +1,6 @@
+{
+  "name": "throws on missing required fields",
+  "before": "{\"port\":7654}",
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"playlists\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  }\n]"
+}

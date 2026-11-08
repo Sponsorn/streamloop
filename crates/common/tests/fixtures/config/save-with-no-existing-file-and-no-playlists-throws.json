@@ -1,0 +1,9 @@
+{
+  "name": "save with no existing file and no playlists throws",
+  "before": null,
+  "patch": {
+    "port": 7000
+  },
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"array\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"playlists\"\n    ],\n    \"message\": \"Invalid input: expected array, received undefined\"\n  }\n]"
+}

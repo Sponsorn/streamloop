@@ -1,0 +1,6 @@
+{
+  "name": "rejects a fractional cacheBudgetMb",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"supervisor\":{\"cacheBudgetMb\":300.5}}",
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"int\",\n    \"format\": \"safeint\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"supervisor\",\n      \"cacheBudgetMb\"\n    ],\n    \"message\": \"Invalid input: expected int, received number\"\n  }\n]"
+}
