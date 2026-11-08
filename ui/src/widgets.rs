@@ -1,13 +1,22 @@
-//! Controls the views share: the action button, admin.js `runAction`.
+//! Controls the views share: the action button (admin.js `runAction`), the restart note, the
+//! config save's reload warning and the settings forms' layout.
 
 use std::collections::HashSet;
 
-use gpui::{AppContext, Context, ElementId, SharedString, Styled, Window, px};
-use gpui_kit::component::{Disableable, Sizable, button::Button};
+use gpui::{
+    AnyElement, App, AppContext, Context, Div, ElementId, FontWeight, Global, IntoElement,
+    SharedString, Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
+};
+use gpui_kit::{
+    base::TestSupportExt,
+    component::{Disableable, Sizable, button::Button, label::Label},
+};
 
 use crate::{
-    api::{ApiError, client::Client},
+    api::{ApiError, client::Client, types::SaveResult},
     app::{AppHandle, ToastKind},
+    logic::is_benign_reload_error,
+    theme::{BORDER, MUTED, SURFACE},
 };
 
 /// The action buttons of one view whose request is running.
@@ -78,4 +87,151 @@ pub fn run_action<V: ActionView, T: Send + 'static>(
         .ok();
     })
     .detach();
+}
+
+/// Spec D6, admin.js `saveConfig`: every config save that went through calls this with the answer.
+/// A reload that failed for any reason but a refused connection (no supervisor running) is a toast.
+pub fn reload_warning(app: &AppHandle, saved: &SaveResult, cx: &mut App) {
+    let (error, code) = (
+        saved.reload_error.as_deref(),
+        saved.reload_error_code.as_deref(),
+    );
+    if !is_benign_reload_error(error, code) {
+        let text = format!(
+            "Saved, but the supervisor could not reload: {}",
+            error.unwrap_or_default()
+        );
+        app.toast(text, ToastKind::Error, cx);
+    }
+}
+
+/// admin.js `restartStream`: stop, then start once the stop went through.
+pub fn restart_stream(client: &Client) -> Result<(), ApiError> {
+    client.stream_stop()?;
+    client.stream_start()
+}
+
+/// Which restart notes show. A tab shows its own; a restart hides them all.
+#[derive(Default)]
+struct RestartNotes(HashSet<&'static str>);
+
+impl Global for RestartNotes {}
+
+/// index.html `.restart-note`: a tab's note that a saved change applies after a stream restart,
+/// with a Restart stream button.
+#[derive(Clone, Copy)]
+pub struct RestartNote {
+    pub id: &'static str,
+    pub button: &'static str,
+    pub text: &'static str,
+}
+
+impl RestartNote {
+    pub fn show(self, cx: &mut App) {
+        cx.default_global::<RestartNotes>().0.insert(self.id);
+    }
+
+    pub fn shown(self, cx: &App) -> bool {
+        cx.try_global::<RestartNotes>()
+            .is_some_and(|notes| notes.0.contains(self.id))
+    }
+
+    /// admin.js hides every `.restart-note` after a restart, whichever button started it.
+    pub fn hide_all(cx: &mut App) {
+        cx.default_global::<RestartNotes>().0.clear();
+    }
+
+    /// Renders the view again whenever a note shows or hides.
+    pub fn observe<V: 'static>(cx: &mut Context<V>) -> Subscription {
+        cx.observe_global::<RestartNotes>(|_, cx| cx.notify())
+    }
+
+    /// The note while it shows. Its button runs `restart_stream` through `run_action`, then hides every note.
+    pub fn render<V: ActionView>(
+        self,
+        app: &AppHandle,
+        busy: &Busy,
+        cx: &mut Context<V>,
+    ) -> Option<AnyElement> {
+        if !self.shown(cx) {
+            return None;
+        }
+        let app = app.clone();
+        let restart = btn(action_button(self.button, "Restart stream", busy)).on_click(
+            cx.listener(move |view, _, window, cx| {
+                run_action(
+                    view,
+                    self.button,
+                    &app,
+                    restart_stream,
+                    |_, _, _, cx| RestartNote::hide_all(cx),
+                    window,
+                    cx,
+                );
+            }),
+        );
+        let note = div()
+            .id(self.id)
+            .mt(px(12.))
+            .px(px(16.))
+            .py(px(12.))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .border_1()
+            .border_color(rgba(NOTE_BORDER))
+            .bg(rgba(NOTE_BG))
+            .rounded(px(8.))
+            .child(Label::new(self.text).text_size(px(14.)))
+            .child(restart)
+            .test_support();
+        Some(note.into_any_element())
+    }
+}
+
+/// admin.css `.restart-note`: the yellow at 40 % for the border and 8 % for the fill.
+const NOTE_BORDER: u32 = 0xf39c1266;
+const NOTE_BG: u32 = 0xf39c1214;
+
+/// admin.css `.section` with its `.section-title`, which the CSS shows in capitals.
+pub fn section(title: &str) -> Div {
+    div().mb(px(24.)).child(
+        Label::new(title.to_uppercase())
+            .mb(px(12.))
+            .text_size(px(14.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(rgb(MUTED)),
+    )
+}
+
+/// admin.css `.settings-panel`.
+pub fn settings_panel() -> Div {
+    div()
+        .p(px(20.))
+        .bg(rgb(SURFACE))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .rounded(px(8.))
+}
+
+/// admin.css `.form-group`: the label over the control, then the hint.
+pub fn form_group(label: &str, control: impl IntoElement, hint: Option<&str>) -> Div {
+    div()
+        .mb(px(16.))
+        .child(
+            Label::new(label.to_string())
+                .mb(px(4.))
+                .text_size(px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(MUTED)),
+        )
+        .child(control)
+        .children(hint.map(|text| {
+            Label::new(text.to_string())
+                .mt(px(2.))
+                .text_size(px(11.))
+                .text_color(rgb(MUTED))
+        }))
 }

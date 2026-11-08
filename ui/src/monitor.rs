@@ -33,7 +33,7 @@ use crate::{
     logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
     videos::VideoList,
-    widgets::{ActionView, Busy, action_button, btn, run_action},
+    widgets::{ActionView, Busy, action_button, btn, run_action, section},
 };
 
 const STOP_TITLE: &str = "Stop the stream?";
@@ -350,17 +350,6 @@ fn card() -> Div {
         .border_1()
         .border_color(rgb(BORDER))
         .rounded(px(8.))
-}
-
-/// admin.css `.section` with its `.section-title`, which the CSS shows in capitals.
-fn section(title: &str) -> Div {
-    div().mb(px(24.)).child(
-        Label::new(title.to_uppercase())
-            .mb(px(12.))
-            .text_size(px(14.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(MUTED)),
-    )
 }
 
 /// admin.css `.stream-detail` in the colour of `level`.

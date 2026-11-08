@@ -15,6 +15,7 @@ use crate::{
     app::AppHandle,
     logic::admin::format_duration,
     monitor::MonitorView,
+    playback::PlaybackView,
     theme::{BORDER, MAX_WIDTH, MUTED, RED, SURFACE, SURFACE_HOVER, TEXT, WHITE},
 };
 
@@ -145,7 +146,7 @@ fn build_tab(
 ) -> Box<dyn AnyTab> {
     match tab {
         Tab::Monitor => Box::new(cx.new(|cx| MonitorView::new(app.clone(), window, cx))),
-        Tab::Playback => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
+        Tab::Playback => Box::new(cx.new(|cx| PlaybackView::new(app.clone(), window, cx))),
         Tab::Webhooks => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
         Tab::Settings => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
     }

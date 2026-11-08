@@ -154,6 +154,47 @@ function maskedConfig() {
   };
 }
 
+// The config a save changes, as Node keeps config.json.
+const config = maskedConfig();
+
+/** `POST /api/config`: merges the patch one level deep, as Node's saveAndReload. An encoder
+ *  change answers restartRequired, as the supervisor's /reload does. */
+function saveConfig(patch) {
+  const before = config.supervisor.encoder;
+  for (const [key, value] of Object.entries(patch)) {
+    const nested = value && typeof value === 'object' && !Array.isArray(value) && config[key] && typeof config[key] === 'object';
+    config[key] = nested ? { ...config[key], ...value } : value;
+  }
+  const restartRequired = config.supervisor.encoder !== before;
+  return [200, { ok: true, config, restartRequired, reloadError: null, reloadErrorCode: null }];
+}
+
+// No check has run until the first POST /api/setup-check/run, as on a fresh install.
+const INSTALL = 'C:\\StreamLoop3\\streamloop';
+const SETUP_CHECK_DELAY_MS = 3000;
+let setupReport = null;
+
+async function runSetupCheck() {
+  await new Promise((resolve) => setTimeout(resolve, SETUP_CHECK_DELAY_MS));
+  setupReport = {
+    at: new Date().toISOString(),
+    encoder: { chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false, works: true },
+    cache: { freeMb: 182340, recommendedMb: 4096, warning: null },
+    dependencies: [
+      ['Supervisor', 'supervisor\\streamloop-supervisor.exe'],
+      ['Standby slate', 'supervisor\\slate.mp4'],
+      ['ffmpeg', 'ffmpeg\\ffmpeg.exe'],
+      ['yt-dlp', 'yt-dlp\\yt-dlp.exe'],
+      ['Deno', 'yt-dlp\\deno.exe'],
+      ['PO-token plugin', 'yt-dlp\\plugins\\bgutil-ytdlp-pot-provider.zip'],
+      ['Token server', 'pot\\build\\main.js'],
+      ['Token server modules', 'pot\\node_modules'],
+    ].map(([name, rel]) => ({ name, ok: name !== 'Token server modules', path: `${INSTALL}\\${rel}` }))
+      .concat({ name: 'Overlay font', ok: true, path: 'C:\\Windows\\Fonts\\malgun.ttf' }),
+  };
+  return [200, setupReport];
+}
+
 function videoPage(query) {
   const which = Number(query.get('playlist') ?? '0');
   const list = lists[which];
@@ -175,9 +216,9 @@ const GETS = {
   '/api/status': () => [200, status()],
   '/api/events': () => [200, events],
   '/api/update/status': () => [200, { currentVersion: '3.0.5', latestVersion: '3.0.5', updateAvailable: false, status: 'idle', isDevMode: true, nodeNotice: null }],
-  '/api/config': () => [200, maskedConfig()],
+  '/api/config': () => [200, config],
   '/api/autostart': () => [200, { enabled: true, target: 'C:\\StreamLoop3\\streamloop\\START.bat', thisInstall: true }],
-  '/api/setup-check': () => [503, { error: 'No setup check has run on this stand-in backend.' }],
+  '/api/setup-check': () => [200, setupReport],
   '/api/discord/defaults': () => [200, { templates: example.discord.templates, variables: {} }],
   '/api/logs': () => [200, logFiles.map(({ source, name, text, mtime }) => ({ name, size: Buffer.byteLength(text), mtime, source }))],
 };
@@ -196,6 +237,8 @@ const POSTS = {
     const byId = list.videos.findIndex((v) => v.id === body.videoId);
     seek(byId >= 0 ? byId : Number(body.videoIndex) || 0);
   },
+  '/api/config': saveConfig,
+  '/api/setup-check/run': runSetupCheck,
 };
 
 function seek(index) {
@@ -254,8 +297,9 @@ createServer(async (req, res) => {
   if (req.method === 'GET' && GETS[path]) return send(res, ...GETS[path]());
   if (req.method === 'POST' && POSTS[path]) {
     if (req.headers['x-api-token'] !== TOKEN) return send(res, 403, { error: 'Forbidden: invalid API token' });
-    const refused = POSTS[path](await readBody(req));
-    if (refused) return send(res, ...refused);
+    // A handler returns [code, body] for an answer of its own, or nothing for { ok: true }.
+    const answer = await POSTS[path](await readBody(req));
+    if (answer) return send(res, ...answer);
     return send(res, 200, { ok: true });
   }
   send(res, 404, { error: 'Not found' });

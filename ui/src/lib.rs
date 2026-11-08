@@ -9,6 +9,8 @@ pub mod dashboard;
 pub mod logic;
 pub mod logs;
 pub mod monitor;
+pub mod playback;
+pub mod setup_check;
 #[cfg(test)]
 mod test_support;
 pub mod theme;

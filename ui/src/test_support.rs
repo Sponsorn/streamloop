@@ -115,6 +115,27 @@ pub fn config_json() -> Value {
     })
 }
 
+/// A setup check report: NVENC works, 4096 MB recommended, ffmpeg found and Deno missing (listed found first).
+pub fn setup_report_json() -> Value {
+    json!({
+        "at": "2026-11-08T12:34:00.000Z",
+        "encoder": { "chosen": "h264_nvenc", "tried": ["h264_nvenc"], "software": false, "works": true },
+        "cache": { "freeMb": 120_000, "recommendedMb": 4096, "warning": null },
+        "dependencies": [
+            { "name": "ffmpeg", "ok": true, "path": r"C:\StreamLoop3\streamloop\ffmpeg\ffmpeg.exe" },
+            { "name": "Deno", "ok": false, "path": r"C:\StreamLoop3\streamloop\yt-dlp\deno.exe" }
+        ]
+    })
+}
+
+/// `POST /api/config`'s answer after a reload that worked.
+pub fn saved_json(restart_required: bool) -> Value {
+    json!({
+        "ok": true, "config": config_json(), "restartRequired": restart_required,
+        "reloadError": null, "reloadErrorCode": null
+    })
+}
+
 /// `GET /api/events`, oldest first, one second apart: "Event 1" to "Event n".
 pub fn events_json(n: usize) -> Value {
     let events: Vec<Value> = (1..=n)

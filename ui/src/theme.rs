@@ -101,7 +101,9 @@ pub fn init(cx: &mut App) {
     c.scrollbar = hex(BG);
     c.scrollbar_thumb = hex(BORDER);
     c.scrollbar_thumb_hover = hex(MUTED);
-    c.switch = hex(BORDER);
+    // admin.css outlines an off toggle in muted; this Switch has no outline, so its track takes the
+    // colour. BORDER would be 1.25:1 on the surface, under the 3:1 a control needs.
+    c.switch = hex(MUTED);
 
     Theme::update(cx, |theme| theme.apply_config(&Rc::new(config)));
 }
