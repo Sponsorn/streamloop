@@ -11,7 +11,9 @@
 // Finished downloads are kept in supervisor\results\update-cache-seed\ and put into the next
 // install's data\cache\, so the runs fetch each video from YouTube once.
 // UPDATE_SESSION_HOLD=<run> keeps that run's install up at its end, for a look at the dashboard.
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync, copyFileSync, createReadStream } from 'node:fs';
+// Ctrl+C or Ctrl+Break tears the run and the session down; a start after the harness was killed
+// outright first sweeps what that harness left.
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync, copyFileSync, createReadStream, appendFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,8 +21,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { dailyFiles, EVENTS, PLAYLIST, redact } from './lib.mjs';
 import {
-  spawn, run, TAR, KEY, INGEST, NODE_API, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, supStatus, waitLive,
-  packets, reconnects, runReader, stopReader, resetReader, gapStats, sha256File, extract, quietConfig, tsxEval, portOpen,
+  spawn, run, TAR, KEY, INGEST, READ_URL, NODE_API, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, supStatus, waitLive,
+  packets, reconnects, runReader, stopReader, resetReader, gapStats, sha256File, grepTree, extract, quietConfig, tsxEval, portOpen,
+  allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted,
 } from './install-kit.mjs';
 import { hashParts } from '../../src/server/components.js';
 import { updateOfferText, updateBannerView } from '../../src/admin/status-view.js';
@@ -102,7 +105,7 @@ function exeRuns(exe, args, input = '') {
 }
 
 async function buildReleases() {
-  const want = { recipe: 1, full: sha256File(DIST_FULL), slim: sha256File(DIST_SLIM), variants: VARIANTS, append: sha(APPEND) };
+  const want = { recipe: 2, full: sha256File(DIST_FULL), slim: sha256File(DIST_SLIM), variants: VARIANTS, append: sha(APPEND) };
   const manifestFile = join(WORK, 'manifest.json');
   const have = readJson(manifestFile);
   const complete = have && same(have.want, want)
@@ -130,6 +133,10 @@ async function buildReleases() {
     writeFileSync(supExe, v.supervisor === 'append' ? Buffer.concat([sup0, APPEND]) : v.supervisor === 'ffmpeg' ? ff0 : sup0);
     writeFileSync(ffExe, v.ffmpeg === 'append' ? Buffer.concat([ff0, APPEND]) : ff0);
     const runs = { supervisorProtect: await exeRuns(supExe, ['protect'], 'not-a-key'), ffmpegVersion: await exeRuns(ffExe, ['-hide_banner', '-version']) };
+    // Only the broken release is meant to carry a supervisor that does not run.
+    const supervisorRuns = runs.supervisorProtect.code === 0 && runs.supervisorProtect.line.length > 0;
+    if (supervisorRuns !== (v.supervisor !== 'ffmpeg')) throw new Stop(`the repacked ${id} supervisor ${supervisorRuns ? 'runs' : 'does not run'}: protect exited ${runs.supervisorProtect.code}`);
+    if (runs.ffmpegVersion.code !== 0) throw new Stop(`the repacked ${id} ffmpeg does not run: -version exited ${runs.ffmpegVersion.code}`);
     const dir = join(SERVE, id);
     mkdirSync(dir, { recursive: true });
     const components = { version: v.version, node: nodeVersion, parts: await hashParts(top) };
@@ -199,6 +206,7 @@ const catcher = http.createServer((req, res) => {
     const messages = String(embed.description ?? '').split('\n\n').map((m) => m.replace(/^(ℹ️|⚠️|\u{1F6A8}) /u, '')).filter(Boolean);
     const row = { ms: Date.now(), at: iso(), title: embed.title, color: embed.color, footer: embed.footer?.text, messages };
     alerts.push(row);
+    appendFileSync(join(runOut, 'catcher.jsonl'), `${JSON.stringify(row)}\n`);
     res.writeHead(204).end();
   });
 });
@@ -207,19 +215,7 @@ const posted = (ms, text) => postsSince(ms).some((a) => a.messages.includes(text
 
 // the install
 
-/** Every process whose exe or command line names the install folder. The ASCII part matches as well,
- *  in case a command line comes back in another codepage. */
-async function underInstall() {
-  const r = await run('powershell', ['-NoProfile', '-Command',
-    '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress'],
-    { encoding: 'utf8' });
-  let v = [];
-  try { v = JSON.parse(r.stdout || '[]'); } catch { return []; }
-  const rows = Array.isArray(v) ? v : [v];
-  const root = S.toLowerCase();
-  return rows.filter((p) => p.ProcessId !== process.pid && [p.ExecutablePath, p.CommandLine].some((x) => typeof x === 'string'
-    && (x.toLowerCase().includes(root) || x.toLowerCase().includes('\\sl3 update '))));
-}
+const underInstall = () => runningFrom([S], /\\sl3 update /i);
 const supervisors = async () => (await underInstall()).filter((p) => p.Name === 'streamloop-supervisor.exe').map((p) => p.ProcessId);
 
 function seedCache() {
@@ -305,9 +301,12 @@ const LEFTOVER = /^_update_|^START\.bat\.new$|^_apply_launcher\.bat$/;
 const MARKERS = ['update-checking', 'update-swapping', 'waiting-for-start'];
 const leftovers = (snap) => [...snap.root.filter((f) => LEFTOVER.test(f)), ...snap.data.filter((f) => MARKERS.includes(f))];
 
+/** The monitor of the update in progress; runOne ends it whatever way the run ended. */
+let monitor = null;
 /** Polls the update's progress file, the supervisor and Node once a second while an update runs. */
 function startMonitor(t0) {
   const m = { t0, states: [], playing: [], supervisor: [], node: [], savedAtStop: null, stop: false };
+  monitor = m;
   m.done = (async () => {
     let lastState = '';
     let lastSup = null;
@@ -342,6 +341,7 @@ function startMonitor(t0) {
 async function endMonitor(m) {
   m.stop = true;
   await m.done;
+  if (monitor === m) monitor = null;
   // Step lengths from the file's own start times.
   const steps = m.states.filter((s) => s.stepStartedAt).map((s) => ({ step: s.step, result: s.result, startedT: Date.parse(s.stepStartedAt) - m.t0 }));
   return { states: m.states, steps, supervisor: m.supervisor.map(({ t, answering }) => ({ t, answering })), node: m.node, savedAtStop: m.savedAtStop };
@@ -391,6 +391,7 @@ async function checkUpdate() {
 
 /** Checks for the update, records the install, presses Update and starts watching. */
 async function apply(r) {
+  if (interrupted()) throw new Stop(`interrupted by ${interrupted()}`);
   r.offer = await checkUpdate();
   note('offer', r.offer);
   writeFileSync(MARKER, randomBytes(16).toString('hex'));
@@ -746,24 +747,37 @@ async function holdForLook(out) {
   await waitFor('the continue file', async () => existsSync(join(out, 'continue')), 30 * 60_000, 2000);
 }
 
-async function endRun(r) {
+/** Ends a run's install once, whoever asks first: an API stop unless an interrupt wants speed, then a kill
+ *  of what still runs, the evidence copied and grepped for the key, and the folder removed. */
+function endRun(r, fast = false) {
+  r.ending ??= finishRun(r, fast);
+  return r.ending;
+}
+async function finishRun(r, fast) {
   stopReader();
-  const c = {};
-  try {
-    if (await nodeAnswers()) {
-      await nodeUp('cleanup', 10_000).catch(() => null);
-      c.stop = (await api('POST', '/stream/stop')).status;
-      c.supervisorExitMs = (await waitFor('the supervisor to exit', async () => (await supervisors()).length === 0, 60_000, 1000)).ms;
-      c.shutdown = (await api('POST', '/shutdown')).status;
-      c.nodeExitMs = (await waitFor('Node to exit', async () => !(await nodeAnswers()), 30_000, 500)).ms;
-      // A clean exit 0 ends Node's processes and the hidden START.bat by themselves.
-      c.nodeProcessesGoneMs = (await waitFor('Node processes to end', async () => !(await underInstall()).some((p) => p.Name === 'node.exe'), 20_000, 1000)).ms;
-      if (bat && bat.exitCode === null) await waitFor('START.bat to end', async () => bat.exitCode !== null, 15_000, 500);
-    }
-  } catch (err) { c.error = String(err); }
+  if (monitor) {
+    const ended = await endMonitor(monitor);
+    r.monitor ??= ended;
+  }
+  const c = { fast };
+  if (!fast) {
+    try {
+      if (await nodeAnswers()) {
+        await nodeUp('cleanup', 10_000).catch(() => null);
+        c.stop = (await api('POST', '/stream/stop')).status;
+        c.supervisorExitMs = (await waitFor('the supervisor to exit', async () => (await supervisors()).length === 0, 60_000, 1000)).ms;
+        c.shutdown = (await api('POST', '/shutdown')).status;
+        c.nodeExitMs = (await waitFor('Node to exit', async () => !(await nodeAnswers()), 30_000, 500)).ms;
+        // A clean exit 0 ends Node's processes and the hidden START.bat by themselves.
+        c.nodeProcessesGoneMs = (await waitFor('Node processes to end', async () => !(await underInstall()).some((p) => p.Name === 'node.exe'), 20_000, 1000)).ms;
+        if (bat && bat.exitCode === null) await waitFor('START.bat to end', async () => bat.exitCode !== null, 15_000, 500);
+      }
+    } catch (err) { c.error = String(err); }
+  }
+  const out = join(OUT_ROOT, r.run);
   c.batExitCode = bat?.exitCode ?? null;
-  c.consoleSaysStoppedCleanly = readdirSync(join(OUT_ROOT, r.run)).filter((f) => f.startsWith('console-'))
-    .some((f) => (readText(join(OUT_ROOT, r.run, f)) ?? '').includes('Server stopped cleanly.'));
+  c.consoleSaysStoppedCleanly = readdirSync(out).filter((f) => f.startsWith('console-'))
+    .some((f) => (readText(join(out, f)) ?? '').includes('Server stopped cleanly.'));
   if (holder) {
     holder.kill();
     holder = null;
@@ -771,31 +785,48 @@ async function endRun(r) {
   if (bat && bat.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(bat.pid)]);
   bat = null;
   // A trampoline's new START.bat window and anything else still running from the install.
-  c.killed = [];
-  for (const p of await underInstall()) {
-    c.killed.push(`${p.Name} ${p.ProcessId}`);
-    await run('taskkill', ['/F', '/T', '/PID', String(p.ProcessId)]);
-  }
+  c.killed = await killAll(await underInstall());
   await sleep(2000);
-  const out = join(OUT_ROOT, r.run);
   for (const [from, to] of [[join(DATA, 'logs'), 'supervisor-logs'], [join(ROOT, 'app', 'logs'), 'node-logs']]) {
     try { if (existsSync(from)) cpSync(from, join(out, to), { recursive: true }); } catch (err) { note(`could not copy ${from}`, { error: String(err) }); }
   }
   for (const f of ['update-state.json', 'update-swap.log', 'state.json']) {
     try { if (existsSync(join(DATA, f))) copyFileSync(join(DATA, f), join(out, f)); } catch { /* evidence only */ }
   }
-  try { growSeed(); } catch (err) { note('could not keep the cache', { error: String(err) }); }
+  // The install holds the update's own writers (update-state.json, update-swap.log, the check's reason);
+  // the output folder holds the requests, the console logs and the Discord posts.
+  const grep = { install: grepTree(S, KEY), output: grepTree(out, KEY) };
+  c.keyGrep = { installFiles: grep.install.files, outputFiles: grep.output.files, hits: [...grep.install.hits.map((h) => `install: ${h}`), ...grep.output.hits.map((h) => `output: ${h}`)] };
+  if (!fast) {
+    try { growSeed(); } catch (err) { note('could not keep the cache', { error: String(err) }); }
+  }
   try { rmSync(S, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch (err) { c.removeError = String(err); }
   c.removed = !existsSync(S);
   c.stillRunning = (await underInstall()).map((p) => `${p.Name} ${p.ProcessId}`);
-  c.ok = c.removed && c.stillRunning.length === 0;
+  c.ok = c.removed && c.stillRunning.length === 0 && c.keyGrep.hits.length === 0;
   r.cleanup = c;
   note('cleanup', c);
 }
 
+function judge(r) {
+  r.failedChecks = Object.entries(r.checks ?? {}).filter(([, v]) => !v).map(([k]) => k);
+  r.pass = !r.failed && r.checks !== undefined && r.failedChecks.length === 0 && r.cleanup?.ok === true;
+  r.endedAt = iso();
+  const { ending, ...plain } = r;
+  writeFileSync(join(OUT_ROOT, r.run, 'results.json'), redact(JSON.stringify(plain, null, 2), KEY));
+  note(`${r.run}: ${r.pass ? 'PASS' : 'FAIL'}`, { failedChecks: r.failedChecks, failed: r.failed?.split('\n')[0], offAirMs: r.offAir?.offAirMs ?? null, cleanup: r.cleanup?.ok ?? null });
+  summary.runs[r.run] = { pass: r.pass, blocked: r.blocked ?? null, failedChecks: r.failedChecks, failed: r.failed?.split('\n')[0] ?? null, offAirMs: r.offAir?.offAirMs ?? null };
+}
+
+/** The run in progress, for the interrupt teardown. */
+let current = null;
+/** Where the catcher writes the Discord posts: the run in progress, else the session's folder. */
+let runOut = join(OUT_ROOT, 'session');
+
 async function runOne(name) {
   const out = join(OUT_ROOT, name);
   useOut(out);
+  runOut = out;
   resetReader();
   const r = { run: name, startedAt: iso() };
   const taken = await portsTaken();
@@ -803,22 +834,58 @@ async function runOne(name) {
     r.blocked = taken;
     note(`${name}: BLOCKED, a port is taken by a process this session did not start`, taken);
     writeFileSync(join(out, 'results.json'), JSON.stringify(r, null, 2));
+    summary.runs[name] = { pass: false, blocked: taken };
     return r;
   }
+  current = r;
   try {
     await RUNS[name](r);
   } catch (err) {
     r.failed = String(err?.stack ?? err);
     note('run stopped', { error: r.failed });
   }
-  if (HOLD.includes(name)) await holdForLook(out);
+  if (HOLD.includes(name) && !interrupted()) await holdForLook(out);
+  // A run that threw after Apply still has its monitor going.
+  if (monitor) {
+    const ended = await endMonitor(monitor);
+    r.monitor ??= ended;
+  }
   await endRun(r);
-  r.failedChecks = Object.entries(r.checks ?? {}).filter(([, v]) => !v).map(([k]) => k);
-  r.pass = !r.failed && r.checks !== undefined && r.failedChecks.length === 0 && r.cleanup.ok;
-  r.endedAt = iso();
-  writeFileSync(join(out, 'results.json'), redact(JSON.stringify(r, null, 2), KEY));
-  note(`${name}: ${r.pass ? 'PASS' : 'FAIL'}`, { failedChecks: r.failedChecks, failed: r.failed?.split('\n')[0], offAirMs: r.offAir?.offAirMs ?? null, cleanup: r.cleanup.ok });
+  current = null;
+  judge(r);
   return r;
+}
+
+let mediamtx = null;
+let sessionEnd = null;
+/** Stops the reader, MediaMTX, the release host and the catcher, then fails the session on anything left. */
+function endSession() {
+  sessionEnd ??= (async () => {
+    useOut(join(OUT_ROOT, 'session-end'));
+    runOut = join(OUT_ROOT, 'session-end');
+    stopReader();
+    mediamtx?.kill();
+    assetServer.close();
+    catcher.close();
+    await sleep(3000);
+    const all = await allProcesses();
+    const watch = ['streamloop-supervisor.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'deno.exe', 'mediamtx.exe', 'tail.exe'];
+    summary.tasklist = Object.fromEntries(watch.map((n) => [n, all.filter((p) => String(p.Name).toLowerCase() === n).length]));
+    const tools = join(TOOLS, 'mediamtx.exe').toLowerCase();
+    summary.leftovers = {
+      underInstall: under(all, [S], /\\sl3 update /i).map((p) => `${p.Name} ${p.ProcessId}`),
+      mediamtx: all.filter((p) => p.Name === 'mediamtx.exe' && String(p.ExecutablePath).toLowerCase() === tools).map((p) => p.ProcessId),
+      readers: all.filter((p) => p.Name === 'ffprobe.exe' && (p.CommandLine ?? '').includes(READ_URL)).map((p) => p.ProcessId),
+    };
+    summary.installRemoved = !existsSync(S);
+    summary.clean = summary.installRemoved && Object.values(summary.leftovers).every((l) => l.length === 0);
+    summary.interrupted = interrupted();
+    writeFileSync(join(OUT_ROOT, 'summary.json'), JSON.stringify(summary, null, 2));
+    for (const [name, x] of Object.entries(summary.runs)) console.log(`${name}: ${x.blocked ? 'BLOCKED' : x.pass ? 'PASS' : 'FAIL'}${x.offAirMs ? ` (off air ${(x.offAirMs / 1000).toFixed(1)} s)` : ''}${x.failedChecks?.length ? ` failed: ${x.failedChecks.join(', ')}` : ''}${x.failed ? ` stopped: ${x.failed}` : ''}`);
+    note('session end', { clean: summary.clean, leftovers: summary.leftovers, installRemoved: summary.installRemoved, tasklist: summary.tasklist });
+    return summary.clean;
+  })();
+  return sessionEnd;
 }
 
 const arg = process.argv[2] ?? 'all';
@@ -832,37 +899,36 @@ if (arg === 'build') {
   await buildReleases();
   process.exit(0);
 }
+const swept = await sweepLeftovers({ dirs: [S], ascii: /\\sl3 update /i, mediamtx: join(TOOLS, 'mediamtx.exe') });
+if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
+if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
 const taken = await portsTaken();
 for (const port of [ASSET_PORT, CATCHER_PORT, 1935, 8888, 8554, 8889]) if (await portOpen(port)) taken.push({ port, holder: await portHolder(port) });
 if (taken.length) { note('BLOCKED: ports taken by processes this session did not start', taken); process.exit(3); }
 note('preflight: 7654, 4417, 4416, 4418, MediaMTX, release host and catcher ports free');
 
+const summary = { at: iso(), dist: { full: basename(DIST_FULL), slim: basename(DIST_SLIM) }, swept, runs: {} };
+onInterrupt(async (signal) => {
+  const r = current;
+  if (r) {
+    r.failed ??= `interrupted by ${signal}`;
+    await endRun(r, true);
+    judge(r);
+  }
+  await endSession();
+});
 const manifest = await buildReleases();
+summary.releases = Object.fromEntries(Object.entries(manifest.built).map(([id, b]) => [id, { version: b.version, components: b.components.parts, runs: b.runs }]));
 await new Promise((resolve) => assetServer.listen(ASSET_PORT, '127.0.0.1', resolve));
 await new Promise((resolve) => catcher.listen(CATCHER_PORT, '127.0.0.1', resolve));
-const mediamtx = spawn(join(TOOLS, 'mediamtx.exe'), [], { cwd: TOOLS, stdio: 'ignore' });
+mediamtx = spawn(join(TOOLS, 'mediamtx.exe'), [], { cwd: TOOLS, stdio: 'ignore' });
 await sleep(3000);
-if (!(await portOpen(1935))) { note('MediaMTX did not open :1935'); process.exit(2); }
+if (!(await portOpen(1935))) { note('MediaMTX did not open :1935'); await endSession(); process.exit(2); }
 note('release host, catcher and MediaMTX up', { mediamtx: mediamtx.pid });
 
-const summary = { at: iso(), dist: { full: basename(DIST_FULL), slim: basename(DIST_SLIM) }, releases: Object.fromEntries(Object.entries(manifest.built).map(([id, b]) => [id, { version: b.version, components: b.components.parts, runs: b.runs }])), runs: {} };
 for (const name of names) {
   const r = await runOne(name);
-  summary.runs[name] = { pass: r.pass ?? false, blocked: r.blocked ?? null, failedChecks: r.failedChecks ?? null, failed: r.failed?.split('\n')[0] ?? null, offAirMs: r.offAir?.offAirMs ?? null };
-  if (r.blocked || /YouTube breaker open/.test(r.failed ?? '')) { note('stopping the session'); break; }
+  if (interrupted() || r.blocked || /YouTube breaker open/.test(r.failed ?? '')) { note('stopping the session'); break; }
 }
-
-useOut(join(OUT_ROOT, 'session-end'));
-mediamtx.kill();
-assetServer.close();
-catcher.close();
-await sleep(3000);
-const tl = await run('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8' });
-const watch = ['streamloop-supervisor.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'tail.exe'];
-summary.tasklist = Object.fromEntries(watch.map((n) => [n, tl.stdout.split(/\r?\n/).filter((l) => l.toLowerCase().startsWith(`"${n}"`)).length]));
-summary.underInstall = (await underInstall()).map((p) => `${p.Name} ${p.ProcessId}`);
-summary.installRemoved = !existsSync(S);
-writeFileSync(join(OUT_ROOT, 'summary.json'), JSON.stringify(summary, null, 2));
-for (const [name, s] of Object.entries(summary.runs)) console.log(`${name}: ${s.blocked ? 'BLOCKED' : s.pass ? 'PASS' : 'FAIL'}${s.offAirMs !== null ? ` (off air ${(s.offAirMs / 1000).toFixed(1)} s)` : ''}${s.failedChecks?.length ? ` failed: ${s.failedChecks.join(', ')}` : ''}${s.failed ? ` stopped: ${s.failed}` : ''}`);
-note('session end', { tasklist: summary.tasklist, underInstall: summary.underInstall, installRemoved: summary.installRemoved });
-process.exit(Object.values(summary.runs).every((s) => s.pass) && Object.keys(summary.runs).length === names.length ? 0 : 1);
+const clean = await endSession();
+process.exit(names.every((n) => summary.runs[n]?.pass) && clean && !interrupted() ? 0 : 1);

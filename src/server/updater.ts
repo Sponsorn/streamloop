@@ -379,7 +379,7 @@ export class Updater {
   }
 
   private allowed(url: string): boolean {
-    return isAllowedDownloadUrl(url, this.testReleases !== null);
+    return isAllowedDownloadUrl(url, Boolean(this.testReleases));
   }
 
   private selectAssets(release: GithubRelease, kind: UpdateKind): void {

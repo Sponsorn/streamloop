@@ -14,16 +14,17 @@
 // webhook on a local catcher, then one fault at a time through POST /debug/fault, each checked
 // before the next (see faults()). Then the key grep, leftovers and removal as above.
 // The helpers shared with update-session.mjs are in install-kit.mjs. Nothing opens a window.
+// Ctrl+C or Ctrl+Break tears the installs down; a start after a killed run first sweeps what it left.
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync, statSync, cpSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { dailyFiles, EVENTS, TOKEN_SERVER_PING, PLAYLIST, redact } from './lib.mjs';
 import {
   spawn, run, KEY, INGEST, READ_URL, NODE_API, SUP, sleep, iso, Stop, useOut, note, ps, waitFor, startBat, token, nodeUp, api,
-  nodeStatus, supStatus, waitLive, packets, reconnects, runReader, stopReader, gapStats, hashTree, sha256File, extract, quietConfig,
-  tsxEval, portOpen,
+  nodeStatus, supStatus, waitLive, packets, reconnects, runReader, stopReader, gapStats, hashTree, sha256File, grepTree, extract, quietConfig,
+  tsxEval, portOpen, sweepLeftovers, onInterrupt,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -51,20 +52,6 @@ const supervisors = async () => (await ps()).filter((p) => p.Name === 'streamloo
 
 const ENV3 = GATE ? { STREAMLOOP_DEBUG_FAULTS: '1' } : { STREAMLOOP_TEST_HOOKS: '1' };
 
-function grepTree(dir, needle) {
-  const hits = [];
-  let files = 0;
-  const walk = (d) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const p = join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile()) { files += 1; if (readFileSync(p).includes(needle)) hits.push(relative(dir, p)); }
-    }
-  };
-  if (existsSync(dir)) walk(dir);
-  return { files, hits };
-}
-
 /** 2.x's own stream guard, under 2.x's own Node: true holds 2.x's OBS stream off. */
 const guard2 = (root2) => tsxEval(root2, "import(process.env.MOD).then(async (m) => { console.log(JSON.stringify({ streamloop3IsStreaming: await m.streamloop3IsStreaming() })); process.exit(0); })",
   { MOD: pathToFileURL(join(root2, 'app', 'src', 'server', 'stream-guard.ts')).href });
@@ -72,6 +59,9 @@ const guard2 = (root2) => tsxEval(root2, "import(process.env.MOD).then(async (m)
 // preflight
 async function tokenServerOk() { try { return (await fetch(TOKEN_SERVER_PING, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }
 for (const f of [FULL_ZIP, SLIM_ZIP]) if (!existsSync(f)) { note(`missing ${f}`); process.exit(2); }
+const swept = await sweepLeftovers({ dirs: [S3, S2], ascii: GATE ? /sl3 gate|sl2 install/i : /sl[23] install/i, mediamtx: join(TOOLS, 'mediamtx.exe') });
+if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
+if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
 if (!(await tokenServerOk())) { note('PO-token server not answering: stop'); process.exit(2); }
 if (await portOpen(7654) || await portOpen(4417)) { note('7654 or 4417 already taken: stop'); process.exit(2); }
 note('preflight: token server answers /ping, 7654 and 4417 free');
@@ -519,7 +509,20 @@ async function cleanup() {
   mediamtx?.kill();
   await sleep(3000);
 }
+let cleaning = null;
+const cleanupOnce = () => (cleaning ??= cleanup());
+function removeInstalls() {
+  for (const d of [S3, S2]) {
+    try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch (err) { note(`could not remove ${d}`, { error: String(err) }); }
+  }
+  note('installs removed', { sl3: !existsSync(S3), sl2: !existsSync(S2) });
+}
 
+onInterrupt(async () => {
+  await cleanupOnce();
+  catcher?.close();
+  removeInstalls();
+});
 try {
   await step1();
   if (GATE) await faults();
@@ -528,7 +531,7 @@ try {
   results.failed = String(err?.stack ?? err);
   note('run stopped', { error: results.failed });
 }
-await cleanup();
+await cleanupOnce();
 if (existsSync(join(ROOT3, 'data', 'logs'))) cpSync(join(ROOT3, 'data', 'logs'), join(OUT, 'supervisor-logs'), { recursive: true });
 
 const tl = await run('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8' });
@@ -547,8 +550,5 @@ results.keyGrep = { sl3: grepTree(S3, KEY), sl2: grepTree(S2, KEY), scriptOutput
 writeFileSync(join(OUT, 'results.json'), redact(JSON.stringify(results, null, 2), KEY));
 note('key grep', results.keyGrep);
 note('after cleanup', { tasklist: results.tasklist, testNodesLeft: results.testNodesLeft, tokenServer: results.tokenServerAfter });
-for (const d of [S3, S2]) {
-  try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch (err) { note(`could not remove ${d}`, { error: String(err) }); }
-}
-note('installs removed', { sl3: !existsSync(S3), sl2: !existsSync(S2) });
+removeInstalls();
 process.exit(results.failed ? 1 : 0);

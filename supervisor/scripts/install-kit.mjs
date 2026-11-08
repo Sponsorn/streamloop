@@ -1,10 +1,11 @@
 // Helpers shared by install-session.mjs and update-session.mjs: an install started from its own
-// START.bat, its Node API, the RTMP reader and file hashes. Every child is spawned hidden.
+// START.bat, its Node API, the RTMP reader, file hashes, the interrupt teardown and the sweep of
+// what a killed harness left. Every child is spawned hidden.
 // useOut() names the results folder that note(), the console logs and requests.jsonl go to.
 import * as cp from 'node:child_process';
-import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync } from 'node:fs';
+import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, relative } from 'node:path';
+import { join, relative, basename } from 'node:path';
 import net from 'node:net';
 import { FFPROBE, redact } from './lib.mjs';
 
@@ -90,7 +91,7 @@ export async function api(method, path, body) {
     text = await res.text();
   } catch (err) { text = String(err); }
   const recorded = path === '/stream-key' ? '[stream key, not recorded]' : body;
-  // Not redacted, so the key grep catches Node echoing the key.
+  // Not redacted: both harnesses grep their output folder for the key, which catches Node echoing it.
   appendFileSync(join(OUT, 'requests.jsonl'), `${JSON.stringify({ at: iso(), method, path, request: recorded ?? null, status, response: text.slice(0, 4000) })}\n`);
   let json = null;
   try { json = JSON.parse(text); } catch { /* not json */ }
@@ -164,6 +165,19 @@ export function hashTree(dir) {
   return { files, sha256: h.digest('hex') };
 }
 export const sha256File = (f) => createHash('sha256').update(readFileSync(f)).digest('hex');
+export function grepTree(dir, needle) {
+  const hits = [];
+  let files = 0;
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile()) { files += 1; if (readFileSync(p).includes(needle)) hits.push(relative(dir, p)); }
+    }
+  };
+  if (existsSync(dir)) walk(dir);
+  return { files, hits };
+}
 
 export async function extract(zip, dest) {
   rmSync(dest, { recursive: true, force: true });
@@ -191,3 +205,90 @@ export const portOpen = (port) => new Promise((resolve) => {
   s.on('connect', () => { s.destroy(); resolve(true); });
   s.on('error', () => resolve(false));
 });
+
+/** Every process with its exe path, command line and start time (`created`, epoch ms), in UTF-8 so a
+ *  non-ASCII install path comes back intact. */
+export async function allProcesses() {
+  const r = await run('powershell', ['-NoProfile', '-Command',
+    '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress'],
+    { encoding: 'utf8' });
+  try {
+    const v = JSON.parse(r.stdout || '[]');
+    // ConvertTo-Json writes a date as "/Date(<ms>)/".
+    return (Array.isArray(v) ? v : [v]).map((p) => ({ ...p, created: Number(/\d+/.exec(String(p.CreationDate))?.[0] ?? 0) }));
+  } catch { return []; }
+}
+/** The processes whose exe or command line names one of `dirs`; `ascii` also matches, in case a command
+ *  line comes back in another codepage. */
+export function under(procs, dirs, ascii = null) {
+  const wanted = dirs.map((d) => d.toLowerCase());
+  return procs.filter((p) => p.ProcessId !== process.pid && [p.ExecutablePath, p.CommandLine].some((x) => typeof x === 'string'
+    && (wanted.some((d) => x.toLowerCase().includes(d)) || (ascii !== null && ascii.test(x)))));
+}
+export const runningFrom = async (dirs, ascii = null) => under(await allProcesses(), dirs, ascii);
+
+// START.bat first, so it cannot restart Node; Node before the supervisor, so its launcher cannot relaunch it.
+const KILL_ORDER = ['cmd.exe', 'node.exe', 'streamloop-supervisor.exe'];
+export async function killAll(procs) {
+  const rank = (p) => { const i = KILL_ORDER.indexOf(String(p.Name).toLowerCase()); return i < 0 ? KILL_ORDER.length : i; };
+  const killed = [];
+  for (const p of [...procs].sort((a, b) => rank(a) - rank(b))) {
+    await run('taskkill', ['/F', '/T', '/PID', String(p.ProcessId)]);
+    killed.push(`${p.Name} ${p.ProcessId}`);
+  }
+  return killed;
+}
+
+/** Ends what a harness killed outright left (processes under `dirs`, its orphaned MediaMTX and reader) and
+ *  removes `dirs`; an install whose START.bat has a live parent is a running harness's, named in `owner`. */
+export async function sweepLeftovers({ dirs, ascii = null, mediamtx }) {
+  const report = { found: [], removed: [], owner: null };
+  for (let pass = 0; pass < 3; pass += 1) {
+    const all = await allProcesses();
+    const byPid = new Map(all.map((p) => [p.ProcessId, p]));
+    // A parent started after its child is a new process that took over a dead parent's PID.
+    const parentOf = (p) => { const pp = byPid.get(p.ParentProcessId); return pp && pp.created <= p.created ? pp : null; };
+    const inst = under(all, dirs, ascii);
+    const owner = inst.filter((p) => p.Name === 'cmd.exe' && /start\.bat/i.test(p.CommandLine ?? ''))
+      .map(parentOf).find((pp) => pp && !inst.includes(pp));
+    if (owner) {
+      report.owner = `${owner.Name} ${owner.ProcessId}`;
+      return report;
+    }
+    const orphan = (p) => parentOf(p) === null;
+    const tools = all.filter((p) => orphan(p) && ((p.Name === 'mediamtx.exe' && String(p.ExecutablePath).toLowerCase() === mediamtx.toLowerCase())
+      || (p.Name === 'ffprobe.exe' && (p.CommandLine ?? '').includes(READ_URL))));
+    const left = [...inst, ...tools];
+    if (left.length === 0) break;
+    report.found.push(...left.map((p) => `${p.Name} ${p.ProcessId}`).filter((x) => !report.found.includes(x)));
+    await killAll(left);
+    await sleep(2000);
+  }
+  for (const d of dirs.filter((x) => existsSync(x))) {
+    try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch { /* reported below */ }
+    report.removed.push({ dir: basename(d), gone: !existsSync(d) });
+  }
+  return report;
+}
+
+// SIGINT, SIGTERM or SIGBREAK runs every registered teardown, newest first, then exits 130. A second
+// signal exits at once and leaves the rest to the next start's sweep.
+const teardowns = [];
+let signalled = null;
+export function onInterrupt(fn) {
+  teardowns.push(fn);
+}
+export const interrupted = () => signalled;
+async function interrupt(signal) {
+  if (signalled) {
+    console.error(`${signal} again: exiting without finishing the teardown`);
+    process.exit(130);
+  }
+  signalled = signal;
+  try { note(`${signal}: tearing down`); } catch { console.error(`${signal}: tearing down`); }
+  for (const fn of [...teardowns].reverse()) {
+    try { await fn(signal); } catch (err) { console.error(`teardown failed: ${err?.stack ?? err}`); }
+  }
+  process.exit(130);
+}
+for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, () => void interrupt(s));
