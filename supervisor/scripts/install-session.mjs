@@ -4,8 +4,9 @@
 //    wizard's API calls (system check included) take it to live against local MediaMTX.
 // 2. The slim ZIP's app\ is staged into _update_tmp\ by the installed updater's stageUpdate, and the
 //    env-gated POST /api/test/exit-75 hook makes START.bat swap it in while a yt-dlp download runs.
-//    Then the installed updater's checkForUpdate runs on GitHub's real release list plus one made-up
-//    3.x prerelease (fetch is stubbed, nothing is written to GitHub).
+//    Then the installed updater's checkForUpdate runs on GitHub's real release list plus a made-up
+//    prerelease one patch above the installed version (fetch is stubbed, nothing is written to
+//    GitHub). The run fails unless that prerelease is offered and 2.3.8 still picks no 3.x release.
 // 3. Stop from 3.0's dashboard, kill 3.0's Node tree, start the v2.3.8 full ZIP from
 //    %TEMP%\sl2 install\, read its stream guard, stop it, start 3.0 again: stopped until Start.
 // 4. Key grep over both installs, leftover processes, both installs removed.
@@ -52,6 +53,23 @@ const isTestNode = (p) => p.Name === 'node.exe' && inInstall(p) && /src[\\/]serv
 const supervisors = async () => (await ps()).filter((p) => p.Name === 'streamloop-supervisor.exe').map((p) => p.ProcessId);
 
 const ENV3 = GATE ? { STREAMLOOP_DEBUG_FAULTS: '1' } : { STREAMLOOP_TEST_HOOKS: '1' };
+
+/** The tag one patch above `version`, with any suffix dropped. */
+function mockTagAbove(version) {
+  const [major, minor, patch] = version.replace(/^v/, '').split('-')[0].split('.').map(Number);
+  return `v${major}.${minor}.${patch + 1}`;
+}
+
+/** The installed updater must pick and offer the made-up release, and 2.x must not pick a 3.x release from that list. */
+function updaterGate(result, mockTag) {
+  const mocked = result?.mocked;
+  const checks = {
+    pickedTheMock: result?.pickMocked === mockTag,
+    offeredTheMock: mocked?.status === 'idle' && mocked?.updateAvailable === true && mocked?.latestVersion === mockTag.slice(1),
+    twoXPicksNo3x: Boolean(result) && !/^v?3\./.test(result.pickMockedAs238 ?? ''),
+  };
+  return { checks, pass: Object.values(checks).every(Boolean) };
+}
 
 /** 2.x's own stream guard, under 2.x's own Node: true holds 2.x's OBS stream off. */
 const guard2 = (root2) => tsxEval(root2, "import(process.env.MOD).then(async (m) => { console.log(JSON.stringify({ streamloop3IsStreaming: await m.streamloop3IsStreaming() })); process.exit(0); })",
@@ -179,12 +197,15 @@ async function step2() {
   r.ytdlpUnchanged = r.ytdlpAfter.sha256 === r.ytdlpBefore.sha256 && r.ytdlpBefore.sha256 === results.ytdlpAtInstall.sha256;
   note('step 2 swap', r);
 
-  // The installed updater on GitHub's real release list (one read-only GET) plus a made-up 3.x prerelease.
+  // The installed updater on GitHub's real release list (one read-only GET) plus a made-up 3.x prerelease
+  // one patch above the installed version, so it is newer than anything the install could already run.
   const real = await fetch(RELEASES_API, { headers: { 'User-Agent': 'streamloop-install-session', Accept: 'application/vnd.github.v3+json' }, signal: AbortSignal.timeout(15_000) });
   const list = await real.json();
   writeFileSync(join(OUT, 'releases-real.json'), JSON.stringify(list.map((x) => ({ tag_name: x.tag_name, draft: x.draft, prerelease: x.prerelease, assets: x.assets.map((a) => ({ name: a.name, browser_download_url: a.browser_download_url })) })), null, 2));
-  const dl1 = (n) => ({ name: n, browser_download_url: `https://github.com/Sponsorn/streamloop/releases/download/v3.0.1/${n}` });
-  const fake = { tag_name: 'v3.0.1', draft: false, prerelease: true, assets: ['streamloop-v3.0.1.zip', 'streamloop-v3.0.1.sha256', 'streamloop-v3.0.1-update.zip', 'streamloop-v3.0.1-update.sha256', 'node-version.txt'].map(dl1) };
+  const installed = JSON.parse(readFileSync(join(ROOT3, 'app', 'package.json'), 'utf8')).version;
+  const mockTag = mockTagAbove(installed);
+  const dl1 = (n) => ({ name: n, browser_download_url: `https://github.com/Sponsorn/streamloop/releases/download/${mockTag}/${n}` });
+  const fake = { tag_name: mockTag, draft: false, prerelease: true, assets: [`streamloop-${mockTag}.zip`, `streamloop-${mockTag}.sha256`, `streamloop-${mockTag}-update.zip`, `streamloop-${mockTag}-update.sha256`, 'node-version.txt'].map(dl1) };
   writeFileSync(join(OUT, 'releases-mocked.json'), JSON.stringify([fake, ...JSON.parse(readFileSync(join(OUT, 'releases-real.json'), 'utf8'))], null, 2));
   // fetch is stubbed inside that process: the list comes from the files, node-version.txt says 22.23.4.
   const code = `(async () => {
@@ -205,14 +226,16 @@ async function step2() {
     process.exit(0);
   })()`;
   const upd = await tsxEval(ROOT3, code, {
-    REAL: join(OUT, 'releases-real.json'), MOCKED: join(OUT, 'releases-mocked.json'), V: VERSION,
+    REAL: join(OUT, 'releases-real.json'), MOCKED: join(OUT, 'releases-mocked.json'), V: installed,
     MOD: pathToFileURL(join(ROOT3, 'app', 'src', 'server', 'updater.ts')).href,
   });
   let parsed = null;
   try { parsed = JSON.parse(upd.stdout.split(/\r?\n/).find((l) => l.startsWith('{"pickReal'))); } catch { /* reported raw */ }
-  r.updater = { realReleases: list.map((x) => `${x.tag_name}${x.prerelease ? ' (pre)' : ''}`), result: parsed ?? upd };
+  // The real list's result is only recorded: what GitHub holds changes from release to release.
+  r.updater = { realReleases: list.map((x) => `${x.tag_name}${x.prerelease ? ' (pre)' : ''}`), installed, mockTag, result: parsed ?? upd, gate: updaterGate(parsed, mockTag) };
   note('step 2 updater', r.updater);
   results.step2 = r;
+  if (!r.updater.gate.pass) throw new Stop(`the updater check failed: ${Object.keys(r.updater.gate.checks).filter((k) => !r.updater.gate.checks[k]).join(', ')}`);
 }
 
 async function step3() {
