@@ -1,0 +1,1690 @@
+{
+  "server": "node",
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/token",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "token": "<token>"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/status",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "stream": {
+          "state": "live",
+          "reason": null
+        },
+        "supervisor": {
+          "state": "playing",
+          "reason": null,
+          "streamKeyProblem": null,
+          "playing": {
+            "index": 2,
+            "playlistId": "PLparity000000002",
+            "id": "abc123XYZ_-",
+            "title": "Parity video",
+            "source": "file",
+            "position": 12.5,
+            "duration": 300
+          },
+          "encoder": {
+            "alive": true,
+            "speed": 1,
+            "cpuPercent": 3,
+            "restarts": 0,
+            "generation": 1,
+            "mediaTime": 42.5
+          },
+          "recovery": {
+            "step": "none",
+            "retries": 0
+          },
+          "watchdog": {
+            "last": null
+          },
+          "hold": null,
+          "youtube": {
+            "breaker": "closed",
+            "retryAt": null,
+            "cookieProblem": null
+          },
+          "playlistCount": 5,
+          "tokenServer": {
+            "state": "running",
+            "restarts": 0
+          }
+        },
+        "launcher": "running",
+        "twitch": {
+          "enabled": false,
+          "channelLive": null,
+          "encoderAlive": null,
+          "consecutiveMismatches": 0,
+          "mismatchThreshold": 3,
+          "lastCheckAt": null,
+          "lastRestartAt": null,
+          "restartCount": 0,
+          "readback": {
+            "lastCheckAt": null,
+            "lastDiff": null,
+            "state": "off"
+          }
+        },
+        "firstRun": false,
+        "systemMemory": "<memory>",
+        "uptimeMs": "<ms>"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/state",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "index": 2,
+        "id": "abc123XYZ_-",
+        "title": "Parity video",
+        "position": 12.5,
+        "duration": 300,
+        "source": "file"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/events",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": [
+        {
+          "timestamp": "<time>",
+          "message": "Seeded timeline entry one"
+        },
+        {
+          "timestamp": "<time>",
+          "message": "Seeded timeline entry two"
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/config",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "port": 7654,
+        "playlists": [
+          {
+            "id": "PLparity000000001",
+            "name": "First"
+          },
+          {
+            "id": "PLparity000000002"
+          }
+        ],
+        "discord": {
+          "webhookUrl": "********",
+          "botName": "Parity",
+          "avatarUrl": "",
+          "rolePing": "",
+          "events": {
+            "error": true,
+            "skip": true,
+            "recovery": true,
+            "critical": true,
+            "resume": true,
+            "streamDrop": true,
+            "streamRestart": true,
+            "outputFrozen": true,
+            "twitchMismatch": true,
+            "twitchRestart": true
+          },
+          "templates": {
+            "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+            "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+            "recovery": "Recovery action: **{step}**",
+            "critical": "**CRITICAL:** {message}",
+            "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+            "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+            "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+            "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+            "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+            "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+          }
+        },
+        "supervisor": {
+          "ingestUrl": "rtmp://127.0.0.1:1935/live",
+          "encoder": "libx264",
+          "cacheBudgetMb": 300,
+          "readAheadSeconds": 20,
+          "playerClient": "mweb,web_embedded",
+          "overlay": true,
+          "freezeSeconds": 20,
+          "silenceSeconds": 30,
+          "streamKeySet": false
+        },
+        "autoUpdateCheck": false,
+        "updateCheckIntervalMs": 21600000,
+        "autoUpdateYtdlp": false,
+        "autoOpenAdmin": false,
+        "twitchClientId": "",
+        "twitchClientSecret": "",
+        "twitchChannel": "",
+        "twitchLivenessEnabled": false,
+        "twitchPollIntervalMs": 60000,
+        "ytdlCookiesFromBrowser": ""
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/discord/defaults",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "templates": {
+          "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+          "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+          "recovery": "Recovery action: **{step}**",
+          "critical": "**CRITICAL:** {message}",
+          "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+          "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+          "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+          "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+          "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+          "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+        },
+        "variables": {
+          "error": [
+            "videoIndex",
+            "videoId",
+            "errorCode",
+            "attempt"
+          ],
+          "skip": [
+            "videoIndex",
+            "videoId",
+            "reason"
+          ],
+          "recovery": [
+            "step"
+          ],
+          "critical": [
+            "message"
+          ],
+          "resume": [
+            "videoIndex",
+            "videoId"
+          ],
+          "streamDrop": [
+            "attempt",
+            "maxAttempts"
+          ],
+          "streamRestart": [
+            "attempts"
+          ],
+          "outputFrozen": [
+            "kind",
+            "videoIndex"
+          ],
+          "twitchMismatch": [
+            "channel"
+          ],
+          "twitchRestart": [
+            "channel"
+          ]
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/update/status",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "currentVersion": "<version>",
+        "latestVersion": null,
+        "updateAvailable": false,
+        "status": "idle",
+        "error": null,
+        "isDevMode": true,
+        "nodeNotice": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/setup-check",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "at": "<time>",
+        "encoder": {
+          "chosen": "libx264",
+          "tried": [
+            "libx264"
+          ],
+          "software": true,
+          "works": true
+        },
+        "cache": {
+          "freeMb": 100000,
+          "recommendedMb": 4096,
+          "warning": null
+        },
+        "dependencies": [
+          {
+            "name": "ffmpeg",
+            "ok": true,
+            "path": "ffmpeg\\ffmpeg.exe"
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": [
+        {
+          "name": "events-<date>.jsonl",
+          "size": "<size>",
+          "mtime": "<time>",
+          "source": "node"
+        },
+        {
+          "name": "streamloop-<date>.log",
+          "size": "<size>",
+          "mtime": "<time>",
+          "source": "node"
+        },
+        {
+          "name": "supervisor-events-2026-01-01.jsonl",
+          "size": 89,
+          "mtime": "<time>",
+          "source": "supervisor"
+        },
+        {
+          "name": "seams-2026-01-01.csv",
+          "size": 60,
+          "mtime": "<time>",
+          "source": "supervisor"
+        },
+        {
+          "name": "old-run.log",
+          "size": 97,
+          "mtime": "<time>",
+          "source": "node"
+        }
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/node/old-run.log",
+      "request": null,
+      "status": 200,
+      "contentType": "text/plain; charset=utf-8",
+      "response": "2026-01-01 00:00:00.000 INFO  Starting StreamLoop\n2026-01-01 00:00:01.000 INFO  Server listening\n"
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/supervisor/seams-2026-01-01.csv",
+      "request": null,
+      "status": 200,
+      "contentType": "text/plain; charset=utf-8",
+      "response": "wallMs,videoNumber,id\n1000,1,abc123XYZ_-\n2000,2,def456UVW_-\n"
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/supervisor/supervisor-events-2026-01-01.jsonl",
+      "request": null,
+      "status": 200,
+      "contentType": "text/plain; charset=utf-8",
+      "response": "{\"t\":\"2026-01-01T00:00:00Z\",\"kind\":\"started\"}\n{\"t\":\"2026-01-01T00:00:05Z\",\"kind\":\"seam\"}\n"
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/node/missing.log",
+      "request": null,
+      "status": 404,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Log file not found"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/node/notes.txt",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid log file name"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/node/..%5Cconfig.json",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid log file name"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs/other/old-run.log",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Unknown log source"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/discord/test",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "supervisor": {
+          "cacheBudgetMb": 400,
+          "freezeSeconds": 25
+        },
+        "discord": {
+          "botName": "Parity two"
+        },
+        "twitchClientSecret": "********"
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true,
+        "config": {
+          "port": 7654,
+          "playlists": [
+            {
+              "id": "PLparity000000001",
+              "name": "First"
+            },
+            {
+              "id": "PLparity000000002"
+            }
+          ],
+          "discord": {
+            "webhookUrl": "********",
+            "botName": "Parity two",
+            "avatarUrl": "",
+            "rolePing": "",
+            "events": {
+              "error": true,
+              "skip": true,
+              "recovery": true,
+              "critical": true,
+              "resume": true,
+              "streamDrop": true,
+              "streamRestart": true,
+              "outputFrozen": true,
+              "twitchMismatch": true,
+              "twitchRestart": true
+            },
+            "templates": {
+              "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+              "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+              "recovery": "Recovery action: **{step}**",
+              "critical": "**CRITICAL:** {message}",
+              "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+              "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+              "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+              "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+              "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+              "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+            }
+          },
+          "supervisor": {
+            "ingestUrl": "rtmp://127.0.0.1:1935/live",
+            "encoder": "libx264",
+            "cacheBudgetMb": 400,
+            "readAheadSeconds": 20,
+            "playerClient": "mweb,web_embedded",
+            "overlay": true,
+            "freezeSeconds": 25,
+            "silenceSeconds": 30,
+            "streamKeySet": false
+          },
+          "autoUpdateCheck": false,
+          "updateCheckIntervalMs": 21600000,
+          "autoUpdateYtdlp": false,
+          "autoOpenAdmin": false,
+          "twitchClientId": "",
+          "twitchClientSecret": "",
+          "twitchChannel": "",
+          "twitchLivenessEnabled": false,
+          "twitchPollIntervalMs": 60000,
+          "ytdlCookiesFromBrowser": ""
+        },
+        "restartRequired": false,
+        "reloadError": null,
+        "reloadErrorCode": null
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "supervisor": {
+          "encoder": "h264_amf"
+        }
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true,
+        "config": {
+          "port": 7654,
+          "playlists": [
+            {
+              "id": "PLparity000000001",
+              "name": "First"
+            },
+            {
+              "id": "PLparity000000002"
+            }
+          ],
+          "discord": {
+            "webhookUrl": "********",
+            "botName": "Parity two",
+            "avatarUrl": "",
+            "rolePing": "",
+            "events": {
+              "error": true,
+              "skip": true,
+              "recovery": true,
+              "critical": true,
+              "resume": true,
+              "streamDrop": true,
+              "streamRestart": true,
+              "outputFrozen": true,
+              "twitchMismatch": true,
+              "twitchRestart": true
+            },
+            "templates": {
+              "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+              "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+              "recovery": "Recovery action: **{step}**",
+              "critical": "**CRITICAL:** {message}",
+              "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+              "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+              "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+              "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+              "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+              "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+            }
+          },
+          "supervisor": {
+            "ingestUrl": "rtmp://127.0.0.1:1935/live",
+            "encoder": "h264_amf",
+            "preferredEncoder": "h264_amf",
+            "cacheBudgetMb": 400,
+            "readAheadSeconds": 20,
+            "playerClient": "mweb,web_embedded",
+            "overlay": true,
+            "freezeSeconds": 25,
+            "silenceSeconds": 30,
+            "streamKeySet": false
+          },
+          "autoUpdateCheck": false,
+          "updateCheckIntervalMs": 21600000,
+          "autoUpdateYtdlp": false,
+          "autoOpenAdmin": false,
+          "twitchClientId": "",
+          "twitchClientSecret": "",
+          "twitchChannel": "",
+          "twitchLivenessEnabled": false,
+          "twitchPollIntervalMs": 60000,
+          "ytdlCookiesFromBrowser": ""
+        },
+        "restartRequired": false,
+        "reloadError": null,
+        "reloadErrorCode": null
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "supervisor": {
+          "cacheBudgetMb": 10
+        }
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "supervisor.cacheBudgetMb: Too small: expected number to be >=50"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "ytdlCookiesFromBrowser": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "\"yt-dlp cookies from browser\" is longer than 200 characters."
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "ytdlCookiesFromBrowser": "firefox\u0007"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "\"yt-dlp cookies from browser\" contains a control character."
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "ytdlCookiesFromBrowser": "firefox:default"
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true,
+        "config": {
+          "port": 7654,
+          "playlists": [
+            {
+              "id": "PLparity000000001",
+              "name": "First"
+            },
+            {
+              "id": "PLparity000000002"
+            }
+          ],
+          "discord": {
+            "webhookUrl": "********",
+            "botName": "Parity two",
+            "avatarUrl": "",
+            "rolePing": "",
+            "events": {
+              "error": true,
+              "skip": true,
+              "recovery": true,
+              "critical": true,
+              "resume": true,
+              "streamDrop": true,
+              "streamRestart": true,
+              "outputFrozen": true,
+              "twitchMismatch": true,
+              "twitchRestart": true
+            },
+            "templates": {
+              "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+              "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+              "recovery": "Recovery action: **{step}**",
+              "critical": "**CRITICAL:** {message}",
+              "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+              "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+              "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+              "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+              "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+              "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+            }
+          },
+          "supervisor": {
+            "ingestUrl": "rtmp://127.0.0.1:1935/live",
+            "encoder": "h264_amf",
+            "preferredEncoder": "h264_amf",
+            "cacheBudgetMb": 400,
+            "readAheadSeconds": 20,
+            "playerClient": "mweb,web_embedded",
+            "overlay": true,
+            "freezeSeconds": 25,
+            "silenceSeconds": 30,
+            "streamKeySet": false
+          },
+          "autoUpdateCheck": false,
+          "updateCheckIntervalMs": 21600000,
+          "autoUpdateYtdlp": false,
+          "autoOpenAdmin": false,
+          "twitchClientId": "",
+          "twitchClientSecret": "",
+          "twitchChannel": "",
+          "twitchLivenessEnabled": false,
+          "twitchPollIntervalMs": 60000,
+          "ytdlCookiesFromBrowser": "firefox:default"
+        },
+        "restartRequired": false,
+        "reloadError": null,
+        "reloadErrorCode": null
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": "{\"supervisor\":",
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid JSON"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {
+        "discord": {
+          "webhookUrl": ""
+        }
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true,
+        "config": {
+          "port": 7654,
+          "playlists": [
+            {
+              "id": "PLparity000000001",
+              "name": "First"
+            },
+            {
+              "id": "PLparity000000002"
+            }
+          ],
+          "discord": {
+            "webhookUrl": "",
+            "botName": "Parity two",
+            "avatarUrl": "",
+            "rolePing": "",
+            "events": {
+              "error": true,
+              "skip": true,
+              "recovery": true,
+              "critical": true,
+              "resume": true,
+              "streamDrop": true,
+              "streamRestart": true,
+              "outputFrozen": true,
+              "twitchMismatch": true,
+              "twitchRestart": true
+            },
+            "templates": {
+              "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+              "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+              "recovery": "Recovery action: **{step}**",
+              "critical": "**CRITICAL:** {message}",
+              "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+              "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+              "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+              "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+              "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+              "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+            }
+          },
+          "supervisor": {
+            "ingestUrl": "rtmp://127.0.0.1:1935/live",
+            "encoder": "h264_amf",
+            "preferredEncoder": "h264_amf",
+            "cacheBudgetMb": 400,
+            "readAheadSeconds": 20,
+            "playerClient": "mweb,web_embedded",
+            "overlay": true,
+            "freezeSeconds": 25,
+            "silenceSeconds": 30,
+            "streamKeySet": false
+          },
+          "autoUpdateCheck": false,
+          "updateCheckIntervalMs": 21600000,
+          "autoUpdateYtdlp": false,
+          "autoOpenAdmin": false,
+          "twitchClientId": "",
+          "twitchClientSecret": "",
+          "twitchChannel": "",
+          "twitchLivenessEnabled": false,
+          "twitchPollIntervalMs": 60000,
+          "ytdlCookiesFromBrowser": "firefox:default"
+        },
+        "restartRequired": false,
+        "reloadError": null,
+        "reloadErrorCode": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/config",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "port": 7654,
+        "playlists": [
+          {
+            "id": "PLparity000000001",
+            "name": "First"
+          },
+          {
+            "id": "PLparity000000002"
+          }
+        ],
+        "discord": {
+          "webhookUrl": "",
+          "botName": "Parity two",
+          "avatarUrl": "",
+          "rolePing": "",
+          "events": {
+            "error": true,
+            "skip": true,
+            "recovery": true,
+            "critical": true,
+            "resume": true,
+            "streamDrop": true,
+            "streamRestart": true,
+            "outputFrozen": true,
+            "twitchMismatch": true,
+            "twitchRestart": true
+          },
+          "templates": {
+            "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
+            "skip": "Skipping video #{videoIndex} (`{videoId}`)\nReason: {reason}",
+            "recovery": "Recovery action: **{step}**",
+            "critical": "**CRITICAL:** {message}",
+            "resume": "Playback resumed at video #{videoIndex} (`{videoId}`)",
+            "streamDrop": "Stream stopped unexpectedly — attempting restart (attempt {attempt}/{maxAttempts})",
+            "streamRestart": "Stream restarted successfully after {attempts} attempt(s)",
+            "outputFrozen": "Output frozen ({kind}) on video #{videoIndex}",
+            "twitchMismatch": "Twitch liveness mismatch — the encoder reports streaming but **{channel}** is offline on Twitch. Restarting stream.",
+            "twitchRestart": "Stream restarted after Twitch liveness mismatch on **{channel}**"
+          }
+        },
+        "supervisor": {
+          "ingestUrl": "rtmp://127.0.0.1:1935/live",
+          "encoder": "h264_amf",
+          "preferredEncoder": "h264_amf",
+          "cacheBudgetMb": 400,
+          "readAheadSeconds": 20,
+          "playerClient": "mweb,web_embedded",
+          "overlay": true,
+          "freezeSeconds": 25,
+          "silenceSeconds": 30,
+          "streamKeySet": false
+        },
+        "autoUpdateCheck": false,
+        "updateCheckIntervalMs": 21600000,
+        "autoUpdateYtdlp": false,
+        "autoOpenAdmin": false,
+        "twitchClientId": "",
+        "twitchClientSecret": "",
+        "twitchChannel": "",
+        "twitchLivenessEnabled": false,
+        "twitchPollIntervalMs": 60000,
+        "ytdlCookiesFromBrowser": "firefox:default"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/discord/test",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "No Discord webhook URL configured"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream-key",
+      "request": "{\"key\":",
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid JSON"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream-key",
+      "request": {
+        "key": "   "
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "No stream key given"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream-key",
+      "request": {},
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "No stream key given"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream-key",
+      "request": {
+        "key": "live_TESTKEY"
+      },
+      "status": 503,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP."
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/next",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/prev",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/restart",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 3
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 3,
+        "id": "abc123XYZ_-"
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 777
+      },
+      "status": 502,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "The supervisor refused: index out of range"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": -1
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 1.5
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 1000000
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": "3"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 3,
+        "id": "bad id!"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video id"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {
+        "index": 3,
+        "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video id"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": "{\"index\":3}",
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      },
+      "requestContentType": "text/plain"
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 1
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 0,
+        "videoIndex": 4,
+        "videoId": "abc123XYZ_-"
+      },
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 0,
+        "videoIndex": 777
+      },
+      "status": 502,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "The supervisor refused: index out of range"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 2
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": -1
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": "0"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 0,
+        "videoIndex": -1
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 0,
+        "videoIndex": 1000000
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 0,
+        "videoId": "bad id!"
+      },
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid video id"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/playlist/videos?playlist=5",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/playlist/videos?playlist=-1",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/playlist/videos?playlist=abc",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/playlist/videos?playlist=1.5",
+      "request": null,
+      "status": 400,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Invalid playlist index"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/config",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream-key",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/autostart",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/discord/test",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/check",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/apply",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/next",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/prev",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/restart",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/jump",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream/stop",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream/start",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/setup-check/run",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/yt-dlp/update",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/test/exit-75",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/shutdown",
+      "request": {},
+      "status": 403,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "Forbidden: invalid API token"
+      },
+      "token": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/obs-path/detect",
+      "request": {},
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "response": {
+        "sha256": "00625e339ae7268e1386785decdff06a47d64b73f2e3f0147f5faea17abd0f5e",
+        "length": 159
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/obs-path/validate",
+      "request": {},
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "response": {
+        "sha256": "d57d52688e696b46fe28fb06be5ae67a60613a7212beb3c9a5d304f45fb14974",
+        "length": 161
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/seek",
+      "request": {},
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "response": {
+        "sha256": "4942f647af8f0c91d3c1a51234daa7d68f246abb4d7da6623e4006b28c1a88d2",
+        "length": 155
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/pause",
+      "request": {},
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "response": {
+        "sha256": "273e1aee42af430d47f72cfc00f5c741e48ccd3ece2b6c5b8cc52f8fb81e0670",
+        "length": 156
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/resume",
+      "request": {},
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "response": {
+        "sha256": "8633c6dc60f35ae6785dad654d86e9cade4bafeca6f9c9f811ba69ec4b7aff27",
+        "length": 157
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/restart-mpv",
+      "request": {},
+      "status": 404,
+      "contentType": "text/html; charset=utf-8",
+      "response": {
+        "sha256": "4efed0cf664760909cbd9b89cf9c015f83d157fc404aedfa89ac1a336ed29ae8",
+        "length": 162
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream/stop",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/status",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "stream": {
+          "state": "stopped",
+          "reason": "The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start."
+        },
+        "supervisor": {
+          "state": "playing",
+          "reason": null,
+          "streamKeyProblem": null,
+          "playing": {
+            "index": 2,
+            "playlistId": "PLparity000000002",
+            "id": "abc123XYZ_-",
+            "title": "Parity video",
+            "source": "file",
+            "position": 12.5,
+            "duration": 300
+          },
+          "encoder": {
+            "alive": true,
+            "speed": 1,
+            "cpuPercent": 3,
+            "restarts": 0,
+            "generation": 1,
+            "mediaTime": 42.5
+          },
+          "recovery": {
+            "step": "none",
+            "retries": 0
+          },
+          "watchdog": {
+            "last": null
+          },
+          "hold": null,
+          "youtube": {
+            "breaker": "closed",
+            "retryAt": null,
+            "cookieProblem": null
+          },
+          "playlistCount": 5,
+          "tokenServer": {
+            "state": "running",
+            "restarts": 0
+          }
+        },
+        "launcher": "running",
+        "twitch": {
+          "enabled": false,
+          "channelLive": null,
+          "encoderAlive": null,
+          "consecutiveMismatches": 0,
+          "mismatchThreshold": 3,
+          "lastCheckAt": null,
+          "lastRestartAt": null,
+          "restartCount": 0,
+          "readback": {
+            "lastCheckAt": null,
+            "lastDiff": null,
+            "state": "off"
+          }
+        },
+        "firstRun": false,
+        "systemMemory": "<memory>",
+        "uptimeMs": "<ms>"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/player/next",
+      "request": null,
+      "status": 503,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "The stream is stopped. Start it first."
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/playlist/switch",
+      "request": {
+        "playlistIndex": 0
+      },
+      "status": 503,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "error": "The stream is stopped. Start it first."
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/stream/start",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/shutdown",
+      "request": null,
+      "status": 200,
+      "contentType": "application/json; charset=utf-8",
+      "response": {
+        "ok": true,
+        "message": "Shutting down..."
+      }
+    }
+  ],
+  "supervisorRequests": [
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {}
+    },
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {}
+    },
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {}
+    },
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {}
+    },
+    {
+      "method": "POST",
+      "path": "/control",
+      "body": {
+        "cmd": "next"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/control",
+      "body": {
+        "cmd": "prev"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/control",
+      "body": {
+        "cmd": "restart"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/control",
+      "body": {
+        "cmd": "jump",
+        "index": 3
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/control",
+      "body": {
+        "cmd": "jump",
+        "index": 3,
+        "id": "abc123XYZ_-"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/control",
+      "body": {
+        "cmd": "jump",
+        "index": 777
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {
+        "playlist": "PLparity000000002"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {
+        "playlist": "PLparity000000001",
+        "index": 4,
+        "id": "abc123XYZ_-"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/reload",
+      "body": {
+        "playlist": "PLparity000000001",
+        "index": 777
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/shutdown",
+      "body": {}
+    }
+  ],
+  "catcherRequests": 1
+}
