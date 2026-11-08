@@ -25,8 +25,8 @@ cp config.example.json config.json   # Then edit config.json with your settings
 
 **Dev setup with the supervisor.** In dev, Node reads `config.json` from its working directory, and the supervisor reads `ROOT\app\config.json`. They must be the same file, so run Node from `ROOT\app`:
 
-1. `cargo build --release` in `supervisor/`.
-2. `node supervisor/scripts/dev-root.mjs` builds a dev root in the install layout (default `%TEMP%\streamloop-devroot`); put `supervisor\target\release\streamloop-supervisor.exe` in `ROOT\supervisor\`.
+1. `cargo build --release` at the repo root (the Cargo workspace; the exe is `target\release\streamloop.exe`).
+2. `node supervisor/scripts/dev-root.mjs` builds a dev root in the install layout (default `%TEMP%\streamloop-devroot`); copy `target\release\streamloop.exe` to `ROOT\supervisor\streamloop-supervisor.exe`, the name Node's launcher still runs.
 3. Start Node with cwd `ROOT\app` and `STREAMLOOP_ROOT=ROOT`, running the repo's tsx on the repo's `src/server/index.ts` by absolute path. `installRoot()` uses `STREAMLOOP_ROOT` when there is no `node\` folder next to the app.
 
 Node's own logs and timeline still go to the repo's `logs/` in dev, since `logger.ts` and `index.ts` resolve them from the source folder. `supervisor/scripts/node-session.mjs` does all of this for the end-to-end runs.
@@ -46,7 +46,7 @@ npm run test:watch   # Run tests in watch mode (vitest)
 npm run build:release       # full ZIP in the install layout (node, app, supervisor, ffmpeg, yt-dlp, pot, data, START.bat)
 npm run build:release:slim  # update ZIP: app + START.bat only (streamloop-vX.Y.Z-update.zip)
 node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout.js (both builds run it)
-cargo build --release       # at the repo root: targetelease\streamloop.exe (supervisor, launch and protect modes)
+cargo build --release       # at the repo root: target\release\streamloop.exe (supervisor, launch and protect modes)
 cargo test --workspace      # all Rust tests: supervisor, common, control, the exe's CLI
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs

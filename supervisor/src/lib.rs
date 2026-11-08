@@ -78,8 +78,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = match opt("root") {
         Some(r) => cwd.join(r),
-        // the exe sits in ROOT\supervisor\
-        None => std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.to_path_buf())).ok_or("cannot find the install root; pass --root")?,
+        // streamloop.exe sits in ROOT
+        None => std::env::current_exe().ok().and_then(|e| Some(e.parent()?.to_path_buf())).ok_or("cannot find the install root; pass --root")?,
     };
     let mut paths = Paths::new(&root);
     if let Some(d) = opt("data") {
@@ -2626,6 +2626,22 @@ pub fn run(argv: Vec<String>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn root_defaults_to_the_exes_folder() {
+        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+
+        let args = parse_args(&[]).unwrap();
+
+        assert_eq!(args.paths.root, exe_dir);
+    }
+
+    #[test]
+    fn an_explicit_root_wins_over_the_exes_folder() {
+        let args = parse_args(&["--root".into(), "R".into()]).unwrap();
+
+        assert_eq!(args.paths.root, std::env::current_dir().unwrap().join("R"));
+    }
+
 
     /// A control loop over `ids` with no encoder, feeder or yt-dlp behind it; logs go to a temp folder.
     fn test_ctl(name: &str, ids: &[&str]) -> Ctl {
