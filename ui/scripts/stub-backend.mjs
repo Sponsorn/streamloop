@@ -157,18 +157,32 @@ function maskedConfig() {
 // The config a save changes, as Node keeps config.json.
 const config = maskedConfig();
 
-// The saved webhook URL, kept apart from `config` so every answer masks it as Node does.
+// The saved webhook URL and Twitch secret, kept apart from `config` so every answer masks them as Node does.
 let webhookUrl = 'https://discord.com/api/webhooks/0/stub';
+let twitchClientSecret = 'stub-secret';
+delete config.twitchClientSecret;
 
-/** `GET /api/config`, with the webhook URL masked. */
+/** `GET /api/config`, with the webhook URL and the Twitch secret masked. */
 function servedConfig() {
-  return { ...config, discord: { ...config.discord, webhookUrl: webhookUrl ? '********' : '' } };
+  return {
+    ...config,
+    twitchClientSecret: twitchClientSecret ? '********' : '',
+    discord: { ...config.discord, webhookUrl: webhookUrl ? '********' : '' },
+  };
 }
 
+// The supervisor settings whose change Node answers with restartRequired.
+const RESTART_KEYS = ['ingestUrl', 'encoder', 'freezeSeconds', 'silenceSeconds'];
+
 /** `POST /api/config`: merges the patch as Node's saveAndReload (discord's events and templates one
- *  level deeper, `********` keeps the URL). An encoder change answers restartRequired. */
+ *  level deeper, `********` keeps the URL and the secret). */
 function saveConfig(patch) {
-  const before = config.supervisor.encoder;
+  const before = { ...config.supervisor };
+  if (patch.twitchClientSecret !== undefined) {
+    const { twitchClientSecret: secret, ...rest } = patch;
+    if (secret !== '********') twitchClientSecret = secret;
+    patch = rest;
+  }
   if (patch.discord) {
     const { webhookUrl: url, ...discord } = patch.discord;
     if (url !== undefined && url !== '********') webhookUrl = url;
@@ -185,8 +199,45 @@ function saveConfig(patch) {
     const nested = value && typeof value === 'object' && !Array.isArray(value) && config[key] && typeof config[key] === 'object';
     config[key] = nested ? { ...config[key], ...value } : value;
   }
-  const restartRequired = config.supervisor.encoder !== before;
+  const restartRequired = RESTART_KEYS.some((key) => config.supervisor[key] !== before[key]);
   return [200, { ok: true, config: servedConfig(), restartRequired, reloadError: null, reloadErrorCode: null }];
+}
+
+/** `POST /api/stream-key`: Node's answer, without encrypting or keeping the key. */
+function setStreamKey(body) {
+  if (typeof body.key !== 'string' || !body.key.trim()) return [400, { error: 'No stream key given' }];
+  config.supervisor.streamKeySet = true;
+  return [200, { ok: true, streamKeySet: true }];
+}
+
+// StreamLoop.vbs in the Startup folder, as Node reads it back.
+const THIS_BAT = 'C:\\StreamLoop3\\streamloop\\START.bat';
+let autostart = { enabled: true, target: THIS_BAT, thisInstall: true };
+
+/** `POST /api/autostart`: writes or removes the file; another install's file answers 409. */
+function setAutostart(body) {
+  if (body.enabled) {
+    autostart = { enabled: true, target: THIS_BAT, thisInstall: true };
+  } else if (autostart.enabled) {
+    if (!autostart.thisInstall) {
+      return [409, { error: `Autostart points to another StreamLoop install: ${autostart.target}.` }];
+    }
+    autostart = { enabled: false, target: null, thisInstall: false };
+  }
+  return [200, { ok: true, enabled: Boolean(body.enabled) }];
+}
+
+const YTDLP_UPDATE_DELAY_MS = 2000;
+
+async function updateYtdlp() {
+  await new Promise((resolve) => setTimeout(resolve, YTDLP_UPDATE_DELAY_MS));
+  return [200, { ok: true, version: '2026.11.01' }];
+}
+
+/** `POST /api/shutdown`: answers, then the stub exits as Node does. */
+function shutdown() {
+  setTimeout(() => process.exit(0), 500);
+  return [200, { ok: true, message: 'Shutting down...' }];
 }
 
 // src/server/config.ts DEFAULT_DISCORD_TEMPLATES and DISCORD_TEMPLATE_VARIABLES.
@@ -271,7 +322,7 @@ const GETS = {
   '/api/events': () => [200, events],
   '/api/update/status': () => [200, { currentVersion: '3.0.5', latestVersion: '3.0.5', updateAvailable: false, status: 'idle', isDevMode: true, nodeNotice: null }],
   '/api/config': () => [200, servedConfig()],
-  '/api/autostart': () => [200, { enabled: true, target: 'C:\\StreamLoop3\\streamloop\\START.bat', thisInstall: true }],
+  '/api/autostart': () => [200, autostart],
   '/api/setup-check': () => [200, setupReport],
   '/api/discord/defaults': () => [200, DISCORD_DEFAULTS],
   '/api/logs': () => [200, logFiles.map(({ source, name, text, mtime }) => ({ name, size: Buffer.byteLength(text), mtime, source }))],
@@ -294,6 +345,10 @@ const POSTS = {
   '/api/config': saveConfig,
   '/api/setup-check/run': runSetupCheck,
   '/api/discord/test': discordTest,
+  '/api/stream-key': setStreamKey,
+  '/api/autostart': setAutostart,
+  '/api/yt-dlp/update': updateYtdlp,
+  '/api/shutdown': shutdown,
 };
 
 function seek(index) {

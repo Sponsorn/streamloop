@@ -87,6 +87,17 @@ pub fn init(cx: &mut App) {
     c.danger_hover = hex(RED);
     c.danger_active = hex(DANGER);
     c.danger_foreground = hex(WHITE);
+    // admin.css `.btn-danger`: solid, white text, no hover change. The button tokens otherwise
+    // fall back to a 20 % tint with red text.
+    c.button_danger = hex(DANGER);
+    c.button_danger_hover = hex(DANGER);
+    c.button_danger_active = hex(DANGER);
+    c.button_danger_foreground = hex(WHITE);
+    // admin.css `.btn-copied`, with the page colour for text: white on the green is 2.5:1.
+    c.button_success = hex(GREEN);
+    c.button_success_hover = hex(GREEN);
+    c.button_success_active = hex(GREEN);
+    c.button_success_foreground = hex(BG);
     c.success = hex(GREEN);
     c.warning = hex(YELLOW);
     c.popover = hex(SURFACE);

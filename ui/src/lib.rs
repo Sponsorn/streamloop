@@ -10,6 +10,7 @@ pub mod logic;
 pub mod logs;
 pub mod monitor;
 pub mod playback;
+pub mod settings;
 pub mod setup_check;
 #[cfg(test)]
 mod test_support;

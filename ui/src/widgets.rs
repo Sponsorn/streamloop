@@ -5,23 +5,30 @@ use std::{collections::HashSet, time::Duration};
 
 use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Div, Element, ElementId, Entity, FontWeight,
-    Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, SharedString,
-    Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
+    Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Render,
+    SharedString, Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
 use gpui_kit::{
     base::TestSupportExt,
     component::{
         Disableable, Sizable,
-        button::Button,
+        button::{Button, ButtonCustomVariant, ButtonVariants},
         input::{Input, InputState, TextareaState},
         label::Label,
     },
 };
 
 use crate::{
-    api::{ApiError, client::Client, types::SaveResult},
+    api::{
+        ApiError,
+        client::Client,
+        types::{PlaylistRef, SaveResult},
+    },
     app::{AppHandle, ToastKind},
-    logic::is_benign_reload_error,
+    logic::{
+        admin::{PlaylistEntry, collect_playlists},
+        is_benign_reload_error,
+    },
     theme::{BG, BORDER, MUTED, RED, SURFACE},
 };
 
@@ -281,6 +288,213 @@ pub fn put_area_text(area: &Entity<TextareaState>, text: &str, window: &mut Wind
         state.set_value(SharedString::from(text.to_string()), window, cx);
         state.set_selected_range(text.len()..text.len(), cx);
     });
+}
+
+/// The element ids of one `PlaylistRows`. Each row's ids carry its key: `(id, key)`.
+#[derive(Clone, Copy)]
+pub struct PlaylistRowIds {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub remove: &'static str,
+    pub add: &'static str,
+}
+
+struct PlaylistRow {
+    key: usize,
+    id: Entity<InputState>,
+    name: Entity<InputState>,
+    invalid: bool,
+}
+
+const VIDEO_URL: &str =
+    "That looks like a single video URL. Paste a playlist URL or a playlist ID (starts with PL).";
+
+/// admin.js `addPlaylistRow` and `collectPlaylists`: rows of an ID input, a Name input and ×,
+/// then "+ Add Playlist". The Settings tab and the wizard each keep one.
+pub struct PlaylistRows {
+    app: AppHandle,
+    ids: PlaylistRowIds,
+    rows: Vec<PlaylistRow>,
+    /// Keys stay with their row, so removing one leaves the others' ids and focus alone.
+    next_key: usize,
+    /// The row whose × is under the pointer.
+    hovered: Option<usize>,
+}
+
+impl PlaylistRows {
+    pub fn new(app: AppHandle, ids: PlaylistRowIds) -> Self {
+        Self {
+            app,
+            ids,
+            rows: Vec::new(),
+            next_key: 0,
+            hovered: None,
+        }
+    }
+
+    /// One row per playlist, in order, replacing every row there was.
+    pub fn set(&mut self, playlists: &[PlaylistRef], window: &mut Window, cx: &mut Context<Self>) {
+        self.rows.clear();
+        for playlist in playlists {
+            let name = playlist.name.as_deref().unwrap_or_default();
+            self.push(&playlist.id, name, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// "+ Add Playlist".
+    pub fn add_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.push("", "", window, cx);
+        cx.notify();
+    }
+
+    fn push(&mut self, id: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let id_input = cx.new(|cx| InputState::new(window, cx).placeholder("PLxxxxxxxxxxxxxxxx"));
+        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Name (optional)"));
+        put_text(&id_input, id, window, cx);
+        put_text(&name_input, name, window, cx);
+        self.rows.push(PlaylistRow {
+            key: self.next_key,
+            id: id_input,
+            name: name_input,
+            invalid: false,
+        });
+        self.next_key += 1;
+    }
+
+    fn remove(&mut self, key: usize, cx: &mut Context<Self>) {
+        self.rows.retain(|row| row.key != key);
+        if self.hovered == Some(key) {
+            self.hovered = None;
+        }
+        cx.notify();
+    }
+
+    /// The playlists to save, leaving out blank rows. A row whose ID is a video URL is marked red
+    /// with a toast of its own, and then nothing comes back; a row that passes loses its mark.
+    // The error carries nothing: the toasts have told the user why.
+    #[allow(clippy::result_unit_err)]
+    pub fn collect(&mut self, cx: &mut Context<Self>) -> Result<Vec<PlaylistEntry>, ()> {
+        let texts: Vec<(String, String)> = self
+            .rows
+            .iter()
+            .map(|row| (text_of(&row.id, cx), text_of(&row.name, cx)))
+            .collect();
+        let answer = collect_playlists(&texts);
+        let bad = answer.as_ref().err().cloned().unwrap_or_default();
+        for (index, (row, (id, _))) in self.rows.iter_mut().zip(&texts).enumerate() {
+            // A blank row is skipped, so it keeps whatever mark it had, as in admin.js.
+            if id.trim().is_empty() {
+                continue;
+            }
+            row.invalid = bad.contains(&index);
+            if row.invalid {
+                self.app.toast(VIDEO_URL, ToastKind::Error, cx);
+            }
+        }
+        cx.notify();
+        answer.map_err(|_| ())
+    }
+
+    /// admin.css `.btn-remove`: no fill, a border and muted text; red under the pointer.
+    fn remove_button(&self, key: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let color = if self.hovered == Some(key) {
+            RED
+        } else {
+            MUTED
+        };
+        let button = Button::new((self.ids.remove, key))
+            .accessibility_label("Remove playlist")
+            .tooltip("Remove")
+            .custom(ButtonCustomVariant::new(cx).foreground(rgb(color).into()))
+            // A label child, since the button sets its own label's size.
+            .child(Label::new("×").text_size(px(16.)).text_color(rgb(color)))
+            .h(px(38.))
+            .px(px(10.))
+            .on_click(cx.listener(move |this, _, _, cx| this.remove(key, cx)));
+        // A custom button's own border takes its fill colour under the pointer, so a wrapper draws
+        // it. The wrapper tracks the pointer too, since the button's tooltip has its hover handler.
+        let frame = SharedString::from(format!("{}-frame", self.ids.remove));
+        div()
+            .id((frame, key))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.hovered = Some(key);
+                } else if this.hovered == Some(key) {
+                    this.hovered = None;
+                }
+                cx.notify();
+            }))
+            .flex()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(color))
+            .child(reveal_on_focus(button))
+    }
+}
+
+#[cfg(test)]
+impl PlaylistRows {
+    /// Each row's key, in page order.
+    pub(crate) fn keys(&self) -> Vec<usize> {
+        self.rows.iter().map(|row| row.key).collect()
+    }
+
+    /// Each row's (ID, Name) text.
+    pub(crate) fn values(&self, cx: &App) -> Vec<(String, String)> {
+        self.rows
+            .iter()
+            .map(|row| (text_of(&row.id, cx), text_of(&row.name, cx)))
+            .collect()
+    }
+
+    /// Whether each row's ID is marked red.
+    pub(crate) fn marks(&self) -> Vec<bool> {
+        self.rows.iter().map(|row| row.invalid).collect()
+    }
+}
+
+impl Render for PlaylistRows {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ids = self.ids;
+        // admin.css `.playlist-row`: the ID takes two shares of the width and the name one.
+        let rows: Vec<Div> = self
+            .rows
+            .iter()
+            .map(|row| {
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .mb(px(8.))
+                    .child(grow(div(), 2.).min_w_0().child(text_input(
+                        &row.id,
+                        (ids.id, row.key),
+                        "Playlist ID or URL",
+                        row.invalid,
+                    )))
+                    .child(div().flex_1().min_w_0().child(text_input(
+                        &row.name,
+                        (ids.name, row.key),
+                        "Playlist name",
+                        false,
+                    )))
+                    .child(self.remove_button(row.key, cx))
+            })
+            .collect();
+        let add = btn(Button::new(ids.add).label("+ Add Playlist"))
+            .on_click(cx.listener(|this, _, window, cx| this.add_empty(window, cx)));
+        div()
+            .children(rows)
+            // As wide as its label, as the inline button in index.html.
+            .child(div().flex().child(reveal_on_focus(add)))
+    }
+}
+
+/// CSS `flex: <share>`: grows by `share` from no width of its own.
+fn grow(mut div: Div, share: f32) -> Div {
+    div = div.flex_1();
+    div.style().flex_grow = Some(share);
+    div
 }
 
 /// Wraps a control so the dashboard scrolls it into view when Tab gives it the focus.

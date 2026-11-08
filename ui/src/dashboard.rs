@@ -20,6 +20,7 @@ use crate::{
     logic::admin::format_duration,
     monitor::MonitorView,
     playback::PlaybackView,
+    settings::SettingsView,
     theme::{BORDER, MAX_WIDTH, MUTED, RED, SURFACE, SURFACE_HOVER, TEXT, WHITE},
     webhooks::WebhooksView,
     widgets::reveal_on_focus,
@@ -130,23 +131,6 @@ impl<T: TabView> AnyTab for Entity<T> {
     }
 }
 
-struct EmptyPanel;
-
-impl EmptyPanel {
-    /// Takes what a real tab's `new` takes, so each `build_tab` arm already has the shape it keeps.
-    fn new(_app: &AppHandle, _window: &mut Window) -> Self {
-        EmptyPanel
-    }
-}
-
-impl Render for EmptyPanel {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
-impl TabView for EmptyPanel {}
-
 fn build_tab(
     tab: Tab,
     app: &AppHandle,
@@ -157,7 +141,7 @@ fn build_tab(
         Tab::Monitor => Box::new(cx.new(|cx| MonitorView::new(app.clone(), window, cx))),
         Tab::Playback => Box::new(cx.new(|cx| PlaybackView::new(app.clone(), window, cx))),
         Tab::Webhooks => Box::new(cx.new(|cx| WebhooksView::new(app.clone(), window, cx))),
-        Tab::Settings => Box::new(cx.new(|_| EmptyPanel::new(app, window))),
+        Tab::Settings => Box::new(cx.new(|cx| SettingsView::new(app.clone(), window, cx))),
     }
 }
 
