@@ -342,8 +342,9 @@ describe('updateProgressText', () => {
     expect(updateProgressText(state(), log, at(10))).toBe('Replacing files, 10 s (trying node again)');
   });
 
-  it('shows the ready copy when the update went through', () => {
-    expect(updateProgressText(state({ step: 'done', result: 'ok' }), [], at(1))).toBe('Updated to 3.0.6. Ready to stream.');
+  it('shows the ready copy when the update went through, and back on air once the stream is up', () => {
+    expect(updateProgressText(state({ step: 'start', result: 'ok' }), [], at(1))).toBe('Updated to 3.0.6. Ready to stream.');
+    expect(updateProgressText(state({ step: 'done', result: 'ok' }), [], at(1))).toBe('Back on air on 3.0.6.');
   });
 
   it('shows the failure with step and reason', () => {
@@ -378,7 +379,7 @@ describe('updateBannerView', () => {
     from: '3.0.5', to: '3.0.6', parts: ['node'], folders: ['node'], step: 'swap', result: 'running', reason: 'boom',
     startedAt: new Date(T0).toISOString(), stepStartedAt: new Date(T0).toISOString(), baseline: null, ...over,
   });
-  const status = (over: Record<string, unknown> = {}) => ({ updateAvailable: false, status: 'idle', progress: null, swapLog: [], ...over });
+  const status = (over: Record<string, unknown> = {}) => ({ currentVersion: '3.0.6', updateAvailable: false, status: 'idle', progress: null, swapLog: [], ...over });
 
   it('hides the button while an update runs', () => {
     // Act
@@ -408,8 +409,34 @@ describe('updateBannerView', () => {
     const ok = progress({ result: 'ok', step: 'done' });
 
     // Act + Assert
-    expect(updateBannerView(status({ progress: ok }), T0 + 9 * 60_000)).toMatchObject({ visible: true, text: 'Updated to 3.0.6. Ready to stream.', showButton: false });
+    expect(updateBannerView(status({ progress: ok }), T0 + 9 * 60_000)).toMatchObject({ visible: true, text: 'Back on air on 3.0.6.', showButton: false });
     expect(updateBannerView(status({ progress: ok }), T0 + 11 * 60_000)).toMatchObject({ visible: false, showButton: true, keepText: false });
     expect(updateBannerView(status({ updateAvailable: true, progress: ok }), T0 + 11 * 60_000)).toMatchObject({ visible: true, showButton: true });
+  });
+
+  it('drops the ready banner once the stream is live, and keeps back on air', () => {
+    // Arrange
+    const ready = progress({ result: 'ok', step: 'start' });
+    const back = progress({ result: 'ok', step: 'done' });
+
+    // Act + Assert
+    expect(updateBannerView(status({ progress: ready }), T0 + 5000, 'stopped')).toMatchObject({ visible: true, text: 'Updated to 3.0.6. Ready to stream.' });
+    expect(updateBannerView(status({ progress: ready }), T0 + 5000, 'live')).toMatchObject({ visible: false, keepText: false });
+    expect(updateBannerView(status({ progress: back }), T0 + 5000, 'live')).toMatchObject({ visible: true, text: 'Back on air on 3.0.6.' });
+  });
+
+  it('hides a finished update that neither came from nor went to the running version', () => {
+    // Arrange: a failed full update from 3.0.5 to 3.0.6, then an app-only update to 3.0.8.
+    const failed = progress({ result: 'failed' });
+
+    // Act
+    const later = updateBannerView(status({ currentVersion: '3.0.8', progress: failed }), T0 + 5000);
+    const offer = updateBannerView(status({ currentVersion: '3.0.8', updateAvailable: true, progress: failed }), T0 + 5000);
+    const stillOld = updateBannerView(status({ currentVersion: '3.0.5', progress: failed }), T0 + 5000);
+
+    // Assert
+    expect(later).toMatchObject({ visible: false, keepText: false });
+    expect(offer).toMatchObject({ visible: true, showButton: true, keepText: false });
+    expect(stillOld).toMatchObject({ visible: true, keepText: true, text: 'The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.' });
   });
 });

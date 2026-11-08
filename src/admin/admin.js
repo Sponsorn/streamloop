@@ -14,6 +14,8 @@ let pollTimer = null;
 let pollFailures = 0;
 let lastProgress = null;
 let lastSwapLog = [];
+/** The last /api/status stream state, so the update banner can drop "Ready to stream" once live. */
+let lastStreamState = null;
 let waitingForRestart = false;
 const VIDEO_LIST_PER_PAGE = 25;
 
@@ -727,6 +729,7 @@ async function pollOnce() {
     ]);
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
+    lastStreamState = status.stream ? status.stream.state : null;
     if (updateStatus) {
       lastProgress = updateStatus.progress;
       lastSwapLog = updateStatus.swapLog || [];
@@ -1344,7 +1347,7 @@ function renderUpdateBanner(status) {
   const notice = $('#update-node-notice');
   notice.textContent = status.nodeNotice || '';
   notice.classList.toggle('hidden', !status.nodeNotice);
-  const view = updateBannerView(status, Date.now());
+  const view = updateBannerView(status, Date.now(), lastStreamState);
   banner.classList.toggle('hidden', !view.visible);
   btn.classList.toggle('hidden', !view.showButton);
   if (!view.visible) return;

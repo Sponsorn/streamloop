@@ -201,7 +201,7 @@ export function updateRunning(progress) {
 
 /** The progress line: the step with its elapsed time while running, else the result. */
 export function updateProgressText(progress, swapLog, nowMs) {
-  if (progress.result === 'ok') return `Updated to ${progress.to}. Ready to stream.`;
+  if (progress.result === 'ok') return progress.step === 'done' ? `Back on air on ${progress.to}.` : `Updated to ${progress.to}. Ready to stream.`;
   if (progress.result !== 'running') return failureText(progress);
   const since = Date.parse(progress.stepStartedAt);
   const percent = progress.step === 'download' && typeof progress.downloadPercent === 'number' ? `${progress.downloadPercent}%, ` : '';
@@ -214,10 +214,14 @@ export function updateProgressText(progress, swapLog, nowMs) {
 const OK_BANNER_MS = 10 * 60 * 1000;
 
 /** What the update banner shows. keepText: the text is the update's own (progress or result), not the offer's.
- *  A failed result keeps its text and still offers the next update or a retry; ok gives way to the offer after 10 minutes. */
-export function updateBannerView(status, nowMs) {
+ *  A failed result keeps its text and still offers the next update or a retry; ok gives way to the offer after
+ *  10 minutes, and "Ready to stream" as soon as streamState (the /api/status stream state) is live. A finished
+ *  update from and to other versions than the running one is history: a later update replaced it. */
+export function updateBannerView(status, nowMs, streamState = null) {
   const p = status.progress;
-  if (p) {
+  const history = p && p.result !== 'running' && p.from !== status.currentVersion && p.to !== status.currentVersion;
+  const readyWhileLive = p && p.result === 'ok' && p.step !== 'done' && streamState === 'live';
+  if (p && !history && !readyWhileLive) {
     const text = updateProgressText(p, status.swapLog || [], nowMs);
     if (p.result === 'running') return { visible: true, text, showButton: false, keepText: true };
     if (p.result === 'failed' || p.result === 'rolled-back') {

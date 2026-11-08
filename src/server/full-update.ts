@@ -504,9 +504,14 @@ async function finishUpdate(deps: StartupDeps, current: UpdateState | null): Pro
   (deps.removeOldCopies ?? removeOldCopies)(deps.root);
   logger.info({ version: deps.version }, 'The update passed its check');
 
-  if (!deps.autoStartStream() || deps.launcher.isStoppedByUser()) return;
+  const ownStart = state?.result === 'ok' && state.step === 'start';
+  if (!deps.autoStartStream() || deps.launcher.isStoppedByUser()) {
+    // Closes "the stream is off air until it is done" for a stream that waits for Start.
+    if (ownStart) deps.notify(`Updated to ${deps.version}. Ready to stream.`, 'info');
+    return;
+  }
   deps.launcher.release();
-  if (state?.result === 'ok' && state.step === 'start') await reportOnAir(deps);
+  if (ownStart) await reportOnAir(deps);
 }
 
 async function reportOnAir(deps: StartupDeps): Promise<void> {

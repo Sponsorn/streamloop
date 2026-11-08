@@ -680,11 +680,11 @@ describe('runStartup', () => {
       // Act
       await runStartup(deps);
 
-      // Assert
+      // Assert: the post closes "off air until it is done".
       expect(deps.launcher.release).not.toHaveBeenCalled();
       expect(readUpdateState(ROOT)).toMatchObject({ result: 'ok', step: 'start' });
       expect(existsSync(marker)).toBe(false);
-      expect(deps.notify).not.toHaveBeenCalled();
+      expect(vi.mocked(deps.notify).mock.calls).toEqual([['Updated to 3.0.6. Ready to stream.', 'info']]);
     }
   });
 
@@ -699,6 +699,20 @@ describe('runStartup', () => {
     // Assert
     expect(deps.launcher.release).not.toHaveBeenCalled();
     expect(readUpdateState(ROOT)).toMatchObject({ result: 'ok', step: 'start' });
+    expect(vi.mocked(deps.notify).mock.calls).toEqual([['Updated to 3.0.6. Ready to stream.', 'info']]);
+  });
+
+  it('posts nothing more for a held update that a restart finishes again', async () => {
+    // Arrange: a state already past its start, as after the user pressed Start and the stream ran.
+    const s = state({ step: 'done', result: 'ok' });
+    swapped(s);
+    const deps = fakeStartup({ kind: 'finish' }, s, { autoStartStream: () => false });
+
+    // Act
+    await runStartup(deps);
+
+    // Assert
+    expect(deps.notify).not.toHaveBeenCalled();
   });
 
   it('keeps update-checking and exits 76 when the check fails', async () => {
