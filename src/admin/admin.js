@@ -1,7 +1,7 @@
 import {
   streamLine, youtubeNote, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
   encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, playingListIndex,
-  updateOfferText, updateProgressText, updateRunning, updateBannerView,
+  updateOfferText, updateProgressText, updateRunning, updateBannerView, appDownloadText,
 } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -1351,7 +1351,7 @@ function renderUpdateBanner(status) {
   if (view.keepText) text.textContent = view.text;
   if (!view.showButton) return;
   if (status.status === 'downloading') {
-    if (!view.keepText) text.textContent = `Downloading v${status.latestVersion}...`;
+    if (!view.keepText) text.textContent = appDownloadText(status);
     btn.disabled = true;
     btn.textContent = 'Downloading...';
   } else if (status.status === 'extracting') {

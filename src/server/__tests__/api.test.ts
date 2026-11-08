@@ -55,7 +55,7 @@ interface Harness {
 function idleUpdate(): UpdateInfo {
   return {
     currentVersion: '3.0.5', latestVersion: '3.0.6', updateAvailable: true, status: 'idle', error: null,
-    isDevMode: false, nodeNotice: null, kind: 'full', parts: ['supervisor'], sameVersion: false,
+    isDevMode: false, nodeNotice: null, kind: 'full', parts: ['supervisor'], sameVersion: false, downloadPercent: null,
   };
 }
 

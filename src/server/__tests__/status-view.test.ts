@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-ignore — plain browser JS module without a declaration file
-import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex, updateOfferText, updateProgressText, formatElapsed, updateRunning, updateBannerView } from '../../admin/status-view.js';
+import { streamLine, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime, WIZARD_OFF_AIR_GRACE_MS, WIZARD_TIMEOUT_MS, encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, youtubeNote, playingListIndex, updateOfferText, updateProgressText, formatElapsed, updateRunning, updateBannerView, appDownloadText } from '../../admin/status-view.js';
 
 const twitch = (over: Record<string, unknown> = {}) => ({
   enabled: true,
@@ -331,6 +331,12 @@ describe('updateProgressText', () => {
     expect(updateProgressText(state({ step: 'start' }), [], at(3))).toBe('Starting the stream, 3 s');
   });
 
+  it('shows the download percentage during the download step only', () => {
+    expect(updateProgressText(state({ step: 'download', downloadPercent: 42 }), [], at(70))).toBe('Downloading, 42%, 1 min 10 s');
+    expect(updateProgressText(state({ step: 'download', downloadPercent: null }), [], at(70))).toBe('Downloading, 1 min 10 s');
+    expect(updateProgressText(state({ step: 'stop', downloadPercent: 100 }), [], at(5))).toBe('Stopping the stream, 5 s');
+  });
+
   it('mentions a swap retry', () => {
     const log = [{ folder: 'node', status: 'retry', detail: 'in use' }];
     expect(updateProgressText(state(), log, at(10))).toBe('Replacing files, 10 s (trying node again)');
@@ -348,6 +354,13 @@ describe('updateProgressText', () => {
     // Assert
     expect(failed).toBe('The update to 3.0.6 failed at replacing files: ffmpeg is still running. Still on 3.0.5.');
     expect(back).toBe('The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5.');
+  });
+});
+
+describe('appDownloadText', () => {
+  it('adds the percentage of an app-only download when the server knows it', () => {
+    expect(appDownloadText({ latestVersion: '3.0.7', downloadPercent: 42 })).toBe('Downloading v3.0.7, 42%...');
+    expect(appDownloadText({ latestVersion: '3.0.7', downloadPercent: null })).toBe('Downloading v3.0.7...');
   });
 });
 

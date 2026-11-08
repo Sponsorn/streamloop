@@ -4,8 +4,10 @@ import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { Readable, Writable } from 'stream';
+import { pipeline } from 'stream/promises';
 import {
-  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, UpdateRefusedError, type GithubRelease, parseComponents, updateKind,
+  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, UpdateRefusedError, downloadCounter, type GithubRelease, parseComponents, updateKind,
 } from '../updater.js';
 
 function asset(name: string) {
@@ -624,6 +626,37 @@ describe('stageUpdate with part folders', () => {
   });
 });
 
+describe('downloadCounter', () => {
+  async function count(chunks: number[], total: number | null, clockMs: number[]): Promise<{ seen: number[]; passed: number }> {
+    const seen: number[] = [];
+    let tick = 0;
+    let passed = 0;
+    const counter = downloadCounter(total, (p) => seen.push(p), () => clockMs[Math.min(tick++, clockMs.length - 1)]);
+    await pipeline(Readable.from(chunks.map((n) => Buffer.alloc(n))), counter, new Writable({
+      write(chunk: Buffer, _enc, cb) { passed += chunk.length; cb(); },
+    }));
+    return { seen, passed };
+  }
+
+  it('reports the percentage at most once a second and once more at the end', async () => {
+    // Act: ten chunks of 10 bytes, 300 ms apart.
+    const { seen, passed } = await count(Array(10).fill(10), 100, [0, 300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700]);
+
+    // Assert
+    expect(passed).toBe(100);
+    expect(seen).toEqual([10, 50, 90, 100]);
+  });
+
+  it('reports nothing without a content-length', async () => {
+    // Act
+    const { seen, passed } = await count([10, 10], null, [0, 2000]);
+
+    // Assert
+    expect(passed).toBe(20);
+    expect(seen).toEqual([]);
+  });
+});
+
 describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
   const HASH = (c: string) => c.repeat(64);
   const parts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };
@@ -665,7 +698,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
       }
       if (url.endsWith('components.json')) return new Response(JSON.stringify({ version: NEXT, node: '22.23.4', parts }));
       if (url.endsWith(`${zipName}.sha256`)) return new Response(`${sha}  ${zipName}\n`);
-      if (url.endsWith(zipName)) return new Response(new Uint8Array(zip));
+      if (url.endsWith(zipName)) return new Response(new Uint8Array(zip), { headers: { 'content-length': String(zip.length) } });
       return new Response('', { status: 404 });
     }));
   }
@@ -845,6 +878,52 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     // Assert
     await expect(start).rejects.toThrow(new UpdateRefusedError('The running programs could not be listed. Try again.'));
     expect(existsSync(join(root, 'data', 'update-state.json'))).toBe(false);
+  });
+
+  it('records the download percentage in the update state', async () => {
+    // Arrange
+    stubRelease();
+    const updater = await updaterWith(hooks());
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert: the last write of the download step, kept through the later steps.
+    expect(readState()).toMatchObject({ step: 'swap', downloadPercent: 100 });
+  });
+
+  it('shows the percentage of an app-only download in the status while it runs', async () => {
+    // Arrange: the update ZIP comes in two halves, the second once the test has looked.
+    let release: () => void = () => {};
+    const second = new Promise<void>((r) => { release = r; });
+    const body = new ReadableStream<Uint8Array>({
+      async start(c) {
+        c.enqueue(new Uint8Array(50));
+        await second;
+        c.enqueue(new Uint8Array(50));
+        c.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: [
+          asset(`streamloop-v${NEXT}-update.zip`), asset(`streamloop-v${NEXT}-update.zip.sha256`), asset(zipName), asset(`${zipName}.sha256`),
+        ] }]));
+      }
+      if (url.endsWith('-update.zip')) return new Response(body, { headers: { 'content-length': '100' } });
+      return new Response('', { status: 404 });
+    }));
+    const updater = new Updater({ isDevMode: false, rootDir: root });
+    await updater.checkForUpdate();
+
+    // Act
+    const apply = updater.downloadAndApply();
+    await vi.waitFor(() => expect(updater.getStatus().downloadPercent).toBe(50));
+    release();
+
+    // Assert: the stub has no checksum, so the update stops after the download.
+    await expect(apply).rejects.toThrow('Checksum download failed: 404');
+    expect(updater.getStatus().downloadPercent).toBeNull();
   });
 
   it('counts no windows for an app-only update', async () => {

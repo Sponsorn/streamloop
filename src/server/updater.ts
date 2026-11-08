@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { createRequire } from 'module';
 import { z } from 'zod';
@@ -90,6 +91,39 @@ export interface UpdateInfo {
   parts: Part[];
   /** The offer is the running version with its parts reinstalled. */
   sameVersion: boolean;
+  /** How much of the ZIP has arrived while it downloads; null without a content-length or outside the download. */
+  downloadPercent: number | null;
+}
+
+/** Passes the download through and reports its percentage of `total`, at most once a second and once at the end. */
+export function downloadCounter(
+  total: number | null,
+  report: (percent: number) => void,
+  now: () => number = Date.now,
+  everyMs = 1000,
+): Transform {
+  let got = 0;
+  let lastAt = -Infinity;
+  let lastPercent = -1;
+  const percent = (): number => Math.min(100, Math.floor((got * 100) / (total ?? 1)));
+  return new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      got += chunk.length;
+      if (total !== null) {
+        const t = now();
+        if (t - lastAt >= everyMs) {
+          lastAt = t;
+          lastPercent = percent();
+          report(lastPercent);
+        }
+      }
+      done(null, chunk);
+    },
+    flush(done) {
+      if (total !== null && percent() !== lastPercent) report(percent());
+      done();
+    },
+  });
 }
 
 /** The slim "-update.zip" for an app-only update (else any ".zip"), the full bundle for a full one.
@@ -241,6 +275,7 @@ export class Updater {
   private kind: UpdateKind | null = null;
   private parts: Part[] = [];
   private sameVersion = false;
+  private downloadPercent: number | null = null;
   private installParts: () => Promise<InstallParts | null>;
   private rootDir: string;
   private full: FullUpdateHooks | null;
@@ -281,6 +316,7 @@ export class Updater {
       kind: this.kind,
       parts: this.parts,
       sameVersion: this.sameVersion,
+      downloadPercent: this.downloadPercent,
     };
   }
 
@@ -521,9 +557,11 @@ export class Updater {
     const oldDir = join(rootDir, '_update_old');
 
     let state: UpdateState | null = null;
+    this.downloadPercent = null;
     const fail = (err: unknown): void => {
       this.status = 'error';
       this.error = err instanceof Error ? err.message : String(err);
+      this.downloadPercent = null;
       try {
         if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
       } catch { /* best effort */ }
@@ -565,8 +603,20 @@ export class Updater {
       if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
       if (!res.body) throw new Error('No response body');
 
+      const length = Number(res.headers.get('content-length'));
+      const counter = downloadCounter(Number.isFinite(length) && length > 0 ? length : null, (percent) => {
+        this.downloadPercent = percent;
+        if (!state) return;
+        state = { ...state, downloadPercent: percent };
+        try {
+          writeUpdateState(rootDir, state);
+        } catch (err) {
+          // Only the dashboard's figure is lost; the download goes on.
+          logger.warn({ err }, 'Could not record the download percentage');
+        }
+      });
       const fileStream = createWriteStream(zipPath);
-      await pipeline(res.body as unknown as NodeJS.ReadableStream, fileStream);
+      await pipeline(res.body as unknown as NodeJS.ReadableStream, counter, fileStream);
 
       logger.info('Verifying update checksum');
       const checksumRes = await fetch(checksumUrl, {
@@ -584,6 +634,7 @@ export class Updater {
       logger.info('Update checksum verified');
 
       this.status = 'extracting';
+      this.downloadPercent = null;
       logger.info('Extracting update');
       const extractDir = join(tmpDir, 'extracted');
       mkdirSync(extractDir, { recursive: true });

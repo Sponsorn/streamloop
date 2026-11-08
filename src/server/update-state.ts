@@ -17,6 +17,8 @@ export interface UpdateState {
   startedAt: string;
   stepStartedAt: string;
   baseline: { encoder: Encoder; works: boolean } | null;
+  /** How much of the ZIP has arrived, written at most once a second while it downloads. */
+  downloadPercent?: number | null;
 }
 
 /** File in data\ that exists while the new Node runs its health check. */
@@ -41,6 +43,7 @@ const stateSchema = z.object({
       works: z.boolean(),
     })
     .nullable(),
+  downloadPercent: z.number().min(0).max(100).nullable().optional(),
 });
 
 const dataDir = (root: string) => join(root, 'data');

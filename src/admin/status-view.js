@@ -188,6 +188,12 @@ export function updateOfferText(status) {
   return `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
 }
 
+/** The banner while an app-only update downloads; a full update shows updateProgressText instead. */
+export function appDownloadText(status) {
+  const percent = typeof status.downloadPercent === 'number' ? `, ${status.downloadPercent}%` : '';
+  return `Downloading v${status.latestVersion}${percent}...`;
+}
+
 /** True while a full update owns the stream: the dashboard shows its progress instead of the stream status. */
 export function updateRunning(progress) {
   return !!progress && progress.result === 'running';
@@ -198,7 +204,8 @@ export function updateProgressText(progress, swapLog, nowMs) {
   if (progress.result === 'ok') return `Updated to ${progress.to}. Ready to stream.`;
   if (progress.result !== 'running') return failureText(progress);
   const since = Date.parse(progress.stepStartedAt);
-  let text = `${stepLabel(progress.step)}, ${formatElapsed(Number.isNaN(since) ? 0 : nowMs - since)}`;
+  const percent = progress.step === 'download' && typeof progress.downloadPercent === 'number' ? `${progress.downloadPercent}%, ` : '';
+  let text = `${stepLabel(progress.step)}, ${percent}${formatElapsed(Number.isNaN(since) ? 0 : nowMs - since)}`;
   const last = progress.step === 'swap' && swapLog && swapLog[swapLog.length - 1];
   if (last && last.status === 'retry') text += ` (trying ${last.folder} again)`;
   return text;
