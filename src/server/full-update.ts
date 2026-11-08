@@ -65,53 +65,88 @@ export async function listProcessesUnder(dirs: string[]): Promise<ProcessInfo[]>
   return processesUnder(json, dirs);
 }
 
-export interface CommandLineInfo {
+export interface ProcessRow {
   pid: number;
+  parentPid: number;
   name: string;
-  commandLine: string;
+  /** Read for cmd.exe only, so the encoder's command line, which holds the stream key, never reaches Node. */
+  commandLine: string | null;
 }
 
-const LIST_CMD_WINDOWS = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; '
-  + "Get-CimInstance Win32_Process -Filter \"Name='cmd.exe'\" | Select-Object ProcessId, Name, CommandLine | ConvertTo-Json -Compress";
+const LIST_PROCESS_ROWS = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; '
+  + 'Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, '
+  + "@{n='CommandLine';e={ if ($_.Name -eq 'cmd.exe') { $_.CommandLine } }} | ConvertTo-Json -Compress";
 
-export function parseCommandLines(json: string): CommandLineInfo[] {
+export function parseProcessRows(json: string): ProcessRow[] {
   if (!json.trim()) return [];
   const parsed: unknown = JSON.parse(json);
-  const rows = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ ProcessId?: unknown; Name?: unknown; CommandLine?: unknown }>;
-  return rows.flatMap((row) => (typeof row?.ProcessId === 'number' && typeof row.Name === 'string' && typeof row.CommandLine === 'string'
-    ? [{ pid: row.ProcessId, name: row.Name, commandLine: row.CommandLine }]
+  const rows = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{ ProcessId?: unknown; ParentProcessId?: unknown; Name?: unknown; CommandLine?: unknown }>;
+  return rows.flatMap((row) => (typeof row?.ProcessId === 'number' && typeof row.Name === 'string'
+    ? [{
+      pid: row.ProcessId,
+      parentPid: typeof row.ParentProcessId === 'number' ? row.ParentProcessId : 0,
+      name: row.Name,
+      commandLine: typeof row.CommandLine === 'string' ? row.CommandLine : null,
+    }]
     : []));
 }
 
 /** No path goes to PowerShell: the command lines are matched here. */
-export async function listCmdWindows(): Promise<CommandLineInfo[]> {
+export async function listProcessRows(): Promise<ProcessRow[]> {
   const json = await new Promise<string>((res, rej) => {
     execFile(
       POWERSHELL,
-      ['-NoProfile', '-NonInteractive', '-Command', LIST_CMD_WINDOWS],
+      ['-NoProfile', '-NonInteractive', '-Command', LIST_PROCESS_ROWS],
       { cwd: SPAWN_CWD, windowsHide: true, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout) => (err ? rej(err) : res(stdout)),
     );
   });
-  return parseCommandLines(json);
+  return parseProcessRows(json);
 }
 
 /** A path character on either side means another file, such as START.bat.new or D:\x\<root>\START.bat. */
 const BAT_EDGE = /[^\s"]/;
+/** Every console window has one of these as its child, so it does not mean the window is running anything. */
+const CONSOLE_HOSTS = new Set(['conhost.exe', 'openconsole.exe']);
 
-/** How many cmd.exe windows run ROOT\START.bat. A second one would heal, and so roll back, beside the swap. */
-export async function countStartBatWindows(root: string, list: () => Promise<CommandLineInfo[]> = listCmdWindows): Promise<number> {
+function namesStartBat(row: ProcessRow, needle: string): boolean {
+  if (row.name.toLowerCase() !== 'cmd.exe' || row.commandLine === null) return false;
+  const line = row.commandLine.toLowerCase();
+  for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + 1)) {
+    const before = line[at - 1] ?? ' ';
+    const after = line[at + needle.length] ?? ' ';
+    if (!BAT_EDGE.test(before) && !BAT_EDGE.test(after)) return true;
+  }
+  return false;
+}
+
+function runsAProgram(rows: ProcessRow[], pid: number): boolean {
+  return rows.some((r) => r.parentPid === pid && !CONSOLE_HOSTS.has(r.name.toLowerCase()));
+}
+
+/**
+ * How many cmd.exe windows run ROOT\START.bat. A second one would heal, and so roll back, beside the swap.
+ * A window counts only while it runs a program. The trampoline starts the new launcher with `start`, which is
+ * cmd /K, so a launcher that hands off again or stops cleanly leaves an idle prompt that still names START.bat.
+ * A running launcher has no child for a moment between two commands, so a window found idle is looked at once more.
+ */
+export async function countStartBatWindows(
+  root: string,
+  list: () => Promise<ProcessRow[]> = listProcessRows,
+  recheckMs = 1000,
+): Promise<number> {
   const needle = `${resolve(root).replace(/\\+$/, '')}\\start.bat`.toLowerCase();
-  return (await list()).filter((p) => {
-    if (p.name.toLowerCase() !== 'cmd.exe') return false;
-    const line = p.commandLine.toLowerCase();
-    for (let at = line.indexOf(needle); at >= 0; at = line.indexOf(needle, at + 1)) {
-      const before = line[at - 1] ?? ' ';
-      const after = line[at + needle.length] ?? ' ';
-      if (!BAT_EDGE.test(before) && !BAT_EDGE.test(after)) return true;
-    }
-    return false;
-  }).length;
+  const first = await list();
+  const windows = first.filter((r) => namesStartBat(r, needle)).map((r) => r.pid);
+  const busy = new Set(windows.filter((pid) => runsAProgram(first, pid)));
+  const idle = windows.filter((pid) => !busy.has(pid));
+  if (idle.length === 0) return busy.size;
+  await new Promise((r) => setTimeout(r, recheckMs));
+  const second = await list();
+  for (const pid of idle) {
+    if (second.some((r) => r.pid === pid && namesStartBat(r, needle)) && runsAProgram(second, pid)) busy.add(pid);
+  }
+  return busy.size;
 }
 
 /** Ends a process at once; on Windows that is TerminateProcess. One that is already gone is fine. */

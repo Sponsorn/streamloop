@@ -11,15 +11,15 @@ import {
   failureMessage,
   holdAtStart,
   listProcessesUnder,
-  parseCommandLines,
+  parseProcessRows,
   processesUnder,
   runCheckProgram,
   runHealthCheck,
   runStartup,
   stopForSwap,
   type CheckDeps,
-  type CommandLineInfo,
   type ProcessInfo,
+  type ProcessRow,
   type StartupAction,
   type StartupDeps,
   type StopDeps,
@@ -189,11 +189,13 @@ describe('processesUnder', () => {
 });
 
 describe('countStartBatWindows', () => {
-  const cmd = (pid: number, commandLine: string): CommandLineInfo => ({ pid, name: 'cmd.exe', commandLine });
+  const cmd = (pid: number, commandLine: string): ProcessRow => ({ pid, parentPid: 1, name: 'cmd.exe', commandLine });
+  const child = (pid: number, parentPid: number, name: string): ProcessRow => ({ pid, parentPid, name, commandLine: null });
+  const bat = (pid: number) => cmd(pid, `C:\\WINDOWS\\system32\\cmd.exe  /K "${R}\\START.bat" update`);
 
   it("counts the cmd.exe windows running this install's START.bat, however they were started and ignoring case", async () => {
-    // Arrange: Explorer or the autostart VBS, the trampoline's start, a plain cmd /c, and look-alikes.
-    const list = vi.fn(async () => [
+    // Arrange: Explorer or the autostart VBS, the trampoline's start, a plain cmd /c, and look-alikes, each running a program.
+    const windows = [
       cmd(1, `C:\\WINDOWS\\system32\\cmd.exe /c ""${R}\\START.bat" "`),
       cmd(2, `C:\\WINDOWS\\system32\\cmd.exe  /K "${R.toUpperCase()}\\start.bat" update`),
       cmd(3, `cmd.exe /d /s /c ""${R}\\START.bat""`),
@@ -201,41 +203,86 @@ describe('countStartBatWindows', () => {
       cmd(5, `cmd.exe /c "D:\\Other\\StreamLoop 3\\START.bat"`),
       cmd(6, `cmd.exe /c "${R}\\app\\START.bat"`),
       cmd(7, `cmd.exe /c "${R}\\_apply_launcher.bat"`),
-      { pid: 8, name: 'node.exe', commandLine: `node.exe "${R}\\START.bat"` },
-    ]);
+      { pid: 8, parentPid: 1, name: 'node.exe', commandLine: `node.exe "${R}\\START.bat"` },
+    ];
+    const list = vi.fn(async () => [...windows, ...windows.map((w) => child(100 + w.pid, w.pid, 'node.exe'))]);
 
     // Act
-    const n = await countStartBatWindows(`${R}\\`, list);
+    const n = await countStartBatWindows(`${R}\\`, list, 0);
 
     // Assert
     expect(n).toBe(3);
   });
 
-  it('reads a single process, which PowerShell prints as an object, and skips one without a command line', () => {
+  it("leaves out an idle prompt naming START.bat, such as the trampoline's cmd /K window after its launcher exited", async () => {
+    // Arrange: window 10 runs the server; window 11 has only its console hosts, on both looks.
+    const rows = [bat(10), child(20, 10, 'node.exe'), bat(11), child(21, 11, 'conhost.exe'), child(22, 11, 'OpenConsole.exe')];
+    const list = vi.fn(async () => rows);
+
     // Act
-    const one = parseCommandLines(JSON.stringify({ ProcessId: 9, Name: 'cmd.exe', CommandLine: 'cmd.exe /c x.bat' }));
-    const none = parseCommandLines(JSON.stringify([{ ProcessId: 10, Name: 'cmd.exe', CommandLine: null }]));
+    const n = await countStartBatWindows(R, list, 0);
 
     // Assert
-    expect(one).toEqual([{ pid: 9, name: 'cmd.exe', commandLine: 'cmd.exe /c x.bat' }]);
-    expect(none).toEqual([]);
+    expect(n).toBe(1);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a window caught between two commands when it runs a program on the second look', async () => {
+    // Arrange: window 11 has no program on the first look and runs ping on the second.
+    const list = vi.fn()
+      .mockResolvedValueOnce([bat(10), child(20, 10, 'node.exe'), bat(11), child(21, 11, 'conhost.exe')])
+      .mockResolvedValueOnce([bat(10), child(20, 10, 'node.exe'), bat(11), child(21, 11, 'conhost.exe'), child(23, 11, 'PING.EXE')]);
+
+    // Act
+    const n = await countStartBatWindows(R, list, 0);
+
+    // Assert
+    expect(n).toBe(2);
+  });
+
+  it('looks once when every START.bat window runs a program', async () => {
+    // Arrange
+    const list = vi.fn(async () => [bat(10), child(20, 10, 'node.exe'), bat(11), child(23, 11, 'PING.EXE')]);
+
+    // Act
+    const n = await countStartBatWindows(R, list, 0);
+
+    // Assert
+    expect(n).toBe(2);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads a single process, which PowerShell prints as an object, and keeps one without a command line', () => {
+    // Act
+    const one = parseProcessRows(JSON.stringify({ ProcessId: 9, ParentProcessId: 4, Name: 'cmd.exe', CommandLine: 'cmd.exe /c x.bat' }));
+    const rows = parseProcessRows(JSON.stringify([{ ProcessId: 10, ParentProcessId: 9, Name: 'conhost.exe', CommandLine: null }, { Name: 'no-pid.exe' }]));
+
+    // Assert
+    expect(one).toEqual([{ pid: 9, parentPid: 4, name: 'cmd.exe', commandLine: 'cmd.exe /c x.bat' }]);
+    expect(rows).toEqual([{ pid: 10, parentPid: 9, name: 'conhost.exe', commandLine: null }]);
   });
 });
 
 describe.skipIf(process.platform !== 'win32')('countStartBatWindows on this machine', () => {
   let dir = '';
+  let idleDir = '';
   let window: ChildProcess | null = null;
+  let idle: ChildProcess | null = null;
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'sl window Ö-'));
     writeFileSync(join(dir, 'START.bat'), '@echo off\r\nping -n 60 127.0.0.1 >nul\r\n');
     window = spawn('cmd.exe', ['/d', '/s', '/c', `""${join(dir, 'START.bat')}""`], { cwd: dir, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
-    await new Promise((r) => setTimeout(r, 500));
+    // The trampoline's window: cmd /K whose launcher has exited, left at a prompt that waits on its input.
+    idleDir = mkdtempSync(join(tmpdir(), 'sl window Ö-'));
+    writeFileSync(join(idleDir, 'START.bat'), '@echo off\r\nexit /b 0\r\n');
+    idle = spawn('cmd.exe', ['/d', '/s', '/k', `""${join(idleDir, 'START.bat')}""`], { cwd: idleDir, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, windowsVerbatimArguments: true });
+    await new Promise((r) => setTimeout(r, 1000));
   });
 
   afterAll(() => {
-    if (window?.pid) spawn('taskkill', ['/T', '/F', '/PID', String(window.pid)], { stdio: 'ignore', windowsHide: true });
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    for (const p of [window, idle]) if (p?.pid) spawn('taskkill', ['/T', '/F', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true });
+    for (const d of [dir, idleDir]) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 
   it('finds a START.bat window in a folder with a space and an Ö in its path', async () => {
@@ -246,6 +293,15 @@ describe.skipIf(process.platform !== 'win32')('countStartBatWindows on this mach
     // Assert
     expect(n).toBe(1);
     expect(elsewhere).toBe(0);
+  }, 30_000);
+
+  it('leaves out a cmd /K prompt whose START.bat has exited', async () => {
+    // Act
+    const n = await countStartBatWindows(idleDir);
+
+    // Assert
+    expect(idle?.exitCode).toBeNull();
+    expect(n).toBe(0);
   }, 30_000);
 });
 
