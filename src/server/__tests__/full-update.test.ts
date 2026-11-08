@@ -240,6 +240,19 @@ describe('countStartBatWindows', () => {
     expect(n).toBe(2);
   });
 
+  it('leaves out an idle window that has closed by the second look', async () => {
+    // Arrange: window 11 is idle on the first look and gone on the second.
+    const list = vi.fn()
+      .mockResolvedValueOnce([bat(10), child(20, 10, 'node.exe'), bat(11), child(21, 11, 'conhost.exe')])
+      .mockResolvedValueOnce([bat(10), child(20, 10, 'node.exe')]);
+
+    // Act
+    const n = await countStartBatWindows(R, list, 0);
+
+    // Assert
+    expect(n).toBe(1);
+  });
+
   it('looks once when every START.bat window runs a program', async () => {
     // Arrange
     const list = vi.fn(async () => [bat(10), child(20, 10, 'node.exe'), bat(11), child(23, 11, 'PING.EXE')]);
