@@ -2463,6 +2463,14 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
     }
 }
 
+/// Asks for the token server's identity while it is unknown. `ask` runs only while `server` is `None`:
+/// a missing answer is asked again on the next answering ping, and a known one stays until a spawn clears it.
+fn fill_identity(server: &mut Option<String>, ask: impl FnOnce() -> Option<String>) {
+    if server.is_none() {
+        *server = ask();
+    }
+}
+
 /// Adopt a running PO-token server, or own one; replace it when it dies or hangs.
 fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: Logs) {
     let mut owned: Option<Child> = None;
@@ -2482,8 +2490,7 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: 
             }
         }
     };
-    // Set after a spawn: the next ping that answers also asks who answered.
-    let mut identify = false;
+    // A `None` identity is asked again by the loop on the next answering ping, adopted or owned.
     if ytdlp::ping(port) {
         let server = ytdlp::server_identity(port);
         let mut s = state.lock().unwrap();
@@ -2492,7 +2499,6 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: 
         logs.event("info", "token-server-adopt", json!({"port": port, "server": server}));
     } else {
         owned = spawn(&logs);
-        identify = owned.is_some();
         let mut s = state.lock().unwrap();
         s.state = if owned.is_some() { "owned" } else { "down" };
         s.server = None;
@@ -2528,9 +2534,10 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: 
         let exited = owned.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))));
         if Instant::now() >= next_ping && restart_at.is_none() {
             if ytdlp::ping(port) {
-                if std::mem::take(&mut identify) {
-                    state.lock().unwrap().server = ytdlp::server_identity(port);
-                }
+                // Copy out so the HTTP call runs without the lock that the status API reads.
+                let mut server = state.lock().unwrap().server.clone();
+                fill_identity(&mut server, || ytdlp::server_identity(port));
+                state.lock().unwrap().server = server;
                 failed_pings = 0;
                 backoff_level = 0;
                 next_ping = Instant::now() + Duration::from_secs(15);
@@ -2555,7 +2562,6 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, port: u16, logs: 
             backoff_level += 1;
             failed_pings = 0;
             owned = spawn(&logs);
-            identify = owned.is_some();
             let mut s = state.lock().unwrap();
             s.restarts += 1;
             s.state = if owned.is_some() { "owned" } else { "down" };
@@ -2671,6 +2677,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_is_asked_again_after_a_missing_answer_until_it_answers() {
+        let mut server = None;
+        let mut asks = 0;
+        fill_identity(&mut server, || { asks += 1; None });
+        assert_eq!(server, None);
+        fill_identity(&mut server, || { asks += 1; Some("streamloop-pot 2.0.0".to_string()) });
+        assert_eq!(server.as_deref(), Some("streamloop-pot 2.0.0"));
+        assert_eq!(asks, 2);
+    }
+
+    #[test]
+    fn a_known_identity_is_not_asked_again() {
+        let mut server = Some("bgutil 2.0.0".to_string());
+        fill_identity(&mut server, || panic!("asked for an identity that is already known"));
+        assert_eq!(server.as_deref(), Some("bgutil 2.0.0"));
+    }
+
+    #[test]
+    fn a_restart_that_clears_the_identity_asks_again() {
+        let mut server = Some("bgutil 2.0.0".to_string());
+        fill_identity(&mut server, || panic!("asked for an identity that is already known"));
+        // A spawn or restart clears the identity, as the watchdog does.
+        server = None;
+        let mut asked = false;
+        fill_identity(&mut server, || { asked = true; Some("streamloop-pot 2.0.0".to_string()) });
+        assert!(asked);
+        assert_eq!(server.as_deref(), Some("streamloop-pot 2.0.0"));
+    }
 
     /// A control loop over `ids` with no encoder, feeder or yt-dlp behind it; logs go to a temp folder.
     fn test_ctl(name: &str, ids: &[&str]) -> Ctl {
