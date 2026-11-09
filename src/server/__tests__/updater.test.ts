@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { Readable, Writable } from 'stream';
+import { pipeline } from 'stream/promises';
 import {
-  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, type GithubRelease,
+  compareVersions, selectReleaseAssets, pickRelease, parseNodeVersion, stageUpdate, Updater, UpdateRefusedError, downloadCounter, type GithubRelease, parseComponents, updateKind,
 } from '../updater.js';
 
 function asset(name: string) {
@@ -401,5 +405,691 @@ describe('Updater checksum', () => {
     await expect(apply).rejects.toThrow('This release has no checksum file, so it was not installed.');
     expect(download).not.toHaveBeenCalled();
     expect(updater.getStatus().status).toBe('error');
+  });
+});
+
+describe('Updater during a check', () => {
+  const names = [`streamloop-v${NEXT}-update.zip`, `streamloop-v${NEXT}-update.zip.sha256`, `streamloop-v${NEXT}.zip`, `streamloop-v${NEXT}.zip.sha256`];
+  const list = () => new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: names.map(asset) }]));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('refuses to apply while a check runs, and the check forgets the last offer', async () => {
+    // Arrange: a first check finds the update; a second one, past the cooldown, waits on GitHub.
+    let answer: (r: Response) => void = () => {};
+    const github = vi.fn(async () => list());
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('api.github.com') ? github() : new Response('', { status: 404 }))));
+    const updater = new Updater({ isDevMode: false });
+    await updater.checkForUpdate();
+    github.mockImplementationOnce(() => new Promise<Response>((r) => { answer = r; }));
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+
+    // Act
+    const check = updater.checkForUpdate();
+    const during = updater.getStatus();
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    expect(during).toMatchObject({ status: 'checking', updateAvailable: false });
+    await expect(apply).rejects.toThrow('Update already in progress');
+    answer(list());
+    expect(await check).toMatchObject({ status: 'idle', updateAvailable: true });
+  });
+
+  it('offers nothing to apply after a check that failed', async () => {
+    // Arrange
+    const github = vi.fn(async () => list());
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('api.github.com') ? github() : new Response('', { status: 404 }))));
+    const updater = new Updater({ isDevMode: false });
+    expect((await updater.checkForUpdate()).updateAvailable).toBe(true);
+    github.mockResolvedValueOnce(new Response('', { status: 500, statusText: 'Server Error' }));
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+
+    // Act
+    const failed = await updater.checkForUpdate();
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    expect(failed).toMatchObject({ status: 'error', updateAvailable: false });
+    await expect(apply).rejects.toThrow('No update available to apply');
+  });
+});
+
+describe('Updater part comparison', () => {
+  const HASH = (c: string) => c.repeat(64);
+  const sameParts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };
+  const components = (parts: Record<string, string> = sameParts) =>
+    JSON.stringify({ version: NEXT, node: '22.23.4', parts });
+  const current = `${major}.${minor}.${patch}`;
+
+  function releaseAssets(version: string, withComponents: boolean) {
+    const base = [asset(`streamloop-v${version}-update.zip`), asset(`streamloop-v${version}-update.zip.sha256`),
+      asset(`streamloop-v${version}.zip`), asset(`streamloop-v${version}.zip.sha256`)];
+    return withComponents ? [...base, asset('components.json')] : base;
+  }
+
+  function stubFetch(releases: Array<{ tag: string; assets: ReturnType<typeof asset>[] }>, componentsText: string | null) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify(releases.map((r) => ({ tag_name: r.tag, draft: false, prerelease: true, assets: r.assets }))));
+      }
+      if (url.endsWith('components.json') && componentsText !== null) return new Response(componentsText);
+      return new Response('', { status: 404 });
+    }));
+  }
+
+  const installOf = (over: Record<string, string | null> = {}) => async () => ({ ...sameParts, ...over }) as never;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('takes the update ZIP when every part matches the release', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf() }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+    expect(info.parts).toEqual([]);
+    expect(info.sameVersion).toBe(false);
+  });
+
+  it('takes the full ZIP and names the parts when the supervisor differs', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.kind).toBe('full');
+    expect(info.parts).toEqual(['supervisor']);
+    expect(info.nodeNotice).toBeNull();
+  });
+
+  it('falls back to the update ZIP when the release has no components.json', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, false) }], null);
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+  });
+
+  it('falls back to the update ZIP when components.json is malformed', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], '{"parts": [');
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+    expect(info.parts).toEqual([]);
+  });
+
+  it('offers a same-version full update when the installed parts differ from the current release', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${current}`, assets: releaseAssets(current, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ ffmpeg: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.sameVersion).toBe(true);
+    expect(info.kind).toBe('full');
+    expect(info.parts).toEqual(['ffmpeg']);
+    expect(info.latestVersion).toBe(current);
+  });
+
+  it('makes no same-version offer when the current release lacks the full ZIP or its checksum', async () => {
+    // Arrange
+    const noZip = [asset(`streamloop-v${current}-update.zip`), asset(`streamloop-v${current}-update.zip.sha256`), asset('components.json')];
+    const noChecksum = [...noZip, asset(`streamloop-v${current}.zip`)];
+    for (const assets of [noZip, noChecksum]) {
+      stubFetch([{ tag: `v${current}`, assets }], components());
+      // Act
+      const info = await new Updater({ isDevMode: false, installParts: installOf({ ffmpeg: HASH('9') }) }).checkForUpdate();
+      // Assert
+      expect(info.updateAvailable).toBe(false);
+      expect(info.sameVersion).toBe(false);
+      expect(info.kind).toBeNull();
+    }
+  });
+
+  it('keeps a same-version offer and reads components.json once per check', async () => {
+    // Arrange
+    let componentsRequests = 0;
+    const assets = releaseAssets(current, true);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: `v${current}`, draft: false, prerelease: true, assets }]));
+      }
+      if (url.endsWith('components.json')) {
+        componentsRequests += 1;
+        return componentsRequests === 1 ? new Response(components()) : new Response('', { status: 500 });
+      }
+      return new Response('', { status: 404 });
+    }));
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf({ ffmpeg: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(componentsRequests).toBe(1);
+    expect(info.updateAvailable).toBe(true);
+    expect(info.sameVersion).toBe(true);
+    expect(info.kind).toBe('full');
+  });
+
+  it("offers nothing when the current release's parts match", async () => {
+    // Arrange
+    stubFetch([{ tag: `v${current}`, assets: releaseAssets(current, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: false, installParts: installOf() }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(false);
+    expect(info.sameVersion).toBe(false);
+    expect(info.kind).toBeNull();
+  });
+
+  it('dev mode never offers a full update', async () => {
+    // Arrange
+    stubFetch([{ tag: `v${NEXT}`, assets: releaseAssets(NEXT, true) }], components());
+    // Act
+    const info = await new Updater({ isDevMode: true, installParts: installOf({ supervisor: HASH('9') }) }).checkForUpdate();
+    // Assert
+    expect(info.updateAvailable).toBe(true);
+    expect(info.kind).toBe('app');
+  });
+});
+
+describe('parseComponents and updateKind', () => {
+  it('returns null for anything that is not a components file', () => {
+    expect(parseComponents('')).toBeNull();
+    expect(parseComponents('{}')).toBeNull();
+    expect(parseComponents('{"version":"1.0.0","node":"22.0.0","parts":"x"}')).toBeNull();
+  });
+
+  it('keeps the part hashes of a valid file', () => {
+    const text = JSON.stringify({ version: '3.0.6', node: '22.23.4', parts: { node: 'a', supervisor: 'b' } });
+    expect(parseComponents(text)).toEqual({ version: '3.0.6', node: '22.23.4', parts: { node: 'a', supervisor: 'b' } });
+  });
+
+  it('stays app-only without an install or a release', () => {
+    expect(updateKind(null, null)).toEqual({ kind: 'app', parts: [] });
+  });
+});
+
+describe('selectReleaseAssets for a full update', () => {
+  it('selectReleaseAssets with full picks the full ZIP and its own checksum', () => {
+    // Arrange
+    const assets = [
+      asset('streamloop-v3.0.6.zip'), asset('streamloop-v3.0.6.zip.sha256'),
+      asset('streamloop-v3.0.6-update.zip'), asset('streamloop-v3.0.6-update.zip.sha256'),
+    ];
+    // Act
+    const { zipUrl, checksumUrl } = selectReleaseAssets(assets, 'full');
+    // Assert
+    expect(zipUrl).toMatch(/streamloop-v3\.0\.6\.zip$/);
+    expect(checksumUrl).toMatch(/streamloop-v3\.0\.6\.zip\.sha256$/);
+  });
+});
+
+describe('stageUpdate with part folders', () => {
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-parts');
+  const extractDir = join(root, 'extracted');
+  const tmpDir = join(root, 'tmp');
+  const top = join(extractDir, 'streamloop');
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(join(top, 'app', 'src'), { recursive: true });
+    mkdirSync(join(top, 'supervisor'), { recursive: true });
+    mkdirSync(join(top, 'yt-dlp', 'plugins'), { recursive: true });
+    writeFileSync(join(top, 'supervisor', 'streamloop-supervisor.exe'), '');
+    writeFileSync(join(top, 'yt-dlp', 'plugins', 'bgutil-ytdlp-pot-provider.zip'), '');
+    writeFileSync(join(top, 'START.bat'), '@echo off');
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('stageUpdate moves the listed folders and app into the staging folder', () => {
+    // Act
+    stageUpdate(extractDir, tmpDir, ['supervisor', 'yt-dlp']);
+    // Assert
+    expect(readdirSync(tmpDir).sort()).toEqual(['START.bat', 'app', 'supervisor', 'yt-dlp']);
+    expect(existsSync(join(tmpDir, 'supervisor', 'streamloop-supervisor.exe'))).toBe(true);
+  });
+
+  it("stageUpdate refuses an archive missing a part's key file", () => {
+    // Arrange
+    mkdirSync(join(top, 'ffmpeg'), { recursive: true });
+    // Act
+    const stage = () => stageUpdate(extractDir, tmpDir, ['supervisor', 'ffmpeg']);
+    // Assert
+    expect(stage).toThrow('The update archive has no ffmpeg/ffmpeg.exe');
+    expect(readdirSync(tmpDir)).toEqual([]);
+  });
+});
+
+describe('downloadCounter', () => {
+  async function count(chunks: number[], total: number | null, clockMs: number[]): Promise<{ seen: number[]; passed: number }> {
+    const seen: number[] = [];
+    let tick = 0;
+    let passed = 0;
+    const counter = downloadCounter(total, (p) => seen.push(p), () => clockMs[Math.min(tick++, clockMs.length - 1)]);
+    await pipeline(Readable.from(chunks.map((n) => Buffer.alloc(n))), counter, new Writable({
+      write(chunk: Buffer, _enc, cb) { passed += chunk.length; cb(); },
+    }));
+    return { seen, passed };
+  }
+
+  it('reports the percentage at most once a second and once more at the end', async () => {
+    // Act: ten chunks of 10 bytes, 300 ms apart.
+    const { seen, passed } = await count(Array(10).fill(10), 100, [0, 300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700]);
+
+    // Assert
+    expect(passed).toBe(100);
+    expect(seen).toEqual([10, 50, 90, 100]);
+  });
+
+  it('reports nothing without a content-length', async () => {
+    // Act
+    const { seen, passed } = await count([10, 10], null, [0, 2000]);
+
+    // Assert
+    expect(passed).toBe(20);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
+  const HASH = (c: string) => c.repeat(64);
+  const parts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-full');
+  const zipName = `streamloop-v${NEXT}.zip`;
+  let zip: Buffer;
+
+  function buildZip(): Buffer {
+    const src = join(root, 'src');
+    const top = join(src, 'streamloop');
+    for (const [rel, text] of [
+      ['app/src/server/index.ts', ''], ['START.bat', '@echo off'],
+      ['supervisor/streamloop-supervisor.exe', 'new'], ['supervisor/slate.mp4', ''],
+      ['yt-dlp/yt-dlp.exe', ''], ['yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip', 'new'],
+    ]) {
+      mkdirSync(join(top, rel, '..'), { recursive: true });
+      writeFileSync(join(top, rel), text);
+    }
+    const out = join(root, zipName);
+    execFileSync('C:\\Windows\\System32\\tar.exe', ['-a', '-cf', out, '-C', src, 'streamloop']);
+    return readFileSync(out);
+  }
+
+  function install(): void {
+    for (const rel of ['supervisor/streamloop-supervisor.exe', 'ffmpeg/ffmpeg.exe', 'node/node.exe', 'pot/build/main.js', 'yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip']) {
+      mkdirSync(join(root, rel, '..'), { recursive: true });
+      writeFileSync(join(root, rel), 'old');
+    }
+  }
+
+  function stubRelease(): void {
+    const sha = createHash('sha256').update(zip).digest('hex');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: [
+          asset(`streamloop-v${NEXT}-update.zip`), asset(`streamloop-v${NEXT}-update.zip.sha256`),
+          asset(zipName), asset(`${zipName}.sha256`), asset('components.json'),
+        ] }]));
+      }
+      if (url.endsWith('components.json')) return new Response(JSON.stringify({ version: NEXT, node: '22.23.4', parts }));
+      if (url.endsWith(`${zipName}.sha256`)) return new Response(`${sha}  ${zipName}\n`);
+      if (url.endsWith(zipName)) return new Response(new Uint8Array(zip), { headers: { 'content-length': String(zip.length) } });
+      return new Response('', { status: 404 });
+    }));
+  }
+
+  type StopResult = { ok: true } | { ok: false; reason: string };
+
+  function hooks(stop: () => Promise<StopResult> = async () => ({ ok: true }), windows: number[] = [1]) {
+    let call = 0;
+    return {
+      baseline: vi.fn(async () => ({ encoder: 'h264_nvenc' as const, works: true })),
+      stop: vi.fn(stop),
+      resume: vi.fn(),
+      reportFailure: vi.fn(),
+      windows: vi.fn(async () => windows[Math.min(call++, windows.length - 1)]),
+    };
+  }
+
+  async function updaterWith(h: ReturnType<typeof hooks>): Promise<Updater> {
+    const updater = new Updater({
+      isDevMode: false,
+      installParts: async () => ({ ...parts, supervisor: HASH('9') }),
+      rootDir: root,
+      full: h,
+    });
+    const info = await updater.checkForUpdate();
+    expect(info.kind).toBe('full');
+    return updater;
+  }
+
+  const readState = () => JSON.parse(readFileSync(join(root, 'data', 'update-state.json'), 'utf8'));
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    zip = buildZip();
+    rmSync(join(root, 'src'), { recursive: true, force: true });
+    install();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('records the baseline, stages the parts, stops the stream and moves on to the swap', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks();
+    const updater = await updaterWith(h);
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert
+    expect(readdirSync(join(root, '_update_tmp')).filter((n) => !['extracted', 'update.zip'].includes(n)).sort())
+      .toEqual(['START.bat', 'app', 'supervisor', 'yt-dlp']);
+    expect(h.stop).toHaveBeenCalledWith(['supervisor', 'yt-dlp'], NEXT);
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(h.reportFailure).not.toHaveBeenCalled();
+    expect(readState()).toMatchObject({
+      from: `${major}.${minor}.${patch}`, to: NEXT, parts: ['supervisor'], folders: ['supervisor', 'yt-dlp'],
+      step: 'swap', result: 'running', reason: null, baseline: { encoder: 'h264_nvenc', works: true },
+    });
+    expect(updater.getStatus().status).toBe('ready');
+  });
+
+  it('removes copies left by an earlier update before it starts', async () => {
+    // Arrange
+    stubRelease();
+    for (const dir of ['_update_old', '_update_old_ffmpeg', '_update_old_node', '_update_bad_pot']) {
+      mkdirSync(join(root, dir, 'x'), { recursive: true });
+    }
+    const updater = await updaterWith(hooks());
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert
+    for (const dir of ['_update_old', '_update_old_ffmpeg', '_update_old_node', '_update_bad_pot']) {
+      expect(existsSync(join(root, dir))).toBe(false);
+    }
+  });
+
+  it('removes an update-checking left by an earlier update before it starts', async () => {
+    // Arrange
+    stubRelease();
+    mkdirSync(join(root, 'data'), { recursive: true });
+    writeFileSync(join(root, 'data', 'update-checking'), '');
+    const updater = await updaterWith(hooks());
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert
+    expect(existsSync(join(root, 'data', 'update-checking'))).toBe(false);
+    expect(readState()).toMatchObject({ step: 'swap', result: 'running' });
+  });
+
+  it('calls the update off at the download when a stale update-checking cannot be removed', async () => {
+    // Arrange: a folder in the marker's place cannot be removed as a file.
+    stubRelease();
+    mkdirSync(join(root, 'data', 'update-checking', 'x'), { recursive: true });
+    const h = hooks();
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('data\\update-checking from an earlier update could not be removed.');
+    expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
+    expect(h.stop).not.toHaveBeenCalled();
+  });
+
+  it('keeps an earlier copy that is the only one of its part and calls the update off', async () => {
+    // Arrange
+    stubRelease();
+    rmSync(join(root, 'ffmpeg'), { recursive: true });
+    mkdirSync(join(root, '_update_old_ffmpeg'), { recursive: true });
+    writeFileSync(join(root, '_update_old_ffmpeg', 'ffmpeg.exe'), 'old');
+    const h = hooks();
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('_update_old_ffmpeg');
+    expect(existsSync(join(root, '_update_old_ffmpeg', 'ffmpeg.exe'))).toBe(true);
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
+    expect(h.reportFailure.mock.calls).toEqual([[
+      `The update to ${NEXT} failed at downloading: ffmpeg\\ is not whole, so _update_old_ffmpeg from an earlier update was kept. Still on ${major}.${minor}.${patch}.`,
+    ]]);
+  });
+
+  it('calls the update off and starts the services again when the stream cannot be stopped', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks(async () => ({ ok: false, reason: 'ffmpeg\\ffmpeg.exe is still running.' }));
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('ffmpeg\\ffmpeg.exe is still running.');
+    expect(readState()).toMatchObject({ step: 'stop', result: 'failed', reason: 'ffmpeg\\ffmpeg.exe is still running.' });
+    expect(existsSync(join(root, '_update_tmp'))).toBe(false);
+    expect(h.resume).toHaveBeenCalledTimes(1);
+    expect(updater.getStatus()).toMatchObject({ status: 'error', error: 'ffmpeg\\ffmpeg.exe is still running.' });
+    expect(h.reportFailure.mock.calls).toEqual([[
+      `The update to ${NEXT} failed at stopping the stream: ffmpeg\\ffmpeg.exe is still running. Still on ${major}.${minor}.${patch}.`,
+    ]]);
+  });
+
+  it('refuses a full update while a second START.bat window runs, before anything is downloaded or written', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks(undefined, [2]);
+    const updater = await updaterWith(h);
+    const calls = vi.mocked(fetch).mock.calls.length;
+
+    // Act
+    const start = updater.startUpdate();
+
+    // Assert
+    await expect(start).rejects.toThrow(new UpdateRefusedError('Close the other StreamLoop window first.'));
+    expect(vi.mocked(fetch).mock.calls.length).toBe(calls);
+    expect(h.baseline).not.toHaveBeenCalled();
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(existsSync(join(root, 'data', 'update-state.json'))).toBe(false);
+    expect(existsSync(join(root, '_update_tmp'))).toBe(false);
+    expect(updater.getStatus()).toMatchObject({ status: 'idle', error: null, updateAvailable: true });
+  });
+
+  it('fails at stop with nothing stopped when a second window opened during the download', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks(undefined, [1, 2]);
+    const updater = await updaterWith(h);
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('another StreamLoop window is open');
+    expect(h.windows).toHaveBeenCalledTimes(2);
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(readState()).toMatchObject({ step: 'stop', result: 'failed', reason: 'another StreamLoop window is open' });
+    expect(existsSync(join(root, '_update_tmp'))).toBe(false);
+    expect(h.reportFailure.mock.calls).toEqual([[
+      `The update to ${NEXT} failed at stopping the stream: another StreamLoop window is open. Still on ${major}.${minor}.${patch}.`,
+    ]]);
+  });
+
+  it('refuses a full update when the windows cannot be counted', async () => {
+    // Arrange
+    stubRelease();
+    const h = hooks();
+    h.windows.mockRejectedValueOnce(new Error('powershell failed'));
+    const updater = await updaterWith(h);
+
+    // Act
+    const start = updater.startUpdate();
+
+    // Assert
+    await expect(start).rejects.toThrow(new UpdateRefusedError('The running programs could not be listed. Try again.'));
+    expect(existsSync(join(root, 'data', 'update-state.json'))).toBe(false);
+  });
+
+  it('records the download percentage in the update state', async () => {
+    // Arrange
+    stubRelease();
+    const updater = await updaterWith(hooks());
+
+    // Act
+    await updater.downloadAndApply();
+
+    // Assert: the last write of the download step, kept through the later steps.
+    expect(readState()).toMatchObject({ step: 'swap', downloadPercent: 100 });
+  });
+
+  it('shows the percentage of an app-only download in the status while it runs', async () => {
+    // Arrange: the update ZIP comes in two halves, the second once the test has looked.
+    let release: () => void = () => {};
+    const second = new Promise<void>((r) => { release = r; });
+    const body = new ReadableStream<Uint8Array>({
+      async start(c) {
+        c.enqueue(new Uint8Array(50));
+        await second;
+        c.enqueue(new Uint8Array(50));
+        c.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('api.github.com')) {
+        return new Response(JSON.stringify([{ tag_name: `v${NEXT}`, draft: false, prerelease: true, assets: [
+          asset(`streamloop-v${NEXT}-update.zip`), asset(`streamloop-v${NEXT}-update.zip.sha256`), asset(zipName), asset(`${zipName}.sha256`),
+        ] }]));
+      }
+      if (url.endsWith('-update.zip')) return new Response(body, { headers: { 'content-length': '100' } });
+      return new Response('', { status: 404 });
+    }));
+    const updater = new Updater({ isDevMode: false, rootDir: root });
+    await updater.checkForUpdate();
+
+    // Act
+    const apply = updater.downloadAndApply();
+    await vi.waitFor(() => expect(updater.getStatus().downloadPercent).toBe(50));
+    release();
+
+    // Assert: the stub has no checksum, so the update stops after the download.
+    await expect(apply).rejects.toThrow('Checksum download failed: 404');
+    expect(updater.getStatus().downloadPercent).toBeNull();
+  });
+
+  it('counts no windows for an app-only update', async () => {
+    // Arrange: every part matches, so the update ZIP is taken; the stub serves none, so the download fails.
+    stubRelease();
+    const h = hooks(undefined, [2]);
+    const updater = new Updater({ isDevMode: false, installParts: async () => parts, rootDir: root, full: h });
+    expect((await updater.checkForUpdate()).kind).toBe('app');
+
+    // Act
+    const apply = updater.downloadAndApply();
+
+    // Assert
+    await expect(apply).rejects.toThrow('Download failed: 404');
+    expect(h.windows).not.toHaveBeenCalled();
+  });
+
+  it('does not check for updates while one is being applied', async () => {
+    // Arrange
+    stubRelease();
+    let finishStop: (v: StopResult) => void = () => {};
+    const h = hooks(() => new Promise<StopResult>((r) => { finishStop = r; }));
+    const updater = await updaterWith(h);
+    const apply = updater.downloadAndApply();
+    await vi.waitFor(() => expect(h.stop).toHaveBeenCalled());
+    const fetchCalls = vi.mocked(fetch).mock.calls.length;
+    // Past the 60 s cooldown, as the 6-hourly check would be.
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, 'now').mockReturnValue(later);
+
+    // Act
+    const info = await updater.checkForUpdate();
+    vi.mocked(Date.now).mockRestore();
+
+    // Assert
+    expect(info).toMatchObject({ status: 'ready', kind: 'full', parts: ['supervisor'] });
+    expect(vi.mocked(fetch).mock.calls.length).toBe(fetchCalls);
+    finishStop({ ok: true });
+    await apply;
+  });
+});
+
+describe('Updater test release list', () => {
+  const root = join(import.meta.dirname, '..', '..', '..', '.test-tmp', 'updater-test-releases');
+  const file = join(root, 'releases.json');
+  const names = [`streamloop-v${NEXT}-update.zip`, `streamloop-v${NEXT}-update.sha256`, `streamloop-v${NEXT}.zip`, `streamloop-v${NEXT}.sha256`];
+  const release = (base: string): GithubRelease => ({
+    tag_name: `v${NEXT}`, draft: false, prerelease: true,
+    assets: names.map((name) => ({ name, browser_download_url: `${base}/v${NEXT}/${name}` })),
+  });
+
+  beforeEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reads releases from the test file and allows only local asset URLs while it is set', async () => {
+    // Arrange
+    const calls: string[] = [];
+    let githubList: GithubRelease[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes('api.github.com')) return new Response(JSON.stringify(githubList));
+      return new Response('', { status: 404 });
+    }));
+    const check = (testReleases: string | null) => new Updater({ isDevMode: false, testReleases }).checkForUpdate();
+
+    // Act
+    writeFileSync(file, JSON.stringify([release('http://127.0.0.1:8791')]));
+    const local = await check(file);
+    writeFileSync(file, JSON.stringify([release('https://github.com/Sponsorn/streamloop/releases/download')]));
+    const githubInFile = await check(file);
+    const githubCalls = calls.filter((u) => u.includes('api.github.com')).length;
+    githubList = [release('http://127.0.0.1:8791')];
+    const localWithoutFile = await check(null);
+
+    // Assert
+    expect(local).toMatchObject({ status: 'idle', updateAvailable: true, latestVersion: NEXT, kind: 'app' });
+    expect(githubInFile).toMatchObject({ status: 'error', error: expect.stringContaining('Untrusted download URL domain') });
+    expect(githubCalls).toBe(0);
+    expect(localWithoutFile).toMatchObject({ status: 'error', error: expect.stringContaining('Untrusted download URL domain: http://127.0.0.1:8791') });
   });
 });

@@ -1,6 +1,7 @@
 import {
   streamLine, youtubeNote, twitchLine, isBenignReloadError, sourceLabel, wizardVerdict, formatTime,
   encoderLabel, autostartLabel, dependencyRows, changedFields, savePatch, encoderOptionsHtml, playingListIndex,
+  updateOfferText, updateProgressText, updateRunning, updateBannerView, appDownloadText,
 } from './status-view.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -11,6 +12,11 @@ $('#pb-encoder').innerHTML = encoderOptionsHtml();
 let apiToken = '';
 let pollTimer = null;
 let pollFailures = 0;
+let lastProgress = null;
+let lastSwapLog = [];
+/** The last /api/status stream state, so the update banner can drop "Ready to stream" once live. */
+let lastStreamState = null;
+let waitingForRestart = false;
 const VIDEO_LIST_PER_PAGE = 25;
 
 // Initialization
@@ -468,7 +474,18 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // Monitor: stream line
 
-function renderStream(s) {
+function renderStream(s, progress = null) {
+  if (updateRunning(progress)) {
+    const word = $('#stream-word');
+    word.textContent = 'Updating';
+    word.className = 'stream-word warn';
+    const reason = $('#stream-reason');
+    reason.textContent = updateProgressText(progress, lastSwapLog, Date.now());
+    reason.classList.remove('hidden');
+    $('#btn-stream-start').classList.add('hidden');
+    $('#btn-stream-stop').classList.add('hidden');
+    return;
+  }
   const line = streamLine(s.stream, youtubeNote(s.supervisor && s.supervisor.youtube));
   const word = $('#stream-word');
   word.textContent = line.word;
@@ -712,7 +729,13 @@ async function pollOnce() {
     ]);
     pollFailures = 0;
     $('#connection-lost').classList.add('hidden');
-    renderStream(status);
+    lastStreamState = status.stream ? status.stream.state : null;
+    if (updateStatus) {
+      lastProgress = updateStatus.progress;
+      lastSwapLog = updateStatus.swapLog || [];
+    }
+    const progress = updateStatus ? updateStatus.progress : lastProgress;
+    renderStream(status, progress);
     renderNowPlaying(status);
     renderEvents(events);
     if (updateStatus) renderUpdateBanner(updateStatus);
@@ -720,6 +743,7 @@ async function pollOnce() {
     console.error('Poll error:', err);
     pollFailures++;
     if (pollFailures >= 2) $('#connection-lost').classList.remove('hidden');
+    if (pollFailures >= 2 && updateRunning(lastProgress)) waitForRestart();
   }
 }
 
@@ -817,6 +841,7 @@ async function loadSettings() {
     $('#set-twitch-client-secret').value = cfg.twitchClientSecret || '';
     $('#set-twitch-channel').value = cfg.twitchChannel || '';
     $('#auto-open-toggle').checked = cfg.autoOpenAdmin !== false;
+    $('#auto-start-stream-toggle').checked = cfg.autoStartStream !== false;
     settingsLoaded = true;
   } catch (err) {
     showToast('Could not load settings: ' + err.message);
@@ -924,6 +949,16 @@ async function handleAutoOpenToggle() {
   const input = $('#auto-open-toggle');
   try {
     await saveConfig({ autoOpenAdmin: input.checked });
+  } catch (err) {
+    showToast('Could not change the setting: ' + err.message);
+    input.checked = !input.checked;
+  }
+}
+
+async function handleAutoStartStreamToggle() {
+  const input = $('#auto-start-stream-toggle');
+  try {
+    await saveConfig({ autoStartStream: input.checked });
   } catch (err) {
     showToast('Could not change the setting: ' + err.message);
     input.checked = !input.checked;
@@ -1312,30 +1347,31 @@ function renderUpdateBanner(status) {
   const notice = $('#update-node-notice');
   notice.textContent = status.nodeNotice || '';
   notice.classList.toggle('hidden', !status.nodeNotice);
-  if (!status.updateAvailable) {
-    banner.classList.add('hidden');
-    return;
-  }
-  banner.classList.remove('hidden');
+  const view = updateBannerView(status, Date.now(), lastStreamState);
+  banner.classList.toggle('hidden', !view.visible);
+  btn.classList.toggle('hidden', !view.showButton);
+  if (!view.visible) return;
+  if (view.keepText) text.textContent = view.text;
+  if (!view.showButton) return;
   if (status.status === 'downloading') {
-    text.textContent = `Downloading v${status.latestVersion}...`;
+    if (!view.keepText) text.textContent = appDownloadText(status);
     btn.disabled = true;
     btn.textContent = 'Downloading...';
   } else if (status.status === 'extracting') {
-    text.textContent = `Installing v${status.latestVersion}...`;
+    if (!view.keepText) text.textContent = `Installing v${status.latestVersion}...`;
     btn.disabled = true;
     btn.textContent = 'Installing...';
   } else if (status.status === 'ready') {
-    text.textContent = 'Update installed. Restarting...';
+    if (!view.keepText) text.textContent = 'Update installed. Restarting...';
     btn.disabled = true;
     btn.textContent = 'Restarting...';
   } else if (status.status === 'error') {
-    text.textContent = `Update failed: ${status.error}`;
+    if (!view.keepText) text.textContent = `Update failed: ${status.error}`;
     btn.disabled = false;
     btn.textContent = 'Retry';
   } else {
-    text.textContent = `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
-    btn.textContent = status.isDevMode ? 'Dev Mode' : 'Update Now';
+    if (!view.keepText) text.textContent = updateOfferText(status);
+    btn.textContent = status.isDevMode ? 'Dev Mode' : status.kind === 'full' && status.sameVersion ? updateOfferText(status) : 'Update Now';
     btn.disabled = !!status.isDevMode;
   }
 }
@@ -1357,7 +1393,13 @@ async function handleUpdate() {
 async function pollUpdateProgress() {
   try {
     const status = await api('/api/update/status');
+    lastProgress = status.progress;
+    lastSwapLog = status.swapLog || [];
     renderUpdateBanner(status);
+    if (updateRunning(status.progress)) {
+      setTimeout(pollUpdateProgress, 1500);
+      return;
+    }
     if (status.status === 'ready') {
       setTimeout(waitForRestart, 3000);
       return;
@@ -1370,24 +1412,27 @@ async function pollUpdateProgress() {
   }
 }
 
-let restartAttempts = 0;
+/** Waits for the server with no limit: a full update can keep it down for minutes. Shows the last step seen meanwhile. */
 async function waitForRestart() {
-  restartAttempts++;
-  if (restartAttempts > 30) {
-    showToast('The server did not come back after the update. Check the StreamLoop window for errors.');
-    const btn = $('#update-btn');
-    btn.disabled = false;
-    btn.textContent = 'Retry';
-    restartAttempts = 0;
-    return;
-  }
+  if (waitingForRestart) return;
+  waitingForRestart = true;
+  await restartLoop();
+}
+
+async function restartLoop() {
   try {
     await api('/api/status');
-    restartAttempts = 0;
     window.location.reload();
+    return;
   } catch {
-    setTimeout(waitForRestart, 2000);
+    if (lastProgress) {
+      const shown = updateProgressText(lastProgress, lastSwapLog, Date.now());
+      $('#update-banner').classList.remove('hidden');
+      $('#update-banner-text').textContent = shown;
+      $('#update-btn').classList.add('hidden');
+    }
   }
+  setTimeout(restartLoop, 2000);
 }
 
 async function handleCheckUpdate() {
@@ -1471,6 +1516,7 @@ async function boot() {
   $('#copy-redirect-btn').addEventListener('click', (e) => copyRedirectUrl(e.currentTarget));
   $('#autostart-toggle').addEventListener('change', handleAutostartToggle);
   $('#auto-open-toggle').addEventListener('change', handleAutoOpenToggle);
+  $('#auto-start-stream-toggle').addEventListener('change', handleAutoStartStreamToggle);
   $('#check-update-btn').addEventListener('click', handleCheckUpdate);
   $('#settings-update-btn').addEventListener('click', handleUpdate);
   $('#update-btn').addEventListener('click', handleUpdate);

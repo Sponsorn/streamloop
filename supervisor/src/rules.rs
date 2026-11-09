@@ -393,6 +393,30 @@ pub fn encoder_backoff_s(failures: u32) -> u64 {
     [2, 5, 10, 30, 60][(failures as usize).min(4)]
 }
 
+/// The `host:port` the encoder connects to, for the ingest probe. Twitch's ingest URL names no
+/// port, and a host alone does not resolve as a socket address.
+pub fn ingest_addr(ingest_url: &str) -> Option<String> {
+    let (scheme, rest) = ingest_url.split_once("://")?;
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "rtmp" => 1935,
+        "rtmps" => 443,
+        _ => return None,
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    // An IPv6 host is bracketed, so its own colons are not the port's.
+    let host_end = if authority.starts_with('[') { authority.find(']')? + 1 } else { authority.find(':').unwrap_or(authority.len()) };
+    let (host, port) = authority.split_at(host_end);
+    if host.is_empty() || host == "[]" {
+        return None;
+    }
+    let port = match port.strip_prefix(':') {
+        Some(p) => p.parse::<u16>().ok()?,
+        None if port.is_empty() => default_port,
+        None => return None,
+    };
+    Some(format!("{host}:{port}"))
+}
+
 pub fn token_backoff_s(restarts: u32) -> u64 {
     [2, 10, 30, 60][(restarts as usize).min(3)]
 }
@@ -905,6 +929,44 @@ mod tests {
         assert!(!ended_early(true, 10.0, None));
         assert_eq!([0, 1, 2, 3, 4, 9].map(encoder_backoff_s), [2, 5, 10, 30, 60, 60]);
         assert_eq!([0, 1, 2, 7].map(token_backoff_s), [2, 10, 30, 60]);
+    }
+
+    #[test]
+    fn the_ingest_probe_uses_the_rtmp_port_when_the_url_names_none() {
+        // Arrange
+        let twitch = "rtmp://live.twitch.tv/app";
+
+        // Act
+        let addr = ingest_addr(twitch);
+
+        // Assert
+        assert_eq!(addr.as_deref(), Some("live.twitch.tv:1935"));
+    }
+
+    #[test]
+    fn the_ingest_probe_uses_port_443_for_rtmps() {
+        assert_eq!(ingest_addr("rtmps://ingest.example/app").as_deref(), Some("ingest.example:443"));
+        assert_eq!(ingest_addr("RTMPS://ingest.example/app").as_deref(), Some("ingest.example:443"));
+    }
+
+    #[test]
+    fn the_ingest_probe_keeps_a_port_the_url_names() {
+        assert_eq!(ingest_addr("rtmp://127.0.0.1:1935/live").as_deref(), Some("127.0.0.1:1935"));
+        assert_eq!(ingest_addr("rtmp://[::1]:1936/live").as_deref(), Some("[::1]:1936"));
+        assert_eq!(ingest_addr("rtmp://[::1]/live").as_deref(), Some("[::1]:1935"));
+    }
+
+    #[test]
+    fn the_ingest_probe_address_never_carries_the_path_or_the_stream_key() {
+        assert_eq!(ingest_addr("rtmp://live.twitch.tv/app/live_987654_SeCrEt").as_deref(), Some("live.twitch.tv:1935"));
+        assert_eq!(ingest_addr("rtmp://live.twitch.tv").as_deref(), Some("live.twitch.tv:1935"));
+    }
+
+    #[test]
+    fn the_ingest_probe_has_no_address_for_a_url_it_cannot_read() {
+        for url in ["", "live.twitch.tv/app", "rtmp:///app", "http://live.twitch.tv/app", "rtmp://host:notaport/app"] {
+            assert_eq!(ingest_addr(url), None, "{url}");
+        }
     }
 
     #[test]

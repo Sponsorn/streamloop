@@ -109,6 +109,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig(tmpConfig)).toThrow();
   });
 
+  it('defaults autoStartStream to true', () => {
+    // Arrange
+    writeFileSync(tmpConfig, JSON.stringify({ playlists: [{ id: 'PL1' }] }));
+
+    // Act
+    const config = loadConfig(tmpConfig);
+
+    // Assert
+    expect(config.autoStartStream).toBe(true);
+  });
+
   it('opens the admin panel on boot unless autoOpenAdmin is false', () => {
     // Arrange
     const base = { playlists: [{ id: 'PL1' }] };
@@ -392,6 +403,7 @@ describe('a config.json written by 3.0.x', () => {
     updateCheckIntervalMs: 3600000,
     autoUpdateYtdlp: false,
     autoOpenAdmin: false,
+    autoStartStream: true,
     twitchClientId: 'client-id',
     twitchClientSecret: 'client-secret',
     twitchChannel: 'channel',
