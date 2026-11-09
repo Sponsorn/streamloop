@@ -14,10 +14,7 @@ use streamloop_common::events::events_file;
 use streamloop_common::time::{iso, local_date};
 
 use crate::clock::Clock;
-
-pub const OBS_RUNNING: &str = "OBS is running, and 2.x may be streaming on the same key. Close OBS to start 3.0.";
-pub const NO_ENCODER: &str = "No encoder works on this PC. Check the graphics driver.";
-pub const FFMPEG_MISSING: &str = "ffmpeg is missing from the install. Reinstall StreamLoop from the full ZIP.";
+use crate::setup_check::{FFMPEG_MISSING, NO_ENCODER, OBS_RUNNING};
 
 /// One line of the supervisor's events file, or an event the launcher raised in the same shape.
 #[derive(Debug, Clone, PartialEq, Serialize)]

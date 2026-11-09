@@ -8,8 +8,9 @@ use serde_json::{json, Map, Value};
 use streamloop_common::config::Playlist;
 use streamloop_control::clock::TestClock;
 use streamloop_control::events::{
-    describe, launcher_event, with_playlist_names, Alert, AlertGate, Described, DiscordKind, SupervisorEvent, SupervisorEvents, FFMPEG_MISSING, NO_ENCODER,
+    describe, launcher_event, with_playlist_names, Alert, AlertGate, Described, DiscordKind, SupervisorEvent, SupervisorEvents,
 };
+use streamloop_control::setup_check::{FFMPEG_MISSING, NO_ENCODER};
 
 /// 2026-10-25 12:00 UTC: the same calendar day on every time zone from -11 to +11.
 const NOON: u64 = 1_792_929_600;

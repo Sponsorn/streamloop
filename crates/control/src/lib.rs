@@ -5,5 +5,6 @@ pub mod events;
 pub mod http;
 pub mod logging;
 pub mod runner;
+pub mod setup_check;
 pub mod supervisor_client;
 pub mod timeline;
