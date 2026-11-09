@@ -224,6 +224,14 @@ async fn an_unknown_admin_file_is_the_same_404_page_naming_the_path() {
 }
 
 #[tokio::test]
+async fn the_dashboards_own_tests_are_not_served() {
+    // Act
+    let r = call(app(), get_req("/admin/__tests__/status-view.test.ts")).await;
+    // Assert
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn a_path_that_climbs_out_of_the_admin_folder_is_404() {
     // Act
     let r = call(app(), get_req("/admin/..%2f..%2fCargo.toml")).await;

@@ -1,4 +1,4 @@
-// Helpers shared by install-session.mjs, update-session.mjs and R3's ui-session.mjs: an install started
+// Helpers shared by install-session.mjs and R3's ui-session.mjs: an install started
 // from its own START.bat, its control process's API (Node's in a 3.0 install), the RTMP reader, file
 // hashes, the interrupt teardown and the sweep of what a killed harness left. Every child is spawned hidden.
 // useOut() names the results folder that note(), the console logs and requests.jsonl go to.
@@ -224,13 +224,6 @@ export function quietConfig(file, overrides = {}) {
   Object.assign(c, { autoOpenAdmin: false, autoUpdateYtdlp: false, autoUpdateCheck: false }, overrides);
   writeFileSync(file, JSON.stringify(c, null, 2));
 }
-/** Runs a snippet under an install's own Node and tsx, from that app's folder. */
-export async function tsxEval(root, code, env = {}) {
-  const r = await run(join(root, 'node', 'node.exe'), [join(root, 'app', 'node_modules', 'tsx', 'dist', 'cli.mjs'), '-e', code],
-    { cwd: join(root, 'app'), encoding: 'utf8', timeout: 60_000, env: { ...process.env, ...env } });
-  return { status: r.status, stdout: r.stdout.trim(), stderr: r.stderr.trim().slice(0, 2000) };
-}
-
 export const portOpen = (port) => new Promise((resolve) => {
   const s = net.connect(port, '127.0.0.1');
   s.on('connect', () => { s.destroy(); resolve(true); });

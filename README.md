@@ -1,102 +1,90 @@
 # StreamLoop
 
-24/7 YouTube playlist streamer for OBS with automatic recovery. StreamLoop plays a YouTube playlist in **mpv** (resolved via yt-dlp) and OBS captures the mpv window with a **Window Capture** source. A background server watches for playback freezes, stalls, network errors, and signed-URL expiry, and recovers automatically — preferring an in-place URL reload (so the stream never shows a black screen) before escalating to an mpv restart. It can optionally drive OBS streaming, send Discord alerts, and cross-check Twitch liveness.
+Streams a YouTube playlist to Twitch around the clock from one Windows PC. StreamLoop 3 needs no OBS and no mpv: one program, `streamloop.exe`, downloads the videos with yt-dlp, plays them through ffmpeg and sends the stream to Twitch itself. It retries or skips a video that fails, restarts the encoder when it stops, sends alerts to Discord, and checks that Twitch really shows a moving picture.
 
-> **Windows only.** StreamLoop controls mpv over a Windows named pipe, captures the mpv window in OBS, and uses a VBS script for autostart.
+> **Windows only.** StreamLoop uses Windows' DPAPI to store the stream key, a Windows Job Object to keep its ffmpeg processes together, and a VBS script for autostart.
 
 ## How it works
 
 ```
-yt-dlp ──resolves──> mpv (plays playlist) ──Window Capture──> OBS ──streams──> YouTube/Twitch/…
-                       ▲                                        ▲
-                       └──────── StreamLoop server ────────────┘
-                         named-pipe IPC + OBS WebSocket
-                         (heartbeat monitor, recovery, dashboard)
+YouTube ──yt-dlp──> download cache ──> feeder ffmpeg ──> encoder ffmpeg ──RTMP──> Twitch
+                                         (one video     (one connection
+                                          at a time)     for the whole stream)
+                         ▲
+        streamloop.exe supervisor: plays the playlist, retries, skips, restarts
+                         ▲  local HTTP
+        streamloop.exe: dashboard, Discord alerts, Twitch checks, updates
 ```
 
-The server polls mpv every few seconds and runs several independent freeze/stall detectors. Most try an **in-place URL retry** (re-resolve the video at the current position — no mpv restart) before falling back to the full restart sequence: RetryCurrent → RestartMpv → CriticalAlert.
+`streamloop.exe` runs as two processes. The supervisor keeps the pipeline going: one long-lived encoder holds the Twitch connection while a feeder per video hands over to the next, so a new video never drops the stream. The control process serves the dashboard on `http://localhost:7654/admin`, starts the supervisor, and starts it again if it stops. The supervisor does not depend on the control process: the stream keeps running while the control process restarts.
 
 ## Features
 
-- **Automatic recovery** from stalls, video-freeze-while-audio-continues, output freezes (detected by hashing OBS screenshots), premature EOF, and YouTube's ~6h signed-URL expiry — in-place reload first, mpv restart only as a fallback
-- **Persistent playback position** across restarts (`state.json`)
-- **Admin dashboard** for live monitoring, recovery-event history, playback controls (playlist selector, transport, seek, video list), and live config editing — no restart needed
-- **Now-playing overlay** for OBS at `/overlay`
-- **Discord webhook alerts** with customizable per-event templates
-- **OBS streaming control** with optional auto-start and auto-restart on stream drop
-- **Twitch liveness check** — restarts the stream if OBS reports streaming but the channel is offline
+- **No gaps between videos**: the Twitch connection stays up from one video to the next, and from the end of one playlist to the start of the next
+- **Automatic recovery** from a video that fails, stalls or freezes (retried, then skipped), an encoder that stops (restarted) and a supervisor that stops (started again, resuming where it was)
+- **Download cache** with a size limit, and a standby slate while nothing is ready
+- **Hardware encoding** on NVIDIA, AMD or Intel, with software encoding as the last resort; the first-run check finds the one that works
+- **Now-playing overlay** drawn into the stream
+- **Dashboard** for status, the event timeline, Stop and Start, skip and jump, playlists, settings and logs
+- **Discord webhook alerts** with a template per event
+- **Twitch checks** that the channel is live and that its own stream shows a moving picture
 - **Windows autostart** for unattended operation
-- **One-click auto-updater** from the dashboard (GitHub Releases)
+- **Updates from the dashboard**: a new version replaces `streamloop.exe` just before Twitch's 48-hour cut, or at once with Update Now, and the previous version comes back if the new one does not start
 
-## Quick start (end users)
+## Quick start
 
-Download the latest `streamloop-vX.Y.Z.zip` from [Releases](https://github.com/Sponsorn/streamloop/releases), extract it anywhere, and run `START.bat`. The bundle is self-contained — it includes portable Node.js, mpv, and yt-dlp, so nothing needs to be installed. On first run, open `http://localhost:7654/admin` and the setup wizard walks you through playlist, OBS, and Discord settings. After that, updates are one click from the dashboard.
+1. Download `streamloop-vX.Y.Z.zip` from [Releases](https://github.com/Sponsorn/streamloop/releases). 3.x versions are marked as pre-releases.
+2. Make a new, empty folder, for example `C:\StreamLoop3`, and extract the ZIP into it. The ZIP holds one folder, `streamloop`.
+3. Double-click `START.bat` in `C:\StreamLoop3\streamloop`.
+
+Everything StreamLoop needs is in the folder: ffmpeg, yt-dlp, and Node.js for the YouTube token server. The dashboard opens at `http://localhost:7654/admin` and walks you through the playlist, your Twitch stream key (stored encrypted for your Windows user), Discord, and a system check that picks the encoder and the cache size.
+
+Keep the `START.bat` window open: it runs the dashboard. Closing it does not stop the stream; start `START.bat` again to get the dashboard back.
+
+StreamLoop 2.x (mpv and OBS) lives on the `2.x` branch, and 3.0 on the `3.0` branch.
 
 ## Development setup (from source)
 
-Requires Node.js 22+ and, because StreamLoop drives the real player, local copies of the Windows binaries:
+Requires Rust stable (MSVC toolchain) and Node.js 22 or later, for the tests and the build scripts.
 
 ```bash
+cargo build --release   # target\release\streamloop.exe
+cargo test --workspace  # the Rust tests
 npm install
-cp config.example.json config.json      # then edit config.json
+npm test                # the dashboard's tests and the test harness's (vitest)
 ```
 
-Place `mpv.exe` in `mpv/` and `yt-dlp.exe` in `yt-dlp/` at the project root (the server looks there first in dev, then falls back to the portable release layout). `config.json` is gitignored; `config.example.json` is the tracked template.
-
-```bash
-npm start       # run the server (tsx)
-npm run dev     # run with file watching (tsx watch)
-```
-
-## OBS configuration
-
-1. Start StreamLoop — it launches mpv playing your playlist in its own window.
-2. In OBS, add a **Window Capture** source targeting the mpv window.
-3. Set that source's name as `obsBrowserSourceName` in config (the field name is legacy; it's the source the output-freeze detector screenshots). The setup wizard does this for you.
-4. Enable the OBS WebSocket server: **Tools → WebSocket Server Settings → Enable**, then put the URL and password in config so StreamLoop can monitor and control streaming.
-5. (Optional) Add a **Browser Source** pointing at `http://localhost:7654/overlay` for a now-playing overlay.
-
-## Admin dashboard
-
-Open `http://localhost:7654/admin` to monitor player status, review recovery events, control playback, and edit every setting live.
+`streamloop.exe` needs an install folder around it (ffmpeg, yt-dlp, the token server and `app\config.json`). `node supervisor/scripts/dev-root.mjs` builds one from local copies of the tools; [CLAUDE.md](CLAUDE.md) has the details, and [ARCHITECTURE.md](ARCHITECTURE.md) how the parts fit.
 
 ## Configuration
 
-`config.json` is validated against a Zod schema with sensible defaults — see [`config.example.json`](config.example.json) for the complete set, and edit most of it live from the dashboard. Key fields:
+`app\config.json` is created from `app\config.example.json` on first start and edited from the dashboard. Most settings apply live; a new ingest, key, encoder, or freeze or silence time needs a stream restart, and the dashboard says so when you save. Key fields:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `playlists` | — | Array of `{ id, name? }` YouTube playlist objects (at least one) |
-| `obsBrowserSourceName` | — | Name of the OBS source capturing the mpv window (legacy field name) |
-| `port` | `7654` | HTTP server / dashboard port |
-| `obsWebsocketUrl` | `ws://127.0.0.1:4455` | OBS WebSocket server URL |
-| `obsWebsocketPassword` | `""` | OBS WebSocket password |
-| `discord.webhookUrl` | `""` | Discord webhook for alerts (per-event toggles + templates under `discord`) |
-| `obsAutoStream` / `obsAutoRestart` | `false` | Auto-start streaming on connect / auto-restart on stream drop |
-| `proactiveUrlRefreshMs` | `19800000` (5.5h) | Reload the current video before YouTube's signed-URL expiry; `0` disables |
-| `initialLoadGraceMs` | `90000` | Grace window after each mpv connect before the non-playing watchdog escalates |
-| `sourceRefreshIntervalMs` | `1800000` (30m) | Periodic proactive mpv restart to curb memory growth; `0` disables |
-| `twitchLivenessEnabled` | `false` | Cross-check Twitch liveness (needs `twitchClientId`/`Secret`/`Channel`) |
-| `autoUpdateCheck` | `true` | Periodically check GitHub Releases for updates |
-| `autoOpenAdmin` | `true` | Open the admin dashboard in the default browser on start; `false` skips it |
-| `mpvYtdlFormat` | `bestvideo[height<=?1080]+bestaudio/best` | yt-dlp format string passed to mpv |
-| `ytdlCookiesFromBrowser` | `""` | Browser name to pull cookies from (for age/region-gated videos) |
+| `playlists` | — | YouTube playlists as `{ id, name? }`, at least one, in play order |
+| `port` | `7654` | Dashboard and API port |
+| `supervisor.ingestUrl` | `rtmp://live.twitch.tv/app` | Twitch ingest |
+| `supervisor.streamKeyProtected` | `""` | The stream key, encrypted; set it from the dashboard |
+| `supervisor.encoder` | `h264_nvenc` | `h264_nvenc`, `h264_amf`, `h264_qsv` or `libx264`; the system check picks one |
+| `supervisor.cacheBudgetMb` | `300` | Disk space for downloaded videos |
+| `supervisor.overlay` | `true` | Draw the now-playing overlay into the stream |
+| `supervisor.freezeSeconds` / `silenceSeconds` | `20` / `30` | How long a frozen picture or silence lasts before StreamLoop acts or reports it |
+| `discord.webhookUrl` | `""` | Discord webhook for alerts (per-event toggles and templates under `discord`) |
+| `twitchLivenessEnabled` | `false` | Check that the channel is live (needs `twitchClientId`, `twitchClientSecret`, `twitchChannel`) |
+| `autoUpdateCheck` | `true` | Check GitHub Releases for updates and install them at the planned break |
+| `autoUpdateYtdlp` | `true` | Update yt-dlp each time StreamLoop starts |
+| `autoOpenAdmin` | `true` | Open the dashboard in the browser on start |
+| `autoStartStream` | `true` | Start the stream when StreamLoop starts; when off, it waits for Start |
+| `ytdlCookiesFromBrowser` | `""` | Browser to take YouTube cookies from (for age- or region-gated videos) |
 
 ## Windows release build
 
 ```bash
-npm run build:release        # full self-contained ZIP (node + mpv + yt-dlp/deno + app)
-npm run build:release:slim   # update-only ZIP (app + yt-dlp, no node/mpv) — smaller updates
+npm run build:release
 ```
 
-Both emit a matching `.sha256`. The full build requires `mpv.exe` in `build/mpv/`. Always ship the full ZIP (first-time installs need `node/` + `mpv/`); the slim ZIP is an update-only supplement the auto-updater prefers so existing installs download less.
-
-## Testing
-
-```bash
-npm test             # run once (vitest)
-npm run test:watch   # watch mode
-```
+It builds `streamloop.exe` with cargo and writes, in `dist\`, the full ZIP `streamloop-vX.Y.Z.zip` (the install), `streamloop-vX.Y.Z.exe` (what the updater downloads), a `.sha256` for each and `node-version.txt`, then checks the ZIP with `build/verify-release.mjs`. There is no separate update ZIP: an update replaces the exe, and a release that changes ffmpeg, Node.js or the token server says in its notes that it needs the full ZIP.
 
 ## License
 

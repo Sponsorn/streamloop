@@ -1,15 +1,14 @@
 // Records the dashboard API's answers from a running server, so the Rust server can be checked
 // against the Node backend's. The request script below is data: the Rust run replays it unchanged.
-//   node api-parity.mjs record --server node|rust --out FILE
+//   node api-parity.mjs record --server rust --out FILE
 //   node api-parity.mjs compare A B        exit 0 when equal, else prints each differing request, exit 1
 // The compare skips the known differences in EXPECTED, each by name, and says which ones it skipped.
 // Nothing leaves the machine: a fake supervisor answers on 4417, a local catcher takes the Discord
 // webhook, and the config turns off every outbound check. The server runs against a temp root.
-// Node runs as an install does: the repo's src\ is copied to ROOT\app\src, so its logs and timeline
-// land in ROOT\app\logs, where the Rust control process puts them too.
+// api-parity/node.json is the Node backend's recording, made before 3.1 removed src\server; it cannot be re-recorded.
 import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, utimesSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -320,7 +319,7 @@ function startCatcher(counter) {
   });
 }
 
-/** Unlinks the node_modules junction first, so removing the root never walks into the repo. */
+/** Unlinks a node_modules junction an old Node recording left, so removing the root never walks into the repo. */
 function removeRoot(root) {
   try { rmdirSync(join(root, 'app', 'node_modules')); } catch { /* absent or not a junction */ }
   rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -352,25 +351,15 @@ function seedRoot(root) {
   }, null, 2));
 }
 
-function launchServer(kind, root) {
+function launchServer(root) {
   const env = { ...process.env, STREAMLOOP_ROOT: root, STREAMLOOP_TEST_HOOKS: '1', LOG_LEVEL: 'info' };
   for (const k of ['STREAMLOOP_DEBUG_FAULTS', 'STREAMLOOP_TEST_HLS_URL', 'STREAMLOOP_TEST_RELEASES']) delete env[k];
-  if (kind === 'node') {
-    const app = join(root, 'app');
-    cpSync(join(REPO, 'src'), join(app, 'src'), { recursive: true, filter: (p) => !p.includes('__tests__') });
-    cpSync(join(REPO, 'package.json'), join(app, 'package.json'));
-    if (existsSync(join(REPO, 'tsconfig.json'))) cpSync(join(REPO, 'tsconfig.json'), join(app, 'tsconfig.json'));
-    symlinkSync(join(REPO, 'node_modules'), join(app, 'node_modules'), 'junction');
-    const tsx = join(REPO, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-    return cp.spawn(process.execPath, [tsx, join(app, 'src', 'server', 'index.ts')], { cwd: app, env, windowsHide: true, stdio: 'ignore' });
-  }
   return cp.spawn(RUST_EXE, ['--root', root], { cwd: join(root, 'app'), env, windowsHide: true, stdio: 'ignore' });
 }
 
 const RUST_EXE = join(REPO, 'target', 'release', 'streamloop.exe');
 /** The version the server under test runs, which its fake supervisor reports. */
-function serverVersion(kind) {
-  if (kind === 'node') return JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
+function serverVersion() {
   if (!existsSync(RUST_EXE)) throw new Error(`${RUST_EXE} is missing: build it with cargo build --release`);
   return cp.execFileSync(RUST_EXE, ['--version'], { encoding: 'utf8', windowsHide: true }).trim();
 }
@@ -407,14 +396,14 @@ async function send(request) {
   return { status: res.status, contentType: res.headers.get('content-type'), buffer: Buffer.from(await res.arrayBuffer()) };
 }
 
-async function record(kind, out) {
+async function record(out) {
   for (const port of [API_PORT, SUPERVISOR_PORT, CATCHER_PORT]) {
     if (!(await portFree(port))) throw new Error(`port ${port} is in use: not ours, so nothing was started`);
   }
   const root = join(tmpdir(), 'streamloop-api-parity');
   const received = [];
   const catcherCount = { n: 0 };
-  const fake = startFakeSupervisor(received, serverVersion(kind));
+  const fake = startFakeSupervisor(received, serverVersion());
   const catcher = startCatcher(catcherCount);
   let child = null;
   live.servers = [fake, catcher];
@@ -423,7 +412,7 @@ async function record(kind, out) {
     seedRoot(root);
     await listen(fake, SUPERVISOR_PORT);
     await listen(catcher, CATCHER_PORT);
-    child = launchServer(kind, root);
+    child = launchServer(root);
     live.child = child;
     const exited = new Promise((resolve) => child.once('exit', resolve));
     // up: the token answers; ready: the launcher has seen the fake supervisor
@@ -431,7 +420,7 @@ async function record(kind, out) {
     for (let i = 0; i < 120 && !up && child.exitCode === null; i += 1) {
       try { send.token = (await (await fetch(`${API}/token`)).json()).token; up = true; } catch { await sleep(500); }
     }
-    if (!up) throw new Error(`the ${kind} server did not come up`);
+    if (!up) throw new Error('the control process did not come up');
     let ready = false;
     for (let i = 0; i < 40 && !ready; i += 1) {
       try { ready = (await (await fetch(`${API}/status`)).json()).launcher === 'running'; } catch { /* retry */ }
@@ -455,7 +444,7 @@ async function record(kind, out) {
     }
     // the shutdown was the last request: the server exits by itself
     await Promise.race([exited, sleep(10_000)]);
-    const result = { server: kind, requests, supervisorRequests: received, catcherRequests: catcherCount.n };
+    const result = { server: 'rust', requests, supervisorRequests: received, catcherRequests: catcherCount.n };
     mkdirSync(join(out, '..'), { recursive: true });
     writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
     return result;
@@ -470,8 +459,12 @@ function main() {
   if (cmd === 'record') {
     const kind = opt('--server');
     const out = opt('--out');
-    if (!['node', 'rust'].includes(kind) || !out) { console.error('usage: api-parity.mjs record --server node|rust --out FILE'); process.exit(2); }
-    record(kind, out).then((r) => console.log(`recorded ${r.requests.length} requests and ${r.supervisorRequests.length} supervisor requests to ${out}`))
+    if (kind === 'node') {
+      console.error('The Node backend was removed in 3.1, so it cannot be recorded again. supervisor/scripts/api-parity/node.json is its recording: compare against that file.');
+      process.exit(2);
+    }
+    if (kind !== 'rust' || !out) { console.error('usage: api-parity.mjs record --server rust --out FILE'); process.exit(2); }
+    record(out).then((r) => console.log(`recorded ${r.requests.length} requests and ${r.supervisorRequests.length} supervisor requests to ${out}`))
       .catch((e) => { console.error(e.message); process.exit(1); });
   } else if (cmd === 'compare' && args.length === 2) {
     const [a, b] = args.map((f) => JSON.parse(readFileSync(f, 'utf8')));
@@ -483,7 +476,7 @@ function main() {
     console.log(lines.join('\n'));
     process.exit(1);
   } else {
-    console.error('usage: api-parity.mjs record --server node|rust --out FILE | compare A B');
+    console.error('usage: api-parity.mjs record --server rust --out FILE | compare A B');
     process.exit(2);
   }
 }

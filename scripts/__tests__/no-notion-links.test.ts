@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'fs';
 import { resolve, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const skippedExtensions = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.zip', '.exe', '.dll', '.mp4', '.mpg', '.lock',
 ]);

@@ -257,6 +257,7 @@ const BODY_LIMIT: usize = 100 * 1024;
 
 #[derive(RustEmbed)]
 #[folder = "../../src/admin/"]
+#[exclude = "__tests__/*"]
 struct AdminFiles;
 
 /// The whole API: every route of `api.ts` on the router base.

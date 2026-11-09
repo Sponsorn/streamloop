@@ -1,4 +1,4 @@
-// Update wording shared by the dashboard (status-view.js) and the server's Discord post (full-update.ts).
+// Update wording for the dashboard (status-view.js); crates/control/src/landing.rs words its Discord post the same way.
 
 export const STEP_LABELS = {
   download: 'Downloading',
