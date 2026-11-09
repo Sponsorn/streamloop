@@ -1277,6 +1277,67 @@ async fn a_start_while_suspended_launches_once_and_keeps_the_hold() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn launch_now_and_wait_returns_when_the_launch_helper_exits() {
+    // Arrange: the helper exits 2 s after its spawn
+    let r = rig(Setup::default());
+    r.launcher.start();
+    let spawner = r.spawner.clone();
+    tokio::spawn(async move {
+        while spawner.count() == 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        spawner.exit(0, 0);
+    });
+    // Act
+    let outcome = r.launcher.launch_now_and_wait(Duration::from_secs(60)).await;
+    r.launcher.stop();
+    // Assert
+    assert_eq!(outcome, Some(LaunchOutcome::Exited(Some(0))));
+    assert_eq!(r.spawner.count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn launch_now_and_wait_returns_the_reason_the_guard_held_it() {
+    // Arrange
+    let r = guarded(GuardSetup { obs: true, ..guard_setup() }, false);
+    r.launcher.start();
+    // Act
+    let outcome = r.launcher.launch_now_and_wait(Duration::from_secs(60)).await;
+    r.launcher.stop();
+    // Assert
+    assert_eq!(outcome, Some(LaunchOutcome::Held(OBS_RUNNING.to_string())));
+    assert_eq!(r.spawner.count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn launch_now_and_wait_gives_up_at_its_limit() {
+    // Arrange: the helper never exits
+    let r = rig(Setup::default());
+    r.launcher.start();
+    let started = tokio::time::Instant::now();
+    // Act
+    let outcome = r.launcher.launch_now_and_wait(Duration::from_secs(60)).await;
+    r.launcher.stop();
+    // Assert
+    assert_eq!(outcome, None);
+    assert_eq!(started.elapsed(), Duration::from_secs(60));
+    assert_eq!(r.spawner.count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn waits_for_start_until_released() {
+    // Arrange
+    let r = rig(Setup { hold_for_start: true, ..Setup::default() });
+    let held = r.launcher.is_waiting_for_start();
+    // Act
+    r.launcher.release();
+    // Assert
+    assert!(held);
+    assert!(!r.launcher.is_waiting_for_start());
+}
+
+#[tokio::test(start_paused = true)]
 async fn relaunches_after_resume() {
     // Arrange
     let r = rig(Setup::default());

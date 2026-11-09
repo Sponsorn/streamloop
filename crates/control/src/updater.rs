@@ -254,6 +254,8 @@ struct Inner {
     state: Mutex<State>,
     /// Held for the whole of a stage, so two never run at once.
     stage_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Held while a check asks GitHub, so a landing can wait for it.
+    check_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// A handle to the one updater; clones share it.
@@ -301,6 +303,7 @@ impl Updater {
                 policy: opts.policy,
                 state: Mutex::new(state),
                 stage_lock: Arc::new(tokio::sync::Mutex::new(())),
+                check_lock: Arc::new(tokio::sync::Mutex::new(())),
             }),
         }
     }
@@ -314,7 +317,7 @@ impl Updater {
     /// A check beside a check or a stage, or within 60 s of the last one, returns the status as it is.
     pub async fn check(&self) -> UpdateInfo {
         let now = self.inner.clock.now();
-        {
+        let _checking = {
             let mut st = self.inner.lock();
             if matches!(st.status, UpdateStatus::Checking | UpdateStatus::Downloading | UpdateStatus::Ready) {
                 return self.inner.info(&st);
@@ -333,7 +336,9 @@ impl Updater {
                 st.offer = None;
                 st.node_notice = None;
             }
-        }
+            // Taken while `Checking` is set, so no `wait_for_check` slips in before it; only one check runs.
+            self.inner.check_lock.clone().try_lock_owned().ok()
+        };
 
         let result = self.inner.find_update().await;
 
@@ -385,6 +390,11 @@ impl Updater {
     /// Waits until the stage a `check` started has ended.
     pub async fn wait_for_stage(&self) {
         drop(self.inner.stage_lock.lock().await);
+    }
+
+    /// Waits until a check that is asking GitHub has its answer.
+    pub async fn wait_for_check(&self) {
+        drop(self.inner.check_lock.lock().await);
     }
 
     /// The version of the verified exe in `_update\`, while the last check still offers it.

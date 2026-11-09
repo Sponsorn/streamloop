@@ -11,6 +11,7 @@ use streamloop_common::api::SupervisorStatus;
 use streamloop_common::events::events_file;
 use streamloop_common::paths::Layout;
 use streamloop_common::time::local_date;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::clock::Clock;
@@ -50,6 +51,17 @@ impl LauncherState {
             LauncherState::Ready => "ready",
         }
     }
+}
+
+/// How a launch ended, for a caller that waits for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchOutcome {
+    /// The `launch` helper exited: 0 once the supervisor holds its port, 2 when another one does.
+    Exited(Option<i32>),
+    /// The launch guard held it, for this reason.
+    Held(String),
+    /// `streamloop.exe` is missing or could not be started.
+    NotStarted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +180,8 @@ struct Inner {
     own_version: Option<String>,
     on_event: OnEvent,
     guard: tokio::sync::Mutex<Option<LaunchGuard>>,
+    /// Counts launch outcomes, with the last one.
+    outcomes: watch::Sender<(u64, Option<LaunchOutcome>)>,
     state: Mutex<State>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -227,6 +241,7 @@ impl Launcher {
             own_version: opts.own_version,
             on_event: opts.on_event,
             guard: tokio::sync::Mutex::new(opts.guard),
+            outcomes: watch::Sender::new((0, None)),
             state: Mutex::new(State {
                 running: false,
                 polling: false,
@@ -362,6 +377,23 @@ impl Launcher {
         self.poll_soon();
     }
 
+    /// Held at start until Start or `release`, with no supervisor seen since.
+    pub fn is_waiting_for_start(&self) -> bool {
+        self.inner.state.lock().unwrap().waiting_for_start
+    }
+
+    /// `launch_now`, then waits up to `limit` for that launch to end; `None` when it did not.
+    pub async fn launch_now_and_wait(&self, limit: Duration) -> Option<LaunchOutcome> {
+        let mut outcomes = self.inner.outcomes.subscribe();
+        let before = outcomes.borrow_and_update().0;
+        self.launch_now();
+        let ended = match tokio::time::timeout(limit, outcomes.wait_for(|(seq, _)| *seq > before)).await {
+            Ok(Ok(ended)) => ended.1.clone(),
+            _ => None,
+        };
+        ended
+    }
+
     /// Ends the start hold; the next poll launches unless the stream was stopped by the user.
     pub fn release(&self) {
         self.inner.end_hold();
@@ -398,6 +430,13 @@ impl Launcher {
 impl Inner {
     fn emit(&self, kind: &str, d: Map<String, Value>) {
         (self.on_event)(kind, d);
+    }
+
+    fn report(&self, outcome: LaunchOutcome) {
+        self.outcomes.send_modify(|(seq, last)| {
+            *seq += 1;
+            *last = Some(outcome);
+        });
     }
 
     fn end_hold(&self) {
@@ -560,6 +599,7 @@ impl Inner {
             if first {
                 self.emit("supervisor-missing", detail(&[("root", self.layout.root.to_string_lossy().into_owned().into())]));
             }
+            self.report(LaunchOutcome::NotStarted);
             return;
         }
         self.state.lock().unwrap().missing_reported = false;
@@ -574,7 +614,9 @@ impl Inner {
                     return;
                 }
                 st.held = held.clone();
-                if held.is_some() {
+                if let Some(reason) = held {
+                    drop(st);
+                    self.report(LaunchOutcome::Held(reason));
                     return;
                 }
             }
@@ -610,10 +652,13 @@ impl Inner {
             }
             Err(err) => {
                 tracing::warn!(%err, "The supervisor could not be spawned");
-                let mut st = self.state.lock().unwrap();
-                if st.spawn_seq == seq && st.phase == LauncherState::Starting {
-                    st.phase = LauncherState::Down;
+                {
+                    let mut st = self.state.lock().unwrap();
+                    if st.spawn_seq == seq && st.phase == LauncherState::Starting {
+                        st.phase = LauncherState::Down;
+                    }
                 }
+                self.report(LaunchOutcome::NotStarted);
             }
         }
     }
@@ -636,5 +681,7 @@ impl Inner {
         if code != Some(0) && st.phase == LauncherState::Starting {
             st.phase = LauncherState::Down;
         }
+        drop(st);
+        self.report(LaunchOutcome::Exited(code));
     }
 }
