@@ -275,22 +275,25 @@ impl VideoList {
                     .text_color(rgb(MUTED)),
             )
             .child(
-                div().w_full().max_w(px(280.)).child(reveal_on_focus(fit_menu(
-                    "playlist-menu",
-                    Select::new(&self.select)
-                        .id("playlist-select")
-                        .large()
-                        // With no lists the box stays empty, as the browser's <select> does.
-                        .placeholder("")
-                        .accessibility_label("Playlist")
-                        .h(px(40.))
-                        .px(px(12.))
-                        .bg(rgb(BG)),
-                    self.playlists
-                        .iter()
-                        .enumerate()
-                        .map(|(index, p)| playlist_option_label(p, index, self.playing).into()),
-                ))),
+                div()
+                    .w_full()
+                    .max_w(px(280.))
+                    .child(reveal_on_focus(fit_menu(
+                        "playlist-menu",
+                        Select::new(&self.select)
+                            .id("playlist-select")
+                            .large()
+                            // With no lists the box stays empty, as the browser's <select> does.
+                            .placeholder("")
+                            .accessibility_label("Playlist")
+                            .h(px(40.))
+                            .px(px(12.))
+                            .bg(rgb(BG)),
+                        self.playlists
+                            .iter()
+                            .enumerate()
+                            .map(|(index, p)| playlist_option_label(p, index, self.playing).into()),
+                    ))),
             )
     }
 
@@ -688,14 +691,22 @@ mod tests {
             let style = window.text_style();
             let full = window
                 .text_system()
-                .shape_line(label.clone().into(), px(14.), &[style.to_run(label.len())], None)
+                .shape_line(
+                    label.clone().into(),
+                    px(14.),
+                    &[style.to_run(label.len())],
+                    None,
+                )
                 .width;
             let (row, closed): (Vec<_>, Vec<_>) = texts(window)
                 .into_iter()
                 .filter(|t| t.visible() && t.text() == label)
                 .partition(|t| format!("{:?}", t.path()).contains("select-popup"));
             assert!(closed[0].bounds().size.width < full, "the box clips it");
-            assert!(row[0].bounds().size.width >= full, "the open list shows it whole");
+            assert!(
+                row[0].bounds().size.width >= full,
+                "the open list shows it whole"
+            );
         })
         .unwrap();
     }

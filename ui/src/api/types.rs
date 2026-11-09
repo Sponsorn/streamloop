@@ -295,7 +295,10 @@ pub struct DiscordConfig {
 }
 
 fn text(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn number(v: &Value, key: &str) -> f64 {
@@ -348,7 +351,11 @@ impl Config {
                 avatar_url: text(d, "avatarUrl"),
                 role_ping: text(d, "rolePing"),
                 templates: map("templates")
-                    .map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_str().unwrap_or_default().to_string())).collect())
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, x)| (k.clone(), x.as_str().unwrap_or_default().to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default(),
             },
             twitch_liveness_enabled: flag(v, "twitchLivenessEnabled"),
@@ -361,7 +368,6 @@ impl Config {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -394,7 +400,17 @@ mod tests {
         let status: Status = serde_json::from_str(STUB_STATUS).unwrap();
 
         assert_eq!(status.stream.state, "live");
-        assert_eq!(status.supervisor.as_ref().unwrap().playing.as_ref().unwrap().index, Some(0));
+        assert_eq!(
+            status
+                .supervisor
+                .as_ref()
+                .unwrap()
+                .playing
+                .as_ref()
+                .unwrap()
+                .index,
+            Some(0)
+        );
         assert_eq!(status.twitch.unwrap().readback.unwrap().state, "moving");
         assert_eq!(status.launcher, "running");
         assert_eq!(status.uptime_ms, 123456);
@@ -410,12 +426,19 @@ mod tests {
     }
 
     /// The stub's status with the field at `pointer` set to `value`, and with that field left out.
-    fn with_and_without(pointer: &str, value: Value) -> (Result<Status, serde_json::Error>, Status) {
+    fn with_and_without(
+        pointer: &str,
+        value: Value,
+    ) -> (Result<Status, serde_json::Error>, Status) {
         let mut raw: Value = serde_json::from_str(STUB_STATUS).unwrap();
         let (parent, key) = pointer.rsplit_once('/').unwrap();
         *raw.pointer_mut(pointer).unwrap() = value;
         let with = serde_json::from_value(raw.clone());
-        raw.pointer_mut(parent).unwrap().as_object_mut().unwrap().remove(key);
+        raw.pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(key);
         (with, serde_json::from_value(raw).unwrap())
     }
 
@@ -426,7 +449,10 @@ mod tests {
         let status = status.unwrap();
         assert_eq!(status.uptime_ms, 0);
         assert_eq!(format!("{status:?}"), format!("{without:?}"));
-        assert_eq!(status.supervisor.unwrap().playing.unwrap().title.as_deref(), Some("First video"));
+        assert_eq!(
+            status.supervisor.unwrap().playing.unwrap().title.as_deref(),
+            Some("First video")
+        );
     }
 
     #[test]
@@ -457,7 +483,14 @@ mod tests {
 
     #[test]
     fn update_status_reads_every_banner_state() {
-        for state in ["idle", "checking", "downloading", "extracting", "ready", "error"] {
+        for state in [
+            "idle",
+            "checking",
+            "downloading",
+            "extracting",
+            "ready",
+            "error",
+        ] {
             let raw = json!({"status": state, "isDevMode": true, "nodeNotice": "Install the full ZIP", "updateAvailable": true}).to_string();
 
             let update: UpdateStatus = serde_json::from_str(&raw).unwrap();
@@ -490,17 +523,32 @@ mod tests {
         assert!(update.same_version);
         assert_eq!(update.download_percent, Some(42.5));
         let progress = update.progress.unwrap();
-        assert_eq!((progress.from.as_str(), progress.to.as_str(), progress.step.as_str()), ("3.0.5", "3.0.6", "swap"));
+        assert_eq!(
+            (
+                progress.from.as_str(),
+                progress.to.as_str(),
+                progress.step.as_str()
+            ),
+            ("3.0.5", "3.0.6", "swap")
+        );
         assert_eq!(progress.result, "running");
         assert_eq!(progress.reason, None);
         assert_eq!(progress.step_started_at, "2026-11-08T10:00:05.000Z");
         assert_eq!(progress.download_percent, Some(7.0));
-        assert_eq!(update.swap_log, [SwapLine { folder: "node".into(), status: "retry".into(), detail: "in use".into() }]);
+        assert_eq!(
+            update.swap_log,
+            [SwapLine {
+                folder: "node".into(),
+                status: "retry".into(),
+                detail: "in use".into()
+            }]
+        );
     }
 
     #[test]
     fn update_status_without_the_full_update_fields_takes_the_defaults() {
-        let update: UpdateStatus = serde_json::from_str(r#"{"status": "idle", "progress": null}"#).unwrap();
+        let update: UpdateStatus =
+            serde_json::from_str(r#"{"status": "idle", "progress": null}"#).unwrap();
 
         assert_eq!(update.kind, None);
         assert!(update.parts.is_empty() && !update.same_version && update.swap_log.is_empty());
@@ -543,14 +591,45 @@ mod tests {
 
     #[test]
     fn discord_defaults_keep_the_servers_key_order() {
-        let keys = ["error", "skip", "recovery", "critical", "resume", "streamDrop", "streamRestart", "outputFrozen", "twitchMismatch", "twitchRestart"];
-        let templates: String = keys.iter().map(|k| format!("\"{k}\": \"t\"")).collect::<Vec<_>>().join(",");
-        let raw = format!("{{\"templates\": {{{templates}}}, \"variables\": {{\"skip\": [\"b\", \"a\"], \"error\": []}}}}");
+        let keys = [
+            "error",
+            "skip",
+            "recovery",
+            "critical",
+            "resume",
+            "streamDrop",
+            "streamRestart",
+            "outputFrozen",
+            "twitchMismatch",
+            "twitchRestart",
+        ];
+        let templates: String = keys
+            .iter()
+            .map(|k| format!("\"{k}\": \"t\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let raw = format!(
+            "{{\"templates\": {{{templates}}}, \"variables\": {{\"skip\": [\"b\", \"a\"], \"error\": []}}}}"
+        );
 
         let defaults: DiscordDefaults = serde_json::from_str(&raw).unwrap();
 
-        assert_eq!(defaults.templates.keys().map(String::as_str).collect::<Vec<_>>(), keys);
-        assert_eq!(defaults.variables.keys().map(String::as_str).collect::<Vec<_>>(), ["skip", "error"]);
+        assert_eq!(
+            defaults
+                .templates
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            keys
+        );
+        assert_eq!(
+            defaults
+                .variables
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["skip", "error"]
+        );
     }
 
     #[test]

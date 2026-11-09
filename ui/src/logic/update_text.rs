@@ -22,7 +22,11 @@ pub fn step_label(step: &str) -> String {
 
 /// "The update to X failed at replacing files: reason. Still on Y."
 pub fn failure_text(p: &UpdateProgress) -> String {
-    let reason = p.reason.as_deref().filter(|r| !r.is_empty()).unwrap_or("no reason was recorded");
+    let reason = p
+        .reason
+        .as_deref()
+        .filter(|r| !r.is_empty())
+        .unwrap_or("no reason was recorded");
     format!(
         "The update to {} failed at {}: {}. Still on {}.",
         p.to,

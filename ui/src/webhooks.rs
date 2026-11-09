@@ -623,18 +623,23 @@ impl WebhooksView {
         let (bar, title, text) =
             self.preview(cx)
                 .unwrap_or((BAR_BEFORE, String::new(), String::new()));
-        let select = div().w_full().max_w(px(280.)).child(reveal_on_focus(fit_menu(
-            "wh-preview-menu",
-            Select::new(&self.preview_select)
-                .id("wh-preview-select")
-                .large()
-                .placeholder("")
-                .accessibility_label("Event Type")
-                .h(px(40.))
-                .px(px(12.))
-                .bg(rgb(BG)),
-            self.rows.iter().map(|row| SharedString::from(row.label.clone())),
-        )));
+        let select = div()
+            .w_full()
+            .max_w(px(280.))
+            .child(reveal_on_focus(fit_menu(
+                "wh-preview-menu",
+                Select::new(&self.preview_select)
+                    .id("wh-preview-select")
+                    .large()
+                    .placeholder("")
+                    .accessibility_label("Event Type")
+                    .h(px(40.))
+                    .px(px(12.))
+                    .bg(rgb(BG)),
+                self.rows
+                    .iter()
+                    .map(|row| SharedString::from(row.label.clone())),
+            )));
         settings_panel()
             .child(form_group("Event Type", select, None))
             .child(

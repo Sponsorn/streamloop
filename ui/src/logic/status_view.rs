@@ -1,7 +1,10 @@
 //! Port of `src/admin/status-view.js`: the texts and colour levels the dashboard shows.
 
-use crate::api::types::{AutostartStatus, PlaylistRef, SetupReport, Stream, SwapLine, Twitch, UpdateProgress, UpdateStatus, Youtube};
 use super::update_text::{failure_text, step_label};
+use crate::api::types::{
+    AutostartStatus, PlaylistRef, SetupReport, Stream, SwapLine, Twitch, UpdateProgress,
+    UpdateStatus, Youtube,
+};
 use chrono::{DateTime, Local, Timelike};
 use serde_json::{Map, Value};
 
@@ -37,7 +40,9 @@ pub fn stream_line(stream: Option<&Stream>, note: Option<&str>) -> StreamLine {
     let known = stream.and_then(|s| stream_word(&s.state));
     let (word, level) = known.unwrap_or(("Off air", Level::Err));
     let live = known.is_some() && stream.is_some_and(|s| s.state == "live");
-    let own = stream.and_then(|s| s.reason.as_deref()).filter(|r| !r.is_empty());
+    let own = stream
+        .and_then(|s| s.reason.as_deref())
+        .filter(|r| !r.is_empty());
     let reason = if live {
         None
     } else if let Some(r) = own {
@@ -58,7 +63,11 @@ pub fn stream_line(stream: Option<&Stream>, note: Option<&str>) -> StreamLine {
                 None => note.to_string(),
             }),
         },
-        _ => StreamLine { word, level, reason },
+        _ => StreamLine {
+            word,
+            level,
+            reason,
+        },
     }
 }
 
@@ -81,7 +90,11 @@ pub fn youtube_note(youtube: Option<&Youtube>) -> Option<String> {
         None => Some("YouTube is blocking requests.".to_string()),
         Some(at) => {
             let at = at.with_timezone(&Local);
-            Some(format!("YouTube is blocking requests. Next try at {:02}:{:02}.", at.hour(), at.minute()))
+            Some(format!(
+                "YouTube is blocking requests. Next try at {:02}:{:02}.",
+                at.hour(),
+                at.minute()
+            ))
         }
     }
 }
@@ -96,11 +109,18 @@ pub fn twitch_line(twitch: Option<&Twitch>) -> (String, Level) {
         Some(true) => ("Twitch: live".to_string(), Level::Ok),
         Some(false) => (
             "Twitch: offline".to_string(),
-            if twitch.consecutive_mismatches > 0 { Level::Err } else { Level::Warn },
+            if twitch.consecutive_mismatches > 0 {
+                Level::Err
+            } else {
+                Level::Warn
+            },
         ),
     };
     if twitch.consecutive_mismatches > 0 {
-        text.push_str(&format!(" ({}/{})", twitch.consecutive_mismatches, twitch.mismatch_threshold));
+        text.push_str(&format!(
+            " ({}/{})",
+            twitch.consecutive_mismatches, twitch.mismatch_threshold
+        ));
     }
 
     let (state, checked) = match &twitch.readback {
@@ -112,7 +132,11 @@ pub fn twitch_line(twitch: Option<&Twitch>) -> (String, Level) {
         "frozen" => (text + " · read-back: picture frozen", Level::Err),
         "unavailable" => (
             text + " · read-back: no picture from Twitch",
-            if level == Level::Ok { Level::Warn } else { level },
+            if level == Level::Ok {
+                Level::Warn
+            } else {
+                level
+            },
         ),
         _ => (
             text + if checked {
@@ -127,7 +151,10 @@ pub fn twitch_line(twitch: Option<&Twitch>) -> (String, Level) {
 
 /// Index into the configured playlists of the list on air; the first when the supervisor names none it knows.
 pub fn playing_list_index(playlists: &[PlaylistRef], playing_id: Option<&str>) -> usize {
-    playlists.iter().position(|p| Some(p.id.as_str()) == playing_id).unwrap_or(0)
+    playlists
+        .iter()
+        .position(|p| Some(p.id.as_str()) == playing_id)
+        .unwrap_or(0)
 }
 
 /// A refused reload is harmless: no supervisor is running, and it reads the saved config at start.
@@ -169,7 +196,11 @@ pub fn wizard_verdict(stream: Option<&Stream>, elapsed_ms: u64) -> Verdict {
     if matches!(state, Some("starting" | "recovering")) {
         return Verdict::Wait;
     }
-    if elapsed_ms >= WIZARD_OFF_AIR_GRACE_MS { Verdict::Reason } else { Verdict::Wait }
+    if elapsed_ms >= WIZARD_OFF_AIR_GRACE_MS {
+        Verdict::Reason
+    } else {
+        Verdict::Wait
+    }
 }
 
 /// Seconds as h:mm:ss.
@@ -196,11 +227,20 @@ pub const ENCODER_NAMES: [(&str, &str); 4] = [
 pub fn encoder_label(report: &SetupReport) -> (String, Level) {
     let enc = &report.encoder;
     if !enc.works {
-        return ("No encoder works on this PC. Check the graphics driver.".to_string(), Level::Err);
+        return (
+            "No encoder works on this PC. Check the graphics driver.".to_string(),
+            Level::Err,
+        );
     }
-    let name = ENCODER_NAMES.iter().find(|(v, _)| *v == enc.chosen).map_or(enc.chosen.as_str(), |(_, n)| n);
+    let name = ENCODER_NAMES
+        .iter()
+        .find(|(v, _)| *v == enc.chosen)
+        .map_or(enc.chosen.as_str(), |(_, n)| n);
     if enc.software {
-        return (format!("{name}. No graphics card encoder works on this PC."), Level::Warn);
+        return (
+            format!("{name}. No graphics card encoder works on this PC."),
+            Level::Warn,
+        );
     }
     (name.to_string(), Level::Ok)
 }
@@ -251,9 +291,13 @@ pub fn dependency_rows(report: &SetupReport) -> Vec<DependencyRow> {
 fn same_json(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x == y || x.as_f64() == y.as_f64(),
-        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_json(p, q)),
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_json(p, q))
+        }
         (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same_json(v, w)))
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_json(v, w)))
         }
         _ => a == b,
     }
@@ -285,7 +329,10 @@ pub fn changed_fields(original: &Value, edited: &Value) -> Value {
 pub fn save_patch(original: &Value, edited: &Value) -> Value {
     let mut patch = changed_fields(original, edited);
     if let Some(sup) = patch.get_mut("supervisor").and_then(Value::as_object_mut) {
-        let picked = sup.get("encoder").filter(|e| !e.is_null() && e.as_str() != Some("")).cloned();
+        let picked = sup
+            .get("encoder")
+            .filter(|e| !e.is_null() && e.as_str() != Some(""))
+            .cloned();
         if let Some(encoder) = picked {
             sup.insert("preferredEncoder".to_string(), encoder);
         }
@@ -333,17 +380,34 @@ pub fn update_offer_text(status: &UpdateStatus) -> String {
         let names: Vec<&str> = status
             .parts
             .iter()
-            .map(|p| PART_LABELS.iter().find(|(key, _)| key == p).map_or(p.as_str(), |(_, label)| label))
+            .map(|p| {
+                PART_LABELS
+                    .iter()
+                    .find(|(key, _)| key == p)
+                    .map_or(p.as_str(), |(_, label)| label)
+            })
             .collect();
-        return format!("Full update: the stream goes off air while these parts are replaced: {}.", names.join(", "));
+        return format!(
+            "Full update: the stream goes off air while these parts are replaced: {}.",
+            names.join(", ")
+        );
     }
-    format!("Version {latest} is available (current: {})", status.current_version.as_deref().unwrap_or(""))
+    format!(
+        "Version {latest} is available (current: {})",
+        status.current_version.as_deref().unwrap_or("")
+    )
 }
 
 /// The banner while an app-only update downloads; a full update shows `update_progress_text` instead.
 pub fn app_download_text(status: &UpdateStatus) -> String {
-    let percent = status.download_percent.map(|p| format!(", {}%", js_number(p))).unwrap_or_default();
-    format!("Downloading v{}{percent}...", status.latest_version.as_deref().unwrap_or(""))
+    let percent = status
+        .download_percent
+        .map(|p| format!(", {}%", js_number(p)))
+        .unwrap_or_default();
+    format!(
+        "Downloading v{}{percent}...",
+        status.latest_version.as_deref().unwrap_or("")
+    )
 }
 
 /// True while a full update owns the stream: the dashboard shows its progress instead of the stream status.
@@ -353,7 +417,9 @@ pub fn update_running(progress: Option<&UpdateProgress>) -> bool {
 
 /// `Date.parse` of an ISO time as milliseconds since the epoch; None is JS's NaN.
 fn parse_ms(iso: &str) -> Option<i64> {
-    DateTime::parse_from_rfc3339(iso).ok().map(|t| t.timestamp_millis())
+    DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|t| t.timestamp_millis())
 }
 
 /// The progress line: the step with its elapsed time while running, else the result.
@@ -373,8 +439,15 @@ pub fn update_progress_text(p: &UpdateProgress, swap_log: &[SwapLine], now_ms: i
         _ => String::new(),
     };
     let elapsed = parse_ms(&p.step_started_at).map_or(0, |since| now_ms - since);
-    let mut text = format!("{}, {percent}{}", step_label(&p.step), format_elapsed(elapsed));
-    if let Some(last) = swap_log.last().filter(|l| p.step == "swap" && l.status == "retry") {
+    let mut text = format!(
+        "{}, {percent}{}",
+        step_label(&p.step),
+        format_elapsed(elapsed)
+    );
+    if let Some(last) = swap_log
+        .last()
+        .filter(|l| p.step == "swap" && l.status == "retry")
+    {
         text.push_str(&format!(" (trying {} again)", last.folder));
     }
     text
@@ -393,29 +466,45 @@ pub struct BannerView {
 
 /// What the update banner shows. A failed result keeps its text beside the offer; ok gives way to
 /// it after 10 minutes, and "Ready" goes once `stream_state` is live.
-pub fn update_banner_view(status: &UpdateStatus, now_ms: i64, stream_state: Option<&str>) -> BannerView {
+pub fn update_banner_view(
+    status: &UpdateStatus,
+    now_ms: i64,
+    stream_state: Option<&str>,
+) -> BannerView {
     if let Some(p) = &status.progress {
         let running = p.result == "running";
         let current = status.current_version.as_deref();
         // From and to other versions than the running one: a later update replaced it.
-        let history = !running && Some(p.from.as_str()) != current && Some(p.to.as_str()) != current;
+        let history =
+            !running && Some(p.from.as_str()) != current && Some(p.to.as_str()) != current;
         let ready_while_live = p.result == "ok" && p.step != "done" && stream_state == Some("live");
         if !history && !ready_while_live {
             let text = update_progress_text(p, &status.swap_log, now_ms);
-            let shown = |show_button| BannerView { visible: true, text: text.clone(), show_button, keep_text: true };
+            let shown = |show_button| BannerView {
+                visible: true,
+                text: text.clone(),
+                show_button,
+                keep_text: true,
+            };
             if running {
                 return shown(false);
             }
             if p.result == "failed" || p.result == "rolled-back" {
                 return shown(status.update_available);
             }
-            let fresh = parse_ms(&p.step_started_at).is_some_and(|since| now_ms - since < OK_BANNER_MS);
+            let fresh =
+                parse_ms(&p.step_started_at).is_some_and(|since| now_ms - since < OK_BANNER_MS);
             if p.result == "ok" && fresh {
                 return shown(false);
             }
         }
     }
-    BannerView { visible: status.update_available, text: String::new(), show_button: true, keep_text: false }
+    BannerView {
+        visible: status.update_available,
+        text: String::new(),
+        show_button: true,
+        keep_text: false,
+    }
 }
 
 #[cfg(test)]
@@ -426,11 +515,17 @@ mod tests {
     use serde_json::json;
 
     fn local_rfc3339(h: u32, m: u32, s: u32) -> String {
-        Local.with_ymd_and_hms(2026, 10, 26, h, m, s).unwrap().to_rfc3339()
+        Local
+            .with_ymd_and_hms(2026, 10, 26, h, m, s)
+            .unwrap()
+            .to_rfc3339()
     }
 
     fn stream(state: &str, reason: Option<&str>) -> Stream {
-        Stream { state: state.into(), reason: reason.map(Into::into) }
+        Stream {
+            state: state.into(),
+            reason: reason.map(Into::into),
+        }
     }
 
     fn twitch(f: impl FnOnce(&mut Twitch)) -> Twitch {
@@ -439,25 +534,40 @@ mod tests {
             channel_live: Some(true),
             consecutive_mismatches: 0,
             mismatch_threshold: 3,
-            readback: Some(Readback { state: "ok".into(), last_check_at: Some("1".into()) }),
+            readback: Some(Readback {
+                state: "ok".into(),
+                last_check_at: Some("1".into()),
+            }),
         };
         f(&mut t);
         t
     }
 
     fn report(f: impl FnOnce(&mut SetupEncoder), dependencies: Vec<Dependency>) -> SetupReport {
-        let mut encoder = SetupEncoder { chosen: "h264_nvenc".into(), software: false, works: true };
+        let mut encoder = SetupEncoder {
+            chosen: "h264_nvenc".into(),
+            software: false,
+            works: true,
+        };
         f(&mut encoder);
         SetupReport {
             at: "2026-10-25T10:00:00.000Z".into(),
             encoder,
-            cache: SetupCache { free_mb: 100000, recommended_mb: 4096, warning: None },
+            cache: SetupCache {
+                free_mb: 100000,
+                recommended_mb: 4096,
+                warning: None,
+            },
             dependencies,
         }
     }
 
     fn dep(name: &str, ok: bool, path: &str) -> Dependency {
-        Dependency { name: name.into(), ok, path: path.into() }
+        Dependency {
+            name: name.into(),
+            ok,
+            path: path.into(),
+        }
     }
 
     mod stream_line_tests {
@@ -479,18 +589,27 @@ mod tests {
 
         #[test]
         fn hides_the_reason_while_live() {
-            assert_eq!(stream_line(Some(&stream("live", Some("stale"))), None).reason, None);
+            assert_eq!(
+                stream_line(Some(&stream("live", Some("stale"))), None).reason,
+                None
+            );
         }
 
         #[test]
         fn shows_the_reason_when_not_live() {
             let s = stream("off-air", Some("The encoder is not running."));
-            assert_eq!(stream_line(Some(&s), None).reason.as_deref(), Some("The encoder is not running."));
+            assert_eq!(
+                stream_line(Some(&s), None).reason.as_deref(),
+                Some("The encoder is not running.")
+            );
         }
 
         #[test]
         fn treats_an_unknown_or_missing_state_as_off_air_with_a_reason() {
-            let weird = Stream { state: "weird".into(), reason: None };
+            let weird = Stream {
+                state: "weird".into(),
+                reason: None,
+            };
             let line = stream_line(Some(&weird), None);
             assert_eq!((line.word, line.level), ("Off air", Level::Err));
             assert!(stream_line(None, None).reason.is_some());
@@ -508,12 +627,23 @@ mod tests {
 
         #[test]
         fn puts_the_read_back_next_to_the_live_check_on_one_line() {
-            assert_eq!(twitch_line(Some(&twitch(|_| {}))), ("Twitch: live · read-back: picture moving".to_string(), Level::Ok));
+            assert_eq!(
+                twitch_line(Some(&twitch(|_| {}))),
+                (
+                    "Twitch: live · read-back: picture moving".to_string(),
+                    Level::Ok
+                )
+            );
         }
 
         #[test]
         fn marks_a_frozen_read_back_as_an_error_even_when_the_channel_is_live() {
-            let t = twitch(|t| t.readback = Some(Readback { state: "frozen".into(), last_check_at: Some("1".into()) }));
+            let t = twitch(|t| {
+                t.readback = Some(Readback {
+                    state: "frozen".into(),
+                    last_check_at: Some("1".into()),
+                })
+            });
             assert_eq!(twitch_line(Some(&t)).1, Level::Err);
         }
 
@@ -522,15 +652,33 @@ mod tests {
             let t = twitch(|t| {
                 t.channel_live = Some(false);
                 t.consecutive_mismatches = 2;
-                t.readback = Some(Readback { state: "off".into(), last_check_at: None });
+                t.readback = Some(Readback {
+                    state: "off".into(),
+                    last_check_at: None,
+                });
             });
-            assert_eq!(twitch_line(Some(&t)), ("Twitch: offline (2/3) · read-back off".to_string(), Level::Err));
+            assert_eq!(
+                twitch_line(Some(&t)),
+                (
+                    "Twitch: offline (2/3) · read-back off".to_string(),
+                    Level::Err
+                )
+            );
         }
 
         #[test]
         fn says_the_read_back_is_waiting_before_its_first_check() {
-            let t = twitch(|t| t.readback = Some(Readback { state: "ok".into(), last_check_at: None }));
-            assert!(twitch_line(Some(&t)).0.contains("waiting for the first check"));
+            let t = twitch(|t| {
+                t.readback = Some(Readback {
+                    state: "ok".into(),
+                    last_check_at: None,
+                })
+            });
+            assert!(
+                twitch_line(Some(&t))
+                    .0
+                    .contains("waiting for the first check")
+            );
         }
     }
 
@@ -540,13 +688,22 @@ mod tests {
         #[test]
         fn treats_no_error_and_a_refused_connection_as_benign() {
             assert!(is_benign_reload_error(None, None));
-            assert!(is_benign_reload_error(Some("fetch failed"), Some("ECONNREFUSED")));
+            assert!(is_benign_reload_error(
+                Some("fetch failed"),
+                Some("ECONNREFUSED")
+            ));
         }
 
         #[test]
         fn reports_any_other_failed_fetch_such_as_a_timeout_or_a_reset() {
-            assert!(!is_benign_reload_error(Some("fetch failed"), Some("ECONNRESET")));
-            assert!(!is_benign_reload_error(Some("The operation was aborted due to timeout"), None));
+            assert!(!is_benign_reload_error(
+                Some("fetch failed"),
+                Some("ECONNRESET")
+            ));
+            assert!(!is_benign_reload_error(
+                Some("The operation was aborted due to timeout"),
+                None
+            ));
         }
 
         #[test]
@@ -571,13 +728,19 @@ mod tests {
 
         #[test]
         fn ends_on_live() {
-            assert_eq!(wizard_verdict(Some(&stream("live", None)), 0), Verdict::Live);
+            assert_eq!(
+                wizard_verdict(Some(&stream("live", None)), 0),
+                Verdict::Live
+            );
         }
 
         #[test]
         fn waits_through_starting_until_the_timeout() {
             let s = stream("starting", None);
-            assert_eq!(wizard_verdict(Some(&s), WIZARD_OFF_AIR_GRACE_MS + 1), Verdict::Wait);
+            assert_eq!(
+                wizard_verdict(Some(&s), WIZARD_OFF_AIR_GRACE_MS + 1),
+                Verdict::Wait
+            );
             assert_eq!(wizard_verdict(Some(&s), WIZARD_TIMEOUT_MS), Verdict::Reason);
         }
 
@@ -585,7 +748,10 @@ mod tests {
         fn gives_off_air_a_grace_period_before_showing_the_reason() {
             let s = stream("off-air", None);
             assert_eq!(wizard_verdict(Some(&s), 1000), Verdict::Wait);
-            assert_eq!(wizard_verdict(Some(&s), WIZARD_OFF_AIR_GRACE_MS), Verdict::Reason);
+            assert_eq!(
+                wizard_verdict(Some(&s), WIZARD_OFF_AIR_GRACE_MS),
+                Verdict::Reason
+            );
         }
     }
 
@@ -604,7 +770,10 @@ mod tests {
 
         #[test]
         fn names_a_working_hardware_encoder_as_ok() {
-            assert_eq!(encoder_label(&report(|_| {}, vec![])), ("NVIDIA (NVENC)".to_string(), Level::Ok));
+            assert_eq!(
+                encoder_label(&report(|_| {}, vec![])),
+                ("NVIDIA (NVENC)".to_string(), Level::Ok)
+            );
         }
 
         #[test]
@@ -630,7 +799,13 @@ mod tests {
                 },
                 vec![],
             ));
-            assert_eq!(label, ("No encoder works on this PC. Check the graphics driver.".to_string(), Level::Err));
+            assert_eq!(
+                label,
+                (
+                    "No encoder works on this PC. Check the graphics driver.".to_string(),
+                    Level::Err
+                )
+            );
         }
     }
 
@@ -638,7 +813,11 @@ mod tests {
         use super::*;
 
         fn status(enabled: bool, target: Option<&str>, this_install: bool) -> AutostartStatus {
-            AutostartStatus { enabled, target: target.map(Into::into), this_install }
+            AutostartStatus {
+                enabled,
+                target: target.map(Into::into),
+                this_install,
+            }
         }
 
         #[test]
@@ -648,7 +827,10 @@ mod tests {
 
         #[test]
         fn says_this_install_when_the_file_starts_this_install() {
-            assert_eq!(autostart_label(&status(true, Some("C:\\SL\\START.bat"), true)), "This install");
+            assert_eq!(
+                autostart_label(&status(true, Some("C:\\SL\\START.bat"), true)),
+                "This install"
+            );
         }
 
         #[test]
@@ -675,7 +857,12 @@ mod tests {
         fn lists_failures_first_and_keeps_the_order_otherwise() {
             let rows = dependency_rows(&report(
                 |_| {},
-                vec![dep("Supervisor", true, "a"), dep("ffmpeg", false, "b"), dep("yt-dlp", true, "c"), dep("Deno", false, "d")],
+                vec![
+                    dep("Supervisor", true, "a"),
+                    dep("ffmpeg", false, "b"),
+                    dep("yt-dlp", true, "c"),
+                    dep("Deno", false, "d"),
+                ],
             ));
             let paths: Vec<_> = rows.iter().map(|r| r.path.as_str()).collect();
             assert_eq!(paths, ["b", "d", "a", "c"]);
@@ -722,7 +909,10 @@ mod tests {
         #[test]
         fn sends_no_preference_when_the_encoder_was_not_changed() {
             let edited = json!({ "supervisor": { "encoder": "h264_nvenc", "cacheBudgetMb": 500 } });
-            assert_eq!(save_patch(&loaded(), &edited), json!({ "supervisor": { "cacheBudgetMb": 500 } }));
+            assert_eq!(
+                save_patch(&loaded(), &edited),
+                json!({ "supervisor": { "cacheBudgetMb": 500 } })
+            );
         }
     }
 
@@ -740,13 +930,19 @@ mod tests {
         #[test]
         fn leaves_out_a_fallback_encoder_the_user_did_not_pick() {
             let edited = json!({ "supervisor": { "encoder": "libx264", "cacheBudgetMb": 500, "overlay": true } });
-            assert_eq!(changed_fields(&loaded(), &edited), json!({ "supervisor": { "cacheBudgetMb": 500 } }));
+            assert_eq!(
+                changed_fields(&loaded(), &edited),
+                json!({ "supervisor": { "cacheBudgetMb": 500 } })
+            );
         }
 
         #[test]
         fn sends_the_encoder_when_the_user_picked_another_one() {
             let edited = json!({ "supervisor": { "encoder": "h264_nvenc" } });
-            assert_eq!(changed_fields(&loaded(), &edited), json!({ "supervisor": { "encoder": "h264_nvenc" } }));
+            assert_eq!(
+                changed_fields(&loaded(), &edited),
+                json!({ "supervisor": { "encoder": "h264_nvenc" } })
+            );
         }
 
         #[test]
@@ -805,25 +1001,38 @@ mod tests {
         use super::*;
 
         fn yt(breaker: &str, retry_at: Option<String>, cookie: Option<&str>) -> Youtube {
-            Youtube { breaker: Some(breaker.into()), retry_at, cookie_problem: cookie.map(Into::into) }
+            Youtube {
+                breaker: Some(breaker.into()),
+                retry_at,
+                cookie_problem: cookie.map(Into::into),
+            }
         }
 
         #[test]
         fn gives_the_next_try_in_local_time_while_the_breaker_is_open() {
             let y = yt("open", Some(local_rfc3339(10, 41, 30)), None);
-            assert_eq!(youtube_note(Some(&y)).as_deref(), Some("YouTube is blocking requests. Next try at 10:41."));
+            assert_eq!(
+                youtube_note(Some(&y)).as_deref(),
+                Some("YouTube is blocking requests. Next try at 10:41.")
+            );
         }
 
         #[test]
         fn pads_single_digit_hours_and_minutes() {
             let y = yt("open", Some(local_rfc3339(7, 5, 0)), None);
-            assert_eq!(youtube_note(Some(&y)).as_deref(), Some("YouTube is blocking requests. Next try at 07:05."));
+            assert_eq!(
+                youtube_note(Some(&y)).as_deref(),
+                Some("YouTube is blocking requests. Next try at 07:05.")
+            );
         }
 
         #[test]
         fn leaves_out_the_time_when_the_supervisor_gives_none() {
             let y = yt("open", None, None);
-            assert_eq!(youtube_note(Some(&y)).as_deref(), Some("YouTube is blocking requests."));
+            assert_eq!(
+                youtube_note(Some(&y)).as_deref(),
+                Some("YouTube is blocking requests.")
+            );
         }
 
         #[test]
@@ -834,8 +1043,15 @@ mod tests {
 
         #[test]
         fn names_the_cookie_problem_which_is_not_youtube_blocking() {
-            let y = yt("closed", None, Some("yt-dlp could not read the firefox cookies: locked"));
-            assert_eq!(youtube_note(Some(&y)).as_deref(), Some("yt-dlp could not read the firefox cookies: locked"));
+            let y = yt(
+                "closed",
+                None,
+                Some("yt-dlp could not read the firefox cookies: locked"),
+            );
+            assert_eq!(
+                youtube_note(Some(&y)).as_deref(),
+                Some("yt-dlp could not read the firefox cookies: locked")
+            );
         }
     }
 
@@ -845,7 +1061,12 @@ mod tests {
         #[test]
         fn adds_the_note_to_the_reason_even_while_live_on_the_slate() {
             let note = "YouTube is blocking requests.";
-            assert_eq!(stream_line(Some(&stream("live", None)), Some(note)).reason.as_deref(), Some(note));
+            assert_eq!(
+                stream_line(Some(&stream("live", None)), Some(note))
+                    .reason
+                    .as_deref(),
+                Some(note)
+            );
             let s = stream("recovering", Some("Recovering the current video."));
             assert_eq!(
                 stream_line(Some(&s), Some(note)).reason.as_deref(),
@@ -856,7 +1077,12 @@ mod tests {
         #[test]
         fn shows_no_note_while_the_stream_is_stopped() {
             let s = stream("stopped", Some("Stopped."));
-            assert_eq!(stream_line(Some(&s), Some("YouTube is blocking requests.")).reason.as_deref(), Some("Stopped."));
+            assert_eq!(
+                stream_line(Some(&s), Some("YouTube is blocking requests."))
+                    .reason
+                    .as_deref(),
+                Some("Stopped.")
+            );
         }
     }
 
@@ -864,7 +1090,16 @@ mod tests {
         use super::*;
 
         fn lists() -> Vec<PlaylistRef> {
-            vec![PlaylistRef { id: "PLa".into(), name: None }, PlaylistRef { id: "PLb".into(), name: None }]
+            vec![
+                PlaylistRef {
+                    id: "PLa".into(),
+                    name: None,
+                },
+                PlaylistRef {
+                    id: "PLb".into(),
+                    name: None,
+                },
+            ]
         }
 
         #[test]
@@ -890,7 +1125,9 @@ mod tests {
         const T0_ISO: &str = "2026-11-08T10:00:00.000Z";
 
         fn t0() -> i64 {
-            DateTime::parse_from_rfc3339(T0_ISO).unwrap().timestamp_millis()
+            DateTime::parse_from_rfc3339(T0_ISO)
+                .unwrap()
+                .timestamp_millis()
         }
 
         fn at(s: i64) -> i64 {
@@ -941,7 +1178,10 @@ mod tests {
 
         #[test]
         fn offer_text_keeps_the_app_only_text() {
-            assert_eq!(update_offer_text(&offer_base()), "Version 3.0.6 is available (current: 3.0.5)");
+            assert_eq!(
+                update_offer_text(&offer_base()),
+                "Version 3.0.6 is available (current: 3.0.5)"
+            );
         }
 
         #[test]
@@ -973,7 +1213,11 @@ mod tests {
 
         #[test]
         fn offer_text_prints_an_unknown_part_as_itself() {
-            let status = UpdateStatus { kind: Some("full".into()), parts: vec!["supervisor".into(), "mystery".into()], ..offer_base() };
+            let status = UpdateStatus {
+                kind: Some("full".into()),
+                parts: vec!["supervisor".into(), "mystery".into()],
+                ..offer_base()
+            };
 
             assert_eq!(
                 update_offer_text(&status),
@@ -983,62 +1227,124 @@ mod tests {
 
         #[test]
         fn progress_text_shows_the_step_and_its_elapsed_time() {
-            assert_eq!(update_progress_text(&state(|_| {}), &[], at(80)), "Replacing files, 1 min 20 s");
-            assert_eq!(update_progress_text(&state(|p| p.step = "stop".into()), &[], at(5)), "Stopping the stream, 5 s");
-            assert_eq!(update_progress_text(&state(|p| p.step = "download".into()), &[], at(0)), "Downloading, 0 s");
-            assert_eq!(update_progress_text(&state(|p| p.step = "check".into()), &[], at(3)), "Checking the new version, 3 s");
-            assert_eq!(update_progress_text(&state(|p| p.step = "start".into()), &[], at(3)), "Starting the stream, 3 s");
+            assert_eq!(
+                update_progress_text(&state(|_| {}), &[], at(80)),
+                "Replacing files, 1 min 20 s"
+            );
+            assert_eq!(
+                update_progress_text(&state(|p| p.step = "stop".into()), &[], at(5)),
+                "Stopping the stream, 5 s"
+            );
+            assert_eq!(
+                update_progress_text(&state(|p| p.step = "download".into()), &[], at(0)),
+                "Downloading, 0 s"
+            );
+            assert_eq!(
+                update_progress_text(&state(|p| p.step = "check".into()), &[], at(3)),
+                "Checking the new version, 3 s"
+            );
+            assert_eq!(
+                update_progress_text(&state(|p| p.step = "start".into()), &[], at(3)),
+                "Starting the stream, 3 s"
+            );
         }
 
         #[test]
         fn progress_text_shows_the_download_percentage_only_while_downloading() {
-            let download = |percent| state(|p| {
-                p.step = "download".into();
-                p.download_percent = percent;
-            });
+            let download = |percent| {
+                state(|p| {
+                    p.step = "download".into();
+                    p.download_percent = percent;
+                })
+            };
 
-            assert_eq!(update_progress_text(&download(Some(42.0)), &[], at(70)), "Downloading, 42%, 1 min 10 s");
-            assert_eq!(update_progress_text(&download(None), &[], at(70)), "Downloading, 1 min 10 s");
-            assert_eq!(update_progress_text(&download(Some(42.5)), &[], at(70)), "Downloading, 42.5%, 1 min 10 s");
+            assert_eq!(
+                update_progress_text(&download(Some(42.0)), &[], at(70)),
+                "Downloading, 42%, 1 min 10 s"
+            );
+            assert_eq!(
+                update_progress_text(&download(None), &[], at(70)),
+                "Downloading, 1 min 10 s"
+            );
+            assert_eq!(
+                update_progress_text(&download(Some(42.5)), &[], at(70)),
+                "Downloading, 42.5%, 1 min 10 s"
+            );
             let stop = state(|p| {
                 p.step = "stop".into();
                 p.download_percent = Some(100.0);
             });
-            assert_eq!(update_progress_text(&stop, &[], at(5)), "Stopping the stream, 5 s");
+            assert_eq!(
+                update_progress_text(&stop, &[], at(5)),
+                "Stopping the stream, 5 s"
+            );
         }
 
         #[test]
         fn progress_text_mentions_a_swap_retry() {
-            let log = [SwapLine { folder: "node".into(), status: "retry".into(), detail: "in use".into() }];
+            let log = [SwapLine {
+                folder: "node".into(),
+                status: "retry".into(),
+                detail: "in use".into(),
+            }];
 
-            assert_eq!(update_progress_text(&state(|_| {}), &log, at(10)), "Replacing files, 10 s (trying node again)");
+            assert_eq!(
+                update_progress_text(&state(|_| {}), &log, at(10)),
+                "Replacing files, 10 s (trying node again)"
+            );
         }
 
         #[test]
         fn progress_text_ignores_a_retry_that_is_not_the_last_line_or_not_the_swap() {
-            let retry = SwapLine { folder: "node".into(), status: "retry".into(), detail: String::new() };
-            let done = SwapLine { folder: "node".into(), status: "ok".into(), detail: String::new() };
+            let retry = SwapLine {
+                folder: "node".into(),
+                status: "retry".into(),
+                detail: String::new(),
+            };
+            let done = SwapLine {
+                folder: "node".into(),
+                status: "ok".into(),
+                detail: String::new(),
+            };
 
-            assert_eq!(update_progress_text(&state(|_| {}), &[retry.clone(), done], at(10)), "Replacing files, 10 s");
-            assert_eq!(update_progress_text(&state(|p| p.step = "stop".into()), &[retry], at(10)), "Stopping the stream, 10 s");
+            assert_eq!(
+                update_progress_text(&state(|_| {}), &[retry.clone(), done], at(10)),
+                "Replacing files, 10 s"
+            );
+            assert_eq!(
+                update_progress_text(&state(|p| p.step = "stop".into()), &[retry], at(10)),
+                "Stopping the stream, 10 s"
+            );
         }
 
         #[test]
         fn progress_text_counts_zero_elapsed_when_the_step_time_does_not_parse() {
             let broken = state(|p| p.step_started_at = "not a date".into());
 
-            assert_eq!(update_progress_text(&broken, &[], at(80)), "Replacing files, 0 s");
+            assert_eq!(
+                update_progress_text(&broken, &[], at(80)),
+                "Replacing files, 0 s"
+            );
         }
 
         #[test]
-        fn progress_text_shows_the_ready_copy_when_the_update_went_through_and_back_on_air_once_the_stream_is_up() {
-            let ok = |step: &str| state(|p| {
-                p.step = step.into();
-                p.result = "ok".into();
-            });
+        fn progress_text_shows_the_ready_copy_when_the_update_went_through_and_back_on_air_once_the_stream_is_up()
+         {
+            let ok = |step: &str| {
+                state(|p| {
+                    p.step = step.into();
+                    p.result = "ok".into();
+                })
+            };
 
-            assert_eq!(update_progress_text(&ok("start"), &[], at(1)), "Updated to 3.0.6. Ready to stream.");
-            assert_eq!(update_progress_text(&ok("done"), &[], at(1)), "Back on air on 3.0.6.");
+            assert_eq!(
+                update_progress_text(&ok("start"), &[], at(1)),
+                "Updated to 3.0.6. Ready to stream."
+            );
+            assert_eq!(
+                update_progress_text(&ok("done"), &[], at(1)),
+                "Back on air on 3.0.6."
+            );
         }
 
         #[test]
@@ -1081,9 +1387,16 @@ mod tests {
 
         #[test]
         fn download_text_adds_the_percentage_of_an_app_only_download_when_the_server_knows_it() {
-            let status = |percent| UpdateStatus { latest_version: Some("3.0.7".into()), download_percent: percent, ..Default::default() };
+            let status = |percent| UpdateStatus {
+                latest_version: Some("3.0.7".into()),
+                download_percent: percent,
+                ..Default::default()
+            };
 
-            assert_eq!(app_download_text(&status(Some(42.0))), "Downloading v3.0.7, 42%...");
+            assert_eq!(
+                app_download_text(&status(Some(42.0))),
+                "Downloading v3.0.7, 42%..."
+            );
             assert_eq!(app_download_text(&status(None)), "Downloading v3.0.7...");
         }
 
@@ -1095,13 +1408,22 @@ mod tests {
         }
 
         fn status(over: impl FnOnce(&mut UpdateStatus)) -> UpdateStatus {
-            let mut s = UpdateStatus { current_version: Some("3.0.6".into()), status: "idle".into(), ..Default::default() };
+            let mut s = UpdateStatus {
+                current_version: Some("3.0.6".into()),
+                status: "idle".into(),
+                ..Default::default()
+            };
             over(&mut s);
             s
         }
 
         fn view(visible: bool, text: &str, show_button: bool, keep_text: bool) -> BannerView {
-            BannerView { visible, text: text.into(), show_button, keep_text }
+            BannerView {
+                visible,
+                text: text.into(),
+                show_button,
+                keep_text,
+            }
         }
 
         #[test]
@@ -1111,11 +1433,15 @@ mod tests {
                 s.progress = Some(state(|p| p.reason = Some("boom".into())));
             });
 
-            assert_eq!(update_banner_view(&s, at(5), None), view(true, "Replacing files, 5 s", false, true));
+            assert_eq!(
+                update_banner_view(&s, at(5), None),
+                view(true, "Replacing files, 5 s", false, true)
+            );
         }
 
         #[test]
-        fn banner_view_keeps_the_failure_text_and_still_shows_the_button_when_an_update_is_available() {
+        fn banner_view_keeps_the_failure_text_and_still_shows_the_button_when_an_update_is_available()
+         {
             let s = status(|s| {
                 s.update_available = true;
                 s.progress = Some(state(|p| {
@@ -1127,7 +1453,10 @@ mod tests {
             let v = update_banner_view(&s, at(3600), None);
 
             assert!(v.visible);
-            assert_eq!(v.text, "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.");
+            assert_eq!(
+                v.text,
+                "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5."
+            );
             assert!(v.show_button);
             assert!(v.keep_text);
         }
@@ -1151,8 +1480,14 @@ mod tests {
                 s.progress = Some(ok);
             });
 
-            assert_eq!(update_banner_view(&plain, at(9 * 60), None), view(true, "Back on air on 3.0.6.", false, true));
-            assert_eq!(update_banner_view(&plain, at(11 * 60), None), view(false, "", true, false));
+            assert_eq!(
+                update_banner_view(&plain, at(9 * 60), None),
+                view(true, "Back on air on 3.0.6.", false, true)
+            );
+            assert_eq!(
+                update_banner_view(&plain, at(11 * 60), None),
+                view(false, "", true, false)
+            );
             let v = update_banner_view(&offered, at(11 * 60), None);
             assert!(v.visible && v.show_button && !v.keep_text);
         }
@@ -1166,17 +1501,22 @@ mod tests {
             });
             let s = status(|s| s.progress = Some(ok));
 
-            assert_eq!(update_banner_view(&s, at(1), None), view(false, "", true, false));
+            assert_eq!(
+                update_banner_view(&s, at(1), None),
+                view(false, "", true, false)
+            );
         }
 
         #[test]
         fn banner_view_drops_the_ready_banner_once_the_stream_is_live_and_keeps_back_on_air() {
-            let progress = |step: &str| status(|s| {
-                s.progress = Some(state(|p| {
-                    p.result = "ok".into();
-                    p.step = step.into();
-                }))
-            });
+            let progress = |step: &str| {
+                status(|s| {
+                    s.progress = Some(state(|p| {
+                        p.result = "ok".into();
+                        p.step = step.into();
+                    }))
+                })
+            };
 
             let ready = progress("start");
             let back = progress("done");
@@ -1192,17 +1532,20 @@ mod tests {
         }
 
         #[test]
-        fn banner_view_hides_a_finished_update_that_neither_came_from_nor_went_to_the_running_version() {
+        fn banner_view_hides_a_finished_update_that_neither_came_from_nor_went_to_the_running_version()
+         {
             // A failed full update from 3.0.5 to 3.0.6, then an app-only update to 3.0.8.
             let failed = state(|p| {
                 p.result = "failed".into();
                 p.reason = Some("boom".into());
             });
-            let at_version = |current: &str, available: bool| status(|s| {
-                s.current_version = Some(current.into());
-                s.update_available = available;
-                s.progress = Some(failed.clone());
-            });
+            let at_version = |current: &str, available: bool| {
+                status(|s| {
+                    s.current_version = Some(current.into());
+                    s.update_available = available;
+                    s.progress = Some(failed.clone());
+                })
+            };
 
             let later = update_banner_view(&at_version("3.0.8", false), at(5), None);
             let offer = update_banner_view(&at_version("3.0.8", true), at(5), None);
@@ -1211,7 +1554,10 @@ mod tests {
             assert!(!later.visible && !later.keep_text);
             assert!(offer.visible && offer.show_button && !offer.keep_text);
             assert!(still_old.visible && still_old.keep_text);
-            assert_eq!(still_old.text, "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.");
+            assert_eq!(
+                still_old.text,
+                "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5."
+            );
         }
     }
 }

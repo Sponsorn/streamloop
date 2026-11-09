@@ -49,7 +49,10 @@ pub fn shows(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) -> bo
 /// The update banner's own text, then its Node notice, without the button's label; empty while
 /// the banner is hidden.
 pub fn banner_texts(cx: &mut TestAppContext, window: AnyWindowHandle) -> Vec<String> {
-    let (banner, button) = (ElementId::from("update-banner"), ElementId::from("update-btn"));
+    let (banner, button) = (
+        ElementId::from("update-banner"),
+        ElementId::from("update-btn"),
+    );
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         texts(window)

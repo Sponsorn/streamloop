@@ -28,8 +28,7 @@ use crate::{
     logic::{
         Level,
         admin::{encoder_line, local_hms, now_playing_index, now_playing_time},
-        source_label, stream_line, twitch_line, update_progress_text, update_running,
-        youtube_note,
+        source_label, stream_line, twitch_line, update_progress_text, update_running, youtube_note,
     },
     logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
@@ -810,7 +809,13 @@ mod tests {
                 (line.word.to_string(), line.level, line.reason)
             })
         };
-        let updating = |reason: &str| ("Updating".to_string(), Level::Warn, Some(reason.to_string()));
+        let updating = |reason: &str| {
+            (
+                "Updating".to_string(),
+                Level::Warn,
+                Some(reason.to_string()),
+            )
+        };
 
         // The download runs; its step began 5 s ago, and the next poll is 2 s away.
         let mut progress = progress_json(cx, "download", "running", 5.);
@@ -841,8 +846,15 @@ mod tests {
         stopped["uptimeMs"] = json!(125_000);
         fake.reply("GET", "/api/status", Ok(stopped));
         cx.executor().advance_clock(POLL_EVERY);
-        assert_eq!(line(cx), updating("Replacing files, 32 s (trying node again)"));
-        assert!(shows(cx, window, "Replacing files, 32 s (trying node again)"));
+        assert_eq!(
+            line(cx),
+            updating("Replacing files, 32 s (trying node again)")
+        );
+        assert!(shows(
+            cx,
+            window,
+            "Replacing files, 32 s (trying node again)"
+        ));
         assert!(shows(cx, window, "Encoder: running, 1.00x speed"));
         assert!(shows(cx, window, "Twitch check off"));
         assert!(shows(cx, window, "Uptime: 1m 5s"));
@@ -897,7 +909,10 @@ mod tests {
         let (fake, window) = open_with(cx, status_json("live", false), events_json(0));
         let painted_twice = |cx: &mut TestAppContext, text: &str| {
             assert_eq!(banner_text(cx, window).as_deref(), Some(text));
-            let found = painted(cx, window).into_iter().filter(|t| t == text).count();
+            let found = painted(cx, window)
+                .into_iter()
+                .filter(|t| t == text)
+                .count();
             assert_eq!(found, 2, "{text} in the banner and on the stream line");
         };
         let mut progress = progress_json(cx, "download", "running", 5.);
@@ -953,7 +968,8 @@ mod tests {
             executor.advance_clock(Duration::from_secs(3))
         });
         // The restart wait's tries are the GET /api/status reads beside the polls'.
-        let tries = |fake: &FakeApi| count(fake, "GET", "/api/status") - count(fake, "GET", "/api/events");
+        let tries =
+            |fake: &FakeApi| count(fake, "GET", "/api/status") - count(fake, "GET", "/api/events");
         let before = tries(&fake);
         while tries(&fake) == before {
             cx.executor().advance_clock(Duration::from_secs(1));
@@ -963,7 +979,10 @@ mod tests {
             let text = replacing(cx.update(|cx| now_ms(cx)));
             assert_eq!(reason(cx).as_deref(), Some(text.as_str()));
             assert_eq!(banner_text(cx, window).as_deref(), Some(text.as_str()));
-            let found = painted(cx, window).into_iter().filter(|t| *t == text).count();
+            let found = painted(cx, window)
+                .into_iter()
+                .filter(|t| *t == text)
+                .count();
             assert_eq!(found, 2, "{text} in the banner and on the stream line");
         }
 

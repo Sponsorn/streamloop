@@ -465,7 +465,9 @@ impl SettingsView {
         let client = self.app.client.clone();
         cx.spawn(async move |this, cx| {
             let answer = cx
-                .background_spawn(async move { client.save_config(json!({ "autoStartStream": on })) })
+                .background_spawn(
+                    async move { client.save_config(json!({ "autoStartStream": on })) },
+                )
                 .await;
             this.update(cx, |this, cx| match answer {
                 Ok(saved) => reload_warning(&this.app, &saved, cx),
@@ -870,8 +872,12 @@ impl SettingsView {
                 toggle_row(AUTO_OPEN_LABEL, &[AUTO_OPEN_DESC.into()], auto_open).mt(px(8.)),
             )
             .child(
-                toggle_row(AUTO_START_LABEL, &[AUTO_START_DESC.into()], auto_start_stream)
-                    .mt(px(8.)),
+                toggle_row(
+                    AUTO_START_LABEL,
+                    &[AUTO_START_DESC.into()],
+                    auto_start_stream,
+                )
+                .mt(px(8.)),
             )
     }
 
@@ -1767,7 +1773,11 @@ mod tests {
         type_into(cx, window, ("set-pl-name", key), "Renamed");
         save(cx, window);
 
-        assert!(shows(cx, window, &format!("Could not save: {UPDATE_RUNNING}")));
+        assert!(shows(
+            cx,
+            window,
+            &format!("Could not save: {UPDATE_RUNNING}")
+        ));
         assert_eq!(count(&fake, "POST", "/api/config"), 1);
     }
 
@@ -1983,7 +1993,10 @@ mod tests {
     #[gpui::test]
     fn auto_start_stream_loads_on_unless_the_config_has_false(cx: &mut TestAppContext) {
         let mut without_key = config_json();
-        without_key.as_object_mut().unwrap().remove("autoStartStream");
+        without_key
+            .as_object_mut()
+            .unwrap()
+            .remove("autoStartStream");
         let (_, window, _) = open_settings(cx, without_key);
         reveal(cx, window, "auto-start-stream-toggle");
         assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(true));

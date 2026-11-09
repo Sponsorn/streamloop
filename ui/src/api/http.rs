@@ -179,7 +179,12 @@ mod tests {
                     }
                     let body_in =
                         String::from_utf8_lossy(&buf[head_end..head_end + len]).to_string();
-                    log.lock().unwrap().push(Seen { method, path, token, body: body_in });
+                    log.lock().unwrap().push(Seen {
+                        method,
+                        path,
+                        token,
+                        body: body_in,
+                    });
                     let reply = format!(
                         "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
@@ -187,7 +192,11 @@ mod tests {
                     sock.write_all(reply.as_bytes()).unwrap();
                 }
             });
-            Server { port, seen, thread: Some(thread) }
+            Server {
+                port,
+                seen,
+                thread: Some(thread),
+            }
         }
 
         fn finish(mut self) -> Vec<Seen> {
@@ -251,7 +260,10 @@ mod tests {
 
         let r = api.post("/api/player/next", None);
 
-        assert_eq!(r, Err(ApiError::Server("Forbidden: invalid API token".into())));
+        assert_eq!(
+            r,
+            Err(ApiError::Server("Forbidden: invalid API token".into()))
+        );
         let seen = s.finish();
         assert_eq!(seen.iter().filter(|x| x.method == "POST").count(), 2);
     }

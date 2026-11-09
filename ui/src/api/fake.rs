@@ -111,7 +111,11 @@ impl FakeApi {
             let key = (method, path.to_string());
             let answer = match s.once.get_mut(&key).and_then(VecDeque::pop_front) {
                 Some(a) => a,
-                None => s.standing.get(&key).cloned().unwrap_or(Err(ApiError::Unreachable)),
+                None => s
+                    .standing
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(Err(ApiError::Unreachable)),
             };
             (answer, s.slow.get(&key).cloned())
         };
@@ -135,7 +139,10 @@ impl Api for FakeApi {
             path: path.to_string(),
             body: None,
         });
-        s.texts.get(path).cloned().unwrap_or(Err(ApiError::Unreachable))
+        s.texts
+            .get(path)
+            .cloned()
+            .unwrap_or(Err(ApiError::Unreachable))
     }
 
     fn post(&self, path: &str, body: Option<Value>) -> Answer {

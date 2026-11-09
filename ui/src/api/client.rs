@@ -44,7 +44,11 @@ impl Client {
         self.0.post(path, body).map(|_| ())
     }
 
-    fn send_for<T: DeserializeOwned>(&self, path: &str, body: Option<Value>) -> Result<T, ApiError> {
+    fn send_for<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<T, ApiError> {
         parse(self.0.post(path, body)?)
     }
 

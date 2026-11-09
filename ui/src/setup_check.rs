@@ -271,20 +271,23 @@ pub fn encoder_select_state<V: 'static>(
 
 /// admin.css `.form-group select`: the encoder dropdown `id`, at most 280 px wide, its menu `{id}-menu`.
 pub fn encoder_select(state: &Entity<EncoderSelect>, id: &'static str) -> Div {
-    div().w_full().max_w(px(280.)).child(reveal_on_focus(fit_menu(
-        format!("{id}-menu"),
-        Select::new(state)
-            .id(id)
-            .large()
-            .placeholder("")
-            .accessibility_label("Encoder")
-            .h(px(40.))
-            .px(px(12.))
-            .bg(rgb(BG)),
-        ENCODER_NAMES
-            .iter()
-            .map(|(_, name)| SharedString::from(*name)),
-    )))
+    div()
+        .w_full()
+        .max_w(px(280.))
+        .child(reveal_on_focus(fit_menu(
+            format!("{id}-menu"),
+            Select::new(state)
+                .id(id)
+                .large()
+                .placeholder("")
+                .accessibility_label("Encoder")
+                .h(px(40.))
+                .px(px(12.))
+                .bg(rgb(BG)),
+            ENCODER_NAMES
+                .iter()
+                .map(|(_, name)| SharedString::from(*name)),
+        )))
 }
 
 /// admin.js `applySetup`: saves the picked encoder and cache size where they differ from the

@@ -5,7 +5,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::api::types::{Playing, PlaylistRef, Supervisor, UpdateStatus};
-use crate::logic::status_view::{app_download_text, format_time, update_banner_view, update_offer_text};
+use crate::logic::status_view::{
+    app_download_text, format_time, update_banner_view, update_offer_text,
+};
 
 /// A YouTube URL gives its `list` parameter (None when it has none); anything else comes back as typed.
 pub fn extract_playlist_id(raw: &str) -> Option<String> {
@@ -13,7 +15,10 @@ pub fn extract_playlist_id(raw: &str) -> Option<String> {
         && let Some(host) = url.host_str()
         && (host.contains("youtube.com") || host.contains("youtu.be"))
     {
-        return url.query_pairs().find(|(k, _)| k == "list").map(|(_, v)| v.into_owned());
+        return url
+            .query_pairs()
+            .find(|(k, _)| k == "list")
+            .map(|(_, v)| v.into_owned());
     }
     Some(raw.to_string())
 }
@@ -39,7 +44,10 @@ pub fn collect_playlists(rows: &[(String, String)]) -> Result<Vec<PlaylistEntry>
             continue;
         };
         let name = name.trim();
-        out.push(PlaylistEntry { id, name: (!name.is_empty()).then(|| name.to_string()) });
+        out.push(PlaylistEntry {
+            id,
+            name: (!name.is_empty()).then(|| name.to_string()),
+        });
     }
     if bad.is_empty() { Ok(out) } else { Err(bad) }
 }
@@ -47,7 +55,11 @@ pub fn collect_playlists(rows: &[(String, String)]) -> Result<Vec<PlaylistEntry>
 /// Drops blank strings, so the server keeps the saved value instead of storing "".
 pub fn without_blanks(obj: Value) -> Value {
     match obj {
-        Value::Object(map) => Value::Object(map.into_iter().filter(|(_, v)| v.as_str() != Some("")).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(_, v)| v.as_str() != Some(""))
+                .collect(),
+        ),
         other => other,
     }
 }
@@ -94,7 +106,11 @@ pub fn encoder_line(sup: Option<&Supervisor>) -> String {
             text.push_str(&format!(", {speed:.2}x speed"));
         }
         if enc.restarts > 0 {
-            text.push_str(&format!(", {} restart{}", enc.restarts, if enc.restarts == 1 { "" } else { "s" }));
+            text.push_str(&format!(
+                ", {} restart{}",
+                enc.restarts,
+                if enc.restarts == 1 { "" } else { "s" }
+            ));
         }
     }
     text
@@ -131,10 +147,30 @@ pub struct NumberField {
 }
 
 pub const PLAYBACK_FIELDS: [NumberField; 4] = [
-    NumberField { key: "readAheadSeconds", min: 2.0, label: "Read-ahead", integer: false },
-    NumberField { key: "cacheBudgetMb", min: 50.0, label: "Download cache", integer: true },
-    NumberField { key: "freezeSeconds", min: 5.0, label: "Frozen picture", integer: false },
-    NumberField { key: "silenceSeconds", min: 5.0, label: "Silence", integer: false },
+    NumberField {
+        key: "readAheadSeconds",
+        min: 2.0,
+        label: "Read-ahead",
+        integer: false,
+    },
+    NumberField {
+        key: "cacheBudgetMb",
+        min: 50.0,
+        label: "Download cache",
+        integer: true,
+    },
+    NumberField {
+        key: "freezeSeconds",
+        min: 5.0,
+        label: "Frozen picture",
+        integer: false,
+    },
+    NumberField {
+        key: "silenceSeconds",
+        min: 5.0,
+        label: "Silence",
+        integer: false,
+    },
 ];
 
 pub fn check_number(field: &NumberField, text: &str) -> Result<f64, String> {
@@ -144,7 +180,11 @@ pub fn check_number(field: &NumberField, text: &str) -> Result<f64, String> {
         _ => Err(format!(
             "{} must be {}at least {}.",
             field.label,
-            if field.integer { "a whole number, " } else { "" },
+            if field.integer {
+                "a whole number, "
+            } else {
+                ""
+            },
             field.min as i64
         )),
     }
@@ -159,22 +199,47 @@ pub struct Banner {
 
 /// admin.js `renderUpdateBanner`. A version the server left out prints as an empty string where
 /// admin.js prints "undefined".
-pub fn update_banner(status: &UpdateStatus, now_ms: i64, stream_state: Option<&str>) -> Option<Banner> {
+pub fn update_banner(
+    status: &UpdateStatus,
+    now_ms: i64,
+    stream_state: Option<&str>,
+) -> Option<Banner> {
     let view = update_banner_view(status, now_ms, stream_state);
     if !view.visible {
         return None;
     }
     let latest = status.latest_version.as_deref().unwrap_or("");
-    let own = |text: String| if view.keep_text { view.text.clone() } else { text };
+    let own = |text: String| {
+        if view.keep_text {
+            view.text.clone()
+        } else {
+            text
+        }
+    };
     let button = |label: &str, enabled| view.show_button.then(|| (label.to_string(), enabled));
     let (text, button) = if !view.show_button {
         (own(String::new()), None)
     } else {
         match status.status.as_str() {
-            "downloading" => (own(app_download_text(status)), button("Downloading...", false)),
-            "extracting" => (own(format!("Installing v{latest}...")), button("Installing...", false)),
-            "ready" => (own("Update installed. Restarting...".to_string()), button("Restarting...", false)),
-            "error" => (own(format!("Update failed: {}", status.error.as_deref().unwrap_or(""))), button("Retry", true)),
+            "downloading" => (
+                own(app_download_text(status)),
+                button("Downloading...", false),
+            ),
+            "extracting" => (
+                own(format!("Installing v{latest}...")),
+                button("Installing...", false),
+            ),
+            "ready" => (
+                own("Update installed. Restarting...".to_string()),
+                button("Restarting...", false),
+            ),
+            "error" => (
+                own(format!(
+                    "Update failed: {}",
+                    status.error.as_deref().unwrap_or("")
+                )),
+                button("Retry", true),
+            ),
             _ => {
                 let label = if status.is_dev_mode {
                     "Dev Mode".to_string()
@@ -183,7 +248,10 @@ pub fn update_banner(status: &UpdateStatus, now_ms: i64, stream_state: Option<&s
                 } else {
                     "Update Now".to_string()
                 };
-                (own(update_offer_text(status)), button(&label, !status.is_dev_mode))
+                (
+                    own(update_offer_text(status)),
+                    button(&label, !status.is_dev_mode),
+                )
             }
         }
     };
@@ -192,14 +260,20 @@ pub fn update_banner(status: &UpdateStatus, now_ms: i64, stream_state: Option<&s
 
 pub fn check_update_result(status: &UpdateStatus) -> String {
     if status.update_available {
-        let mut text = format!("v{} is available.", status.latest_version.as_deref().unwrap_or(""));
+        let mut text = format!(
+            "v{} is available.",
+            status.latest_version.as_deref().unwrap_or("")
+        );
         if let Some(n) = status.node_notice.as_deref().filter(|n| !n.is_empty()) {
             text.push(' ');
             text.push_str(n);
         }
         text
     } else {
-        format!("Up to date (v{})", status.current_version.as_deref().unwrap_or(""))
+        format!(
+            "Up to date (v{})",
+            status.current_version.as_deref().unwrap_or("")
+        )
     }
 }
 
@@ -211,16 +285,66 @@ pub enum PreviewLevel {
 }
 
 const EVENT_INFO: [(&str, &str, &str, PreviewLevel); 10] = [
-    ("error", "Video Errors", "A video failed and is being retried", PreviewLevel::Warn),
-    ("skip", "Video Skips", "A video was skipped after repeated failures", PreviewLevel::Warn),
-    ("recovery", "Recovery", "The supervisor is answering again after being down", PreviewLevel::Info),
-    ("critical", "Critical Alerts", "The stream cannot recover by itself and needs you", PreviewLevel::Error),
-    ("resume", "Playback Resumed", "The stream resumed a video after a restart", PreviewLevel::Info),
-    ("streamDrop", "Encoder Stopped", "The encoder stopped and is restarting", PreviewLevel::Warn),
-    ("streamRestart", "Encoder Restarted", "The encoder is running again after stopping", PreviewLevel::Info),
-    ("outputFrozen", "Frozen or Silent Output", "The picture froze or the audio went silent", PreviewLevel::Warn),
-    ("twitchMismatch", "Twitch Mismatch", "The encoder runs but the channel is offline or frozen on Twitch", PreviewLevel::Warn),
-    ("twitchRestart", "Twitch Restarted", "The stream restarted after a Twitch mismatch", PreviewLevel::Info),
+    (
+        "error",
+        "Video Errors",
+        "A video failed and is being retried",
+        PreviewLevel::Warn,
+    ),
+    (
+        "skip",
+        "Video Skips",
+        "A video was skipped after repeated failures",
+        PreviewLevel::Warn,
+    ),
+    (
+        "recovery",
+        "Recovery",
+        "The supervisor is answering again after being down",
+        PreviewLevel::Info,
+    ),
+    (
+        "critical",
+        "Critical Alerts",
+        "The stream cannot recover by itself and needs you",
+        PreviewLevel::Error,
+    ),
+    (
+        "resume",
+        "Playback Resumed",
+        "The stream resumed a video after a restart",
+        PreviewLevel::Info,
+    ),
+    (
+        "streamDrop",
+        "Encoder Stopped",
+        "The encoder stopped and is restarting",
+        PreviewLevel::Warn,
+    ),
+    (
+        "streamRestart",
+        "Encoder Restarted",
+        "The encoder is running again after stopping",
+        PreviewLevel::Info,
+    ),
+    (
+        "outputFrozen",
+        "Frozen or Silent Output",
+        "The picture froze or the audio went silent",
+        PreviewLevel::Warn,
+    ),
+    (
+        "twitchMismatch",
+        "Twitch Mismatch",
+        "The encoder runs but the channel is offline or frozen on Twitch",
+        PreviewLevel::Warn,
+    ),
+    (
+        "twitchRestart",
+        "Twitch Restarted",
+        "The stream restarted after a Twitch mismatch",
+        PreviewLevel::Info,
+    ),
 ];
 
 const SAMPLE_VARS: [(&str, &str); 11] = [
@@ -239,10 +363,10 @@ const SAMPLE_VARS: [(&str, &str); 11] = [
 
 /// (label, description, level); an unknown key shows as itself.
 pub fn event_info(key: &str) -> (String, String, PreviewLevel) {
-    EVENT_INFO
-        .iter()
-        .find(|(k, ..)| *k == key)
-        .map_or((key.to_string(), String::new(), PreviewLevel::Info), |(_, l, d, lv)| (l.to_string(), d.to_string(), *lv))
+    EVENT_INFO.iter().find(|(k, ..)| *k == key).map_or(
+        (key.to_string(), String::new(), PreviewLevel::Info),
+        |(_, l, d, lv)| (l.to_string(), d.to_string(), *lv),
+    )
 }
 
 /// Replaces `{name}` (ASCII letters, digits, underscore) with its sample value; unknown names stay.
@@ -252,7 +376,10 @@ pub fn render_template(template: &str) -> String {
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
-        let name_len = after.bytes().take_while(|b| b.is_ascii_alphanumeric() || *b == b'_').count();
+        let name_len = after
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
         if name_len > 0 && after.as_bytes().get(name_len) == Some(&b'}') {
             let name = &after[..name_len];
             match SAMPLE_VARS.iter().find(|(k, _)| *k == name) {
@@ -289,15 +416,27 @@ pub fn preview_title(level: PreviewLevel) -> String {
 /// (state text, button, placeholder)
 pub fn stream_key_state(is_set: bool) -> (&'static str, &'static str, &'static str) {
     if is_set {
-        ("A stream key is set.", "Replace", "Paste a new key to replace it")
+        (
+            "A stream key is set.",
+            "Replace",
+            "Paste a new key to replace it",
+        )
     } else {
-        ("No stream key is set. The stream cannot start without one.", "Set", "Paste your Twitch stream key")
+        (
+            "No stream key is set. The stream cannot start without one.",
+            "Set",
+            "Paste your Twitch stream key",
+        )
     }
 }
 
 pub fn playlist_option_label(p: &PlaylistRef, index: usize, playing: usize) -> String {
     let base = p.name.as_deref().filter(|n| !n.is_empty()).unwrap_or(&p.id);
-    if index == playing { format!("{base} (playing)") } else { base.to_string() }
+    if index == playing {
+        format!("{base} (playing)")
+    } else {
+        base.to_string()
+    }
 }
 
 pub fn local_hms(ts: &str) -> String {
@@ -318,31 +457,58 @@ fn local_format(ts: &str, fmt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::UpdateProgress;
     use crate::api::types::Encoder;
+    use crate::api::types::UpdateProgress;
     use serde_json::json;
 
     fn rows(v: &[(&str, &str)]) -> Vec<(String, String)> {
-        v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        v.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
     }
 
     #[test]
     fn extracts_playlist_ids() {
-        assert_eq!(extract_playlist_id("https://www.youtube.com/playlist?list=PLabc"), Some("PLabc".into()));
-        assert_eq!(extract_playlist_id("https://youtu.be/xyz?list=PLq"), Some("PLq".into()));
-        assert_eq!(extract_playlist_id("https://www.youtube.com/watch?v=abc"), None);
+        assert_eq!(
+            extract_playlist_id("https://www.youtube.com/playlist?list=PLabc"),
+            Some("PLabc".into())
+        );
+        assert_eq!(
+            extract_playlist_id("https://youtu.be/xyz?list=PLq"),
+            Some("PLq".into())
+        );
+        assert_eq!(
+            extract_playlist_id("https://www.youtube.com/watch?v=abc"),
+            None
+        );
         assert_eq!(extract_playlist_id("PLabc"), Some("PLabc".into()));
-        assert_eq!(extract_playlist_id("https://example.com/?list=PLx"), Some("https://example.com/?list=PLx".into()));
+        assert_eq!(
+            extract_playlist_id("https://example.com/?list=PLx"),
+            Some("https://example.com/?list=PLx".into())
+        );
     }
 
     #[test]
     fn collects_playlists_skipping_blanks_and_trimming_names() {
-        let got = collect_playlists(&rows(&[("  PLa ", " Mine "), ("", "x"), ("PLb", "  ")])).unwrap();
-        assert_eq!(got, vec![
-            PlaylistEntry { id: "PLa".into(), name: Some("Mine".into()) },
-            PlaylistEntry { id: "PLb".into(), name: None },
-        ]);
-        assert_eq!(serde_json::to_value(&got).unwrap(), json!([{"id": "PLa", "name": "Mine"}, {"id": "PLb"}]));
+        let got =
+            collect_playlists(&rows(&[("  PLa ", " Mine "), ("", "x"), ("PLb", "  ")])).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                PlaylistEntry {
+                    id: "PLa".into(),
+                    name: Some("Mine".into())
+                },
+                PlaylistEntry {
+                    id: "PLb".into(),
+                    name: None
+                },
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            json!([{"id": "PLa", "name": "Mine"}, {"id": "PLb"}])
+        );
     }
 
     #[test]
@@ -390,23 +556,44 @@ mod tests {
     #[test]
     fn describes_the_encoder() {
         let sup = |alive, speed, restarts| Supervisor {
-            encoder: Some(Encoder { alive, speed, restarts }),
+            encoder: Some(Encoder {
+                alive,
+                speed,
+                restarts,
+            }),
             ..Default::default()
         };
         assert_eq!(encoder_line(None), "Encoder: not running");
-        assert_eq!(encoder_line(Some(&sup(false, Some(1.0), 0))), "Encoder: not running");
-        assert_eq!(encoder_line(Some(&sup(true, Some(0.987), 1))), "Encoder: running, 0.99x speed, 1 restart");
-        assert_eq!(encoder_line(Some(&sup(true, Some(0.987), 2))), "Encoder: running, 0.99x speed, 2 restarts");
+        assert_eq!(
+            encoder_line(Some(&sup(false, Some(1.0), 0))),
+            "Encoder: not running"
+        );
+        assert_eq!(
+            encoder_line(Some(&sup(true, Some(0.987), 1))),
+            "Encoder: running, 0.99x speed, 1 restart"
+        );
+        assert_eq!(
+            encoder_line(Some(&sup(true, Some(0.987), 2))),
+            "Encoder: running, 0.99x speed, 2 restarts"
+        );
     }
 
     #[test]
     fn describes_now_playing() {
-        let p = Playing { index: Some(3), position: Some(65.0), duration: Some(3600.0), ..Default::default() };
+        let p = Playing {
+            index: Some(3),
+            position: Some(65.0),
+            duration: Some(3600.0),
+            ..Default::default()
+        };
         assert_eq!(now_playing_index(&p, Some(300)), "4 of 300");
         assert_eq!(now_playing_index(&p, None), "4");
         assert_eq!(now_playing_index(&Playing::default(), Some(300)), "-");
         assert_eq!(now_playing_time(&p), "0:01:05 / 1:00:00");
-        let open = Playing { duration: None, ..p };
+        let open = Playing {
+            duration: None,
+            ..p
+        };
         assert_eq!(now_playing_time(&open), "0:01:05 / --:--:--");
         assert_eq!(now_playing_time(&Playing::default()), "-");
     }
@@ -414,8 +601,14 @@ mod tests {
     #[test]
     fn checks_playback_numbers() {
         let [read_ahead, cache, ..] = &PLAYBACK_FIELDS;
-        assert_eq!(check_number(read_ahead, "1"), Err("Read-ahead must be at least 2.".into()));
-        assert_eq!(check_number(cache, "50.5"), Err("Download cache must be a whole number, at least 50.".into()));
+        assert_eq!(
+            check_number(read_ahead, "1"),
+            Err("Read-ahead must be at least 2.".into())
+        );
+        assert_eq!(
+            check_number(cache, "50.5"),
+            Err("Download cache must be a whole number, at least 50.".into())
+        );
         assert!(check_number(read_ahead, "").is_err());
         assert!(check_number(read_ahead, "2,5").is_err());
         assert_eq!(check_number(read_ahead, " 20 "), Ok(20.0));
@@ -435,7 +628,10 @@ mod tests {
     const NOW: i64 = 1_794_132_000_000;
 
     fn b(text: &str, button: &str, enabled: bool) -> Option<Banner> {
-        Some(Banner { text: text.into(), button: Some((button.into(), enabled)) })
+        Some(Banner {
+            text: text.into(),
+            button: Some((button.into(), enabled)),
+        })
     }
 
     fn banner(status: &UpdateStatus) -> Option<Banner> {
@@ -444,13 +640,42 @@ mod tests {
 
     #[test]
     fn banner_per_state() {
-        assert_eq!(banner(&status(true, "idle")), b("Version 3.0.6 is available (current: 3.0.5)", "Update Now", true));
-        let dev = UpdateStatus { is_dev_mode: true, ..status(true, "idle") };
-        assert_eq!(banner(&dev), b("Version 3.0.6 is available (current: 3.0.5)", "Dev Mode", false));
-        assert_eq!(banner(&status(true, "downloading")), b("Downloading v3.0.6...", "Downloading...", false));
-        assert_eq!(banner(&status(true, "extracting")), b("Installing v3.0.6...", "Installing...", false));
-        assert_eq!(banner(&status(true, "ready")), b("Update installed. Restarting...", "Restarting...", false));
-        assert_eq!(banner(&status(true, "error")), b("Update failed: boom", "Retry", true));
+        assert_eq!(
+            banner(&status(true, "idle")),
+            b(
+                "Version 3.0.6 is available (current: 3.0.5)",
+                "Update Now",
+                true
+            )
+        );
+        let dev = UpdateStatus {
+            is_dev_mode: true,
+            ..status(true, "idle")
+        };
+        assert_eq!(
+            banner(&dev),
+            b(
+                "Version 3.0.6 is available (current: 3.0.5)",
+                "Dev Mode",
+                false
+            )
+        );
+        assert_eq!(
+            banner(&status(true, "downloading")),
+            b("Downloading v3.0.6...", "Downloading...", false)
+        );
+        assert_eq!(
+            banner(&status(true, "extracting")),
+            b("Installing v3.0.6...", "Installing...", false)
+        );
+        assert_eq!(
+            banner(&status(true, "ready")),
+            b("Update installed. Restarting...", "Restarting...", false)
+        );
+        assert_eq!(
+            banner(&status(true, "error")),
+            b("Update failed: boom", "Retry", true)
+        );
         assert_eq!(banner(&status(false, "idle")), None);
     }
 
@@ -469,22 +694,40 @@ mod tests {
 
     #[test]
     fn banner_of_a_running_full_update_shows_its_progress_and_no_button() {
-        let s = UpdateStatus { current_version: Some("3.0.5".into()), progress: Some(progress("running")), ..status(true, "idle") };
+        let s = UpdateStatus {
+            current_version: Some("3.0.5".into()),
+            progress: Some(progress("running")),
+            ..status(true, "idle")
+        };
 
         let shown = update_banner(&s, NOW + 5_000, None);
 
-        assert_eq!(shown, Some(Banner { text: "Replacing files, 5 s".into(), button: None }));
+        assert_eq!(
+            shown,
+            Some(Banner {
+                text: "Replacing files, 5 s".into(),
+                button: None
+            })
+        );
     }
 
     #[test]
     fn banner_of_a_failed_update_keeps_the_failure_text_and_offers_update_now() {
-        let s = UpdateStatus { current_version: Some("3.0.5".into()), progress: Some(progress("failed")), ..status(true, "idle") };
+        let s = UpdateStatus {
+            current_version: Some("3.0.5".into()),
+            progress: Some(progress("failed")),
+            ..status(true, "idle")
+        };
 
         let shown = update_banner(&s, NOW + 3_600_000, None);
 
         assert_eq!(
             shown,
-            b("The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.", "Update Now", true)
+            b(
+                "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.",
+                "Update Now",
+                true
+            )
         );
     }
 
@@ -499,38 +742,73 @@ mod tests {
             ..status(true, "idle")
         };
 
-        assert_eq!(banner(&s), b("Update parts to 3.0.5", "Update parts to 3.0.5", true));
+        assert_eq!(
+            banner(&s),
+            b("Update parts to 3.0.5", "Update parts to 3.0.5", true)
+        );
     }
 
     #[test]
     fn banner_of_a_full_offer_names_the_parts_and_keeps_update_now() {
-        let s = UpdateStatus { kind: Some("full".into()), parts: vec!["node".into()], ..status(true, "idle") };
+        let s = UpdateStatus {
+            kind: Some("full".into()),
+            parts: vec!["node".into()],
+            ..status(true, "idle")
+        };
 
         assert_eq!(
             banner(&s),
-            b("Full update: the stream goes off air while these parts are replaced: Node.", "Update Now", true)
+            b(
+                "Full update: the stream goes off air while these parts are replaced: Node.",
+                "Update Now",
+                true
+            )
         );
     }
 
     #[test]
     fn banner_of_an_app_only_download_shows_the_percentage() {
-        let s = UpdateStatus { download_percent: Some(42.0), ..status(true, "downloading") };
+        let s = UpdateStatus {
+            download_percent: Some(42.0),
+            ..status(true, "downloading")
+        };
 
-        assert_eq!(banner(&s), b("Downloading v3.0.6, 42%...", "Downloading...", false));
+        assert_eq!(
+            banner(&s),
+            b("Downloading v3.0.6, 42%...", "Downloading...", false)
+        );
     }
 
     #[test]
     fn check_result_texts() {
-        assert_eq!(check_update_result(&status(false, "idle")), "Up to date (v3.0.5)");
-        assert_eq!(check_update_result(&status(true, "idle")), "v3.0.6 is available.");
-        let noted = UpdateStatus { node_notice: Some("Install the full ZIP.".into()), ..status(true, "idle") };
-        assert_eq!(check_update_result(&noted), "v3.0.6 is available. Install the full ZIP.");
+        assert_eq!(
+            check_update_result(&status(false, "idle")),
+            "Up to date (v3.0.5)"
+        );
+        assert_eq!(
+            check_update_result(&status(true, "idle")),
+            "v3.0.6 is available."
+        );
+        let noted = UpdateStatus {
+            node_notice: Some("Install the full ZIP.".into()),
+            ..status(true, "idle")
+        };
+        assert_eq!(
+            check_update_result(&noted),
+            "v3.0.6 is available. Install the full ZIP."
+        );
     }
 
     #[test]
     fn renders_templates_with_sample_values() {
-        assert_eq!(render_template("Video {videoIndex} failed: {errorCode} {nope}"), "Video 3 failed: early-eof {nope}");
-        assert_eq!(render_template("Hej {channel} 🎥 åäö"), "Hej mychannel 🎥 åäö");
+        assert_eq!(
+            render_template("Video {videoIndex} failed: {errorCode} {nope}"),
+            "Video 3 failed: early-eof {nope}"
+        );
+        assert_eq!(
+            render_template("Hej {channel} 🎥 åäö"),
+            "Hej mychannel 🎥 åäö"
+        );
         assert_eq!(render_template("a { b {kind} {} {"), "a { b freeze {} {");
     }
 
@@ -538,9 +816,16 @@ mod tests {
     fn looks_up_event_info() {
         assert_eq!(
             event_info("streamDrop"),
-            ("Encoder Stopped".into(), "The encoder stopped and is restarting".into(), PreviewLevel::Warn)
+            (
+                "Encoder Stopped".into(),
+                "The encoder stopped and is restarting".into(),
+                PreviewLevel::Warn
+            )
         );
-        assert_eq!(event_info("brandNew"), ("brandNew".into(), String::new(), PreviewLevel::Info));
+        assert_eq!(
+            event_info("brandNew"),
+            ("brandNew".into(), String::new(), PreviewLevel::Info)
+        );
     }
 
     #[test]
@@ -555,17 +840,34 @@ mod tests {
 
     #[test]
     fn stream_key_texts() {
-        assert_eq!(stream_key_state(true), ("A stream key is set.", "Replace", "Paste a new key to replace it"));
+        assert_eq!(
+            stream_key_state(true),
+            (
+                "A stream key is set.",
+                "Replace",
+                "Paste a new key to replace it"
+            )
+        );
         assert_eq!(
             stream_key_state(false),
-            ("No stream key is set. The stream cannot start without one.", "Set", "Paste your Twitch stream key")
+            (
+                "No stream key is set. The stream cannot start without one.",
+                "Set",
+                "Paste your Twitch stream key"
+            )
         );
     }
 
     #[test]
     fn labels_playlist_options() {
-        let named = PlaylistRef { id: "PLa".into(), name: Some("Mine".into()) };
-        let bare = PlaylistRef { id: "PLb".into(), name: None };
+        let named = PlaylistRef {
+            id: "PLa".into(),
+            name: Some("Mine".into()),
+        };
+        let bare = PlaylistRef {
+            id: "PLb".into(),
+            name: None,
+        };
         assert_eq!(playlist_option_label(&named, 0, 0), "Mine (playing)");
         assert_eq!(playlist_option_label(&bare, 1, 0), "PLb");
     }
@@ -575,8 +877,13 @@ mod tests {
         assert_eq!(local_hms("not a time"), "not a time");
         assert_eq!(local_date_time("Låtar 🎵"), "Låtar 🎵");
         let ts = "2026-11-08T12:34:56Z";
-        let local = DateTime::parse_from_rfc3339(ts).unwrap().with_timezone(&Local);
+        let local = DateTime::parse_from_rfc3339(ts)
+            .unwrap()
+            .with_timezone(&Local);
         assert_eq!(local_hms(ts), local.format("%H:%M:%S").to_string());
-        assert_eq!(local_date_time(ts), local.format("%Y-%m-%d %H:%M").to_string());
+        assert_eq!(
+            local_date_time(ts),
+            local.format("%Y-%m-%d %H:%M").to_string()
+        );
     }
 }

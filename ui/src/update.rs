@@ -218,10 +218,7 @@ impl UpdateFlow {
             return;
         }
         self._redraw = Some(cx.spawn(async move |this, cx| {
-            while this
-                .update(cx, |flow, cx| flow.show_last_step(cx))
-                .is_ok()
-            {
+            while this.update(cx, |flow, cx| flow.show_last_step(cx)).is_ok() {
                 cx.background_executor().timer(REDRAW_EVERY).await;
             }
         }));
@@ -400,7 +397,8 @@ mod tests {
     const LOST: &str = "Can't reach the server. The dashboard may be out of date.";
     const FULL_OFFER: &str =
         "Full update: the stream goes off air while these parts are replaced: Node, ffmpeg.";
-    const ROLLED_BACK: &str = "The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5.";
+    const ROLLED_BACK: &str =
+        "The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5.";
     /// A step 12.5 minutes old, which prints "12 min" for the next half minute of the test clock.
     const STEP_AGO_S: f64 = 750.;
 
@@ -1045,7 +1043,11 @@ mod tests {
         click(cx, window, "update-btn");
         cx.run_until_parked();
 
-        assert!(shows(cx, window, &format!("Update failed: {UPDATE_RUNNING}")));
+        assert!(shows(
+            cx,
+            window,
+            &format!("Update failed: {UPDATE_RUNNING}")
+        ));
         assert_eq!(banner_button(cx, window), Some(("Retry".into(), false)));
         assert_eq!(progress_reads(&fake), 0);
     }

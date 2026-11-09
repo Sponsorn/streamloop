@@ -776,7 +776,10 @@ where
                     .shape_line(label.clone(), size, &[run], None)
                     .width
             })
-            .fold(Pixels::ZERO, |widest, width| if width > widest { width } else { widest });
+            .fold(
+                Pixels::ZERO,
+                |widest, width| if width > widest { width } else { widest },
+            );
         let mut select = self.select.take().expect("laid out once");
         if let Some(width) = menu_width(longest, box_width) {
             select = select.menu_width(width);
