@@ -19,6 +19,7 @@ pub type AlertVar = serde_json::Value;
 
 const BATCH_WINDOW: Duration = Duration::from_secs(5);
 const RATE_LIMIT_DEFAULT_WAIT: Duration = Duration::from_secs(10);
+const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(30);
 const POST_TIMEOUT: Duration = Duration::from_secs(30);
 
 const COLOR_INFO: f64 = 3_447_003.0;
@@ -200,6 +201,51 @@ fn failure_kind(e: &HttpError) -> String {
     }
 }
 
+/// The `retry-after` wait as Node reads it with `parseFloat`: a leading number, a missing header meaning 10 s,
+/// anything unreadable or negative meaning none. Capped so a hostile value cannot hold up exit.
+fn retry_wait(header: Option<&str>) -> Duration {
+    let Some(raw) = header.filter(|h| !h.is_empty()) else { return RATE_LIMIT_DEFAULT_WAIT };
+    let secs = parse_float_prefix(raw);
+    if secs.is_nan() || secs <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::try_from_secs_f64(secs.min(RATE_LIMIT_MAX_WAIT.as_secs_f64())).unwrap_or(RATE_LIMIT_MAX_WAIT)
+}
+
+/// `parseFloat`: the longest leading decimal number, NaN when there is none.
+fn parse_float_prefix(raw: &str) -> f64 {
+    let t = raw.trim_start();
+    let b = t.as_bytes();
+    let mut i = 0;
+    if matches!(b.first(), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digits = |from: usize| b[from..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let int = digits(i);
+    i += int;
+    let mut frac = 0;
+    if b.get(i) == Some(&b'.') {
+        frac = digits(i + 1);
+        if int > 0 || frac > 0 {
+            i += 1 + frac;
+        }
+    }
+    if int == 0 && frac == 0 {
+        return f64::NAN;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(b.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        let exp = digits(j);
+        if exp > 0 {
+            i = j + exp;
+        }
+    }
+    t[..i].parse().unwrap_or(f64::NAN)
+}
+
 struct Queued {
     content: String,
     level: Level,
@@ -222,6 +268,8 @@ struct Inner {
     http: Arc<dyn Http>,
     clock: Arc<dyn Clock>,
     batch: Mutex<Batch>,
+    /// Held across a post and its 429 wait, so `flush` waits for a send already under way.
+    sending: tokio::sync::Mutex<()>,
 }
 
 pub struct DiscordNotifier {
@@ -237,7 +285,7 @@ impl DiscordNotifier {
         http: Arc<dyn Http>,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        let inner = Inner { discord, version: version.into(), uptime_ms, admin_url: admin_url.into(), http, clock, batch: Mutex::new(Batch::default()) };
+        let inner = Inner { discord, version: version.into(), uptime_ms, admin_url: admin_url.into(), http, clock, batch: Mutex::new(Batch::default()), sending: tokio::sync::Mutex::new(()) };
         Self { inner: Arc::new(inner) }
     }
 }
@@ -303,6 +351,7 @@ impl Inner {
     }
 
     async fn flush(&self) {
+        let _sending = self.sending.lock().await;
         let messages = {
             let mut b = self.batch.lock().unwrap();
             b.generation += 1;
@@ -321,11 +370,7 @@ impl Inner {
         };
         match self.http.send(req).await {
             Ok(res) if res.status == 429 => {
-                let wait = res
-                    .header("retry-after")
-                    .and_then(|v| v.trim().parse::<f64>().ok())
-                    .filter(|secs| secs.is_finite() && *secs >= 0.0)
-                    .map_or(RATE_LIMIT_DEFAULT_WAIT, Duration::from_secs_f64);
+                let wait = retry_wait(res.header("retry-after"));
                 tracing::warn!(retry_after_ms = wait.as_millis() as u64, "Discord rate limited, waiting");
                 tokio::time::sleep(wait).await;
             }
@@ -416,6 +461,18 @@ impl Notifier for DiscordNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_after_reads_like_parse_float_and_is_capped() {
+        let secs = |h: Option<&str>| retry_wait(h).as_secs_f64();
+        assert_eq!(secs(None), 10.0);
+        assert_eq!(secs(Some("2abc")), 2.0);
+        assert_eq!(secs(Some(" 1.5")), 1.5);
+        assert_eq!(secs(Some("-3")), 0.0);
+        assert_eq!(secs(Some("abc")), 0.0);
+        assert_eq!(secs(Some("3600")), 30.0);
+        assert_eq!(secs(Some("1e300")), 30.0);
+    }
 
     #[test]
     fn to_fixed_rounds_a_tie_up_like_javascript() {

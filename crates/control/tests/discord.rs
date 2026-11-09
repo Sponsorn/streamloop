@@ -8,7 +8,7 @@ use streamloop_common::config::{self, Discord};
 use streamloop_control::clock::TestClock;
 use streamloop_control::discord::{render_template, DiscordNotifier, EmbedField, Level, Notifier};
 use streamloop_control::events::{Alert, AlertLevel, DiscordKind};
-use streamloop_control::http::{FakeHttp, HttpError, HttpResponse};
+use streamloop_control::http::{FakeHttp, Http, HttpError, HttpRequest, HttpResponse};
 
 const HOOK: &str = "https://discord.com/api/webhooks/test";
 
@@ -574,4 +574,87 @@ async fn matches_every_discord_fixture() {
             assert_eq!(got.to_compact(), want_body.to_compact(), "{name}: body");
         }
     }
+}
+
+struct GatedHttp {
+    gate: tokio::sync::Notify,
+    posts: Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl Http for GatedHttp {
+    async fn send(&self, _req: HttpRequest) -> Result<HttpResponse, HttpError> {
+        *self.posts.lock().unwrap() += 1;
+        self.gate.notified().await;
+        Ok(HttpResponse::new(200, ""))
+    }
+    async fn download(&self, _url: &str, _dest: &std::path::Path) -> Result<u64, HttpError> {
+        unreachable!()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn flush_waits_for_a_post_the_timer_already_started() {
+    // Arrange
+    let http = Arc::new(GatedHttp { gate: tokio::sync::Notify::new(), posts: Mutex::new(0) });
+    let clock = Arc::new(TestClock::new(UNIX_EPOCH));
+    let n = Arc::new(DiscordNotifier::new(hooked(json!({})), "1.0.0", Arc::new(|| 0), "", http.clone(), clock));
+    n.send("batched", Level::Info, None).await;
+    pass(Duration::from_secs(5)).await;
+    // Act
+    let flusher = {
+        let n = n.clone();
+        tokio::spawn(async move { n.flush().await })
+    };
+    pass(Duration::from_secs(1)).await;
+    let early = flusher.is_finished();
+    http.gate.notify_one();
+    pass(Duration::from_secs(1)).await;
+    // Assert
+    assert!(!early);
+    assert!(flusher.is_finished());
+    assert_eq!(*http.posts.lock().unwrap(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_huge_retry_after_waits_at_most_the_cap() {
+    // Arrange
+    let http = Arc::new(FakeHttp::new());
+    http.route("https://", |_| {
+        let mut res = HttpResponse::new(429, "");
+        res.headers.push(("retry-after".into(), "3600".into()));
+        Ok(res)
+    });
+    let n = notifier_with(hooked(json!({})), &http);
+    let task = {
+        let n = n.clone();
+        tokio::spawn(async move { n.send("x", Level::Error, None).await })
+    };
+    // Act
+    pass(Duration::from_secs(29)).await;
+    let early = task.is_finished();
+    pass(Duration::from_secs(2)).await;
+    // Assert
+    assert!(!early && task.is_finished());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_after_beyond_f64_range_of_a_duration_does_not_panic() {
+    // Arrange
+    let http = Arc::new(FakeHttp::new());
+    http.route("https://", |_| {
+        let mut res = HttpResponse::new(429, "");
+        res.headers.push(("retry-after".into(), "1e300".into()));
+        Ok(res)
+    });
+    let n = notifier_with(hooked(json!({})), &http);
+    let task = {
+        let n = n.clone();
+        tokio::spawn(async move { n.send("x", Level::Error, None).await })
+    };
+    // Act
+    pass(Duration::from_secs(31)).await;
+    // Assert
+    assert!(task.is_finished());
+    assert!(task.await.is_ok());
 }
