@@ -36,6 +36,17 @@ const CONNECTING_TITLE: &str = "StreamLoop backend is not running";
 const CONNECTING_HINT: &str =
     "Start it with START.bat. This window switches to the dashboard when the backend is up.";
 
+/// The wall clock in milliseconds since the epoch. In tests it is the test scheduler's clock, which
+/// `advance_clock` moves, so elapsed times are exact.
+pub fn now_ms(cx: &App) -> i64 {
+    cx.background_executor()
+        .scheduler_executor()
+        .scheduler()
+        .clock()
+        .utc_now()
+        .timestamp_millis()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Connecting,

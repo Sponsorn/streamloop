@@ -18,7 +18,7 @@ use gpui_kit::{
 
 use crate::{
     api::types::{SwapLine, UpdateProgress, UpdateStatus},
-    app::{AppHandle, ToastKind},
+    app::{AppHandle, ToastKind, now_ms},
     logic::{admin::update_banner, update_progress_text, update_running},
     theme::{ACCENT, MAX_WIDTH, WHITE},
     widgets::reveal_on_focus,
@@ -87,35 +87,39 @@ impl UpdateFlow {
         &self.swap_log
     }
 
-    /// admin.js `pollOnce`'s part: the poll's stream state, then the banner from its update status.
-    /// A failed update read leaves the banner and the last progress as they were.
+    /// admin.js `pollOnce`'s part: the poll's stream state, then the banner from its update status
+    /// at the poll's time. A failed update read leaves the banner and the last progress as they were.
     pub fn on_poll(
         &mut self,
         stream_state: &str,
         update: Option<&UpdateStatus>,
+        now_ms: i64,
         cx: &mut Context<Self>,
     ) {
         self.stream_state = Some(stream_state.to_string());
         if let Some(update) = update {
-            self.read_status(update, cx);
+            self.read_status(update, now_ms, cx);
         }
     }
 
     /// An update status from a poll or a progress read: its progress and swap log are kept.
-    fn read_status(&mut self, status: &UpdateStatus, cx: &mut Context<Self>) {
+    fn read_status(&mut self, status: &UpdateStatus, now_ms: i64, cx: &mut Context<Self>) {
         self.progress = status.progress.clone();
         self.swap_log = status.swap_log.clone();
-        self.show_status(status, cx);
+        self.render_banner(status, now_ms, cx);
     }
 
-    /// admin.js `renderUpdateBanner`.
+    /// admin.js `renderUpdateBanner`, for Settings' check result.
     pub fn show_status(&mut self, status: &UpdateStatus, cx: &mut Context<Self>) {
+        self.render_banner(status, now_ms(cx), cx);
+    }
+
+    fn render_banner(&mut self, status: &UpdateStatus, now_ms: i64, cx: &mut Context<Self>) {
         self.node_notice = status
             .node_notice
             .clone()
             .filter(|notice| !notice.is_empty())
             .map(Into::into);
-        let now_ms = chrono::Utc::now().timestamp_millis();
         match update_banner(status, now_ms, self.stream_state.as_deref()) {
             Some(banner) => {
                 self.shown = true;
@@ -169,7 +173,7 @@ impl UpdateFlow {
                     break DOWN_WAIT;
                 };
                 if this
-                    .update(cx, |flow, cx| flow.read_status(&status, cx))
+                    .update(cx, |flow, cx| flow.read_status(&status, now_ms(cx), cx))
                     .is_err()
                 {
                     return;
@@ -228,8 +232,7 @@ impl UpdateFlow {
         let Some(progress) = &self.progress else {
             return;
         };
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        self.text = update_progress_text(progress, &self.swap_log, now_ms).into();
+        self.text = update_progress_text(progress, &self.swap_log, now_ms(cx)).into();
         self.shown = true;
         self.button = None;
         cx.notify();
@@ -352,7 +355,9 @@ impl Render for UpdateFlow {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use gpui::{AnyWindowHandle, AppContext, Bounds, Entity, Pixels, TestAppContext};
+    use gpui::{
+        AnyWindowHandle, AppContext, Bounds, Entity, Pixels, ScrollDelta, TestAppContext, point, px,
+    };
     use gpui_kit::{base::test_support::texts, test::TestWindowExt};
     use serde_json::{Value, json};
 
@@ -360,8 +365,9 @@ mod tests {
         api::{ApiError, fake::FakeApi},
         app::{AppView, POLL_EVERY, Screen},
         test_support::{
-            UPDATE_RUNNING, answer_polls, config_json, count, full_offer_json, offered_json,
-            open_app, progress_json, shows, status_json, update_json,
+            UPDATE_RUNNING, answer_polls, banner_text, banner_texts, config_json, count,
+            full_offer_json, offered_json, open_app, progress_json, shows, status_json,
+            update_json,
         },
     };
 
@@ -370,8 +376,12 @@ mod tests {
     const FULL_OFFER: &str =
         "Full update: the stream goes off air while these parts are replaced: Node, ffmpeg.";
     const ROLLED_BACK: &str = "The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5.";
-    /// A step 12.5 minutes old prints "12 min" for half a minute of real time.
+    /// A step 12.5 minutes old, which prints "12 min" for the next half minute of the test clock.
     const STEP_AGO_S: f64 = 750.;
+
+    fn banner_is(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
+        assert_eq!(banner_text(cx, window).as_deref(), Some(text));
+    }
 
     /// Opens the dashboard with `update` as the update status. `POST /api/update/apply` answers as
     /// Node does when it starts an update.
@@ -414,6 +424,19 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click(id, cx);
+        })
+        .unwrap();
+    }
+
+    /// Scrolls the dashboard so `id` sits mid-window, clicks it and scrolls back to the banner.
+    fn scroll_and_click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let dy = window.viewport_size().height / 2. - window.find(id).bounds().center().y;
+            window.scroll("tab-settings", ScrollDelta::Pixels(point(px(0.), dy)), cx);
+            window.render_frame(cx);
+            window.click(id, cx);
+            window.scroll(id, ScrollDelta::Pixels(point(px(0.), -dy)), cx);
         })
         .unwrap();
     }
@@ -501,7 +524,7 @@ mod tests {
         for (update, text, button, disabled) in states {
             fake.reply("GET", "/api/update/status", Ok(update));
             cx.executor().advance_clock(POLL_EVERY);
-            assert!(shows(cx, window, text), "{text}");
+            banner_is(cx, window, text);
             assert_eq!(
                 banner_button(cx, window),
                 Some((button.to_string(), disabled)),
@@ -514,7 +537,9 @@ mod tests {
         noted["nodeNotice"] = json!(NOTICE);
         fake.reply("GET", "/api/update/status", Ok(noted));
         cx.executor().advance_clock(POLL_EVERY);
-        let text = text_bounds(cx, window, "Version 3.0.6 is available (current: 3.0.5)");
+        let offer = "Version 3.0.6 is available (current: 3.0.5)";
+        assert_eq!(banner_texts(cx, window), [offer, NOTICE]);
+        let text = text_bounds(cx, window, offer);
         let notice = text_bounds(cx, window, NOTICE);
         assert!(notice.top() >= text.bottom(), "{notice:?} under {text:?}");
         assert!(text.bottom() <= text_bounds(cx, window, "StreamLoop").top());
@@ -522,7 +547,7 @@ mod tests {
         // A failed update status read keeps the banner as it was.
         fake.reply("GET", "/api/update/status", Err(ApiError::Unreachable));
         cx.executor().advance_clock(POLL_EVERY);
-        assert!(shows(cx, window, NOTICE));
+        assert_eq!(banner_texts(cx, window), [offer, NOTICE]);
         assert_eq!(
             banner_button(cx, window),
             Some(("Update Now".into(), false))
@@ -532,12 +557,8 @@ mod tests {
         fake.reply("GET", "/api/update/status", Ok(update_json("idle")));
         cx.executor().advance_clock(POLL_EVERY);
         assert_eq!(banner_button(cx, window), None);
+        assert!(banner_texts(cx, window).is_empty());
         assert!(!shows(cx, window, NOTICE));
-        assert!(!shows(
-            cx,
-            window,
-            "Version 3.0.6 is available (current: 3.0.5)"
-        ));
     }
 
     #[gpui::test]
@@ -569,7 +590,7 @@ mod tests {
         assert_eq!(applies[0].body, None);
         // The first progress read follows the apply at once, then one every 1.5 s.
         assert_eq!(progress_reads(&fake), 1);
-        assert!(shows(cx, window, "Downloading v3.0.6..."));
+        banner_is(cx, window, "Downloading v3.0.6...");
         assert_eq!(
             banner_button(cx, window),
             Some(("Downloading...".into(), true))
@@ -582,7 +603,7 @@ mod tests {
         fake.reply("GET", "/api/update/status", Ok(offered_json("extracting")));
         advance(cx, 1500);
         assert_eq!(progress_reads(&fake), 3);
-        assert!(shows(cx, window, "Installing v3.0.6..."));
+        banner_is(cx, window, "Installing v3.0.6...");
         assert_eq!(
             banner_button(cx, window),
             Some(("Installing...".into(), true))
@@ -591,7 +612,7 @@ mod tests {
         fake.reply("GET", "/api/update/status", Ok(offered_json("ready")));
         advance(cx, 1500);
         assert_eq!(progress_reads(&fake), 4);
-        assert!(shows(cx, window, "Update installed. Restarting..."));
+        banner_is(cx, window, "Update installed. Restarting...");
         assert_eq!(
             banner_button(cx, window),
             Some(("Restarting...".into(), true))
@@ -606,6 +627,12 @@ mod tests {
         advance(cx, 100);
         assert_eq!(status_tries(&fake), tries + 1);
         assert_eq!(screen(cx, &app), Screen::Dashboard);
+        // Without a full update's progress, the failed try leaves the banner as it was.
+        banner_is(cx, window, "Update installed. Restarting...");
+        assert_eq!(
+            banner_button(cx, window),
+            Some(("Restarting...".into(), true))
+        );
         advance(cx, 1900);
         assert_eq!(status_tries(&fake), tries + 1);
         assert!(!shows(cx, window, LOST));
@@ -642,8 +669,8 @@ mod tests {
         let (fake, window, app) = open(cx, full_offer_json("idle", Value::Null));
         let old_dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
         let (forgets, configs) = (fake.token_forgets(), count(&fake, "GET", "/api/config"));
-        assert!(shows(cx, window, FULL_OFFER));
-        let mut progress = progress_json("download", "running", STEP_AGO_S);
+        banner_is(cx, window, FULL_OFFER);
+        let mut progress = progress_json(cx, "download", "running", STEP_AGO_S);
         progress["downloadPercent"] = json!(42);
         fake.reply(
             "GET",
@@ -656,18 +683,18 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(count(&fake, "POST", "/api/update/apply"), 1);
         assert_eq!(progress_reads(&fake), 1);
-        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        banner_is(cx, window, "Downloading, 42%, 12 min");
         assert_eq!(banner_button(cx, window), None);
 
         // Node's own status reads `ready` once the files are staged, but the update runs on, so
-        // the reads go on every 1.5 s.
-        let mut swap = full_offer_json("ready", progress_json("swap", "running", STEP_AGO_S));
+        // the reads go on every 1.5 s. The swap step is 11 min 52 s old at 0 s.
+        let swap_progress = progress_json(cx, "swap", "running", 712.);
+        let mut swap = full_offer_json("ready", swap_progress);
         swap["swapLog"] = json!([{ "folder": "node", "status": "retry", "detail": "in use" }]);
         fake.reply("GET", "/api/update/status", Ok(swap));
         advance(cx, 1500);
         assert_eq!(progress_reads(&fake), 2);
-        let swapping = "Replacing files, 12 min (trying node again)";
-        assert!(shows(cx, window, swapping));
+        banner_is(cx, window, "Replacing files, 11 min (trying node again)");
         assert_eq!(banner_button(cx, window), None);
         advance(cx, 4500);
         assert_eq!(progress_reads(&fake), 5);
@@ -680,15 +707,19 @@ mod tests {
         let tries = status_tries(&fake);
         advance(cx, 1999);
         assert_eq!(status_tries(&fake), tries);
+        banner_is(cx, window, "Replacing files, 11 min (trying node again)");
+        // The first failed try shows the last step at its own time: past 12 minutes.
         advance(cx, 1);
         assert_eq!(status_tries(&fake), tries + 1);
+        banner_is(cx, window, "Replacing files, 12 min (trying node again)");
+        assert_eq!(banner_button(cx, window), None);
 
         // One try every 2 s and no limit: 35 more, and the window still waits with the last step.
         advance(cx, 35 * 2000);
         assert_eq!(status_tries(&fake), tries + 36);
         assert_eq!(progress_reads(&fake), 6);
         assert_eq!(screen(cx, &app), Screen::Dashboard);
-        assert!(shows(cx, window, swapping));
+        banner_is(cx, window, "Replacing files, 13 min (trying node again)");
         assert_eq!(banner_button(cx, window), None);
         assert!(shows(cx, window, LOST));
         assert_eq!(count(&fake, "POST", "/api/update/apply"), 1);
@@ -698,7 +729,7 @@ mod tests {
         fake.reply("GET", "/api/events", Ok(json!([])));
         let mut checking = update_json("idle");
         checking["currentVersion"] = json!("3.0.6");
-        checking["progress"] = progress_json("check", "running", STEP_AGO_S);
+        checking["progress"] = progress_json(cx, "check", "running", STEP_AGO_S);
         fake.reply("GET", "/api/update/status", Ok(checking));
         advance(cx, 2000);
         assert_eq!(screen(cx, &app), Screen::Dashboard);
@@ -706,33 +737,52 @@ mod tests {
         assert_ne!(dashboard.entity_id(), old_dashboard.entity_id());
         assert!(fake.token_forgets() > forgets);
         assert!(count(&fake, "GET", "/api/config") > configs);
-        assert!(shows(cx, window, "Checking the new version, 12 min"));
+        banner_is(cx, window, "Checking the new version, 12 min");
         assert_eq!(banner_button(cx, window), None);
     }
 
     #[gpui::test]
     fn two_failed_polls_during_an_update_start_the_restart_wait(cx: &mut TestAppContext) {
-        let stopping = full_offer_json("ready", progress_json("stop", "running", STEP_AGO_S));
+        let stopping = full_offer_json("ready", progress_json(cx, "stop", "running", 1.));
         let (fake, window, app) = open(cx, stopping);
         let old_dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
-        assert!(shows(cx, window, "Stopping the stream, 12 min"));
+        banner_is(cx, window, "Stopping the stream, 1 s");
         assert_eq!(banner_button(cx, window), None);
         let tries = status_tries(&fake);
 
-        // Another window pressed Update Now; this one sees Node go down.
+        // Another window pressed Update Now. This one's Settings check renders the offer it
+        // found, with a button, as admin.js `handleCheckUpdate` does.
+        fake.reply("POST", "/api/update/check", Ok(offered_json("idle")));
+        click(cx, window, "tab-settings");
+        cx.run_until_parked();
+        scroll_and_click(cx, window, "check-update-btn");
+        cx.run_until_parked();
+        let offer = "Version 3.0.6 is available (current: 3.0.5)";
+        banner_is(cx, window, offer);
+        assert_eq!(
+            banner_button(cx, window),
+            Some(("Update Now".into(), false))
+        );
+
+        // Node goes down. A failed poll leaves the banner as it was.
         node_down(&fake);
         advance(cx, 2000);
         assert_eq!(status_tries(&fake), tries);
         assert!(!shows(cx, window, LOST));
+        banner_is(cx, window, offer);
+        // The second starts the wait, whose first try shows the last step at its own time, and
+        // no button.
         advance(cx, 2000);
         assert_eq!(status_tries(&fake), tries + 1);
         assert!(shows(cx, window, LOST));
+        banner_is(cx, window, "Stopping the stream, 5 s");
+        assert_eq!(banner_button(cx, window), None);
         advance(cx, 20_000);
         assert_eq!(status_tries(&fake), tries + 11);
-        assert!(shows(cx, window, "Stopping the stream, 12 min"));
+        banner_is(cx, window, "Stopping the stream, 25 s");
         assert_eq!(banner_button(cx, window), None);
         assert_eq!(screen(cx, &app), Screen::Dashboard);
-        assert!(fake.posts().is_empty());
+        assert_eq!(count(&fake, "POST", "/api/update/apply"), 0);
 
         answer_polls(&fake);
         advance(cx, 2000);
@@ -763,14 +813,14 @@ mod tests {
     #[gpui::test]
     fn banner_follows_the_full_update(cx: &mut TestAppContext) {
         let (fake, window, _) = open(cx, full_offer_json("idle", Value::Null));
-        assert!(shows(cx, window, FULL_OFFER));
+        banner_is(cx, window, FULL_OFFER);
         assert_eq!(
             banner_button(cx, window),
             Some(("Update Now".into(), false))
         );
 
         // Running: the progress, and no button.
-        let mut progress = progress_json("download", "running", STEP_AGO_S);
+        let mut progress = progress_json(cx, "download", "running", STEP_AGO_S);
         progress["downloadPercent"] = json!(42);
         fake.reply(
             "GET",
@@ -778,12 +828,11 @@ mod tests {
             Ok(full_offer_json("downloading", progress)),
         );
         advance(cx, 2000);
-        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
-        assert!(!shows(cx, window, FULL_OFFER));
+        banner_is(cx, window, "Downloading, 42%, 12 min");
         assert_eq!(banner_button(cx, window), None);
 
         // Rolled back with the offer still there: why, and Update Now.
-        let mut failed = progress_json("check", "rolled-back", 60.);
+        let mut failed = progress_json(cx, "check", "rolled-back", 60.);
         failed["reason"] = json!("No encoder works.");
         fake.reply(
             "GET",
@@ -791,7 +840,7 @@ mod tests {
             Ok(full_offer_json("idle", failed.clone())),
         );
         advance(cx, 2000);
-        assert!(shows(cx, window, ROLLED_BACK));
+        banner_is(cx, window, ROLLED_BACK);
         assert_eq!(
             banner_button(cx, window),
             Some(("Update Now".into(), false))
@@ -801,7 +850,7 @@ mod tests {
         gone["progress"] = failed;
         fake.reply("GET", "/api/update/status", Ok(gone));
         advance(cx, 2000);
-        assert!(shows(cx, window, ROLLED_BACK));
+        banner_is(cx, window, ROLLED_BACK);
         assert_eq!(banner_button(cx, window), None);
 
         // Checked and waiting for Start: "Ready to stream" until the same poll says live.
@@ -816,40 +865,40 @@ mod tests {
         fake.reply(
             "GET",
             "/api/update/status",
-            Ok(on(progress_json("start", "ok", 60.))),
+            Ok(on(progress_json(cx, "start", "ok", 60.))),
         );
         fake.reply("GET", "/api/status", Ok(status_json("stopped", false)));
         advance(cx, 2000);
-        assert!(shows(cx, window, ready));
+        banner_is(cx, window, ready);
         assert_eq!(banner_button(cx, window), None);
         fake.reply("GET", "/api/status", Ok(status_json("live", false)));
         advance(cx, 2000);
-        assert!(!shows(cx, window, ready));
+        assert_eq!(banner_text(cx, window), None);
 
         // Back on air: for 10 minutes.
         fake.reply(
             "GET",
             "/api/update/status",
-            Ok(on(progress_json("done", "ok", 60.))),
+            Ok(on(progress_json(cx, "done", "ok", 60.))),
         );
         advance(cx, 2000);
-        assert!(shows(cx, window, "Back on air on 3.0.6."));
+        banner_is(cx, window, "Back on air on 3.0.6.");
         assert_eq!(banner_button(cx, window), None);
         fake.reply(
             "GET",
             "/api/update/status",
-            Ok(on(progress_json("done", "ok", 601.))),
+            Ok(on(progress_json(cx, "done", "ok", 601.))),
         );
         advance(cx, 2000);
-        assert!(!shows(cx, window, "Back on air on 3.0.6."));
+        assert_eq!(banner_text(cx, window), None);
 
         // An update that neither came from nor went to the running version is not shown.
         let mut older = update_json("idle");
         older["currentVersion"] = json!("3.0.7");
-        older["progress"] = progress_json("check", "failed", 60.);
+        older["progress"] = progress_json(cx, "check", "failed", 60.);
         fake.reply("GET", "/api/update/status", Ok(older));
         advance(cx, 2000);
-        assert!(!shows(cx, window, "The update to 3.0.6 failed at checking the new version: no reason was recorded. Still on 3.0.5."));
+        assert_eq!(banner_text(cx, window), None);
 
         // The same version's parts: the offer is the button too.
         let mut parts = update_json("idle");
@@ -859,7 +908,7 @@ mod tests {
         parts["sameVersion"] = json!(true);
         fake.reply("GET", "/api/update/status", Ok(parts));
         advance(cx, 2000);
-        assert!(shows(cx, window, "Update parts to 3.0.5"));
+        banner_is(cx, window, "Update parts to 3.0.5");
         assert_eq!(
             banner_button(cx, window),
             Some(("Update parts to 3.0.5".into(), false))

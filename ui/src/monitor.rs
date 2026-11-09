@@ -21,7 +21,7 @@ use gpui_kit::{
 use crate::{
     api::{
         client::encode_component,
-        types::{Event, Playing, Status, SwapLine, UpdateProgress, UpdateStatus},
+        types::{Event, Playing, Status, UpdateStatus},
     },
     app::AppHandle,
     dashboard::TabView,
@@ -60,8 +60,8 @@ pub struct MonitorView {
     /// The status the stream card last drew. While a full update runs, admin.js `renderStream`
     /// returns before the Twitch and encoder lines, so they keep what they showed.
     card_status: Option<Status>,
-    /// The last poll's progress and swap log while a full update runs.
-    updating: Option<(UpdateProgress, Vec<SwapLine>)>,
+    /// While a full update runs, its progress at the last poll's time, as the banner shows it.
+    updating: Option<String>,
     events: Option<Vec<Event>>,
     pub(crate) videos: VideoList,
     pub(crate) logs: Entity<LogViewer>,
@@ -93,13 +93,13 @@ impl MonitorView {
     }
 
     /// The stream card's word, its colour level, the reason under it, and whether Start and Stop show.
-    /// While a full update runs: "Updating" with its progress at `now_ms`, and neither button.
-    pub(crate) fn card_line(&self, now_ms: i64) -> CardLine {
-        if let Some((progress, swap_log)) = &self.updating {
+    /// While a full update runs: "Updating" with its progress, and neither button.
+    pub(crate) fn card_line(&self) -> CardLine {
+        if let Some(progress) = &self.updating {
             return CardLine {
                 word: "Updating".into(),
                 level: Level::Warn,
-                reason: Some(update_progress_text(progress, swap_log, now_ms)),
+                reason: Some(progress.clone()),
                 start: false,
                 stop: false,
             };
@@ -133,7 +133,7 @@ impl MonitorView {
             reason,
             start: show_start,
             stop: show_stop,
-        } = self.card_line(chrono::Utc::now().timestamp_millis());
+        } = self.card_line();
         let twitch = status.map(|s| twitch_line(s.twitch.as_ref()));
         let encoder = status.map(|s| encoder_line(s.supervisor.as_ref()));
 
@@ -359,6 +359,7 @@ impl TabView for MonitorView {
         status: &Status,
         events: &[Event],
         _update: Option<&UpdateStatus>,
+        now_ms: i64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -368,7 +369,7 @@ impl TabView for MonitorView {
         self.updating = flow
             .progress()
             .filter(|progress| update_running(Some(progress)))
-            .map(|progress| (progress.clone(), flow.swap_log().to_vec()));
+            .map(|progress| update_progress_text(progress, flow.swap_log(), now_ms));
         if self.updating.is_none() {
             self.card_status = Some(status.clone());
         }
@@ -487,7 +488,7 @@ fn empty_log(text: &str) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use chrono::{DateTime, Local};
     use gpui::{AnyWindowHandle, AppContext, ScrollDelta, TestAppContext, point};
@@ -503,8 +504,8 @@ mod tests {
         app::{AppView, POLL_EVERY},
         dashboard::Tab,
         test_support::{
-            UPDATE_RUNNING, events_json, full_offer_json, open_app, painted, progress_json, shows,
-            status_json, update_json,
+            UPDATE_RUNNING, banner_text, events_json, full_offer_json, open_app, painted,
+            progress_json, shows, status_json, update_json,
         },
     };
 
@@ -791,16 +792,17 @@ mod tests {
         let (fake, window, app) = open_monitor(cx, status_json("live", false), events_json(0));
         assert!(shows(cx, window, "Live"));
         assert!(present(cx, window, "btn-stream-stop"));
-        let word = |cx: &mut TestAppContext| {
+        let line = |cx: &mut TestAppContext| {
             let monitor = monitor(cx, &app);
             monitor.read_with(cx, |monitor, _| {
-                let line = monitor.card_line(chrono::Utc::now().timestamp_millis());
-                (line.word.to_string(), line.level)
+                let line = monitor.card_line();
+                (line.word.to_string(), line.level, line.reason)
             })
         };
+        let updating = |reason: &str| ("Updating".to_string(), Level::Warn, Some(reason.to_string()));
 
-        // The download runs: 12.5 minutes into the step keeps the elapsed text at "12 min".
-        let mut progress = progress_json("download", "running", 750.);
+        // The download runs; its step began 5 s ago, and the next poll is 2 s away.
+        let mut progress = progress_json(cx, "download", "running", 5.);
         progress["downloadPercent"] = json!(42);
         fake.reply(
             "GET",
@@ -808,29 +810,28 @@ mod tests {
             Ok(full_offer_json("downloading", progress)),
         );
         cx.executor().advance_clock(POLL_EVERY);
-        assert_eq!(word(cx), ("Updating".to_string(), Level::Warn));
-        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        assert_eq!(line(cx), updating("Downloading, 42%, 7 s"));
         assert!(!present(cx, window, "btn-stream-start"));
         assert!(!present(cx, window, "btn-stream-stop"));
 
-        // A poll whose update read fails keeps the last progress.
+        // A poll whose update read fails keeps the last progress, at this poll's time.
         fake.reply("GET", "/api/update/status", Err(ApiError::Unreachable));
         cx.executor().advance_clock(POLL_EVERY);
-        assert_eq!(word(cx), ("Updating".to_string(), Level::Warn));
-        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        assert_eq!(line(cx), updating("Downloading, 42%, 9 s"));
         assert!(!present(cx, window, "btn-stream-start"));
         assert!(!present(cx, window, "btn-stream-stop"));
 
         // The swap is retried. The stream is down, but admin.js returns before the Twitch line,
         // the encoder line and the uptime, so they keep what they showed.
-        let mut update = full_offer_json("ready", progress_json("swap", "running", 750.));
+        let mut update = full_offer_json("ready", progress_json(cx, "swap", "running", 30.));
         update["swapLog"] = json!([{ "folder": "node", "status": "retry", "detail": "in use" }]);
         fake.reply("GET", "/api/update/status", Ok(update));
         let mut stopped = status_json("stopped", false);
         stopped["uptimeMs"] = json!(125_000);
         fake.reply("GET", "/api/status", Ok(stopped));
         cx.executor().advance_clock(POLL_EVERY);
-        assert!(shows(cx, window, "Replacing files, 12 min (trying node again)"));
+        assert_eq!(line(cx), updating("Replacing files, 32 s (trying node again)"));
+        assert!(shows(cx, window, "Replacing files, 32 s (trying node again)"));
         assert!(shows(cx, window, "Encoder: running, 1.00x speed"));
         assert!(shows(cx, window, "Twitch check off"));
         assert!(shows(cx, window, "Uptime: 1m 5s"));
@@ -839,14 +840,39 @@ mod tests {
         // The check passed: the stream line follows the status again.
         let mut done = update_json("idle");
         done["currentVersion"] = json!("3.0.6");
-        done["progress"] = progress_json("start", "ok", 60.);
+        done["progress"] = progress_json(cx, "start", "ok", 60.);
         fake.reply("GET", "/api/update/status", Ok(done));
         cx.executor().advance_clock(POLL_EVERY);
-        assert_eq!(word(cx), ("Stopped".to_string(), Level::Muted));
+        assert_eq!(line(cx), ("Stopped".to_string(), Level::Muted, None));
         assert!(shows(cx, window, "Encoder: not running"));
         assert!(shows(cx, window, "Uptime: 2m 5s"));
         assert!(present(cx, window, "btn-stream-start"));
         assert!(!present(cx, window, "btn-stream-stop"));
+    }
+
+    #[gpui::test]
+    fn the_banner_and_the_stream_line_show_the_same_progress(cx: &mut TestAppContext) {
+        let (fake, window) = open_with(cx, status_json("live", false), events_json(0));
+        let painted_twice = |cx: &mut TestAppContext, text: &str| {
+            assert_eq!(banner_text(cx, window).as_deref(), Some(text));
+            let found = painted(cx, window).into_iter().filter(|t| t == text).count();
+            assert_eq!(found, 2, "{text} in the banner and on the stream line");
+        };
+        let mut progress = progress_json(cx, "download", "running", 5.);
+        progress["downloadPercent"] = json!(42);
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(full_offer_json("downloading", progress)),
+        );
+
+        cx.executor().advance_clock(POLL_EVERY);
+        painted_twice(cx, "Downloading, 42%, 7 s");
+        // Between polls neither moves, as in the browser.
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        painted_twice(cx, "Downloading, 42%, 7 s");
+        cx.executor().advance_clock(Duration::from_millis(500));
+        painted_twice(cx, "Downloading, 42%, 9 s");
     }
 
     #[gpui::test]

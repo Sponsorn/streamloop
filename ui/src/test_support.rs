@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gpui::{AnyWindowHandle, AppContext, Entity, TestAppContext};
+use gpui::{AnyWindowHandle, AppContext, ElementId, Entity, TestAppContext};
 use gpui_kit::{base::test_support::texts, test::TestWindowExt};
 use serde_json::{Value, json};
 
@@ -44,6 +44,26 @@ pub fn painted(cx: &mut TestAppContext, window: AnyWindowHandle) -> Vec<String> 
 
 pub fn shows(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) -> bool {
     painted(cx, window).iter().any(|t| t == text)
+}
+
+/// The update banner's own text, then its Node notice, without the button's label; empty while
+/// the banner is hidden.
+pub fn banner_texts(cx: &mut TestAppContext, window: AnyWindowHandle) -> Vec<String> {
+    let (banner, button) = (ElementId::from("update-banner"), ElementId::from("update-btn"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        texts(window)
+            .into_iter()
+            .filter(|t| t.visible() && t.path().contains(&banner) && !t.path().contains(&button))
+            .map(|t| t.text().to_string())
+            .collect()
+    })
+    .expect("the window is open")
+}
+
+/// The update banner's text; `None` while the banner is hidden.
+pub fn banner_text(cx: &mut TestAppContext, window: AnyWindowHandle) -> Option<String> {
+    banner_texts(cx, window).into_iter().next()
 }
 
 pub fn count(fake: &FakeApi, method: &str, path: &str) -> usize {
@@ -171,10 +191,12 @@ pub fn offered_json(status: &str) -> Value {
 pub const UPDATE_RUNNING: &str = "An update is running. Try again when it is done.";
 
 /// `update-state.json` for the full update from 3.0.5 to 3.0.6 of Node and ffmpeg, at `step` with
-/// `result`; the step started `ago_s` seconds before the system clock's now.
-pub fn progress_json(step: &str, result: &str, ago_s: f64) -> Value {
-    let at = chrono::Utc::now() - chrono::Duration::milliseconds((ago_s * 1000.0) as i64);
-    let at = at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+/// `result`; the step started `ago_s` seconds before the test clock's now.
+pub fn progress_json(cx: &mut TestAppContext, step: &str, result: &str, ago_s: f64) -> Value {
+    let now = cx.update(|cx| crate::app::now_ms(cx));
+    let at = chrono::DateTime::from_timestamp_millis(now - (ago_s * 1000.0) as i64)
+        .expect("a time in range")
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     json!({
         "from": "3.0.5", "to": "3.0.6", "parts": ["node", "ffmpeg"], "folders": ["node", "ffmpeg"],
         "step": step, "result": result, "reason": null, "startedAt": at, "stepStartedAt": at,

@@ -12,7 +12,7 @@ use gpui_kit::component::{
 
 use crate::{
     api::types::{Event, Status, UpdateStatus},
-    app::AppHandle,
+    app::{AppHandle, now_ms},
     logic::{admin::format_duration, update_running},
     monitor::MonitorView,
     playback::PlaybackView,
@@ -63,12 +63,14 @@ pub trait TabView: Render {
     /// admin.js `switchTab()`: the user picked this tab, also when it was showing already.
     fn on_tab_shown(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
-    /// Every poll that answered, whether this tab shows or not.
+    /// Every poll that answered, whether this tab shows or not. `now_ms` is the poll's time, so
+    /// every elapsed time it shows matches the banner's.
     fn on_poll(
         &mut self,
         _status: &Status,
         _events: &[Event],
         _update: Option<&UpdateStatus>,
+        _now_ms: i64,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
@@ -88,6 +90,7 @@ trait AnyTab {
         status: &Status,
         events: &[Event],
         update: Option<&UpdateStatus>,
+        now_ms: i64,
         window: &mut Window,
         cx: &mut App,
     );
@@ -112,11 +115,12 @@ impl<T: TabView> AnyTab for Entity<T> {
         status: &Status,
         events: &[Event],
         update: Option<&UpdateStatus>,
+        now_ms: i64,
         window: &mut Window,
         cx: &mut App,
     ) {
         self.update(cx, |tab, cx| {
-            tab.on_poll(status, events, update, window, cx)
+            tab.on_poll(status, events, update, now_ms, window, cx)
         });
     }
 
@@ -227,14 +231,18 @@ impl DashboardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.flow
-            .update(cx, |flow, cx| flow.on_poll(&status.stream.state, update, cx));
+        // One time for the whole poll, as admin.js `pollOnce` renders the banner and the stream
+        // line together.
+        let now = now_ms(cx);
+        self.flow.update(cx, |flow, cx| {
+            flow.on_poll(&status.stream.state, update, now, cx)
+        });
         // admin.js `renderStream` returns before the uptime while a full update runs.
         if !update_running(self.flow.read(cx).progress()) {
             self.uptime_ms = Some(status.uptime_ms);
         }
         for (_, tab) in &self.tabs {
-            tab.poll(status, events, update, window, cx);
+            tab.poll(status, events, update, now, window, cx);
         }
         cx.notify();
     }
@@ -407,6 +415,7 @@ mod tests {
             status: &Status,
             events: &[Event],
             update: Option<&UpdateStatus>,
+            _: i64,
             _: &mut Window,
             _: &mut Context<Self>,
         ) {
