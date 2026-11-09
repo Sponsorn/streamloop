@@ -1,5 +1,6 @@
-use std::io::Write;
-use std::sync::{Arc, Mutex, OnceLock};
+mod support;
+
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -8,16 +9,19 @@ use axum::{Extension, Router};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use streamloop_control::api::{json_reply, router, router_with, AppState, JsonBody};
+use support::{captured_logs, Rig};
 use tower::ServiceExt;
 
 const TOKEN: &str = "test-token";
 
+/// The base routes never touch the rig's fakes or files, so its temp folder can go at once.
 fn app() -> Router {
-    let state = Arc::new(AppState { token: TOKEN.to_string() });
+    let mut state = AppState::new(Rig::new().deps());
+    state.token = TOKEN.to_string();
     let routes = Router::new()
         .route("/echo", post(|Extension(JsonBody(v)): Extension<JsonBody>| async move { json_reply(StatusCode::OK, &v) }))
         .route("/ping", get(|| async { json_reply(StatusCode::OK, &serde_json::json!({"ok": true})) }));
-    router_with(state, routes)
+    router_with(Arc::new(state), routes)
 }
 
 struct Reply {
@@ -49,38 +53,6 @@ fn post_echo(content_type: Option<&str>, token: Option<&str>, body: &str) -> Req
 
 fn get_req(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
-}
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-/// One process-wide capture at TRACE. A per-test subscriber is thread-local, and tracing caches each call site's
-/// interest from whichever subscriber (or none) the first thread to reach it had, so a parallel test could blind it.
-fn captured_logs() -> &'static Capture {
-    static LOGS: OnceLock<Capture> = OnceLock::new();
-    LOGS.get_or_init(|| {
-        let logs = Capture::default();
-        let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
-        tracing::subscriber::set_global_default(subscriber).expect("no other test installs a global subscriber");
-        logs
-    })
-}
-
-impl Write for Capture {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
-    type Writer = Capture;
-    fn make_writer(&'a self) -> Capture {
-        self.clone()
-    }
 }
 
 #[tokio::test]
@@ -271,7 +243,7 @@ async fn an_unmatched_route_with_the_token_answers_the_post_404_page() {
 #[tokio::test]
 async fn the_default_router_has_the_token_and_admin_routes() {
     // Arrange
-    let app = router(Arc::new(AppState::new()));
+    let app = router(Arc::new(AppState::new(Rig::new().deps())));
     // Act
     let r = call(app, get_req("/api/token")).await;
     // Assert

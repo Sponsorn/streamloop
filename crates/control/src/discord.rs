@@ -117,7 +117,7 @@ fn memory_field(total: u64, free: u64) -> EmbedField {
 
 /// Total and free physical memory in bytes.
 #[cfg(windows)]
-fn system_memory() -> (u64, u64) {
+pub(crate) fn system_memory() -> (u64, u64) {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     // SAFETY: an all-zero MEMORYSTATUSEX is a valid value, and the call needs only its length field set.
     let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
@@ -130,7 +130,7 @@ fn system_memory() -> (u64, u64) {
 }
 
 #[cfg(not(windows))]
-fn system_memory() -> (u64, u64) {
+pub(crate) fn system_memory() -> (u64, u64) {
     (0, 0)
 }
 

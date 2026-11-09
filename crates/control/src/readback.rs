@@ -9,8 +9,10 @@ use serde::Serialize;
 use streamloop_common::api::SupervisorStatus;
 use tokio::task::JoinHandle;
 
+use crate::api::{stream_state, StreamState};
 use crate::clock::Clock;
 use crate::http::{Http, HttpRequest};
+use crate::launcher::LauncherState;
 use crate::runner::{RunSpec, Runner};
 use crate::supervisor_client::SupervisorApi;
 
@@ -330,15 +332,9 @@ pub struct TwitchReadback {
     timer: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// Whether the supervisor is on air with a picture: the `live` answer of the dashboard's stream state.
+/// Whether the supervisor is on air with a picture: the dashboard's `live`.
 fn on_air(sup: &Option<SupervisorStatus>) -> bool {
-    let Some(sup) = sup else { return false };
-    if sup.state.as_deref() != Some("playing") || sup.encoder.as_ref().and_then(|e| e.alive) != Some(true) {
-        return false;
-    }
-    let held = matches!(sup.hold, Some(Some(_)));
-    let step = sup.recovery.as_ref().and_then(|r| r.step.as_deref()).unwrap_or("");
-    !held && (step.is_empty() || step == "none")
+    stream_state(sup.as_ref(), LauncherState::Running, false, None, None).0 == StreamState::Live
 }
 
 impl TwitchReadback {

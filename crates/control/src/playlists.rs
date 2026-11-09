@@ -93,7 +93,8 @@ impl PlaylistCache {
 
     pub async fn fetch(&self, id: &str) -> Result<PlaylistMetadata, String> {
         let now = self.clock.now();
-        let sender = {
+        // The lock ends with this block: a guard held across an await would make the fetch unsendable.
+        let in_flight = {
             let mut st = self.state.lock().unwrap();
             if let Some((meta, at)) = st.cache.get(id) {
                 if now.duration_since(*at).unwrap_or_default() < CACHE_TTL {
@@ -105,17 +106,23 @@ impl PlaylistCache {
                     return Err(err.clone());
                 }
             }
-            if let Some(rx) = st.in_flight.get(id) {
-                let mut rx = rx.clone();
-                drop(st);
+            match st.in_flight.get(id) {
+                Some(rx) => Err(rx.clone()),
+                None => {
+                    let (tx, rx) = watch::channel(None);
+                    st.in_flight.insert(id.to_string(), rx);
+                    Ok(tx)
+                }
+            }
+        };
+        let sender = match in_flight {
+            Ok(tx) => tx,
+            Err(mut rx) => {
                 return match rx.wait_for(|v| v.is_some()).await {
                     Ok(v) => v.clone().unwrap(),
                     Err(_) => Err("the playlist fetch was cancelled".to_string()),
                 };
             }
-            let (tx, rx) = watch::channel(None);
-            st.in_flight.insert(id.to_string(), rx);
-            tx
         };
 
         let guard = InFlightGuard { state: &self.state, id };
@@ -186,6 +193,15 @@ mod tests {
         let clock = Arc::new(TestClock::new(UNIX_EPOCH + Duration::from_secs(1_000_000)));
         let cache = PlaylistCache::new(runner.clone(), PathBuf::from("/tmp/yt-dlp"), cookies.into(), clock.clone());
         (cache, clock)
+    }
+
+    #[test]
+    fn a_fetch_can_run_on_another_thread() {
+        // Arrange
+        fn sendable<T: Send>(_: T) {}
+        let (cache, _clock) = cache_with(&Arc::new(FakeRunner::new()), "");
+        // Act + Assert: compiles only while the fetch holds no lock across an await, as a request handler needs.
+        sendable(cache.fetch("PLx"));
     }
 
     #[test]
