@@ -49,6 +49,7 @@ pub struct Config {
     pub update_check_interval_ms: u64,
     pub auto_update_ytdlp: bool,
     pub auto_open_admin: bool,
+    pub auto_start_stream: bool,
     pub twitch_client_id: String,
     pub twitch_client_secret: String,
     pub twitch_channel: String,
@@ -376,6 +377,7 @@ pub(crate) fn validate(root: &Object) -> Result<Config, Vec<Issue>> {
         update_check_interval_ms: c.whole(root, "", "updateCheckIntervalMs", 21_600_000, Bound::AboveZero),
         auto_update_ytdlp: c.flag(root, "", "autoUpdateYtdlp", true),
         auto_open_admin: c.flag(root, "", "autoOpenAdmin", true),
+        auto_start_stream: c.flag(root, "", "autoStartStream", true),
         twitch_client_id: c.text(root, "", "twitchClientId", ""),
         twitch_client_secret: c.text(root, "", "twitchClientSecret", ""),
         twitch_channel: c.text(root, "", "twitchChannel", ""),
@@ -448,6 +450,7 @@ pub(crate) fn to_value(c: &Config) -> Value {
         ("updateCheckIntervalMs", num(c.update_check_interval_ms)),
         ("autoUpdateYtdlp", Value::Bool(c.auto_update_ytdlp)),
         ("autoOpenAdmin", Value::Bool(c.auto_open_admin)),
+        ("autoStartStream", Value::Bool(c.auto_start_stream)),
         ("twitchClientId", text(&c.twitch_client_id)),
         ("twitchClientSecret", text(&c.twitch_client_secret)),
         ("twitchChannel", text(&c.twitch_channel)),
@@ -477,6 +480,7 @@ impl fmt::Debug for Config {
             .field("update_check_interval_ms", &self.update_check_interval_ms)
             .field("auto_update_ytdlp", &self.auto_update_ytdlp)
             .field("auto_open_admin", &self.auto_open_admin)
+            .field("auto_start_stream", &self.auto_start_stream)
             .field("twitch_client_id", &self.twitch_client_id)
             .field("twitch_client_secret", &masked(&self.twitch_client_secret))
             .field("twitch_channel", &self.twitch_channel)

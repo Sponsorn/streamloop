@@ -8,7 +8,7 @@
 // land in ROOT\app\logs, where the Rust control process puts them too.
 import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -292,7 +292,7 @@ function seedRoot(root) {
 
 function launchServer(kind, root) {
   const env = { ...process.env, STREAMLOOP_ROOT: root, STREAMLOOP_TEST_HOOKS: '1', LOG_LEVEL: 'info' };
-  for (const k of ['STREAMLOOP_DEBUG_FAULTS', 'STREAMLOOP_TEST_HLS_URL']) delete env[k];
+  for (const k of ['STREAMLOOP_DEBUG_FAULTS', 'STREAMLOOP_TEST_HLS_URL', 'STREAMLOOP_TEST_RELEASES']) delete env[k];
   if (kind === 'node') {
     const app = join(root, 'app');
     cpSync(join(REPO, 'src'), join(app, 'src'), { recursive: true, filter: (p) => !p.includes('__tests__') });
@@ -370,6 +370,8 @@ async function record(kind, out) {
       if (!ready) await sleep(500);
     }
     if (!ready) throw new Error('the launcher never saw the fake supervisor');
+    // The log file is created by a worker a moment after start; /api/logs must see it every run.
+    for (let i = 0; i < 20 && !readdirSync(join(root, 'app', 'logs')).some((f) => /^streamloop-.*\.log$/.test(f)); i += 1) await sleep(250);
 
     const requests = [];
     for (const step of REQUESTS) {

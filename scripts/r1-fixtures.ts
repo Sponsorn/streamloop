@@ -117,7 +117,7 @@ function recordConfig(): number {
       preferredEncoder: 'h264_nvenc', cacheBudgetMb: 8192, readAheadSeconds: 12.5, playerClient: 'tv', overlay: false,
       freezeSeconds: 25, silenceSeconds: 45, futureKnob: 7,
     },
-    autoUpdateCheck: false, updateCheckIntervalMs: 3600000, autoUpdateYtdlp: false, autoOpenAdmin: false,
+    autoUpdateCheck: false, updateCheckIntervalMs: 3600000, autoUpdateYtdlp: false, autoOpenAdmin: false, autoStartStream: true,
     twitchClientId: 'client-id', twitchClientSecret: 'client-secret', twitchChannel: 'channel', twitchLivenessEnabled: true,
     twitchPollIntervalMs: 30000, ytdlCookiesFromBrowser: 'firefox',
   };
@@ -148,6 +148,8 @@ function recordConfig(): number {
     { name: 'accepts twitchPollIntervalMs of exactly 30000', before: j({ ...base, twitchPollIntervalMs: 30000 }) },
     { name: 'opens the admin panel on boot by default', before: j(base) },
     { name: 'keeps autoOpenAdmin false', before: j({ ...base, autoOpenAdmin: false }) },
+    { name: 'defaults autoStartStream to true', before: j(base) },
+    { name: 'keeps autoStartStream false', before: j({ ...base, autoStartStream: false }) },
     { name: 'preserves ytdlCookiesFromBrowser when set', before: j({ ...base, ytdlCookiesFromBrowser: 'brave:Profile 1' }) },
     { name: 'drops unknown top-level keys on write-back', before: j({ ...base, somethingNew: 1, another: { nested: true } }) },
     { name: 'rewrites a file whose keys are in another order', before: j({ twitchChannel: 'c', playlists: [{ id: 'PLtest123' }], port: 7654 }) },
@@ -459,6 +461,12 @@ function recordStreamState(): Case[] {
     ['an empty wait reason does not count', playing(), 'running', false, '', null],
     ['an empty block reason does not count', null, 'down', false, null, ''],
     ['the stopped-by-user launcher state without the flag is not answering', null, 'stopped-by-user'],
+    // the launcher waits for Start (autoStartStream off, or a held update)
+    ['ready with no supervisor shows Ready to stream', null, 'ready'],
+    ['ready wins over a block reason', null, 'ready', false, null, 'OBS is running.'],
+    ['a wait reason wins over ready', null, 'ready', false, 'Waiting.'],
+    ['stopped by the user wins over ready', null, 'ready', true],
+    ['ready is ignored while the supervisor answers', playing(), 'ready'],
     // the rest of the status shapes
     ['live with the recovery step missing', playing({ recovery: undefined }), 'running'],
     ['live with recovery step none', playing({ recovery: { step: 'none' } }), 'running'],

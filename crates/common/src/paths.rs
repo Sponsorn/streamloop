@@ -26,6 +26,10 @@ pub struct Layout {
     pub stopped_marker: PathBuf,
     pub rolled_back: PathBuf,
     pub setup_report: PathBuf,
+    /// The launcher's hold marker: while it exists the supervisor waits for Start.
+    pub waiting_for_start: PathBuf,
+    /// The update's progress for the dashboard, written while a landing runs.
+    pub update_state: PathBuf,
 }
 
 impl Layout {
@@ -54,6 +58,8 @@ impl Layout {
             stopped_marker: at("data/stopped-by-user"),
             rolled_back: at("data/update-rolled-back"),
             setup_report: at("data/setup-check.json"),
+            waiting_for_start: at("data/waiting-for-start"),
+            update_state: at("data/update-state.json"),
         }
     }
 }
@@ -104,6 +110,26 @@ mod tests {
         assert_eq!(l.staged_exe, root.join("_update").join("streamloop.exe"));
         assert_eq!(l.rolled_back, root.join("data").join("update-rolled-back"));
         assert_eq!(l.app_logs, root.join("app").join("logs"));
+    }
+
+    #[test]
+    fn the_launcher_hold_marker_is_in_the_data_folder() {
+        // Arrange
+        let root = Path::new("R:/sl");
+        // Act
+        let l = Layout::new(root);
+        // Assert
+        assert_eq!(l.waiting_for_start, root.join("data").join("waiting-for-start"));
+    }
+
+    #[test]
+    fn the_update_progress_file_is_in_the_data_folder() {
+        // Arrange
+        let root = Path::new("R:/sl");
+        // Act
+        let l = Layout::new(root);
+        // Assert
+        assert_eq!(l.update_state, root.join("data").join("update-state.json"));
     }
 
     #[test]

@@ -489,6 +489,86 @@
     }
   },
   {
+    "name": "ready with no supervisor shows Ready to stream",
+    "input": {
+      "sup": null,
+      "launcher": "ready",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "stopped",
+      "reason": "Ready to stream. Press Start."
+    }
+  },
+  {
+    "name": "ready wins over a block reason",
+    "input": {
+      "sup": null,
+      "launcher": "ready",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": "OBS is running."
+    },
+    "output": {
+      "state": "stopped",
+      "reason": "Ready to stream. Press Start."
+    }
+  },
+  {
+    "name": "a wait reason wins over ready",
+    "input": {
+      "sup": null,
+      "launcher": "ready",
+      "stoppedByUser": false,
+      "waitReason": "Waiting.",
+      "blockReason": null
+    },
+    "output": {
+      "state": "starting",
+      "reason": "Waiting."
+    }
+  },
+  {
+    "name": "stopped by the user wins over ready",
+    "input": {
+      "sup": null,
+      "launcher": "ready",
+      "stoppedByUser": true,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "stopped",
+      "reason": "The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start."
+    }
+  },
+  {
+    "name": "ready is ignored while the supervisor answers",
+    "input": {
+      "sup": {
+        "state": "playing",
+        "reason": null,
+        "encoder": {
+          "alive": true
+        },
+        "recovery": {
+          "step": "none"
+        },
+        "hold": null
+      },
+      "launcher": "ready",
+      "stoppedByUser": false,
+      "waitReason": null,
+      "blockReason": null
+    },
+    "output": {
+      "state": "live",
+      "reason": null
+    }
+  },
+  {
     "name": "live with the recovery step missing",
     "input": {
       "sup": {

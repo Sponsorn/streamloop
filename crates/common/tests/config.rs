@@ -66,6 +66,7 @@ const WRITTEN_BY_3_0: &str = r#"{
   "updateCheckIntervalMs": 3600000,
   "autoUpdateYtdlp": false,
   "autoOpenAdmin": false,
+  "autoStartStream": true,
   "twitchClientId": "client-id",
   "twitchClientSecret": "client-secret",
   "twitchChannel": "channel",
@@ -689,6 +690,7 @@ fn a_3_0_x_config_loads_with_every_value_as_written_and_leaves_the_file_untouche
         update_check_interval_ms: 3_600_000,
         auto_update_ytdlp: false,
         auto_open_admin: false,
+        auto_start_stream: true,
         twitch_client_id: "client-id".into(),
         twitch_client_secret: "client-secret".into(),
         twitch_channel: "channel".into(),
@@ -819,7 +821,7 @@ fn matches_every_config_fixture() {
         passed += 1;
     }
 
-    assert_eq!(passed, 64);
+    assert_eq!(passed, 66);
 }
 
 #[test]
@@ -857,11 +859,39 @@ fn whole_numbers_are_written_without_a_fraction() {
 }
 
 #[test]
-fn a_3_0_5_config_loads_without_a_write() {
-    // Arrange: what 3.0.5 wrote after copying the full example on a fresh install.
+fn a_3_0_5_config_gains_auto_start_stream_in_one_write() {
+    // Arrange: what 3.0.5 wrote after copying the full example on a fresh install, before the key existed.
+    let case: Json = serde_json::from_str(&std::fs::read_to_string(fixture_dir().join("creates-config-json-from-the-full-example.json")).unwrap()).unwrap();
+    let written = case["after"].as_str().unwrap();
+    let key_line = line_holding(written, "\"autoStartStream\"");
+    let before = written.replacen(&key_line, "", 1);
+    assert!(!before.contains("autoStartStream"));
+    let path = dir("written-by-3-0-5").join("config.json");
+    std::fs::write(&path, &before).unwrap();
+
+    // Act
+    let first = config::load(&path).unwrap();
+    let after_first = std::fs::read_to_string(&path).unwrap();
+    let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+    config::load(&path).unwrap();
+
+    // Assert
+    assert!(first.auto_start_stream);
+    assert_eq!(after_first, written);
+    assert!(after_first.contains("\"autoOpenAdmin\": true,
+  \"autoStartStream\": true,
+  \"twitchClientId\""));
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+}
+
+#[test]
+fn a_config_written_by_3_0_x_with_auto_start_stream_loads_without_a_write() {
+    // Arrange: the full example as a current install holds it.
     let case: Json = serde_json::from_str(&std::fs::read_to_string(fixture_dir().join("creates-config-json-from-the-full-example.json")).unwrap()).unwrap();
     let text = case["after"].as_str().unwrap();
-    let path = dir("written-by-3-0-5").join("config.json");
+    let path = dir("written-with-auto-start").join("config.json");
     std::fs::write(&path, text).unwrap();
     let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
@@ -872,6 +902,38 @@ fn a_3_0_5_config_loads_without_a_write() {
     // Assert
     assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
+fn a_saved_auto_start_stream_false_survives_a_load() {
+    // Arrange
+    let path = config_file("auto-start-false", &with(json!({"autoStartStream": false})));
+
+    // Act
+    let cfg = config::load(&path).unwrap();
+    let again = config::load(&path).unwrap();
+
+    // Assert
+    assert!(!cfg.auto_start_stream);
+    assert!(!again.auto_start_stream);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("\"autoStartStream\": false"));
+}
+
+#[test]
+fn auto_start_stream_defaults_to_true() {
+    // Arrange
+    let path = config_file("auto-start-default", &base());
+
+    // Act
+    let cfg = config::load(&path).unwrap();
+
+    // Assert
+    assert!(cfg.auto_start_stream);
+}
+
+/// The whole line of `text` holding `needle`, with its leading indent and trailing newline.
+fn line_holding(text: &str, needle: &str) -> String {
+    text.split_inclusive('\n').find(|l| l.contains(needle)).unwrap().to_string()
 }
 
 #[test]

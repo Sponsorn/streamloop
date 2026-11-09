@@ -19,6 +19,7 @@ describe('release layout', () => {
     const r1Only = [
       'streamloop.exe', 'streamloop.exe.old', 'streamloop.exe.bad', '_update', '_update/streamloop.exe', '_update/landed',
       'app', 'app/logs', 'data/stopped-by-user', 'data/update-rolled-back', 'data/setup-check.json',
+      'data/waiting-for-start', 'data/update-state.json',
     ];
     const absent = supervisorPaths.filter((p) => p !== 'app/config.json' && !r1Only.includes(p) && !FULL_LAYOUT.includes(p));
 
