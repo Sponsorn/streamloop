@@ -166,3 +166,31 @@ pub fn offered_json(status: &str) -> Value {
     update["latestVersion"] = json!("3.0.6");
     update
 }
+
+/// Node's 409 for a change while an update runs (api.ts `UPDATE_RUNNING`).
+pub const UPDATE_RUNNING: &str = "An update is running. Try again when it is done.";
+
+/// `update-state.json` for the full update from 3.0.5 to 3.0.6 of Node and ffmpeg, at `step` with
+/// `result`; the step started `ago_s` seconds before the system clock's now.
+pub fn progress_json(step: &str, result: &str, ago_s: f64) -> Value {
+    let at = chrono::Utc::now() - chrono::Duration::milliseconds((ago_s * 1000.0) as i64);
+    let at = at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    json!({
+        "from": "3.0.5", "to": "3.0.6", "parts": ["node", "ffmpeg"], "folders": ["node", "ffmpeg"],
+        "step": step, "result": result, "reason": null, "startedAt": at, "stepStartedAt": at,
+        "baseline": null
+    })
+}
+
+/// `GET /api/update/status` with the full update of Node and ffmpeg to 3.0.6 on offer in `status`,
+/// `progress` as Node reads it from `update-state.json` and an empty swap log.
+pub fn full_offer_json(status: &str, progress: Value) -> Value {
+    let mut update = offered_json(status);
+    update["kind"] = json!("full");
+    update["parts"] = json!(["node", "ffmpeg"]);
+    update["sameVersion"] = json!(false);
+    update["downloadPercent"] = Value::Null;
+    update["progress"] = progress;
+    update["swapLog"] = json!([]);
+    update
+}

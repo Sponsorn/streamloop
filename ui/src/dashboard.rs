@@ -13,7 +13,7 @@ use gpui_kit::component::{
 use crate::{
     api::types::{Event, Status, UpdateStatus},
     app::AppHandle,
-    logic::admin::format_duration,
+    logic::{admin::format_duration, update_running},
     monitor::MonitorView,
     playback::PlaybackView,
     settings::SettingsView,
@@ -133,7 +133,9 @@ fn build_tab(
     cx: &mut Context<DashboardView>,
 ) -> Box<dyn AnyTab> {
     match tab {
-        Tab::Monitor => Box::new(cx.new(|cx| MonitorView::new(app.clone(), window, cx))),
+        Tab::Monitor => {
+            Box::new(cx.new(|cx| MonitorView::new(app.clone(), flow.clone(), window, cx)))
+        }
         Tab::Playback => Box::new(cx.new(|cx| PlaybackView::new(app.clone(), window, cx))),
         Tab::Webhooks => Box::new(cx.new(|cx| WebhooksView::new(app.clone(), window, cx))),
         Tab::Settings => {
@@ -225,11 +227,11 @@ impl DashboardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.uptime_ms = Some(status.uptime_ms);
-        // admin.js keeps the last banner when the update status did not answer.
-        if let Some(update) = update {
-            self.flow
-                .update(cx, |flow, cx| flow.show_status(update, cx));
+        self.flow
+            .update(cx, |flow, cx| flow.on_poll(&status.stream.state, update, cx));
+        // admin.js `renderStream` returns before the uptime while a full update runs.
+        if !update_running(self.flow.read(cx).progress()) {
+            self.uptime_ms = Some(status.uptime_ms);
         }
         for (_, tab) in &self.tabs {
             tab.poll(status, events, update, window, cx);
@@ -248,6 +250,11 @@ impl DashboardView {
             self.connection_lost = lost;
             cx.notify();
         }
+    }
+
+    /// Two polls in a row failed; a full update may have Node down.
+    pub fn on_server_lost(&mut self, cx: &mut Context<Self>) {
+        self.flow.update(cx, |flow, cx| flow.server_lost(cx));
     }
 
     fn render_header(&self) -> impl IntoElement {

@@ -1,5 +1,5 @@
 //! The update banner (index.html `#update-banner`) and the update its button starts: admin.js
-//! `renderUpdateBanner`, `handleUpdate`, `pollUpdateProgress` and `waitForRestart`.
+//! `renderUpdateBanner`, `handleUpdate`, `pollUpdateProgress`, `waitForRestart` and `restartLoop`.
 
 use std::time::Duration;
 
@@ -17,9 +17,9 @@ use gpui_kit::{
 };
 
 use crate::{
-    api::types::UpdateStatus,
+    api::types::{SwapLine, UpdateProgress, UpdateStatus},
     app::{AppHandle, ToastKind},
-    logic::admin::update_banner,
+    logic::{admin::update_banner, update_progress_text, update_running},
     theme::{ACCENT, MAX_WIDTH, WHITE},
     widgets::reveal_on_focus,
 };
@@ -30,30 +30,34 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(1500);
 const READY_WAIT: Duration = Duration::from_secs(3);
 /// A progress read that fails means Node went down to restart; the first try follows this long after.
 const DOWN_WAIT: Duration = Duration::from_secs(2);
-/// admin.js `waitForRestart`: one `GET /api/status` this often, at most `RESTART_TRIES` times.
+/// admin.js `restartLoop`: one `GET /api/status` this often, for as long as Node stays down.
 const RESTART_EVERY: Duration = Duration::from_secs(2);
-const RESTART_TRIES: u32 = 30;
 
-const UPDATE_NOW: &str = "Update Now";
-const GAVE_UP: &str = "The server did not come back after the update. Check the StreamLoop 3 console window for errors.";
 /// admin.css `.update-banner`'s gradient runs from the accent to this violet.
 const BANNER_END: u32 = 0x8b5cf6;
 
 /// The update banner's state and the update that Update Now starts. The banner's button and
-/// Settings' Update Now both call `apply`.
+/// Settings' Update Now both call `apply`. It also keeps admin.js's `lastProgress`, `lastSwapLog`
+/// and `lastStreamState`, which the Monitor tab's stream line reads too.
 pub struct UpdateFlow {
     app: AppHandle,
-    /// The banner shows while the last update status had an update on offer.
     shown: bool,
     text: SharedString,
-    button: SharedString,
-    enabled: bool,
+    /// The label and whether it is enabled; None while the banner shows no button.
+    button: Option<(SharedString, bool)>,
     node_notice: Option<SharedString>,
-    /// From Update Now until the update fails, stops on `error` or gives up on the restart.
+    /// From Update Now until the apply is refused or the update stops on `error`.
     running: bool,
+    /// From the last update status that answered a poll or a progress read; a failed read keeps them.
+    progress: Option<UpdateProgress>,
+    swap_log: Vec<SwapLine>,
+    /// The stream state of the last poll that answered, so "Ready to stream" goes once it is live.
+    stream_state: Option<String>,
     /// The banner button's, so the banner can draw its own focus ring.
     focus: FocusHandle,
     _run: Option<Task<()>>,
+    /// The restart wait, once started: it runs until Node answers, and a second start is ignored.
+    _restart: Option<Task<()>>,
 }
 
 impl UpdateFlow {
@@ -62,13 +66,46 @@ impl UpdateFlow {
             app,
             shown: false,
             text: "A new version is available.".into(),
-            button: UPDATE_NOW.into(),
-            enabled: true,
+            button: Some(("Update Now".into(), true)),
             node_notice: None,
             running: false,
+            progress: None,
+            swap_log: Vec::new(),
+            stream_state: None,
             focus: cx.focus_handle(),
             _run: None,
+            _restart: None,
         }
+    }
+
+    /// The full update's progress from the last update status that answered.
+    pub fn progress(&self) -> Option<&UpdateProgress> {
+        self.progress.as_ref()
+    }
+
+    pub fn swap_log(&self) -> &[SwapLine] {
+        &self.swap_log
+    }
+
+    /// admin.js `pollOnce`'s part: the poll's stream state, then the banner from its update status.
+    /// A failed update read leaves the banner and the last progress as they were.
+    pub fn on_poll(
+        &mut self,
+        stream_state: &str,
+        update: Option<&UpdateStatus>,
+        cx: &mut Context<Self>,
+    ) {
+        self.stream_state = Some(stream_state.to_string());
+        if let Some(update) = update {
+            self.read_status(update, cx);
+        }
+    }
+
+    /// An update status from a poll or a progress read: its progress and swap log are kept.
+    fn read_status(&mut self, status: &UpdateStatus, cx: &mut Context<Self>) {
+        self.progress = status.progress.clone();
+        self.swap_log = status.swap_log.clone();
+        self.show_status(status, cx);
     }
 
     /// admin.js `renderUpdateBanner`.
@@ -79,27 +116,35 @@ impl UpdateFlow {
             .filter(|notice| !notice.is_empty())
             .map(Into::into);
         let now_ms = chrono::Utc::now().timestamp_millis();
-        match update_banner(status, now_ms, None) {
+        match update_banner(status, now_ms, self.stream_state.as_deref()) {
             Some(banner) => {
                 self.shown = true;
                 self.text = banner.text.into();
-                if let Some((label, enabled)) = banner.button {
-                    self.set_button(label, enabled);
-                }
+                self.button = banner
+                    .button
+                    .map(|(label, enabled)| (label.into(), enabled));
             }
             None => self.shown = false,
         }
         cx.notify();
     }
 
-    /// admin.js `handleUpdate`, then `pollUpdateProgress` and `waitForRestart`. Nothing happens
-    /// while an update runs already.
+    /// admin.js `pollOnce`'s catch after two failed polls: while a full update runs, Node is down
+    /// for it, so the window waits for it as after Update Now.
+    pub fn server_lost(&mut self, cx: &mut Context<Self>) {
+        if update_running(self.progress.as_ref()) {
+            self.wait_for_restart(cx);
+        }
+    }
+
+    /// admin.js `handleUpdate`, then `pollUpdateProgress`. Nothing happens while an update runs
+    /// already.
     pub fn apply(&mut self, cx: &mut Context<Self>) {
         if self.running {
             return;
         }
         self.running = true;
-        self.set_button("Starting...", false);
+        self.button = Some(("Starting...".into(), false));
         cx.notify();
         let client = self.app.client.clone();
         self._run = Some(cx.spawn(async move |this, cx| {
@@ -120,10 +165,20 @@ impl UpdateFlow {
                     .background_spawn(async move { api.update_status() })
                     .await
                 else {
+                    // Node went down to restart.
                     break DOWN_WAIT;
                 };
-                this.update(cx, |flow, cx| flow.show_status(&status, cx))
-                    .ok();
+                if this
+                    .update(cx, |flow, cx| flow.read_status(&status, cx))
+                    .is_err()
+                {
+                    return;
+                }
+                // A full update runs on past `ready`: Node stops the stream and swaps the parts.
+                if update_running(status.progress.as_ref()) {
+                    cx.background_executor().timer(PROGRESS_EVERY).await;
+                    continue;
+                }
                 match status.status.as_str() {
                     "ready" => break READY_WAIT,
                     "error" => {
@@ -135,8 +190,19 @@ impl UpdateFlow {
                 }
             };
             cx.background_executor().timer(wait).await;
+            this.update(cx, |flow, cx| flow.wait_for_restart(cx)).ok();
+        }));
+    }
 
-            for _ in 0..RESTART_TRIES {
+    /// admin.js `waitForRestart` and `restartLoop`: no limit, since a full update can keep Node down
+    /// for minutes. When Node answers, the window starts over as a page reload would.
+    fn wait_for_restart(&mut self, cx: &mut Context<Self>) {
+        if self._restart.is_some() {
+            return;
+        }
+        let client = self.app.client.clone();
+        self._restart = Some(cx.spawn(async move |this, cx| {
+            loop {
                 let api = client.clone();
                 if cx
                     .background_spawn(async move { api.status() })
@@ -146,24 +212,32 @@ impl UpdateFlow {
                     this.update(cx, |flow, cx| flow.app.start_over(cx)).ok();
                     return;
                 }
+                if this
+                    .update(cx, |flow, cx| flow.show_last_step(cx))
+                    .is_err()
+                {
+                    return;
+                }
                 cx.background_executor().timer(RESTART_EVERY).await;
             }
-            this.update(cx, |flow, cx| {
-                flow.app.toast(GAVE_UP, ToastKind::Error, cx);
-                flow.offer_retry(cx);
-            })
-            .ok();
         }));
     }
 
-    fn set_button(&mut self, label: impl Into<SharedString>, enabled: bool) {
-        self.button = label.into();
-        self.enabled = enabled;
+    /// While Node is down, the banner shows the last step seen, and no button.
+    fn show_last_step(&mut self, cx: &mut Context<Self>) {
+        let Some(progress) = &self.progress else {
+            return;
+        };
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.text = update_progress_text(progress, &self.swap_log, now_ms).into();
+        self.shown = true;
+        self.button = None;
+        cx.notify();
     }
 
     fn offer_retry(&mut self, cx: &mut Context<Self>) {
         self.running = false;
-        self.set_button("Retry", true);
+        self.button = Some(("Retry".into(), true));
         cx.notify();
     }
 }
@@ -204,27 +278,31 @@ pub fn update_button(
 impl Render for UpdateFlow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let banner = self.shown.then(|| {
-            let button = update_button("update-btn", self.button.clone(), self.enabled, cx)
-                .track_focus(&self.focus)
-                .focus_ring(false)
-                .on_click(cx.listener(|flow, _, _, cx| flow.apply(cx)));
-            // The theme's accent ring fades into the gradient, so the banner draws a white one, as
-            // admin.css draws a focus outline: 2 px wide, 2 px out. A button clips its own children.
-            let focused = self.focus.is_focused(window);
-            let control = div().relative().child(button).when(focused, |control| {
-                control.child(
-                    div()
-                        .id("update-btn-ring")
-                        .absolute()
-                        .top(px(-4.))
-                        .left(px(-4.))
-                        .right(px(-4.))
-                        .bottom(px(-4.))
-                        .border_2()
-                        .border_color(white())
-                        .rounded(px(12.))
-                        .test_support(),
-                )
+            let control = self.button.clone().map(|(label, enabled)| {
+                let button = update_button("update-btn", label, enabled, cx)
+                    .track_focus(&self.focus)
+                    .focus_ring(false)
+                    .on_click(cx.listener(|flow, _, _, cx| flow.apply(cx)));
+                // The theme's accent ring fades into the gradient, so the banner draws a white one,
+                // as admin.css draws a focus outline: 2 px wide, 2 px out. A button clips its own
+                // children.
+                let focused = self.focus.is_focused(window);
+                let control = div().relative().child(button).when(focused, |control| {
+                    control.child(
+                        div()
+                            .id("update-btn-ring")
+                            .absolute()
+                            .top(px(-4.))
+                            .left(px(-4.))
+                            .right(px(-4.))
+                            .bottom(px(-4.))
+                            .border_2()
+                            .border_color(white())
+                            .rounded(px(12.))
+                            .test_support(),
+                    )
+                });
+                reveal_on_focus(control)
             });
             let gradient = linear_gradient(
                 135.,
@@ -263,7 +341,7 @@ impl Render for UpdateFlow {
                                     Label::new(notice).text_size(px(13.)).text_color(rgb(WHITE))
                                 })),
                         )
-                        .child(reveal_on_focus(control)),
+                        .children(control),
                 )
         });
         div().id("update-banner").children(banner)
@@ -282,14 +360,18 @@ mod tests {
         api::{ApiError, fake::FakeApi},
         app::{AppView, POLL_EVERY, Screen},
         test_support::{
-            answer_polls, config_json, count, offered_json, open_app, shows, status_json,
-            update_json,
+            UPDATE_RUNNING, answer_polls, config_json, count, full_offer_json, offered_json,
+            open_app, progress_json, shows, status_json, update_json,
         },
     };
 
     const NOTICE: &str = "This release bundles Node 22.24.0. Install the full ZIP to get it.";
-    const GAVE_UP: &str = "The server did not come back after the update. Check the StreamLoop 3 console window for errors.";
     const LOST: &str = "Can't reach the server. The dashboard may be out of date.";
+    const FULL_OFFER: &str =
+        "Full update: the stream goes off air while these parts are replaced: Node, ffmpeg.";
+    const ROLLED_BACK: &str = "The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5.";
+    /// A step 12.5 minutes old prints "12 min" for half a minute of real time.
+    const STEP_AGO_S: f64 = 750.;
 
     /// Opens the dashboard with `update` as the update status. `POST /api/update/apply` answers as
     /// Node does when it starts an update.
@@ -370,6 +452,8 @@ mod tests {
 
         let mut dev = offered_json("idle");
         dev["isDevMode"] = json!(true);
+        let mut counted = offered_json("downloading");
+        counted["downloadPercent"] = json!(42);
         let states = [
             (
                 offered_json("idle"),
@@ -386,6 +470,12 @@ mod tests {
             (
                 offered_json("downloading"),
                 "Downloading v3.0.6...",
+                "Downloading...",
+                true,
+            ),
+            (
+                counted,
+                "Downloading v3.0.6, 42%...",
                 "Downloading...",
                 true,
             ),
@@ -540,38 +630,257 @@ mod tests {
         assert_eq!(fake.token_forgets(), forgets + 1);
     }
 
-    #[gpui::test]
-    fn gives_up_after_thirty_tries(cx: &mut TestAppContext) {
-        let (fake, window, _) = open(cx, offered_json("idle"));
-        fake.reply("GET", "/api/update/status", Ok(offered_json("ready")));
-        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+    /// Node is down: every poll and every read fails.
+    fn node_down(fake: &FakeApi) {
+        for path in ["/api/status", "/api/events", "/api/update/status"] {
+            fake.reply("GET", path, Err(ApiError::Unreachable));
+        }
+    }
 
+    #[gpui::test]
+    fn apply_keeps_reading_progress_while_the_update_runs(cx: &mut TestAppContext) {
+        let (fake, window, app) = open(cx, full_offer_json("idle", Value::Null));
+        let old_dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        let (forgets, configs) = (fake.token_forgets(), count(&fake, "GET", "/api/config"));
+        assert!(shows(cx, window, FULL_OFFER));
+        let mut progress = progress_json("download", "running", STEP_AGO_S);
+        progress["downloadPercent"] = json!(42);
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(full_offer_json("downloading", progress)),
+        );
+
+        // The dashboard polls at 0 s, 2 s, 4 s...; the click is at 0 s.
         click(cx, window, "update-btn");
         cx.run_until_parked();
+        assert_eq!(count(&fake, "POST", "/api/update/apply"), 1);
+        assert_eq!(progress_reads(&fake), 1);
+        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        assert_eq!(banner_button(cx, window), None);
+
+        // Node's own status reads `ready` once the files are staged, but the update runs on, so
+        // the reads go on every 1.5 s.
+        let mut swap = full_offer_json("ready", progress_json("swap", "running", STEP_AGO_S));
+        swap["swapLog"] = json!([{ "folder": "node", "status": "retry", "detail": "in use" }]);
+        fake.reply("GET", "/api/update/status", Ok(swap));
+        advance(cx, 1500);
+        assert_eq!(progress_reads(&fake), 2);
+        let swapping = "Replacing files, 12 min (trying node again)";
+        assert!(shows(cx, window, swapping));
+        assert_eq!(banner_button(cx, window), None);
+        advance(cx, 4500);
+        assert_eq!(progress_reads(&fake), 5);
+
+        // Node stops for the swap at 6 s. The read at 7.5 s fails, so the restart wait starts at
+        // 9.5 s, before the second failed poll at 10 s asks for it too.
+        node_down(&fake);
+        advance(cx, 1500);
+        assert_eq!(progress_reads(&fake), 6);
         let tries = status_tries(&fake);
-        advance(cx, 3000);
+        advance(cx, 1999);
+        assert_eq!(status_tries(&fake), tries);
+        advance(cx, 1);
         assert_eq!(status_tries(&fake), tries + 1);
-        advance(cx, 29 * 2000);
-        assert_eq!(status_tries(&fake), tries + 30);
+
+        // One try every 2 s and no limit: 35 more, and the window still waits with the last step.
+        advance(cx, 35 * 2000);
+        assert_eq!(status_tries(&fake), tries + 36);
+        assert_eq!(progress_reads(&fake), 6);
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+        assert!(shows(cx, window, swapping));
+        assert_eq!(banner_button(cx, window), None);
+        assert!(shows(cx, window, LOST));
+        assert_eq!(count(&fake, "POST", "/api/update/apply"), 1);
+
+        // The new Node answers during its check: the window starts over with a new token.
+        fake.reply("GET", "/api/status", Ok(status_json("off-air", false)));
+        fake.reply("GET", "/api/events", Ok(json!([])));
+        let mut checking = update_json("idle");
+        checking["currentVersion"] = json!("3.0.6");
+        checking["progress"] = progress_json("check", "running", STEP_AGO_S);
+        fake.reply("GET", "/api/update/status", Ok(checking));
+        advance(cx, 2000);
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+        let dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        assert_ne!(dashboard.entity_id(), old_dashboard.entity_id());
+        assert!(fake.token_forgets() > forgets);
+        assert!(count(&fake, "GET", "/api/config") > configs);
+        assert!(shows(cx, window, "Checking the new version, 12 min"));
+        assert_eq!(banner_button(cx, window), None);
+    }
+
+    #[gpui::test]
+    fn two_failed_polls_during_an_update_start_the_restart_wait(cx: &mut TestAppContext) {
+        let stopping = full_offer_json("ready", progress_json("stop", "running", STEP_AGO_S));
+        let (fake, window, app) = open(cx, stopping);
+        let old_dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        assert!(shows(cx, window, "Stopping the stream, 12 min"));
+        assert_eq!(banner_button(cx, window), None);
+        let tries = status_tries(&fake);
+
+        // Another window pressed Update Now; this one sees Node go down.
+        node_down(&fake);
+        advance(cx, 2000);
+        assert_eq!(status_tries(&fake), tries);
+        assert!(!shows(cx, window, LOST));
+        advance(cx, 2000);
+        assert_eq!(status_tries(&fake), tries + 1);
+        assert!(shows(cx, window, LOST));
+        advance(cx, 20_000);
+        assert_eq!(status_tries(&fake), tries + 11);
+        assert!(shows(cx, window, "Stopping the stream, 12 min"));
+        assert_eq!(banner_button(cx, window), None);
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+        assert!(fake.posts().is_empty());
+
+        answer_polls(&fake);
+        advance(cx, 2000);
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+        let dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        assert_ne!(dashboard.entity_id(), old_dashboard.entity_id());
+    }
+
+    #[gpui::test]
+    fn failed_polls_without_an_update_do_not_start_the_restart_wait(cx: &mut TestAppContext) {
+        let (fake, window, app) = open(cx, offered_json("idle"));
+        let old_dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        let tries = status_tries(&fake);
+
+        node_down(&fake);
+        advance(cx, 10_000);
+        assert!(shows(cx, window, LOST));
+        assert_eq!(status_tries(&fake), tries);
+
+        // The poll comes back on its own and the window keeps its dashboard.
+        answer_polls(&fake);
+        advance(cx, 2000);
+        let dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        assert_eq!(dashboard.entity_id(), old_dashboard.entity_id());
+        assert!(!shows(cx, window, LOST));
+    }
+
+    #[gpui::test]
+    fn banner_follows_the_full_update(cx: &mut TestAppContext) {
+        let (fake, window, _) = open(cx, full_offer_json("idle", Value::Null));
+        assert!(shows(cx, window, FULL_OFFER));
         assert_eq!(
             banner_button(cx, window),
-            Some(("Restarting...".into(), true))
+            Some(("Update Now".into(), false))
         );
-        // The polls fail too, and the connection-lost banner shows as in the browser.
-        assert!(shows(cx, window, LOST));
 
-        advance(cx, 1999);
-        assert!(!shows(cx, window, GAVE_UP));
-        advance(cx, 1);
-        assert!(shows(cx, window, GAVE_UP));
-        assert_eq!(banner_button(cx, window), Some(("Retry".into(), false)));
-        assert_eq!(status_tries(&fake), tries + 30);
-        advance(cx, 10_000);
-        assert_eq!(status_tries(&fake), tries + 30);
+        // Running: the progress, and no button.
+        let mut progress = progress_json("download", "running", STEP_AGO_S);
+        progress["downloadPercent"] = json!(42);
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(full_offer_json("downloading", progress)),
+        );
+        advance(cx, 2000);
+        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        assert!(!shows(cx, window, FULL_OFFER));
+        assert_eq!(banner_button(cx, window), None);
+
+        // Rolled back with the offer still there: why, and Update Now.
+        let mut failed = progress_json("check", "rolled-back", 60.);
+        failed["reason"] = json!("No encoder works.");
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(full_offer_json("idle", failed.clone())),
+        );
+        advance(cx, 2000);
+        assert!(shows(cx, window, ROLLED_BACK));
+        assert_eq!(
+            banner_button(cx, window),
+            Some(("Update Now".into(), false))
+        );
+        // Without an offer, no button.
+        let mut gone = update_json("idle");
+        gone["progress"] = failed;
+        fake.reply("GET", "/api/update/status", Ok(gone));
+        advance(cx, 2000);
+        assert!(shows(cx, window, ROLLED_BACK));
+        assert_eq!(banner_button(cx, window), None);
+
+        // Checked and waiting for Start: "Ready to stream" until the same poll says live.
+        let on = |progress: Value| {
+            let mut update = update_json("idle");
+            update["currentVersion"] = json!("3.0.6");
+            update["latestVersion"] = json!("3.0.6");
+            update["progress"] = progress;
+            update
+        };
+        let ready = "Updated to 3.0.6. Ready to stream.";
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(on(progress_json("start", "ok", 60.))),
+        );
+        fake.reply("GET", "/api/status", Ok(status_json("stopped", false)));
+        advance(cx, 2000);
+        assert!(shows(cx, window, ready));
+        assert_eq!(banner_button(cx, window), None);
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        advance(cx, 2000);
+        assert!(!shows(cx, window, ready));
+
+        // Back on air: for 10 minutes.
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(on(progress_json("done", "ok", 60.))),
+        );
+        advance(cx, 2000);
+        assert!(shows(cx, window, "Back on air on 3.0.6."));
+        assert_eq!(banner_button(cx, window), None);
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(on(progress_json("done", "ok", 601.))),
+        );
+        advance(cx, 2000);
+        assert!(!shows(cx, window, "Back on air on 3.0.6."));
+
+        // An update that neither came from nor went to the running version is not shown.
+        let mut older = update_json("idle");
+        older["currentVersion"] = json!("3.0.7");
+        older["progress"] = progress_json("check", "failed", 60.);
+        fake.reply("GET", "/api/update/status", Ok(older));
+        advance(cx, 2000);
+        assert!(!shows(cx, window, "The update to 3.0.6 failed at checking the new version: no reason was recorded. Still on 3.0.5."));
+
+        // The same version's parts: the offer is the button too.
+        let mut parts = update_json("idle");
+        parts["updateAvailable"] = json!(true);
+        parts["kind"] = json!("full");
+        parts["parts"] = json!(["pot"]);
+        parts["sameVersion"] = json!(true);
+        fake.reply("GET", "/api/update/status", Ok(parts));
+        advance(cx, 2000);
+        assert!(shows(cx, window, "Update parts to 3.0.5"));
+        assert_eq!(
+            banner_button(cx, window),
+            Some(("Update parts to 3.0.5".into(), false))
+        );
+    }
+
+    #[gpui::test]
+    fn update_now_during_a_check_shows_the_refusal(cx: &mut TestAppContext) {
+        let (fake, window, _) = open(cx, offered_json("idle"));
+        fake.reply(
+            "POST",
+            "/api/update/apply",
+            Err(ApiError::Server(UPDATE_RUNNING.into())),
+        );
 
         click(cx, window, "update-btn");
         cx.run_until_parked();
-        assert_eq!(count(&fake, "POST", "/api/update/apply"), 2);
+
+        assert!(shows(cx, window, &format!("Update failed: {UPDATE_RUNNING}")));
+        assert_eq!(banner_button(cx, window), Some(("Retry".into(), false)));
+        assert_eq!(progress_reads(&fake), 0);
     }
 
     #[gpui::test]

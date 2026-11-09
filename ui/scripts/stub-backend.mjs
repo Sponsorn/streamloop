@@ -11,6 +11,12 @@ const PORT = Number(process.env.STUB_PORT) || 7654;
 // STUB_UPDATE=1: v3.0.6 is on offer. Applying it walks downloading, extracting and ready as Node's
 // updater does, then the stub restarts as Node does on exit 75: down for 5 s, back with a new token.
 const UPDATE_MODE = process.env.STUB_UPDATE === '1';
+// STUB_UPDATE=full: a full update to v3.0.6 (Node and ffmpeg) is on offer. Applying it walks
+// update-state.json as Node does: download with its percentage, stop (off air), swap with one
+// retry, 8 s down, back with a new token for the check, then start, and done once live.
+// STUB_UPDATE=full-fail: the check rolls back ("No encoder works.") and 3.0.5 stays, with the offer.
+const FULL_MODE = process.env.STUB_UPDATE === 'full' || process.env.STUB_UPDATE === 'full-fail';
+const FULL_FAILS = process.env.STUB_UPDATE === 'full-fail';
 // STUB_FIRST_RUN=1: a fresh install. The config is config.example.json's, so `firstRun` is true
 // until a config with a real playlist is saved; the stream then starts and is live 10 s later.
 const FIRST_RUN_MODE = process.env.STUB_FIRST_RUN === '1';
@@ -118,19 +124,26 @@ setInterval(() => {
 /** src/server/config.ts `isFirstRun`. */
 const isFirstRun = () => config.playlists.length === 1 && config.playlists[0].id.includes('xxxxx');
 
+// While a full update has the stream down: 'off-air' from its stop step, 'starting' once the new
+// version starts it; null otherwise.
+let updateStream = null;
+
+const NOT_ANSWERING = { state: 'off-air', reason: 'The supervisor is not answering.' };
+const STARTING = { state: 'starting', reason: 'The supervisor is starting.' };
+
 function status() {
+  const down = (stream) => ({
+    stream,
+    supervisor: null,
+    launcher: 'starting',
+    twitch: { enabled: false },
+    firstRun: isFirstRun(),
+    uptimeMs: Date.now() - nodeStarted,
+  });
   if (FIRST_RUN_MODE && (liveAt === null || Date.now() < liveAt)) {
-    return {
-      stream: liveAt === null
-        ? { state: 'off-air', reason: 'The supervisor is not answering.' }
-        : { state: 'starting', reason: 'The supervisor is starting.' },
-      supervisor: null,
-      launcher: 'starting',
-      twitch: { enabled: false },
-      firstRun: isFirstRun(),
-      uptimeMs: Date.now() - nodeStarted,
-    };
+    return down(liveAt === null ? NOT_ANSWERING : STARTING);
   }
+  if (updateStream) return down(updateStream === 'off-air' ? NOT_ANSWERING : STARTING);
   const list = lists[state.list];
   const v = current();
   const gib = 1024 ** 3;
@@ -280,27 +293,57 @@ function shutdown() {
   return [200, { ok: true, message: 'Shutting down...' }];
 }
 
-// `GET /api/update/status`. Without STUB_UPDATE the stub is Node in dev mode: up to date, check only.
+// The updater's status (`GET /api/update/status` adds `progress` and `swapLog`, `POST
+// /api/update/check` answers it alone). Without STUB_UPDATE the stub is Node in dev mode: up to
+// date, check only.
 const upToDate = (version, isDevMode) => ({
   currentVersion: version, latestVersion: version, updateAvailable: false, status: 'idle', error: null, isDevMode, nodeNotice: null,
+  kind: null, parts: [], sameVersion: false, downloadPercent: null,
 });
+const FULL_OFFER = {
+  ...upToDate('3.0.5', false), latestVersion: '3.0.6', updateAvailable: true, kind: 'full', parts: ['node', 'ffmpeg'],
+};
 let update = UPDATE_MODE
   ? {
-    currentVersion: '3.0.5', latestVersion: '3.0.6', updateAvailable: true, status: 'idle', error: null, isDevMode: false,
+    ...upToDate('3.0.5', false), latestVersion: '3.0.6', updateAvailable: true, kind: 'app',
     nodeNotice: 'This release bundles Node 22.24.0. Install the full ZIP to get it.',
   }
-  : upToDate('3.0.5', true);
+  : FULL_MODE ? FULL_OFFER : upToDate('3.0.5', true);
+// data\update-state.json and data\update-swap.log, as Node reads them.
+let progress = null;
+let swapLog = [];
+
+const UPDATE_RUNNING = 'An update is running. Try again when it is done.';
+/** api.ts `updateRunning`: from the download until the new version's check has a result. */
+const updateRunning = () => ['downloading', 'extracting', 'ready'].includes(update.status) || progress?.result === 'running';
+// The POSTs api.ts guards with `refuseDuringUpdate` (and `refuseApply` for the apply).
+const REFUSED_DURING_UPDATE = new Set([
+  '/api/config', '/api/stream-key', '/api/playlist/switch', '/api/player/next', '/api/player/prev', '/api/player/restart',
+  '/api/player/jump', '/api/stream/stop', '/api/stream/start', '/api/setup-check/run', '/api/yt-dlp/update',
+  '/api/update/apply',
+]);
 
 const DOWNLOAD_MS = 4000;
 const EXTRACT_MS = 3000;
 // Node exits 1 s after the update is staged (api.ts `triggerRestart`).
 const EXIT_AFTER_MS = 1000;
 const DOWN_FOR_MS = 5000;
+// A full update's download climbs 10 % this often; then each step takes the time below.
+const FULL_DOWNLOAD_TICK_MS = 600;
+const FULL_EXTRACT_MS = 1500;
+const FULL_STOP_MS = 3000;
+const FULL_RETRY_AFTER_MS = 1500;
+const FULL_SWAP_MS = 3000;
+const FULL_DOWN_FOR_MS = 8000;
+const FULL_CHECK_MS = 5000;
+const FULL_START_MS = 5000;
 
 /** `POST /api/update/apply`: Node answers at once and installs in the background. In dev mode it
  *  refuses in the background too, so the answer is the same and nothing changes. */
 function applyUpdate() {
-  if (UPDATE_MODE && update.updateAvailable && update.status === 'idle') {
+  if (FULL_MODE && update.updateAvailable && update.status === 'idle') {
+    applyFullUpdate();
+  } else if (UPDATE_MODE && update.updateAvailable && update.status === 'idle') {
     update = { ...update, status: 'downloading' };
     setTimeout(() => {
       update = { ...update, status: 'extracting' };
@@ -324,6 +367,76 @@ function restartAfterUpdate() {
     update = upToDate('3.0.6', false);
     server.listen(PORT, '127.0.0.1', () => process.stdout.write('stub backend back on v3.0.6 with a new token\n'));
   }, DOWN_FOR_MS);
+}
+
+/** Moves update-state.json to `step`, as full-update.ts `setStep` does. */
+function setStep(step, patch = {}) {
+  progress = { ...progress, ...patch, step, stepStartedAt: new Date().toISOString() };
+}
+
+/** updater.ts `run` and full-update.ts for a full update, on timers. */
+function applyFullUpdate() {
+  const at = new Date().toISOString();
+  update = { ...update, status: 'downloading', downloadPercent: 0 };
+  progress = {
+    from: '3.0.5', to: '3.0.6', parts: ['node', 'ffmpeg'], folders: ['node', 'ffmpeg'], step: 'download', result: 'running',
+    reason: null, startedAt: at, stepStartedAt: at, baseline: { encoder: 'h264_nvenc', works: true }, downloadPercent: 0,
+  };
+  swapLog = [];
+  const download = setInterval(() => {
+    const percent = Math.min(100, update.downloadPercent + 10);
+    update = { ...update, downloadPercent: percent };
+    progress = { ...progress, downloadPercent: percent };
+    if (percent < 100) return;
+    clearInterval(download);
+    update = { ...update, status: 'extracting', downloadPercent: null };
+    setTimeout(() => {
+      update = { ...update, status: 'ready' };
+      setStep('stop');
+      updateStream = 'off-air';
+      addEvent('Stopping the stream for the update to v3.0.6');
+      setTimeout(() => {
+        setStep('swap');
+        setTimeout(() => { swapLog = [{ folder: 'node', status: 'retry', detail: 'in use' }]; }, FULL_RETRY_AFTER_MS);
+        setTimeout(restartForSwap, FULL_SWAP_MS);
+      }, FULL_STOP_MS);
+    }, FULL_EXTRACT_MS);
+  }, FULL_DOWNLOAD_TICK_MS);
+}
+
+/** Node exits for the swap and START.bat starts the new version, which checks itself first. */
+function restartForSwap() {
+  server.close();
+  server.closeAllConnections();
+  process.stdout.write('stub backend down for the swap\n');
+  setTimeout(() => {
+    token = `stub-token-${Date.now()}`;
+    nodeStarted = Date.now();
+    update = upToDate('3.0.6', false);
+    swapLog = [...swapLog, { folder: 'node', status: 'ok', detail: '' }, { folder: 'ffmpeg', status: 'ok', detail: '' }];
+    setStep('check');
+    server.listen(PORT, '127.0.0.1', () => process.stdout.write('stub backend back on v3.0.6 with a new token, checking it\n'));
+    setTimeout(FULL_FAILS ? rollBack : startAfterCheck, FULL_CHECK_MS);
+  }, FULL_DOWN_FOR_MS);
+}
+
+/** The check passed: the stream starts, and the update is done once it is live. */
+function startAfterCheck() {
+  setStep('start', { result: 'ok', reason: null });
+  updateStream = 'starting';
+  setTimeout(() => {
+    updateStream = null;
+    setStep('done');
+    addEvent('Back on air on v3.0.6');
+  }, FULL_START_MS);
+}
+
+/** The check failed: the old version is back, with the update still on offer. */
+function rollBack() {
+  progress = { ...progress, result: 'rolled-back', reason: 'No encoder works.' };
+  update = FULL_OFFER;
+  updateStream = null;
+  addEvent('The update to v3.0.6 was rolled back: No encoder works.');
 }
 
 // src/server/config.ts DEFAULT_DISCORD_TEMPLATES and DISCORD_TEMPLATE_VARIABLES.
@@ -406,7 +519,7 @@ const GETS = {
   '/api/token': () => [200, { token }],
   '/api/status': () => [200, status()],
   '/api/events': () => [200, events],
-  '/api/update/status': () => [200, update],
+  '/api/update/status': () => [200, { ...update, progress, swapLog }],
   '/api/config': () => [200, servedConfig()],
   '/api/autostart': () => [200, autostart],
   '/api/setup-check': () => [200, setupReport],
@@ -495,6 +608,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && GETS[path]) return send(res, ...GETS[path]());
   if (req.method === 'POST' && POSTS[path]) {
     if (req.headers['x-api-token'] !== token) return send(res, 403, { error: 'Forbidden: invalid API token' });
+    if (REFUSED_DURING_UPDATE.has(path) && updateRunning()) return send(res, 409, { error: UPDATE_RUNNING });
     // A handler returns [code, body] for an answer of its own, or nothing for { ok: true }.
     const answer = await POSTS[path](await readBody(req));
     if (answer) return send(res, ...answer);

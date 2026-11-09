@@ -1,7 +1,7 @@
 //! Typed answers of the dashboard's REST calls. A missing field reads as its default and an unknown one is ignored.
 
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 use serde_json::Value;
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -93,12 +93,31 @@ pub struct UpdateStatus {
     pub error: Option<String>,
     pub is_dev_mode: bool,
     pub node_notice: Option<String>,
+    #[serde(deserialize_with = "lenient")]
     pub kind: Option<String>,
+    #[serde(deserialize_with = "lenient")]
     pub parts: Vec<String>,
+    #[serde(deserialize_with = "lenient")]
     pub same_version: bool,
+    #[serde(deserialize_with = "lenient")]
     pub download_percent: Option<f64>,
+    #[serde(deserialize_with = "lenient")]
     pub progress: Option<UpdateProgress>,
+    #[serde(deserialize_with = "lenient")]
     pub swap_log: Vec<SwapLine>,
+}
+
+/// A field of the wrong type reads as its default, so the rest of the answer still reads, as admin.js
+/// tolerates it with `typeof` checks and `|| []`.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default())
 }
 
 /// `update-state.json` as `/api/update/status` serves it; `baseline` is left out.
@@ -442,6 +461,26 @@ mod tests {
         assert_eq!(update.kind, None);
         assert!(update.parts.is_empty() && !update.same_version && update.swap_log.is_empty());
         assert!(update.download_percent.is_none() && update.progress.is_none());
+    }
+
+    #[test]
+    fn update_status_reads_a_wrongly_typed_full_update_field_as_its_default() {
+        let raw = json!({
+            "currentVersion": "3.0.5", "latestVersion": "3.0.6", "updateAvailable": true, "status": "idle",
+            "kind": 5, "parts": null, "sameVersion": "yes", "downloadPercent": "42", "progress": 5,
+            "swapLog": null
+        })
+        .to_string();
+
+        let update: UpdateStatus = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(update.latest_version.as_deref(), Some("3.0.6"));
+        assert!(update.update_available);
+        assert_eq!(update.kind, None);
+        assert!(update.parts.is_empty() && update.swap_log.is_empty());
+        assert!(!update.same_version);
+        assert_eq!(update.download_percent, None);
+        assert_eq!(update.progress, None);
     }
 
     #[test]

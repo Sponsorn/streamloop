@@ -1026,7 +1026,9 @@ mod tests {
         api::{ApiError, fake::FakeApi},
         app::{AppView, TOAST_FOR},
         dashboard::Tab,
-        test_support::{answer_polls, config_json, count, open_app, painted, saved_json, shows},
+        test_support::{
+            UPDATE_RUNNING, answer_polls, config_json, count, open_app, painted, saved_json, shows,
+        },
         widgets::SAVE_RESET,
     };
 
@@ -1749,6 +1751,24 @@ mod tests {
             button(cx, window, "set-btn"),
             (Some("Save Settings".into()), false)
         );
+    }
+
+    #[gpui::test]
+    fn a_save_during_an_update_shows_the_refusal(cx: &mut TestAppContext) {
+        let (fake, window, app) = open_settings(cx, config_json());
+        let view = settings(cx, &app);
+        fake.reply(
+            "POST",
+            "/api/config",
+            Err(ApiError::Server(UPDATE_RUNNING.into())),
+        );
+
+        let key = row_key(cx, &view, 0);
+        type_into(cx, window, ("set-pl-name", key), "Renamed");
+        save(cx, window);
+
+        assert!(shows(cx, window, &format!("Could not save: {UPDATE_RUNNING}")));
+        assert_eq!(count(&fake, "POST", "/api/config"), 1);
     }
 
     #[gpui::test]

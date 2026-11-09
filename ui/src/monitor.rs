@@ -21,17 +21,19 @@ use gpui_kit::{
 use crate::{
     api::{
         client::encode_component,
-        types::{Event, Playing, Status, UpdateStatus},
+        types::{Event, Playing, Status, SwapLine, UpdateProgress, UpdateStatus},
     },
     app::AppHandle,
     dashboard::TabView,
     logic::{
         Level,
         admin::{encoder_line, local_hms, now_playing_index, now_playing_time},
-        source_label, stream_line, twitch_line, youtube_note,
+        source_label, stream_line, twitch_line, update_progress_text, update_running,
+        youtube_note,
     },
     logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
+    update::UpdateFlow,
     videos::VideoList,
     widgets::{ActionView, Busy, action_button, btn, reveal_on_focus, run_action, section},
 };
@@ -40,24 +42,47 @@ const STOP_TITLE: &str = "Stop the stream?";
 const STOP_DETAIL: &str = "The channel goes offline until you start it again.";
 const STOP_OK: &str = "Stop stream";
 
+pub(crate) struct CardLine {
+    pub word: SharedString,
+    pub level: Level,
+    pub reason: Option<String>,
+    pub start: bool,
+    pub stop: bool,
+}
+
 /// The Monitor tab. It shows the last answered poll; before the first one, index.html's placeholders.
 pub struct MonitorView {
     app: AppHandle,
+    /// Holds the full update's last progress, which the stream line shows while the update runs.
+    flow: Entity<UpdateFlow>,
     busy: Busy,
     status: Option<Status>,
+    /// The status the stream card last drew. While a full update runs, admin.js `renderStream`
+    /// returns before the Twitch and encoder lines, so they keep what they showed.
+    card_status: Option<Status>,
+    /// The last poll's progress and swap log while a full update runs.
+    updating: Option<(UpdateProgress, Vec<SwapLine>)>,
     events: Option<Vec<Event>>,
     pub(crate) videos: VideoList,
     pub(crate) logs: Entity<LogViewer>,
 }
 
 impl MonitorView {
-    pub fn new(app: AppHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        app: AppHandle,
+        flow: Entity<UpdateFlow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             videos: VideoList::new(app.clone(), window, cx),
             logs: cx.new(|cx| LogViewer::new(app.clone(), window, cx)),
             app,
+            flow,
             busy: Busy::default(),
             status: None,
+            card_status: None,
+            updating: None,
             events: None,
         }
     }
@@ -67,9 +92,19 @@ impl MonitorView {
         self.status.as_ref()?.supervisor.as_ref()?.playing.as_ref()
     }
 
-    /// admin.js `renderStream`.
-    fn render_stream_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = self.status.as_ref();
+    /// The stream card's word, its colour level, the reason under it, and whether Start and Stop show.
+    /// While a full update runs: "Updating" with its progress at `now_ms`, and neither button.
+    pub(crate) fn card_line(&self, now_ms: i64) -> CardLine {
+        if let Some((progress, swap_log)) = &self.updating {
+            return CardLine {
+                word: "Updating".into(),
+                level: Level::Warn,
+                reason: Some(update_progress_text(progress, swap_log, now_ms)),
+                start: false,
+                stop: false,
+            };
+        }
+        let status = self.card_status.as_ref();
         let line = status.map(|s| {
             let youtube = s.supervisor.as_ref().and_then(|sup| sup.youtube.as_ref());
             stream_line(Some(&s.stream), youtube_note(youtube).as_deref())
@@ -80,8 +115,25 @@ impl MonitorView {
         };
         // Both buttons show until the first poll, as in index.html.
         let state = status.map(|s| s.stream.state.as_str());
-        let show_start = state.is_none_or(|s| s == "stopped" || s == "off-air");
-        let show_stop = state != Some("stopped");
+        CardLine {
+            word: word.into(),
+            level,
+            reason,
+            start: state.is_none_or(|s| s == "stopped" || s == "off-air"),
+            stop: state != Some("stopped"),
+        }
+    }
+
+    /// admin.js `renderStream`.
+    fn render_stream_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self.card_status.as_ref();
+        let CardLine {
+            word,
+            level,
+            reason,
+            start: show_start,
+            stop: show_stop,
+        } = self.card_line(chrono::Utc::now().timestamp_millis());
         let twitch = status.map(|s| twitch_line(s.twitch.as_ref()));
         let encoder = status.map(|s| encoder_line(s.supervisor.as_ref()));
 
@@ -311,6 +363,15 @@ impl TabView for MonitorView {
         cx: &mut Context<Self>,
     ) {
         self.status = Some(status.clone());
+        // The dashboard gave the flow this poll's update status first; a failed read left the last.
+        let flow = self.flow.read(cx);
+        self.updating = flow
+            .progress()
+            .filter(|progress| update_running(Some(progress)))
+            .map(|progress| (progress.clone(), flow.swap_log().to_vec()));
+        if self.updating.is_none() {
+            self.card_status = Some(status.clone());
+        }
         self.events = Some(events.to_vec());
         // admin.js `renderNowPlaying` passes an empty video when nothing plays.
         let playing = self.playing().cloned().unwrap_or_default();
@@ -439,8 +500,12 @@ mod tests {
     use super::*;
     use crate::{
         api::{ApiError, fake::FakeApi},
-        app::POLL_EVERY,
-        test_support::{events_json, open_app, painted, shows, status_json, update_json},
+        app::{AppView, POLL_EVERY},
+        dashboard::Tab,
+        test_support::{
+            UPDATE_RUNNING, events_json, full_offer_json, open_app, painted, progress_json, shows,
+            status_json, update_json,
+        },
     };
 
     const STOP_TITLE: &str = "Stop the stream?";
@@ -453,6 +518,26 @@ mod tests {
         status: Value,
         events: Value,
     ) -> (Arc<FakeApi>, AnyWindowHandle) {
+        let (fake, window, _) = open_monitor(cx, status, events);
+        (fake, window)
+    }
+
+    fn monitor(cx: &mut TestAppContext, app: &Entity<AppView>) -> Entity<MonitorView> {
+        let dashboard = app
+            .read_with(cx, |app, _| app.dashboard())
+            .expect("the dashboard shows");
+        dashboard
+            .read_with(cx, |dashboard, _| dashboard.tab_view(Tab::Monitor))
+            .downcast::<MonitorView>()
+            .unwrap_or_else(|_| panic!("the Monitor tab is a MonitorView"))
+    }
+
+    /// `open_with`, and the app.
+    fn open_monitor(
+        cx: &mut TestAppContext,
+        status: Value,
+        events: Value,
+    ) -> (Arc<FakeApi>, AnyWindowHandle, Entity<AppView>) {
         let fake = FakeApi::new();
         fake.reply("GET", "/api/status", Ok(status));
         fake.reply("GET", "/api/events", Ok(events));
@@ -466,8 +551,8 @@ mod tests {
         ] {
             fake.reply("POST", path, Ok(json!({ "ok": true })));
         }
-        let (_, window) = open_app(cx, fake.clone());
-        (fake, window)
+        let (app, window) = open_app(cx, fake.clone());
+        (fake, window, app)
     }
 
     fn present(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) -> bool {
@@ -699,6 +784,84 @@ mod tests {
             window,
             "The encoder cannot reach Twitch. YouTube is blocking requests."
         ));
+    }
+
+    #[gpui::test]
+    fn stream_line_shows_the_update_while_it_runs(cx: &mut TestAppContext) {
+        let (fake, window, app) = open_monitor(cx, status_json("live", false), events_json(0));
+        assert!(shows(cx, window, "Live"));
+        assert!(present(cx, window, "btn-stream-stop"));
+        let word = |cx: &mut TestAppContext| {
+            let monitor = monitor(cx, &app);
+            monitor.read_with(cx, |monitor, _| {
+                let line = monitor.card_line(chrono::Utc::now().timestamp_millis());
+                (line.word.to_string(), line.level)
+            })
+        };
+
+        // The download runs: 12.5 minutes into the step keeps the elapsed text at "12 min".
+        let mut progress = progress_json("download", "running", 750.);
+        progress["downloadPercent"] = json!(42);
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(full_offer_json("downloading", progress)),
+        );
+        cx.executor().advance_clock(POLL_EVERY);
+        assert_eq!(word(cx), ("Updating".to_string(), Level::Warn));
+        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        assert!(!present(cx, window, "btn-stream-start"));
+        assert!(!present(cx, window, "btn-stream-stop"));
+
+        // A poll whose update read fails keeps the last progress.
+        fake.reply("GET", "/api/update/status", Err(ApiError::Unreachable));
+        cx.executor().advance_clock(POLL_EVERY);
+        assert_eq!(word(cx), ("Updating".to_string(), Level::Warn));
+        assert!(shows(cx, window, "Downloading, 42%, 12 min"));
+        assert!(!present(cx, window, "btn-stream-start"));
+        assert!(!present(cx, window, "btn-stream-stop"));
+
+        // The swap is retried. The stream is down, but admin.js returns before the Twitch line,
+        // the encoder line and the uptime, so they keep what they showed.
+        let mut update = full_offer_json("ready", progress_json("swap", "running", 750.));
+        update["swapLog"] = json!([{ "folder": "node", "status": "retry", "detail": "in use" }]);
+        fake.reply("GET", "/api/update/status", Ok(update));
+        let mut stopped = status_json("stopped", false);
+        stopped["uptimeMs"] = json!(125_000);
+        fake.reply("GET", "/api/status", Ok(stopped));
+        cx.executor().advance_clock(POLL_EVERY);
+        assert!(shows(cx, window, "Replacing files, 12 min (trying node again)"));
+        assert!(shows(cx, window, "Encoder: running, 1.00x speed"));
+        assert!(shows(cx, window, "Twitch check off"));
+        assert!(shows(cx, window, "Uptime: 1m 5s"));
+        assert!(!present(cx, window, "btn-stream-start"));
+
+        // The check passed: the stream line follows the status again.
+        let mut done = update_json("idle");
+        done["currentVersion"] = json!("3.0.6");
+        done["progress"] = progress_json("start", "ok", 60.);
+        fake.reply("GET", "/api/update/status", Ok(done));
+        cx.executor().advance_clock(POLL_EVERY);
+        assert_eq!(word(cx), ("Stopped".to_string(), Level::Muted));
+        assert!(shows(cx, window, "Encoder: not running"));
+        assert!(shows(cx, window, "Uptime: 2m 5s"));
+        assert!(present(cx, window, "btn-stream-start"));
+        assert!(!present(cx, window, "btn-stream-stop"));
+    }
+
+    #[gpui::test]
+    fn next_during_an_update_shows_the_refusal(cx: &mut TestAppContext) {
+        let (fake, window) = open_with(cx, status_json("live", false), events_json(0));
+        fake.reply(
+            "POST",
+            "/api/player/next",
+            Err(ApiError::Server(UPDATE_RUNNING.into())),
+        );
+
+        click(cx, window, "btn-next");
+        cx.run_until_parked();
+
+        assert!(shows(cx, window, UPDATE_RUNNING));
     }
 
     fn local(ts: &str) -> String {

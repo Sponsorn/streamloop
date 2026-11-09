@@ -28,7 +28,8 @@ use crate::{
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
 /// admin.js `showToast`.
 pub const TOAST_FOR: Duration = Duration::from_secs(4);
-/// Failed polls in a row that show the connection-lost banner.
+/// Failed polls in a row that show the connection-lost banner and, while a full update runs, start
+/// the restart wait.
 const LOST_AFTER: u32 = 2;
 
 const CONNECTING_TITLE: &str = "StreamLoop backend is not running";
@@ -325,7 +326,10 @@ impl AppView {
         let (Ok(status), Ok(events)) = (status, events) else {
             self.failures += 1;
             if self.failures >= LOST_AFTER {
-                dashboard.update(cx, |dashboard, cx| dashboard.set_connection_lost(true, cx));
+                dashboard.update(cx, |dashboard, cx| {
+                    dashboard.set_connection_lost(true, cx);
+                    dashboard.on_server_lost(cx);
+                });
             }
             return;
         };
