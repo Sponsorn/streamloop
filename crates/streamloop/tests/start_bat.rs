@@ -124,25 +124,36 @@ fn preflight_checks_each_tool_with_the_reinstall_message() {
     // Arrange
     let l = lines();
     let tools = [
-        "if not exist \"%EXE%\" (",
-        "if not exist \"%ROOT%ffmpeg\\ffmpeg.exe\" (",
-        "if not exist \"%ROOT%node\\node.exe\" (",
-        "if not exist \"%ROOT%pot\\build\\main.js\" (",
+        ("if not exist \"%EXE%\" goto :missing_exe", ":missing_exe"),
+        (r#"if not exist "%ROOT%ffmpeg\ffmpeg.exe" goto :missing_ffmpeg"#, ":missing_ffmpeg"),
+        (r#"if not exist "%ROOT%node\node.exe" goto :missing_node"#, ":missing_node"),
+        (r#"if not exist "%ROOT%pot\build\main.js" goto :missing_pot"#, ":missing_pot"),
     ];
 
-    for tool in tools {
+    for (check, label) in tools {
         // Act
-        let body = block(&l, index_of(&l, tool));
+        let at = index_of(&l, check);
+        let body: Vec<&str> = l[index_of(&l, label) + 1..].iter().map(|x| x.trim()).take(3).collect();
 
         // Assert
-        let t: Vec<&str> = body.iter().map(|x| x.trim()).collect();
-        assert!(
-            t.iter().any(|x| x.starts_with("echo [ERROR]") && x.ends_with("Reinstall StreamLoop from the full ZIP.")),
-            "{tool}"
-        );
-        assert!(t.contains(&"pause"), "{tool}");
-        assert!(t.contains(&"exit /b 1"), "{tool}");
+        assert!(at < index_of(&l, ":loop"), "{check}");
+        assert!(body[0].starts_with("echo [ERROR]") && body[0].ends_with("Reinstall StreamLoop from the full ZIP."), "{label}");
+        assert_eq!(&body[1..], ["pause", "exit /b 1"], "{label}");
+        assert!(index_of(&l, label) > l.iter().rposition(|x| x.trim() == "goto loop").unwrap(), "{label} would run inside the loop");
     }
+}
+
+#[test]
+fn no_expanded_path_inside_a_block() {
+    // Arrange
+    let inside = lines_inside_blocks(&lines());
+
+    // Act
+    let offenders: Vec<&String> = inside.iter().filter(|l| l.contains("%ROOT%") || l.contains("%EXE%")).collect();
+
+    // Assert
+    assert!(!inside.is_empty());
+    assert!(offenders.is_empty(), "a ) in the install path would close the block early: {offenders:?}");
 }
 
 #[test]
@@ -157,7 +168,7 @@ fn restores_a_half_swapped_exe_before_the_preflight() {
     );
 
     // Assert
-    assert!(heal < index_of(&l, "if not exist \"%EXE%\" ("));
+    assert!(heal < index_of(&l, "if not exist \"%EXE%\" goto :missing_exe"));
 }
 
 #[test]
@@ -279,16 +290,16 @@ fn rollback_of_a_half_swap_only_puts_the_old_exe_back() {
     // Arrange
     let l = lines();
     let section = section_from(&l, ":rollback");
-    let open = index_of(&section, "if not exist \"%EXE%\" (");
+    let cut_off = section_from(&l, ":cut_off");
+    let end = cut_off.iter().position(|x| x.trim() == "goto :eof").unwrap();
 
     // Act
-    let half = block(&section, open);
-    let rest = section[open + half.len() + 1..].join("\n");
+    let half = &cut_off[..end];
+    let rest = section[..section.iter().position(|x| x.trim() == "goto :eof").unwrap()].join("\n");
 
     // Assert
-    assert_eq!(open, 1, "the half-swap check comes first");
+    assert_eq!(section[1].trim(), "if not exist \"%EXE%\" goto :cut_off", "the half-swap check comes first");
     assert!(half.iter().any(|x| x.trim() == "rename \"%ROOT%streamloop.exe.old\" streamloop.exe"));
-    assert!(half.iter().any(|x| x.trim() == "goto :eof"));
     assert!(!half.iter().any(|x| x.contains("landed") || x.contains("update-rolled-back") || x.contains("STREAMLOOP_START")));
     assert!(rest.contains("update-rolled-back") && rest.contains("STREAMLOOP_START=rollback"));
 }
