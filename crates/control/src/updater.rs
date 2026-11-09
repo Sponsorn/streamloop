@@ -199,7 +199,7 @@ pub struct UpdaterOptions {
     pub releases_url: String,
     /// `STREAMLOOP_TEST_RELEASES`: the release list comes from this file, and assets only from 127.0.0.1.
     pub test_releases: Option<PathBuf>,
-    /// `node\node.exe --version`, compared with the release's `node-version.txt`.
+    /// `node\node.exe --version`, compared with the release's `node-version.txt`; `set_bundled_node` can give it later.
     pub bundled_node: Option<String>,
     pub policy: BreakPolicy,
 }
@@ -249,7 +249,7 @@ struct Inner {
     layout: Layout,
     releases_url: String,
     test_releases: Option<PathBuf>,
-    bundled_node: Option<String>,
+    bundled_node: Mutex<Option<String>>,
     policy: BreakPolicy,
     state: Mutex<State>,
     /// Held for the whole of a stage, so two never run at once.
@@ -299,7 +299,7 @@ impl Updater {
                 layout: opts.layout,
                 releases_url: opts.releases_url,
                 test_releases: opts.test_releases,
-                bundled_node: opts.bundled_node.as_deref().and_then(parse_node_version),
+                bundled_node: Mutex::new(opts.bundled_node.as_deref().and_then(parse_node_version)),
                 policy: opts.policy,
                 state: Mutex::new(state),
                 stage_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -311,6 +311,11 @@ impl Updater {
     pub fn status(&self) -> UpdateInfo {
         let st = self.inner.lock();
         self.inner.info(&st)
+    }
+
+    /// `node\node.exe --version` as it printed it, for the checks from now on.
+    pub fn set_bundled_node(&self, printed: Option<&str>) {
+        *self.inner.bundled_node.lock().unwrap_or_else(|e| e.into_inner()) = printed.and_then(parse_node_version);
     }
 
     /// Looks for a newer release, and starts staging it in the background when one is found.
@@ -588,7 +593,7 @@ impl Inner {
     }
 
     async fn release_node_notice(&self, release: &GithubRelease) -> Option<String> {
-        let bundled = self.bundled_node.as_deref()?;
+        let bundled = self.bundled_node.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
         let url = &release.assets.iter().find(|a| a.name == "node-version.txt")?.browser_download_url;
         if !self.allowed(url) {
             return None;

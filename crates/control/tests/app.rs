@@ -9,20 +9,31 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use streamloop_common::api::{ControlCmd, SupervisorStatus};
 use streamloop_common::paths::{Layout, Root};
 use streamloop_common::version::VERSION;
 use streamloop_control::app::{self, App, EnvVars, ExitSwitch, Wiring};
 use streamloop_control::clock::SystemClock;
 use streamloop_control::http::FakeHttp;
+use streamloop_control::landing::LandedRecord;
 use streamloop_control::launcher::{SpawnHandle, Spawner};
+use streamloop_control::leftovers::remove_3_0_leftovers;
 use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::fake::{Call, FakeSupervisor};
 use support::captured_logs;
 use tempfile::TempDir;
+use tokio::sync::mpsc;
 
 const OLD_HOOK: &str = "https://discord.example/old";
 const NEW_HOOK: &str = "https://discord.example/new";
+/// A release newer than this build, with the running major version.
+const NEW_VERSION: &str = "3.9.9";
+const NEW_EXE: &str = "new exe";
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// Records each spawn and never starts a process.
 #[derive(Default)]
@@ -71,10 +82,18 @@ struct Rig {
     port: u16,
     sup: Arc<FakeSupervisor>,
     http: Arc<FakeHttp>,
-    /// The encoder probes; `node --version` and yt-dlp never run, since neither is installed.
+    /// GitHub and the downloads.
+    updater_http: Arc<FakeHttp>,
+    /// The encoder probes, `streamloop.exe check` and a staged exe's `--version`; `node --version` and yt-dlp
+    /// never run, since neither is installed.
     runner: Arc<FakeRunner>,
     spawner: Arc<NoSpawner>,
     vars: EnvVars,
+    /// The root is the exe's own folder: the updater stages, as in an install.
+    from_exe: bool,
+    /// Ctrl+C or the console closing.
+    stop: mpsc::UnboundedSender<()>,
+    stop_rx: Mutex<Option<mpsc::UnboundedReceiver<()>>>,
 }
 
 impl Rig {
@@ -90,7 +109,21 @@ impl Rig {
         let http = Arc::new(FakeHttp::new());
         http.respond("https://discord.example/", 204, "");
         let runner = Arc::new(FakeRunner::new());
-        Rig { _dir: dir, root, port, sup, http, runner, spawner: Arc::new(NoSpawner::default()), vars: EnvVars::default() }
+        let (stop, stop_rx) = mpsc::unbounded_channel();
+        Rig {
+            _dir: dir,
+            root,
+            port,
+            sup,
+            http,
+            updater_http: Arc::new(FakeHttp::new()),
+            runner,
+            spawner: Arc::new(NoSpawner::default()),
+            vars: EnvVars::default(),
+            from_exe: false,
+            stop,
+            stop_rx: Mutex::new(Some(stop_rx)),
+        }
     }
 
     fn layout(&self) -> Layout {
@@ -100,11 +133,11 @@ impl Rig {
     fn wiring(&self) -> Wiring {
         let runner = self.runner.clone();
         Wiring {
-            root: Root { dir: self.root.clone(), from_exe: false },
+            root: Root { dir: self.root.clone(), from_exe: self.from_exe },
             vars: self.vars.clone(),
             client: self.sup.clone(),
             http: self.http.clone(),
-            updater_http: Arc::new(FakeHttp::new()),
+            updater_http: self.updater_http.clone(),
             runner: runner.clone(),
             spawner: self.spawner.clone(),
             clock: Arc::new(SystemClock),
@@ -115,8 +148,48 @@ impl Rig {
             protect: Arc::new(|_| Ok("blob".to_string())),
             setup_check: streamloop_control::api::setup_check_with(runner),
             open_admin: Arc::new(|_| {}),
-            stop_signal: Box::pin(std::future::pending()),
+            stop_signal: self.stop_rx.lock().unwrap().take().expect("one wiring per rig"),
         }
+    }
+
+    fn write(&self, rel: &str, bytes: &[u8]) {
+        let path = rel.split('/').fold(self.root.clone(), |p, part| p.join(part));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// `_update\landed` as a landing writes it.
+    fn landed(&self, to: &str, on_air: bool, held: bool) {
+        let record = json!({ "from": "3.0.9", "to": to, "onAir": on_air, "held": held });
+        self.write("_update/landed", record.to_string().as_bytes());
+    }
+
+    /// An exe and an ffmpeg, and a test encode that works: a launch would spawn.
+    fn launchable(&self) {
+        self.write("streamloop.exe", b"old exe");
+        self.write("ffmpeg/ffmpeg.exe", b"");
+        self.runner.push(Ok(RunOutput::ok("")));
+    }
+
+    /// A local release list offering `NEW_VERSION`, its exe served from 127.0.0.1 through the updater's fake.
+    fn offer_new_version(&mut self) {
+        let base = "http://127.0.0.1:9/";
+        let assets: Vec<Value> = [format!("streamloop-v{NEW_VERSION}.zip"), format!("streamloop-v{NEW_VERSION}.exe"), format!("streamloop-v{NEW_VERSION}.exe.sha256")]
+            .into_iter()
+            .map(|name| json!({ "name": name, "browser_download_url": format!("{base}{name}") }))
+            .collect();
+        let list = json!([{ "tag_name": format!("v{NEW_VERSION}"), "draft": false, "prerelease": true, "html_url": "", "assets": assets }]);
+        let file = self.root.parent().unwrap().join("releases.json");
+        std::fs::write(&file, list.to_string()).unwrap();
+        self.vars.test_releases = Some(file);
+        self.updater_http.respond(&format!("{base}streamloop-v{NEW_VERSION}.exe"), 200, NEW_EXE);
+        let checksum = format!("{}  streamloop-v{NEW_VERSION}.exe", sha256_hex(NEW_EXE.as_bytes()));
+        self.updater_http.respond(&format!("{base}streamloop-v{NEW_VERSION}.exe.sha256"), 200, &checksum);
+        self.from_exe = true;
+    }
+
+    async fn get(&self, path: &str) -> Value {
+        json_of(reqwest::get(self.url(path)).await.unwrap()).await
     }
 
     async fn start(&self) -> App {
@@ -313,7 +386,7 @@ fn a_node_modules_junction_goes_and_its_target_stays() {
     assert!(made.status.success(), "mklink /J failed");
 
     // Act
-    app::remove_3_0_leftovers(&layout);
+    remove_3_0_leftovers(&layout);
 
     // Assert
     assert!(std::fs::symlink_metadata(&link).is_err(), "the junction is gone");
@@ -418,4 +491,143 @@ fn an_unknown_argument_returns_64() {
 
     // Assert
     assert_eq!(code, 64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_landing_is_confirmed_by_the_check_and_stays_held() {
+    // Arrange: landed while the stream waited for Start, no supervisor, and a launch would spawn
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.set_status(None);
+    rig.landed(VERSION, false, true);
+    rig.runner.push(Ok(RunOutput::ok("ok")));
+    rig.launchable();
+
+    // Act
+    let app = rig.start().await;
+    rig.wait_until("the update is confirmed", || !rig.layout().landed.exists()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Assert
+    assert_eq!(rig.runner.calls()[0].args, ["check", "--root", &rig.root.to_string_lossy()], "the check confirmed it");
+    assert!(rig.spawner.0.lock().unwrap().is_empty(), "nothing is launched");
+    assert!(rig.layout().waiting_for_start.exists(), "the stream still waits for Start");
+    assert_eq!(rig.get("/api/status").await["launcher"], "ready");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_on_air_landing_is_not_held_once_confirmed() {
+    // Arrange: the new supervisor answers with this version
+    let rig = Rig::new("PLrealplaylist001");
+    rig.landed(VERSION, false, false);
+
+    // Act
+    let app = rig.start().await;
+    rig.wait_until("the update is confirmed", || !rig.layout().landed.exists()).await;
+
+    // Assert
+    assert!(!rig.layout().waiting_for_start.exists());
+    assert_eq!(rig.get("/api/status").await["launcher"], "running");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_landing_that_never_swapped_lets_go_of_the_start_hold() {
+    // Arrange: a landing of another version cut off before its renames, after the supervisor had stopped
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.set_status(None);
+    rig.landed(NEW_VERSION, false, false);
+    rig.launchable();
+
+    // Act
+    let app = rig.start().await;
+    rig.wait_until("the supervisor is launched", || !rig.spawner.0.lock().unwrap().is_empty()).await;
+
+    // Assert
+    assert!(!rig.layout().landed.exists());
+    assert!(!rig.layout().waiting_for_start.exists());
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn during_a_confirmation_update_now_is_refused_and_a_check_stages_nothing() {
+    // Arrange: an install with a newer release offered, and a confirmation that waits for a supervisor
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.offer_new_version();
+    rig.sup.set_status(None);
+    rig.landed(VERSION, true, false);
+    let app = rig.start().await;
+
+    // Act
+    let applied = rig.post("/api/update/apply", json!({})).await;
+    let applied_status = applied.status();
+    let applied = json_of(applied).await;
+    let checked = json_of(rig.post("/api/update/check", json!({})).await).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Assert
+    assert_eq!(applied_status, 409);
+    assert_eq!(applied, json!({ "error": "An update is running. Try again when it is done." }));
+    assert_eq!((checked["updateAvailable"].clone(), checked["latestVersion"].clone()), (json!(false), Value::Null), "the check did not run");
+    assert!(rig.updater_http.requests().is_empty(), "nothing was downloaded");
+    assert!(!rig.layout().staged_exe.exists());
+    assert!(rig.layout().landed.exists(), "still confirming");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_now_on_a_first_run_installs_without_starting_a_supervisor() {
+    // Arrange: an install with only the example's playlist, the new exe staged, and a launch that would spawn
+    let mut rig = Rig::new("PLxxxxxxxxxxxxxxxx");
+    rig.offer_new_version();
+    rig.sup.set_status(None);
+    rig.runner.push(Ok(RunOutput::ok(&format!("{NEW_VERSION}\r\n"))));
+    rig.launchable();
+    let app = rig.start().await;
+    let checked = json_of(rig.post("/api/update/check", json!({})).await).await;
+    rig.wait_until("the exe is staged", || rig.layout().staged_exe.exists()).await;
+
+    // Act
+    let applied = rig.post("/api/update/apply", json!({})).await;
+    let code = exit_code(app).await;
+
+    // Assert
+    assert_eq!(checked["updateAvailable"], true);
+    assert_eq!(applied.status(), 200);
+    assert_eq!(code, 75);
+    assert_eq!(std::fs::read(rig.layout().exe).unwrap(), NEW_EXE.as_bytes());
+    let record = LandedRecord::read(&rig.layout().landed).expect("the landing left its record");
+    assert!(record.held, "a first run counts as held, so the next start confirms with the check");
+    assert!(rig.spawner.0.lock().unwrap().is_empty(), "no supervisor is started");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ctrl_c_during_the_start_ends_the_process_with_0_once_it_is_up() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+    rig.stop.send(()).unwrap();
+
+    // Act
+    let app = rig.start().await;
+    let code = exit_code(app).await;
+
+    // Assert
+    assert_eq!(code, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ctrl_c_after_a_restart_was_asked_keeps_75() {
+    // Arrange
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.vars.test_hooks = true;
+    let app = rig.start().await;
+    let reply = rig.post("/api/test/exit-75", json!({})).await;
+
+    // Act
+    rig.stop.send(()).unwrap();
+    let code = exit_code(app).await;
+
+    // Assert
+    assert_eq!(reply.status(), 200);
+    assert_eq!(code, 75);
 }

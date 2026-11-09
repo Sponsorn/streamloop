@@ -49,9 +49,9 @@ const FAKE_STATUS = {
   playlistCount: 5,
   tokenServer: { state: 'running', restarts: 0 },
 };
-/** The Rust control process replaces a supervisor that reports another version than its own, or none, as a
- *  3.0 one does. Its fake reports the exe's version, which `/api/status` passes through. */
-const statusFor = (version) => (version ? { ...FAKE_STATUS, version } : FAKE_STATUS);
+/** The fake reports the server's own version, as an R1 supervisor does: the Rust control process replaces one
+ *  that reports another version, or none. `/api/status` passes it through, normalised like every version. */
+const statusFor = (version) => ({ ...FAKE_STATUS, version });
 /** The fake refuses this index, to cover the 502 path of control and switch. */
 const REFUSED_INDEX = 777;
 
@@ -205,14 +205,11 @@ const isValidKey = (r) => r.method === 'POST' && r.path === '/api/stream-key' &&
 const isConfig400 = (x, y) => x.method === 'POST' && x.path === '/api/config' && x.status === 400 && y.status === 400;
 /** "a.b: why; c: why" as its field paths, the text before each ': '. */
 const fieldPaths = (error) => (typeof error === 'string' ? error.split('; ').map((part) => part.split(': ')[0]) : error);
-function withoutSupervisorVersion(response) {
-  if (!response?.supervisor || typeof response.supervisor !== 'object') return response;
-  const { version: _version, ...supervisor } = response.supervisor;
-  return { ...response, supervisor };
-}
+/** The body with its `error` reduced to field paths; every other key stays as it is. */
+const withFieldPaths = (response) => ({ ...response, error: fieldPaths(response?.error) });
 
 /** The differences the port is meant to have, each with the ruling behind it. `request` skips a request and
- *  the supervisor calls it caused; `response` maps both responses before they are compared. */
+ *  the supervisor calls it made; `response` maps both responses before they are compared. */
 export const EXPECTED = [
   {
     name: 'stream-key-protected-in-process',
@@ -222,28 +219,30 @@ export const EXPECTED = [
   {
     name: 'config-400-field-paths',
     why: 'Ruling 28: a config validation 400 is compared by its field paths, not its wording',
-    response: (x, y) => (isConfig400(x, y) ? [{ error: fieldPaths(x.response?.error) }, { error: fieldPaths(y.response?.error) }] : null),
-  },
-  {
-    name: 'supervisor-version-echo',
-    why: "the Rust run's fake supervisor reports the exe's version for the version rule, and /api/status passes it through",
-    response: (x, y, a, b) => (x.method === 'GET' && x.path === '/api/status' && (a.fakeSupervisorVersion || b.fakeSupervisorVersion)
-      ? [withoutSupervisorVersion(x.response), withoutSupervisorVersion(y.response)]
-      : null),
+    response: (x, y) => (isConfig400(x, y) ? [withFieldPaths(x.response), withFieldPaths(y.response)] : null),
   },
 ];
 
-/** The recording's supervisor calls without those of the skipped requests, where it says which request made them. */
+/** A recording without the supervisor calls of each request cannot drop a skipped request's calls. */
+function requireCallRanges(recording, side) {
+  const missing = recording.requests.findIndex((r) => !Array.isArray(r.supervisor));
+  if (missing >= 0) throw new Error(`${side} has no supervisor calls recorded for request #${missing}: record it again with this script`);
+}
+
+/** The recording's supervisor calls without those of the skipped requests. */
 function supervisorCalls(recording, skipped) {
   const drop = new Set();
   recording.requests.forEach((r, i) => {
-    if (skipped.has(i) && Array.isArray(r.supervisor)) for (let k = r.supervisor[0]; k < r.supervisor[1]; k += 1) drop.add(k);
+    if (skipped.has(i)) for (let k = r.supervisor[0]; k < r.supervisor[1]; k += 1) drop.add(k);
   });
   return recording.supervisorRequests.filter((_, k) => !drop.has(k));
 }
 
-/** The differing requests as text lines (empty when the recordings agree) and the named skips that applied. */
+/** The differing requests as text lines (empty when the recordings agree) and the named skips that applied.
+ *  Throws when either recording lacks the supervisor calls per request. */
 export function diffRecordings(a, b) {
+  requireCallRanges(a, 'A');
+  requireCallRanges(b, 'B');
   const lines = [];
   const applied = new Set();
   const skipped = new Set();
@@ -260,7 +259,7 @@ export function diffRecordings(a, b) {
     }
     let [rx, ry] = [x.response, y.response];
     for (const e of EXPECTED.filter((e) => e.response)) {
-      const mapped = e.response({ ...x, response: rx }, { ...y, response: ry }, a, b);
+      const mapped = e.response({ ...x, response: rx }, { ...y, response: ry });
       if (!mapped) continue;
       if (!same(rx, ry)) applied.add(e.name);
       [rx, ry] = mapped;
@@ -369,7 +368,9 @@ function launchServer(kind, root) {
 }
 
 const RUST_EXE = join(REPO, 'target', 'release', 'streamloop.exe');
-function rustVersion() {
+/** The version the server under test runs, which its fake supervisor reports. */
+function serverVersion(kind) {
+  if (kind === 'node') return JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
   if (!existsSync(RUST_EXE)) throw new Error(`${RUST_EXE} is missing: build it with cargo build --release`);
   return cp.execFileSync(RUST_EXE, ['--version'], { encoding: 'utf8', windowsHide: true }).trim();
 }
@@ -413,8 +414,7 @@ async function record(kind, out) {
   const root = join(tmpdir(), 'streamloop-api-parity');
   const received = [];
   const catcherCount = { n: 0 };
-  const fakeVersion = kind === 'rust' ? rustVersion() : null;
-  const fake = startFakeSupervisor(received, fakeVersion);
+  const fake = startFakeSupervisor(received, serverVersion(kind));
   const catcher = startCatcher(catcherCount);
   let child = null;
   live.servers = [fake, catcher];
@@ -456,7 +456,6 @@ async function record(kind, out) {
     // the shutdown was the last request: the server exits by itself
     await Promise.race([exited, sleep(10_000)]);
     const result = { server: kind, requests, supervisorRequests: received, catcherRequests: catcherCount.n };
-    if (fakeVersion) result.fakeSupervisorVersion = fakeVersion;
     mkdirSync(join(out, '..'), { recursive: true });
     writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
     return result;
@@ -476,7 +475,9 @@ function main() {
       .catch((e) => { console.error(e.message); process.exit(1); });
   } else if (cmd === 'compare' && args.length === 2) {
     const [a, b] = args.map((f) => JSON.parse(readFileSync(f, 'utf8')));
-    const { lines, skipped } = diffRecordings(a, b);
+    let diff;
+    try { diff = diffRecordings(a, b); } catch (e) { console.error(e.message); process.exit(2); }
+    const { lines, skipped } = diff;
     for (const e of skipped) console.log(`skipped by name: ${e.name} (${e.why})`);
     if (lines.length === 0) { console.log(`equal: ${a.requests.length} requests`); process.exit(0); }
     console.log(lines.join('\n'));

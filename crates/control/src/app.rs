@@ -2,12 +2,9 @@
 //! Node backend. This is `src/server/index.ts`: the wiring, the start order, a config save, the shutdown and
 //! the exit codes.
 
-use std::future::Future;
 use std::net::Ipv4Addr;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
@@ -25,11 +22,12 @@ use tokio::time::MissedTickBehavior;
 
 use crate::api::{self, AppDeps, AppState, ExeUpdates, Protect, RunSetupCheck, Updates};
 use crate::clock::{Clock, SystemClock};
-use crate::discord::{DiscordNotifier, EmbedField, Level, Notifier};
+use crate::discord::{CurrentNotifier, DiscordNotifier, Notifier};
 use crate::events::{launcher_event, with_playlist_names, Alert, AlertGate, SupervisorEvent, SupervisorEvents};
 use crate::http::{Http, ReqwestHttp};
 use crate::landing::{self, Confirmation, KillTree, LandedRecord, LandingDeps, LandingGate, PidOnPort, CONFIRM_WITHIN};
 use crate::launcher::{should_hold, Launcher, LauncherOptions, ProcessSpawner, Spawner, StartKind};
+use crate::leftovers::remove_3_0_leftovers;
 use crate::logging;
 use crate::playlists::PlaylistCache;
 use crate::runner::{ProcessRunner, RunSpec, Runner};
@@ -56,10 +54,6 @@ const OBSERVE_EVERY: Duration = Duration::from_secs(2);
 const NODE_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Node forced its exit this long after a shutdown that had not closed the server.
 const CLOSE_LIMIT: Duration = Duration::from_secs(5);
-/// Master's full update could leave a copy of each of these beside the install.
-const UPDATE_PARTS: [&str; 5] = ["node", "supervisor", "ffmpeg", "pot", "yt-dlp"];
-
-pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// What the environment says about this start. `STREAMLOOP_START` comes from START.bat; the rest are test
 /// switches for the dev machine, never set by `config.json` or a release.
@@ -112,11 +106,13 @@ pub struct Wiring {
     pub protect: Protect,
     pub setup_check: RunSetupCheck,
     pub open_admin: Arc<dyn Fn(&str) + Send + Sync>,
-    /// Ctrl+C or the console window closing.
-    pub stop_signal: BoxFuture<()>,
+    /// One message per Ctrl+C or console close, whenever it came; the first one after the start ends the process.
+    pub stop_signal: mpsc::UnboundedReceiver<()>,
 }
 
 impl Wiring {
+    /// The production wiring. Call it inside the runtime: it starts listening for Ctrl+C and the console
+    /// closing at once, and keeps listening until the runtime ends.
     pub fn real(root: Root) -> Wiring {
         let vars = EnvVars::from_env();
         let http: Arc<dyn Http> = Arc::new(ReqwestHttp::new());
@@ -190,47 +186,6 @@ fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// The notifier of the current config. A save builds a new one, and whatever holds this reaches it.
-#[derive(Clone)]
-struct CurrentNotifier(Arc<RwLock<Arc<dyn Notifier>>>);
-
-impl CurrentNotifier {
-    fn get(&self) -> Arc<dyn Notifier> {
-        read(&self.0).clone()
-    }
-
-    fn set(&self, next: Arc<dyn Notifier>) {
-        *write(&self.0) = next;
-    }
-}
-
-#[async_trait]
-impl Notifier for CurrentNotifier {
-    async fn notify_critical(&self, message: &str) {
-        self.get().notify_critical(message).await;
-    }
-
-    async fn notify_event(&self, alert: Alert) {
-        self.get().notify_event(alert).await;
-    }
-
-    async fn notify_twitch_mismatch(&self, channel: &str) {
-        self.get().notify_twitch_mismatch(channel).await;
-    }
-
-    async fn notify_twitch_restart(&self, channel: &str) {
-        self.get().notify_twitch_restart(channel).await;
-    }
-
-    async fn send(&self, content: &str, level: Level, fields: Option<Vec<EmbedField>>) {
-        self.get().send(content, level, fields).await;
-    }
-
-    async fn flush(&self) {
-        self.get().flush().await;
-    }
 }
 
 /// Turns supervisor and launcher events into timeline lines and Discord alerts. One gate for the process
@@ -319,8 +274,8 @@ impl TwitchParts {
     }
 }
 
-/// The routes' updater. While a landed update is being confirmed it neither checks nor installs, since the
-/// confirmation removes `_update\` and anything staged in it meanwhile.
+/// The routes' updater. During a confirmation an update counts as running (Update Now and the other changing
+/// routes answer 409) and a check changes nothing, since the confirmation removes `_update\` and what it holds.
 struct RouteUpdates {
     exe: ExeUpdates,
     confirming: Arc<AtomicBool>,
@@ -340,13 +295,10 @@ impl Updates for RouteUpdates {
     }
 
     fn landing_in_progress(&self) -> bool {
-        self.exe.landing_in_progress()
+        self.confirming.load(Ordering::SeqCst) || self.exe.landing_in_progress()
     }
 
     async fn land(&self) -> Result<(), String> {
-        if self.confirming.load(Ordering::SeqCst) {
-            return Err("The last update is still being confirmed.".into());
-        }
         self.exe.land().await
     }
 }
@@ -457,7 +409,8 @@ impl Control {
                         me.request_exit(EXIT_RESTART);
                         return;
                     }
-                    // A landing never changes whether the stream is held: one that was on air carries on.
+                    // The landed start held launches until now. A landing never changes whether the stream is
+                    // held: one that was on air carries on, and one that was held stays held.
                     Confirmation::Confirmed if !held && me.launcher.is_waiting_for_start() => me.launcher.release(),
                     Confirmation::Confirmed => {}
                 }
@@ -528,7 +481,7 @@ pub struct App {
     control: Arc<Control>,
     server: JoinHandle<()>,
     close: oneshot::Sender<()>,
-    stop_signal: BoxFuture<()>,
+    stop_signal: mpsc::UnboundedReceiver<()>,
 }
 
 impl App {
@@ -568,7 +521,10 @@ impl App {
         tracing::info!(port, "Server listening");
         tracing::info!("Admin URL: {admin_url}");
 
-        remove_3_0_leftovers(&layout);
+        let leftovers = layout.clone();
+        if let Err(err) = tokio::task::spawn_blocking(move || remove_3_0_leftovers(&leftovers)).await {
+            tracing::error!(%err, "Removing the 3.0 leftovers stopped");
+        }
         let landed = landed_record(&layout);
         landing::settle_unfinished_update(&layout, clock.as_ref(), VERSION);
 
@@ -589,16 +545,16 @@ impl App {
         let playlists = Arc::new(PlaylistCache::new(runner.clone(), layout.ytdlp.clone(), config.ytdl_cookies_from_browser.clone(), clock.clone()));
 
         let discord_parts = DiscordParts { uptime_ms: uptime_ms.clone(), admin_url: admin_url.clone(), http: http.clone(), clock: clock.clone() };
-        let notifier = CurrentNotifier(Arc::new(RwLock::new(discord_parts.build(&config))));
+        let notifier = CurrentNotifier::new(discord_parts.build(&config));
         let forwarding: Arc<dyn Notifier> = Arc::new(notifier.clone());
         let (alerts, alerts_rx) = mpsc::unbounded_channel();
         send_alerts(alerts_rx, forwarding.clone());
         let sink = Arc::new(EventSink { gate: Mutex::default(), config: shared.clone(), timeline: timeline.clone(), clock: clock.clone(), alerts });
 
+        // A landed update's start holds launches until its confirmation ends (a supervisor that answers is
+        // still attached); `confirm_then_watch_updates` lets go of the hold unless the stream was held before.
         let kind = start_kind(vars.start.as_deref(), landed.is_some());
-        // A landing made while the stream waited for Start keeps it waiting; a Stop keeps its own marker.
-        let start_held = landed.as_ref().is_some_and(|r| r.held && !layout.stopped_marker.exists());
-        let hold = should_hold(kind, config.auto_start_stream, layout.waiting_for_start.exists()) || start_held;
+        let hold = should_hold(kind, config.auto_start_stream, layout.waiting_for_start.exists());
         if hold {
             tracing::info!(start_kind = ?kind, "The stream waits for Start");
         }
@@ -627,7 +583,7 @@ impl App {
             layout: layout.clone(),
             releases_url: GITHUB_RELEASES_URL.to_string(),
             test_releases: vars.test_releases.clone(),
-            bundled_node: bundled_node(runner.as_ref(), &layout.node).await,
+            bundled_node: None,
             policy: vars.policy,
         });
         let landing = Arc::new(LandingDeps {
@@ -641,6 +597,10 @@ impl App {
             runner: runner.clone(),
             kill_tree,
             pid_on_port,
+            first_run: {
+                let config = shared.clone();
+                Arc::new(move || is_first_run(&read(&config)))
+            },
             gate: LandingGate::default(),
         });
 
@@ -664,7 +624,7 @@ impl App {
             config: shared.clone(),
             clock,
             launcher: launcher.clone(),
-            updater,
+            updater: updater.clone(),
             landing: landing.clone(),
             timeline: timeline.clone(),
             sink,
@@ -717,6 +677,7 @@ impl App {
         });
         let (close, closed) = oneshot::channel();
         let server = tokio::spawn(serve_api(listener, api::router(Arc::new(state)), closed));
+        tell_bundled_node(runner.clone(), layout.node.clone(), updater);
 
         control.confirm_then_watch_updates(landed);
         control.start_services();
@@ -737,10 +698,10 @@ impl App {
     /// Runs until Ctrl+C, the console closing, `/api/shutdown` (0), or a landed update, a rollback or the
     /// test hook (75). Stops the control process's own timers and closes the server; the stream keeps running.
     pub async fn wait(self) -> i32 {
-        let App { control, server, close, stop_signal } = self;
+        let App { control, server, close, mut stop_signal } = self;
         let code = tokio::select! {
             code = control.exit.wait() => code,
-            () = stop_signal => {
+            Some(()) = stop_signal.recv() => {
                 control.request_exit(EXIT_OK);
                 control.exit.wait().await
             }
@@ -788,7 +749,7 @@ pub fn run(args: Vec<String>) -> i32 {
         }
     };
     let code = runtime.block_on(async move { serve(Wiring::real(root)).await });
-    // Whatever is still running (a landing cut off by Ctrl+C, a Discord post) ends with the process.
+    // Whatever still runs (the Ctrl+C listeners, a landing cut off by Ctrl+C, a Discord post) ends here.
     runtime.shutdown_background();
     code
 }
@@ -857,50 +818,6 @@ fn landed_record(layout: &Layout) -> Option<LandedRecord> {
     record
 }
 
-/// What 3.0 left in the install that 3.1 no longer uses, by name: the Node app, the old supervisor exe and
-/// the leftovers of 3.0's update swaps. `app\config.json`, `app\logs`, `data\` and `_update\` stay.
-pub fn remove_3_0_leftovers(layout: &Layout) {
-    let root = &layout.root;
-    let app = &layout.app_dir;
-    let mut paths = vec![
-        app.join("src"),
-        app.join("node_modules"),
-        app.join("package.json"),
-        app.join("package-lock.json"),
-        app.join("tsconfig.json"),
-        app.join("node-version.txt"),
-        root.join("supervisor").join("streamloop-supervisor.exe"),
-        root.join("_update_tmp"),
-        root.join("_update_old"),
-        root.join("START.bat.new"),
-        root.join("_apply_launcher.bat"),
-        root.join("_update_bad_app"),
-        layout.data.join("update-swapping"),
-        layout.data.join("update-checking"),
-        layout.data.join("update-swap.log"),
-    ];
-    for part in UPDATE_PARTS {
-        paths.push(root.join(format!("_update_old_{part}")));
-        paths.push(root.join(format!("_update_bad_{part}")));
-    }
-    for path in paths {
-        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-        let kind = meta.file_type();
-        let removed = if kind.is_symlink() {
-            // A link (a dev junction for node_modules) goes as a link; its target is left alone.
-            std::fs::remove_dir(&path).or_else(|_| std::fs::remove_file(&path))
-        } else if kind.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match removed {
-            Ok(()) => tracing::info!(path = %path.display(), "Removed a 3.0 leftover"),
-            Err(err) => tracing::warn!(path = %path.display(), %err, "Could not remove a 3.0 leftover"),
-        }
-    }
-}
-
 fn launch_guard(
     layout: &Layout,
     runner: Arc<dyn Runner>,
@@ -935,23 +852,27 @@ fn save_encoders(config: &RwLock<Config>, path: &Path, encoder: Encoder, preferr
     Ok(())
 }
 
-/// `node\node.exe --version`, which the updater compares with a release's `node-version.txt`.
-async fn bundled_node(runner: &dyn Runner, node: &Path) -> Option<String> {
-    if !node.is_file() {
-        return None;
-    }
-    let program = node.to_string_lossy();
-    match runner.run(RunSpec::new(&program, &["--version"], NODE_VERSION_TIMEOUT)).await {
-        Ok(out) if out.code == Some(0) => Some(out.stdout_text().trim().to_string()),
-        Ok(out) => {
-            tracing::warn!(code = ?out.code, "node --version failed");
-            None
+/// Runs `node\node.exe --version` in the background and gives the result to the updater, which compares it
+/// with a release's `node-version.txt`.
+fn tell_bundled_node(runner: Arc<dyn Runner>, node: PathBuf, updater: Updater) {
+    tokio::spawn(async move {
+        if !node.is_file() {
+            return;
         }
-        Err(err) => {
-            tracing::warn!(%err, "node --version failed");
-            None
-        }
-    }
+        let program = node.to_string_lossy().into_owned();
+        let printed = match runner.run(RunSpec::new(&program, &["--version"], NODE_VERSION_TIMEOUT)).await {
+            Ok(out) if out.code == Some(0) => Some(out.stdout_text().trim().to_string()),
+            Ok(out) => {
+                tracing::warn!(code = ?out.code, "node --version failed");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(%err, "node --version failed");
+                None
+            }
+        };
+        updater.set_bundled_node(printed.as_deref());
+    });
 }
 
 /// An outdated yt-dlp can stop after the first page of a playlist, so it updates itself at every start.
@@ -972,6 +893,7 @@ fn update_ytdlp_in_background(runner: Arc<dyn Runner>, ytdlp: PathBuf, playlists
 fn open_in_browser(url: &str) {
     #[cfg(windows)]
     {
+        use std::process::Stdio;
         let mut cmd = streamloop_common::procs::command("cmd.exe");
         cmd.args(["/c", "start", "", url]).stdout(Stdio::null()).stderr(Stdio::null());
         if let Err(err) = cmd.spawn() {
@@ -979,34 +901,43 @@ fn open_in_browser(url: &str) {
         }
     }
     #[cfg(not(windows))]
-    {
-        let _ = (url, Stdio::null());
-    }
+    let _ = url;
 }
 
-/// Ctrl+C or the console window closing. Windows ends the process a few seconds after a close; until then
-/// tokio's handler holds it, so the timers stop and the exit code is 0.
-fn console_stop() -> BoxFuture<()> {
-    async fn ctrl_c() {
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
+/// Ctrl+C and the console closing, from now until the runtime ends, so neither reaches Windows' default handler
+/// (an exit START.bat reads as a crash). After a close, tokio's handler holds the process until it exits 0.
+fn console_stop() -> mpsc::UnboundedReceiver<()> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+        match windows::ctrl_c() {
+            Ok(mut ctrl_c) => {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    while ctrl_c.recv().await.is_some() {
+                        let _ = tx.send(());
+                    }
+                });
+            }
+            Err(err) => tracing::warn!(%err, "Ctrl+C will not stop StreamLoop cleanly"),
+        }
+        match windows::ctrl_close() {
+            Ok(mut close) => {
+                tokio::spawn(async move {
+                    while close.recv().await.is_some() {
+                        let _ = tx.send(());
+                    }
+                });
+            }
+            Err(err) => tracing::warn!(%err, "Closing the console window will not stop StreamLoop cleanly"),
         }
     }
-    Box::pin(async {
-        #[cfg(windows)]
-        match tokio::signal::windows::ctrl_close() {
-            Ok(mut close) => {
-                tokio::select! {
-                    () = ctrl_c() => {}
-                    _ = close.recv() => {}
-                }
-            }
-            Err(err) => {
-                tracing::warn!(%err, "Closing the console window will not stop StreamLoop cleanly");
-                ctrl_c().await;
-            }
+    #[cfg(not(windows))]
+    tokio::spawn(async move {
+        while tokio::signal::ctrl_c().await.is_ok() {
+            let _ = tx.send(());
         }
-        #[cfg(not(windows))]
-        ctrl_c().await;
-    })
+    });
+    rx
 }

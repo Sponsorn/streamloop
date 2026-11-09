@@ -109,6 +109,8 @@ pub struct LandingDeps {
     pub runner: Arc<dyn Runner>,
     pub kill_tree: KillTree,
     pub pid_on_port: PidOnPort,
+    /// A first run (no playlist saved yet) counts as held: nothing is launched, and the check confirms the update.
+    pub first_run: Arc<dyn Fn() -> bool + Send + Sync>,
     pub gate: LandingGate,
 }
 
@@ -409,7 +411,7 @@ impl<'a> Landing<'a> {
         if deps.updater.staged_version().is_none() {
             self.stage_first().await?;
         }
-        self.held = deps.launcher.is_stopped_by_user() || deps.launcher.is_waiting_for_start();
+        self.held = deps.launcher.is_stopped_by_user() || deps.launcher.is_waiting_for_start() || (deps.first_run)();
 
         deps.gate.in_progress.store(true, Ordering::SeqCst);
         // `ready` refuses new checks and stages; one that began before it is waited for.

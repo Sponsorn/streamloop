@@ -6,6 +6,7 @@ pub mod events;
 pub mod http;
 pub mod landing;
 pub mod launcher;
+pub mod leftovers;
 pub mod logging;
 pub mod playlists;
 pub mod readback;

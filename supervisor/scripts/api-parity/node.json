@@ -9,7 +9,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "token": "<token>"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -60,7 +64,8 @@
           "tokenServer": {
             "state": "running",
             "restarts": 0
-          }
+          },
+          "version": "<version>"
         },
         "launcher": "running",
         "twitch": {
@@ -81,7 +86,11 @@
         "firstRun": false,
         "systemMemory": "<memory>",
         "uptimeMs": "<ms>"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -96,7 +105,11 @@
         "position": 12.5,
         "duration": 300,
         "source": "file"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -113,6 +126,10 @@
           "timestamp": "<time>",
           "message": "Seeded timeline entry two"
         }
+      ],
+      "supervisor": [
+        0,
+        0
       ]
     },
     {
@@ -184,7 +201,11 @@
         "twitchLivenessEnabled": false,
         "twitchPollIntervalMs": 60000,
         "ytdlCookiesFromBrowser": ""
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -245,7 +266,11 @@
             "channel"
           ]
         }
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -267,7 +292,11 @@
         "downloadPercent": null,
         "progress": null,
         "swapLog": []
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -297,7 +326,11 @@
             "path": "ffmpeg\\ffmpeg.exe"
           }
         ]
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -336,6 +369,10 @@
           "mtime": "<time>",
           "source": "node"
         }
+      ],
+      "supervisor": [
+        0,
+        0
       ]
     },
     {
@@ -344,7 +381,11 @@
       "request": null,
       "status": 200,
       "contentType": "text/plain; charset=utf-8",
-      "response": "2026-01-01 00:00:00.000 INFO  Starting StreamLoop\n2026-01-01 00:00:01.000 INFO  Server listening\n"
+      "response": "2026-01-01 00:00:00.000 INFO  Starting StreamLoop\n2026-01-01 00:00:01.000 INFO  Server listening\n",
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -352,7 +393,11 @@
       "request": null,
       "status": 200,
       "contentType": "text/plain; charset=utf-8",
-      "response": "wallMs,videoNumber,id\n1000,1,abc123XYZ_-\n2000,2,def456UVW_-\n"
+      "response": "wallMs,videoNumber,id\n1000,1,abc123XYZ_-\n2000,2,def456UVW_-\n",
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -360,7 +405,11 @@
       "request": null,
       "status": 200,
       "contentType": "text/plain; charset=utf-8",
-      "response": "{\"t\":\"2026-01-01T00:00:00Z\",\"kind\":\"started\"}\n{\"t\":\"2026-01-01T00:00:05Z\",\"kind\":\"seam\"}\n"
+      "response": "{\"t\":\"2026-01-01T00:00:00Z\",\"kind\":\"started\"}\n{\"t\":\"2026-01-01T00:00:05Z\",\"kind\":\"seam\"}\n",
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -370,7 +419,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Log file not found"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -380,7 +433,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid log file name"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -390,7 +447,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid log file name"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "GET",
@@ -400,7 +461,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Unknown log source"
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "POST",
@@ -410,7 +475,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        0,
+        0
+      ]
     },
     {
       "method": "POST",
@@ -496,7 +565,11 @@
         "restartRequired": false,
         "reloadError": null,
         "reloadErrorCode": null
-      }
+      },
+      "supervisor": [
+        0,
+        1
+      ]
     },
     {
       "method": "POST",
@@ -578,7 +651,11 @@
         "restartRequired": false,
         "reloadError": null,
         "reloadErrorCode": null
-      }
+      },
+      "supervisor": [
+        1,
+        2
+      ]
     },
     {
       "method": "POST",
@@ -592,7 +669,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "supervisor.cacheBudgetMb: Too small: expected number to be >=50"
-      }
+      },
+      "supervisor": [
+        2,
+        2
+      ]
     },
     {
       "method": "POST",
@@ -604,7 +685,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "\"yt-dlp cookies from browser\" is longer than 200 characters."
-      }
+      },
+      "supervisor": [
+        2,
+        2
+      ]
     },
     {
       "method": "POST",
@@ -616,7 +701,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "\"yt-dlp cookies from browser\" contains a control character."
-      }
+      },
+      "supervisor": [
+        2,
+        2
+      ]
     },
     {
       "method": "POST",
@@ -696,7 +785,11 @@
         "restartRequired": false,
         "reloadError": null,
         "reloadErrorCode": null
-      }
+      },
+      "supervisor": [
+        2,
+        3
+      ]
     },
     {
       "method": "POST",
@@ -706,7 +799,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid JSON"
-      }
+      },
+      "supervisor": [
+        3,
+        3
+      ]
     },
     {
       "method": "POST",
@@ -788,7 +885,11 @@
         "restartRequired": false,
         "reloadError": null,
         "reloadErrorCode": null
-      }
+      },
+      "supervisor": [
+        3,
+        4
+      ]
     },
     {
       "method": "GET",
@@ -860,7 +961,11 @@
         "twitchLivenessEnabled": false,
         "twitchPollIntervalMs": 60000,
         "ytdlCookiesFromBrowser": "firefox:default"
-      }
+      },
+      "supervisor": [
+        4,
+        4
+      ]
     },
     {
       "method": "POST",
@@ -870,7 +975,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "No Discord webhook URL configured"
-      }
+      },
+      "supervisor": [
+        4,
+        4
+      ]
     },
     {
       "method": "POST",
@@ -880,7 +989,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid JSON"
-      }
+      },
+      "supervisor": [
+        4,
+        4
+      ]
     },
     {
       "method": "POST",
@@ -892,7 +1005,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "No stream key given"
-      }
+      },
+      "supervisor": [
+        4,
+        4
+      ]
     },
     {
       "method": "POST",
@@ -902,7 +1019,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "No stream key given"
-      }
+      },
+      "supervisor": [
+        4,
+        4
+      ]
     },
     {
       "method": "POST",
@@ -914,7 +1035,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP."
-      }
+      },
+      "supervisor": [
+        4,
+        4
+      ]
     },
     {
       "method": "POST",
@@ -924,7 +1049,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        4,
+        5
+      ]
     },
     {
       "method": "POST",
@@ -934,7 +1063,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        5,
+        6
+      ]
     },
     {
       "method": "POST",
@@ -944,7 +1077,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        6,
+        7
+      ]
     },
     {
       "method": "POST",
@@ -956,7 +1093,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        7,
+        8
+      ]
     },
     {
       "method": "POST",
@@ -969,7 +1110,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        8,
+        9
+      ]
     },
     {
       "method": "POST",
@@ -981,7 +1126,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "The supervisor refused: index out of range"
-      }
+      },
+      "supervisor": [
+        9,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -993,7 +1142,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video index"
-      }
+      },
+      "supervisor": [
+        10,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -1005,7 +1158,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video index"
-      }
+      },
+      "supervisor": [
+        10,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -1017,7 +1174,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video index"
-      }
+      },
+      "supervisor": [
+        10,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -1029,7 +1190,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video index"
-      }
+      },
+      "supervisor": [
+        10,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -1042,7 +1207,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video id"
-      }
+      },
+      "supervisor": [
+        10,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -1055,7 +1224,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video id"
-      }
+      },
+      "supervisor": [
+        10,
+        10
+      ]
     },
     {
       "method": "POST",
@@ -1066,6 +1239,10 @@
       "response": {
         "error": "Invalid video index"
       },
+      "supervisor": [
+        10,
+        10
+      ],
       "requestContentType": "text/plain"
     },
     {
@@ -1078,7 +1255,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        10,
+        11
+      ]
     },
     {
       "method": "POST",
@@ -1092,7 +1273,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        11,
+        12
+      ]
     },
     {
       "method": "POST",
@@ -1105,7 +1290,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "The supervisor refused: index out of range"
-      }
+      },
+      "supervisor": [
+        12,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1117,7 +1306,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1129,7 +1322,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1141,7 +1338,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1154,7 +1355,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1167,7 +1372,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1180,7 +1389,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid video id"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "GET",
@@ -1190,7 +1403,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "GET",
@@ -1200,7 +1417,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "GET",
@@ -1210,7 +1431,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "GET",
@@ -1220,7 +1445,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "Invalid playlist index"
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1231,6 +1460,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1242,6 +1475,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1253,6 +1490,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1264,6 +1505,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1275,6 +1520,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1286,6 +1535,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1297,6 +1550,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1308,6 +1565,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1319,6 +1580,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1330,6 +1595,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1341,6 +1610,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1352,6 +1625,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1363,6 +1640,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1374,6 +1655,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1385,6 +1670,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1396,6 +1685,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1407,6 +1700,10 @@
       "response": {
         "error": "Forbidden: invalid API token"
       },
+      "supervisor": [
+        13,
+        13
+      ],
       "token": false
     },
     {
@@ -1418,7 +1715,11 @@
       "response": {
         "sha256": "00625e339ae7268e1386785decdff06a47d64b73f2e3f0147f5faea17abd0f5e",
         "length": 159
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1429,7 +1730,11 @@
       "response": {
         "sha256": "d57d52688e696b46fe28fb06be5ae67a60613a7212beb3c9a5d304f45fb14974",
         "length": 161
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1440,7 +1745,11 @@
       "response": {
         "sha256": "4942f647af8f0c91d3c1a51234daa7d68f246abb4d7da6623e4006b28c1a88d2",
         "length": 155
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1451,7 +1760,11 @@
       "response": {
         "sha256": "273e1aee42af430d47f72cfc00f5c741e48ccd3ece2b6c5b8cc52f8fb81e0670",
         "length": 156
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1462,7 +1775,11 @@
       "response": {
         "sha256": "8633c6dc60f35ae6785dad654d86e9cade4bafeca6f9c9f811ba69ec4b7aff27",
         "length": 157
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1473,7 +1790,11 @@
       "response": {
         "sha256": "4efed0cf664760909cbd9b89cf9c015f83d157fc404aedfa89ac1a336ed29ae8",
         "length": 162
-      }
+      },
+      "supervisor": [
+        13,
+        13
+      ]
     },
     {
       "method": "POST",
@@ -1483,7 +1804,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        13,
+        14
+      ]
     },
     {
       "method": "GET",
@@ -1534,7 +1859,8 @@
           "tokenServer": {
             "state": "running",
             "restarts": 0
-          }
+          },
+          "version": "<version>"
         },
         "launcher": "running",
         "twitch": {
@@ -1555,7 +1881,11 @@
         "firstRun": false,
         "systemMemory": "<memory>",
         "uptimeMs": "<ms>"
-      }
+      },
+      "supervisor": [
+        14,
+        14
+      ]
     },
     {
       "method": "POST",
@@ -1565,7 +1895,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "The stream is stopped. Start it first."
-      }
+      },
+      "supervisor": [
+        14,
+        14
+      ]
     },
     {
       "method": "POST",
@@ -1577,7 +1911,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "error": "The stream is stopped. Start it first."
-      }
+      },
+      "supervisor": [
+        14,
+        14
+      ]
     },
     {
       "method": "POST",
@@ -1587,7 +1925,11 @@
       "contentType": "application/json; charset=utf-8",
       "response": {
         "ok": true
-      }
+      },
+      "supervisor": [
+        14,
+        14
+      ]
     },
     {
       "method": "POST",
@@ -1598,7 +1940,11 @@
       "response": {
         "ok": true,
         "message": "Shutting down..."
-      }
+      },
+      "supervisor": [
+        14,
+        14
+      ]
     }
   ],
   "supervisorRequests": [

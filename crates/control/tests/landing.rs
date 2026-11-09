@@ -273,6 +273,7 @@ fn rig(version: &str, exe_bytes: &[u8], runner: Arc<FakeRunner>, hold_for_start:
             kill_sup.answer(None);
         }),
         pid_on_port: Arc::new(move |port| (port == 4417 && port_sup.answering()).then_some(PID)),
+        first_run: Arc::new(|| false),
         gate: LandingGate::default(),
     };
     Rig { deps, sup, spawns, kills, posts, http, runner, clock, layout, _dir: dir }

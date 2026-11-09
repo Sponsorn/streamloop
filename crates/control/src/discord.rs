@@ -458,6 +458,51 @@ impl Notifier for DiscordNotifier {
     }
 }
 
+/// The notifier of the current config. A config save sets a new one, and whatever holds this reaches it.
+#[derive(Clone)]
+pub struct CurrentNotifier(Arc<std::sync::RwLock<Arc<dyn Notifier>>>);
+
+impl CurrentNotifier {
+    pub fn new(first: Arc<dyn Notifier>) -> Self {
+        Self(Arc::new(std::sync::RwLock::new(first)))
+    }
+
+    pub fn get(&self) -> Arc<dyn Notifier> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set(&self, next: Arc<dyn Notifier>) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = next;
+    }
+}
+
+#[async_trait]
+impl Notifier for CurrentNotifier {
+    async fn notify_critical(&self, message: &str) {
+        self.get().notify_critical(message).await;
+    }
+
+    async fn notify_event(&self, alert: Alert) {
+        self.get().notify_event(alert).await;
+    }
+
+    async fn notify_twitch_mismatch(&self, channel: &str) {
+        self.get().notify_twitch_mismatch(channel).await;
+    }
+
+    async fn notify_twitch_restart(&self, channel: &str) {
+        self.get().notify_twitch_restart(channel).await;
+    }
+
+    async fn send(&self, content: &str, level: Level, fields: Option<Vec<EmbedField>>) {
+        self.get().send(content, level, fields).await;
+    }
+
+    async fn flush(&self) {
+        self.get().flush().await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
