@@ -7,9 +7,9 @@
 // update:    v3.0.4's full ZIP from dist\, updating from GitHub's real release list (app only).
 // The releases for dev and the full runs come from `node supervisor/scripts/update-session.mjs build`.
 // The install goes to %TEMP%\sl3 ui Ö\ and is started from its own START.bat, hidden. The session
-// holds until supervisor\results\ui-<mode>\stop exists or Ctrl+C, then stops everything it started,
-// removes the install and lists what is still running.
-import { createReadStream, existsSync, readFileSync, statSync, writeFileSync, appendFileSync, copyFileSync } from 'node:fs';
+// holds until supervisor\results\ui-<mode>\stop exists or Ctrl+C (a `restart` file there starts
+// START.bat again), then stops everything it started, removes the install and lists what still runs.
+import { createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync, copyFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +51,8 @@ const ZIP = MODE === 'update' ? OLD_ZIP : join(SERVE, 'n', `streamloop-v${N}.zip
 
 const OUT = join(REPO, 'supervisor', 'results', `ui-${MODE}`);
 const STOP = join(OUT, 'stop');
+const RESTART = join(OUT, 'restart');
+const STARTUP_VBS = join(process.env.APPDATA ?? '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'StreamLoop.vbs');
 const S = join(tmpdir(), 'sl3 ui Ö');
 const ROOT = join(S, 'streamloop');
 const IN_TEMP = tempFolders(['sl3 ui ']);
@@ -158,11 +160,23 @@ console.log([
   `  Stream key:  ${KEY}   (a dummy key for local MediaMTX)`,
   `  Playlists:   ${PLAYLIST}   and   ${SECOND_PLAYLIST}`,
   `  Webhook URL: ${WEBHOOK}   (posts land in ${join(OUT, 'catcher.jsonl')})`,
+  `  Restart:     after Shut down (START.bat stays down on exit 0), create ${RESTART}`,
   `  Stop:        create ${STOP}, or press Ctrl+C`,
   '',
 ].join('\n'));
 
-while (!existsSync(STOP)) await sleep(2000);
+while (!existsSync(STOP)) {
+  if (existsSync(RESTART)) {
+    rmSync(RESTART, { force: true });
+    if (bat.exitCode === null) {
+      note('restart file ignored: START.bat is still running');
+    } else {
+      bat = startBat(ROOT, `${MODE}-restart`, env);
+      await nodeUp(`${MODE} restart`);
+    }
+  }
+  await sleep(2000);
+}
 note('stop file found');
 await teardown();
 process.exit(0);
@@ -178,6 +192,11 @@ async function teardown() {
   note('sweep', await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') }));
   if (mediamtx && mediamtx.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(mediamtx.pid)]);
   for (const s of servers) s.close();
+  // Autostart turned on from the app points the user's Startup folder at this temp install.
+  if (existsSync(STARTUP_VBS) && readFileSync(STARTUP_VBS, 'utf16le').includes(ROOT)) {
+    rmSync(STARTUP_VBS, { force: true });
+    note('removed StreamLoop.vbs from the Startup folder: it started this temp install');
+  }
   const names = ['node.exe', 'streamloop-supervisor.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'streamloop-ui.exe', 'cmd.exe'];
   const left = (await allProcesses())
     .filter((p) => names.includes(String(p.Name).toLowerCase()) && p.ProcessId !== process.pid)
