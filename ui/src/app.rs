@@ -6,9 +6,9 @@ use std::time::Duration;
 use gpui::{
     AnyWindowHandle, App, AppContext, AsyncApp, Context, Entity, FocusHandle, FontWeight,
     IntoElement, PromptButton, PromptLevel, Render, SharedString, Subscription, Task, WeakEntity,
-    Window, div, prelude::*, px, rgb,
+    Window, div, prelude::*, px, relative, rgb,
 };
-use gpui_kit::component::label::Label;
+use gpui_kit::{base::TestSupportExt, component::label::Label};
 
 use crate::{
     api::{
@@ -21,6 +21,7 @@ use crate::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
         TOAST_SUCCESS_BG, TOAST_SUCCESS_BORDER,
     },
+    widgets::PAGE_LINE_HEIGHT,
     wizard::WizardView,
 };
 
@@ -355,10 +356,13 @@ impl AppView {
         });
     }
 
+    /// admin.css `.toast-container`: top right.
     fn render_toasts(&self) -> impl IntoElement {
         div()
+            .id("toasts")
+            .test_support()
             .absolute()
-            .bottom(px(16.))
+            .top(px(16.))
             .right(px(16.))
             .max_w(px(380.))
             .flex()
@@ -436,6 +440,7 @@ fn connecting() -> impl IntoElement {
         .child(
             Label::new(CONNECTING_TITLE)
                 .text_size(px(28.))
+                .line_height(relative(PAGE_LINE_HEIGHT))
                 .font_weight(FontWeight::SEMIBOLD),
         )
         .child(Label::new(CONNECTING_HINT).text_color(rgb(MUTED)))
@@ -561,6 +566,21 @@ mod tests {
         assert!(shows(cx, window, "Saved."));
         cx.executor().advance_clock(Duration::from_millis(200));
         assert!(!shows(cx, window, "Saved."));
+    }
+
+    #[gpui::test]
+    fn toasts_show_top_right(cx: &mut TestAppContext) {
+        let (app, window) = open_app(cx, FakeApi::new());
+
+        app.update(cx, |app, cx| app.toast("Saved.", ToastKind::Success, cx));
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let toasts = window.find("toasts").bounds();
+            assert_eq!(toasts.top(), px(16.));
+            assert_eq!(toasts.right(), window.viewport_size().width - px(16.));
+        })
+        .unwrap();
     }
 
     #[gpui::test]

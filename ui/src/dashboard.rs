@@ -2,7 +2,7 @@
 
 use gpui::{
     AnyView, App, AppContext, Context, Entity, FontWeight, Hsla, IntoElement, Render, ScrollHandle,
-    Window, div, prelude::*, px, rgb, transparent_black,
+    Window, div, prelude::*, px, relative, rgb, transparent_black,
 };
 use gpui_kit::component::{
     Selectable,
@@ -20,7 +20,7 @@ use crate::{
     theme::{BORDER, MAX_WIDTH, MUTED, RED, SURFACE, SURFACE_HOVER, TEXT, WHITE},
     update::UpdateFlow,
     webhooks::WebhooksView,
-    widgets::{FollowFocus, Followed, reveal_on_focus},
+    widgets::{FollowFocus, Followed, PAGE_LINE_HEIGHT, reveal_on_focus},
 };
 
 const LOST_TEXT: &str = "Can't reach the server. The dashboard may be out of date.";
@@ -274,6 +274,7 @@ impl DashboardView {
             .child(
                 Label::new("StreamLoop")
                     .text_size(px(20.))
+                    .line_height(relative(PAGE_LINE_HEIGHT))
                     .font_weight(FontWeight::SEMIBOLD),
             )
             .children(self.uptime_ms.map(|ms| {

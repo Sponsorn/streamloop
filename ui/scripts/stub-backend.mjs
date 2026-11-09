@@ -57,7 +57,9 @@ function makeList(id, name, count) {
   return { id, name, videos };
 }
 
-const lists = [makeList('PLstubMainVods0001', 'Main VODs', 300), makeList('PLstubHighlights02', 'Highlights', 120)];
+// The third is unnamed with a full-length ID, so the dropdown shows the ID itself.
+const lists = [makeList('PLstubMainVods0001', 'Main VODs', 300), makeList('PLstubHighlights02', 'Highlights', 120),
+  makeList('PLa1F2ddGya_8NhFM-rx_xh5SlIGbHyrZZ', '', 40)];
 const started = Date.now();
 // Node's own start, which the dashboard's uptime counts from; an update restart resets it.
 let nodeStarted = started;

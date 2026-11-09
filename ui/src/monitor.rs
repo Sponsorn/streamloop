@@ -7,7 +7,7 @@ use std::{
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, FontWeight, IntoElement, Render, SharedString,
-    Window, div, prelude::*, px, rgb,
+    Window, div, prelude::*, px, relative, rgb,
 };
 use gpui_kit::{
     base::{SelectableText, TestTextExt},
@@ -35,7 +35,10 @@ use crate::{
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
     update::UpdateFlow,
     videos::VideoList,
-    widgets::{ActionView, Busy, action_button, btn, reveal_on_focus, run_action, section},
+    widgets::{
+        ActionView, Busy, PAGE_LINE_HEIGHT, action_button, btn, reveal_on_focus, run_action,
+        section,
+    },
 };
 
 const STOP_TITLE: &str = "Stop the stream?";
@@ -149,6 +152,7 @@ impl MonitorView {
                     .child(
                         Label::new(word)
                             .text_size(px(28.))
+                            .line_height(relative(PAGE_LINE_HEIGHT))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(level_color(level))),
                     )
@@ -848,6 +852,37 @@ mod tests {
         assert!(shows(cx, window, "Uptime: 2m 5s"));
         assert!(present(cx, window, "btn-stream-start"));
         assert!(!present(cx, window, "btn-stream-stop"));
+    }
+
+    #[gpui::test]
+    fn stream_word_clears_the_reason_while_updating(cx: &mut TestAppContext) {
+        let (fake, window) = open_with(cx, status_json("live", false), events_json(0));
+        let update = full_offer_json("ready", progress_json(cx, "swap", "running", 2.));
+        fake.reply("GET", "/api/update/status", Ok(update));
+        cx.executor().advance_clock(POLL_EVERY);
+        assert!(!present(cx, window, "btn-stream-start"));
+        assert!(!present(cx, window, "btn-stream-stop"));
+
+        let (word, reason) = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let painted = texts(window);
+                let bounds = |text: &str| {
+                    painted
+                        .iter()
+                        .filter(|t| t.visible() && t.text() == text)
+                        .map(|t| t.bounds())
+                        .max_by(|a, b| a.top().partial_cmp(&b.top()).unwrap())
+                        .unwrap_or_else(|| panic!("{text:?} is painted"))
+                };
+                // The reason is painted in the banner too; the stream line's is the lower one.
+                (bounds("Updating"), bounds("Replacing files, 4 s"))
+            })
+            .unwrap();
+
+        // The 28 px word's line box holds its glyphs, so they end above the reason.
+        assert!(word.size.height >= px(28.), "{word:?}");
+        assert!(word.bottom() <= reason.top(), "{word:?} above {reason:?}");
     }
 
     #[gpui::test]

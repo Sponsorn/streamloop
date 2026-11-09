@@ -26,7 +26,7 @@ use crate::{
     },
     monitor::MonitorView,
     theme::{ACCENT, BG, BORDER, MUTED, TEXT, YELLOW},
-    widgets::{Busy, action_button, reveal_on_focus, run_action},
+    widgets::{Busy, action_button, fit_menu, reveal_on_focus, run_action},
 };
 
 const HINT: &str = "This playlist is not playing. Press ▶ on a video to switch to this playlist.";
@@ -275,7 +275,8 @@ impl VideoList {
                     .text_color(rgb(MUTED)),
             )
             .child(
-                div().w_full().max_w(px(280.)).child(reveal_on_focus(
+                div().w_full().max_w(px(280.)).child(reveal_on_focus(fit_menu(
+                    "playlist-menu",
                     Select::new(&self.select)
                         .id("playlist-select")
                         .large()
@@ -285,7 +286,11 @@ impl VideoList {
                         .h(px(40.))
                         .px(px(12.))
                         .bg(rgb(BG)),
-                )),
+                    self.playlists
+                        .iter()
+                        .enumerate()
+                        .map(|(index, p)| playlist_option_label(p, index, self.playing).into()),
+                ))),
             )
     }
 
@@ -466,7 +471,7 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{AnyWindowHandle, AppContext, ElementId, ScrollDelta, TestAppContext, point, px};
-    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{base::test_support::texts, test::TestWindowExt};
     use serde_json::{Value, json};
 
     use crate::{
@@ -664,6 +669,35 @@ mod tests {
             options,
             ["Main VODs (playing)", "Main VODs (playing)", "Highlights"]
         );
+    }
+
+    /// Chrome's open list grows to its longest entry, while the closed box clips it.
+    #[gpui::test]
+    fn the_open_list_fits_its_longest_entry(cx: &mut TestAppContext) {
+        const UNNAMED: &str = "PLa1F2ddGya_8NhFM-rx_xh5SlIGbHyrZZ";
+        let fake = scripted(&[("PLmain", "Main VODs"), (UNNAMED, "")]);
+        fake.reply("GET", "/api/status", Ok(status_on(UNNAMED, 0)));
+        let window = open(cx, &fake);
+        let label = format!("{UNNAMED} (playing)");
+        assert_eq!(chosen(cx, window).as_deref(), Some(label.as_str()));
+
+        open_menu(cx, window);
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let full = window
+                .text_system()
+                .shape_line(label.clone().into(), px(14.), &[style.to_run(label.len())], None)
+                .width;
+            let (row, closed): (Vec<_>, Vec<_>) = texts(window)
+                .into_iter()
+                .filter(|t| t.visible() && t.text() == label)
+                .partition(|t| format!("{:?}", t.path()).contains("select-popup"));
+            assert!(closed[0].bounds().size.width < full, "the box clips it");
+            assert!(row[0].bounds().size.width >= full, "the open list shows it whole");
+        })
+        .unwrap();
     }
 
     #[gpui::test]

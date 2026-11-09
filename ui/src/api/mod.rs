@@ -42,14 +42,13 @@ pub trait Api: Send + Sync + 'static {
 pub fn timeout_for(method: &str, path: &str) -> Duration {
     let path = path.split('?').next().unwrap_or(path);
     let secs = match (method, path) {
-        ("POST", "/api/yt-dlp/update") => 300,
+        // A check right after Node starts waits for it to hash the install's parts.
+        ("POST", "/api/yt-dlp/update") | ("POST", "/api/update/check") => 300,
         ("POST", "/api/setup-check/run")
         | ("GET", "/api/playlist/videos")
         | ("POST", "/api/stream-key")
         | ("POST", "/api/update/apply") => 120,
-        ("POST", "/api/stream/stop")
-        | ("POST", "/api/update/check")
-        | ("POST", "/api/discord/test") => 30,
+        ("POST", "/api/stream/stop") | ("POST", "/api/discord/test") => 30,
         _ => 10,
     };
     Duration::from_secs(secs)

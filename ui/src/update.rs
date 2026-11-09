@@ -32,6 +32,9 @@ const READY_WAIT: Duration = Duration::from_secs(3);
 const DOWN_WAIT: Duration = Duration::from_secs(2);
 /// admin.js `restartLoop`: one `GET /api/status` this often, for as long as Node stays down.
 const RESTART_EVERY: Duration = Duration::from_secs(2);
+/// During the restart wait the banner's elapsed time moves on this often, whatever a try costs: a
+/// refused connect alone takes about 2 s on Windows.
+const REDRAW_EVERY: Duration = Duration::from_secs(1);
 
 /// admin.css `.update-banner`'s gradient runs from the accent to this violet.
 const BANNER_END: u32 = 0x8b5cf6;
@@ -58,6 +61,8 @@ pub struct UpdateFlow {
     _run: Option<Task<()>>,
     /// The restart wait, once started: it runs until Node answers, and a second start is ignored.
     _restart: Option<Task<()>>,
+    /// The restart wait's redraw of the last step, stopped when Node answers.
+    _redraw: Option<Task<()>>,
 }
 
 impl UpdateFlow {
@@ -75,6 +80,7 @@ impl UpdateFlow {
             focus: cx.focus_handle(),
             _run: None,
             _restart: None,
+            _redraw: None,
         }
     }
 
@@ -199,11 +205,20 @@ impl UpdateFlow {
     }
 
     /// admin.js `waitForRestart` and `restartLoop`: no limit, since a full update can keep Node down
-    /// for minutes. When Node answers, the window starts over as a page reload would.
+    /// for minutes. When Node answers, the window starts over as a page reload would. Meanwhile the
+    /// banner shows the last step, its time redrawn every second.
     fn wait_for_restart(&mut self, cx: &mut Context<Self>) {
         if self._restart.is_some() {
             return;
         }
+        self._redraw = Some(cx.spawn(async move |this, cx| {
+            while this
+                .update(cx, |flow, cx| flow.show_last_step(cx))
+                .is_ok()
+            {
+                cx.background_executor().timer(REDRAW_EVERY).await;
+            }
+        }));
         let client = self.app.client.clone();
         self._restart = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -213,13 +228,11 @@ impl UpdateFlow {
                     .await
                     .is_ok()
                 {
-                    this.update(cx, |flow, cx| flow.app.start_over(cx)).ok();
-                    return;
-                }
-                if this
-                    .update(cx, |flow, cx| flow.show_last_step(cx))
-                    .is_err()
-                {
+                    this.update(cx, |flow, cx| {
+                        flow._redraw = None;
+                        flow.app.start_over(cx);
+                    })
+                    .ok();
                     return;
                 }
                 cx.background_executor().timer(RESTART_EVERY).await;
@@ -353,17 +366,20 @@ impl Render for UpdateFlow {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
     use gpui::{
-        AnyWindowHandle, AppContext, Bounds, Entity, Pixels, ScrollDelta, TestAppContext, point, px,
+        AnyWindowHandle, AppContext, Bounds, Context, Entity, Pixels, ScrollDelta, TestAppContext,
+        point, px,
     };
     use gpui_kit::{base::test_support::texts, test::TestWindowExt};
     use serde_json::{Value, json};
 
+    use super::UpdateFlow;
     use crate::{
         api::{ApiError, fake::FakeApi},
-        app::{AppView, POLL_EVERY, Screen},
+        app::{AppView, POLL_EVERY, Screen, now_ms},
+        logic::format_elapsed,
         test_support::{
             UPDATE_RUNNING, answer_polls, banner_text, banner_texts, config_json, count,
             full_offer_json, offered_json, open_app, progress_json, shows, status_json,
@@ -789,6 +805,99 @@ mod tests {
         assert_eq!(screen(cx, &app), Screen::Dashboard);
         let dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
         assert_ne!(dashboard.entity_id(), old_dashboard.entity_id());
+    }
+
+    /// Every `UpdateFlow` the app makes, kept, so a test can follow one the window has let go.
+    fn keep_flows(cx: &mut TestAppContext) -> Rc<RefCell<Vec<Entity<UpdateFlow>>>> {
+        let flows: Rc<RefCell<Vec<Entity<UpdateFlow>>>> = Rc::default();
+        let kept = flows.clone();
+        cx.update(|cx| {
+            cx.observe_new(move |_: &mut UpdateFlow, _, cx: &mut Context<UpdateFlow>| {
+                kept.borrow_mut().push(cx.entity())
+            })
+            .detach()
+        });
+        flows
+    }
+
+    /// Each new banner text of `flow`, with the test clock's time it changed.
+    fn banner_history(
+        cx: &mut TestAppContext,
+        flow: &Entity<UpdateFlow>,
+    ) -> Rc<RefCell<Vec<(i64, String)>>> {
+        let history: Rc<RefCell<Vec<(i64, String)>>> = Rc::default();
+        let log = history.clone();
+        cx.update(|cx| {
+            cx.observe(flow, move |flow, cx| {
+                let text = flow.read(cx).text.to_string();
+                let mut log = log.borrow_mut();
+                if log.last().map(|(_, last)| last) != Some(&text) {
+                    log.push((now_ms(cx), text));
+                }
+            })
+            .detach()
+        });
+        history
+    }
+
+    #[gpui::test]
+    fn restart_wait_counts_every_second(cx: &mut TestAppContext) {
+        let flows = keep_flows(cx);
+        let started = cx.update(|cx| now_ms(cx)) - 1000;
+        let swap = full_offer_json("ready", progress_json(cx, "swap", "running", 1.));
+        let (fake, window, app) = open(cx, swap);
+        let old_dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        let replacing = |at: i64| format!("Replacing files, {}", format_elapsed(at - started));
+        banner_is(cx, window, "Replacing files, 1 s");
+        let flow = flows.borrow()[0].clone();
+        let history = banner_history(cx, &flow);
+
+        // Node goes down, and every GET /api/status takes 3 s while the rest of the app runs on, as
+        // a refused connect takes 2 s on Windows.
+        node_down(&fake);
+        let down = cx.update(|cx| now_ms(cx));
+        let executor = cx.executor();
+        fake.slow("GET", "/api/status", move || {
+            executor.advance_clock(Duration::from_secs(3))
+        });
+        // Two failed polls start the wait.
+        let tries = status_tries(&fake);
+        while status_tries(&fake) == tries {
+            advance(cx, 1000);
+        }
+        for _ in 0..15 {
+            advance(cx, 1000);
+            let now = cx.update(|cx| now_ms(cx));
+            banner_is(cx, window, &replacing(now));
+            assert_eq!(banner_button(cx, window), None);
+        }
+        assert!(status_tries(&fake) >= tries + 3);
+
+        // Every second of the wait was shown, one at a time.
+        let counted: Vec<(i64, String)> = history
+            .borrow()
+            .iter()
+            .filter(|(at, _)| *at > down)
+            .cloned()
+            .collect();
+        assert!(counted.len() >= 15, "{counted:?}");
+        for pair in counted.windows(2) {
+            assert_eq!(pair[1].0 - pair[0].0, 1000, "{pair:?}");
+        }
+        for (at, text) in &counted {
+            assert_eq!(text, &replacing(*at));
+        }
+
+        // Node answers: the window starts over, and the old banner's clock stops.
+        fake.fast("GET", "/api/status");
+        answer_polls(&fake);
+        advance(cx, 5000);
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+        let dashboard = app.read_with(cx, |app, _| app.dashboard()).unwrap();
+        assert_ne!(dashboard.entity_id(), old_dashboard.entity_id());
+        let shown = history.borrow().len();
+        advance(cx, 5000);
+        assert_eq!(history.borrow().len(), shown);
     }
 
     #[gpui::test]

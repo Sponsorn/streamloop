@@ -321,8 +321,8 @@ mod tests {
         );
         assert_eq!(timeout_for("POST", "/api/update/apply"), s(120));
         assert_eq!(timeout_for("POST", "/api/yt-dlp/update"), s(300));
+        assert_eq!(timeout_for("POST", "/api/update/check"), s(300));
         assert_eq!(timeout_for("POST", "/api/stream/stop"), s(30));
-        assert_eq!(timeout_for("POST", "/api/update/check"), s(30));
         assert_eq!(timeout_for("POST", "/api/discord/test"), s(30));
         assert_eq!(timeout_for("GET", "/api/status"), s(10));
     }

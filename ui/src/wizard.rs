@@ -33,9 +33,9 @@ use crate::{
         ACCENT, BG, BORDER, ERROR_TEXT, GREEN, MONO_FONT, MUTED, SURFACE, TEXT, WHITE, YELLOW,
     },
     widgets::{
-        FollowFocus, Followed, PlaylistRowIds, PlaylistRows, Run, btn, form_group, hint, list_item,
-        put_text, reload_warning, reveal_on_focus, rich, summary_button, text_input, text_of,
-        toggle_row,
+        FollowFocus, Followed, PAGE_LINE_HEIGHT, PlaylistRowIds, PlaylistRows, Run, btn,
+        form_group, hint, list_item, put_text, reload_warning, reveal_on_focus, rich,
+        summary_button, text_input, text_of, toggle_row,
     },
 };
 
@@ -1083,6 +1083,7 @@ fn heading(title: &'static str, text: &'static str) -> Div {
             Label::new(title)
                 .mb(px(4.))
                 .text_size(px(22.))
+                .line_height(relative(PAGE_LINE_HEIGHT))
                 .font_weight(FontWeight::BOLD),
         )
         .child(
@@ -1465,6 +1466,21 @@ mod tests {
         walk_to_check(cx, window, view);
         next(cx, window);
         assert_eq!(step(cx, view), 6);
+    }
+
+    /// admin.css `.form-group select`: the encoder dropdown is 280 px wide in the wider wizard card.
+    /// `widgets::tests` has the dashboard's dropdowns.
+    #[gpui::test]
+    fn dropdowns_take_their_container_width(cx: &mut TestAppContext) {
+        let (_, window, _, view) = open_wizard(cx, first_run_config());
+        walk_to_check(cx, window, &view);
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("wiz-encoder").bounds().size.width, px(280.));
+        })
+        .unwrap();
     }
 
     #[gpui::test]

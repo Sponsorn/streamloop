@@ -7,7 +7,7 @@ use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Div, Element, ElementId, Entity, FocusHandle,
     FontStyle, FontWeight, Global, GlobalElementId, HighlightStyle, InspectorElementId,
     IntoElement, LayoutId, Pixels, Point, Render, ScrollHandle, SharedString, Styled, StyledText,
-    Subscription, WeakFocusHandle, Window, div, point, prelude::*, px, rgb, rgba,
+    Subscription, WeakFocusHandle, Window, div, point, prelude::*, px, rems, rgb, rgba,
 };
 use gpui_kit::{
     base::{TestSupportExt, TestTextExt},
@@ -16,6 +16,7 @@ use gpui_kit::{
         button::{Button, ButtonCustomVariant, ButtonVariants},
         input::{Input, InputState, TextareaState},
         label::Label,
+        select::{Select, SelectDelegate, SelectItem},
         switch::Switch,
     },
 };
@@ -36,6 +37,10 @@ use crate::{
 
 /// admin.js puts a save button's label back 1.5 s after a save.
 pub const SAVE_RESET: Duration = Duration::from_millis(1500);
+
+/// admin.css's page line height, for a `Label` over 16 px: the Label's own 1.25 rem line is
+/// shorter than its glyphs, which then run into the line below.
+pub const PAGE_LINE_HEIGHT: f32 = 1.6;
 
 /// The action buttons of one view whose request is running.
 #[derive(Default)]
@@ -676,6 +681,145 @@ impl Element for FocusReveal {
     }
 }
 
+/// An open dropdown row's width beside its label in gpui-component 0.9.0 at the 14 px rem: 4 px of
+/// list inset and 9 px of padding each side, a 3.5 px gap and the 10.5 px check mark.
+const MENU_ROW_CHROME: Pixels = px(40.);
+
+/// The open list's width for its longest label: wide enough for it, or `None` (gpui-component's
+/// `Length::Auto`, the box's own width) when the box is wider.
+fn menu_width(longest_label: Pixels, box_width: Pixels) -> Option<Pixels> {
+    let fit = (longest_label + MENU_ROW_CHROME).ceil();
+    (fit > box_width).then_some(fit)
+}
+
+/// Wraps `select` so its open list grows to its longest entry and is never narrower than the box,
+/// as Chrome's is. `labels` are the entries' titles; the box's width is kept under `id`.
+pub fn fit_menu<D>(
+    id: impl Into<ElementId>,
+    select: Select<D>,
+    labels: impl IntoIterator<Item = SharedString>,
+) -> FitMenu<D>
+where
+    D: SelectDelegate + 'static,
+    <D::Item as SelectItem>::Value: PartialEq + Clone,
+{
+    FitMenu {
+        id: id.into(),
+        select: Some(select),
+        labels: labels.into_iter().collect(),
+        child: None,
+    }
+}
+
+/// A layout-transparent wrapper that sets its dropdown's menu width; see `fit_menu`.
+pub struct FitMenu<D>
+where
+    D: SelectDelegate + 'static,
+    <D::Item as SelectItem>::Value: PartialEq + Clone,
+{
+    id: ElementId,
+    select: Option<Select<D>>,
+    labels: Vec<SharedString>,
+    child: Option<AnyElement>,
+}
+
+impl<D> IntoElement for FitMenu<D>
+where
+    D: SelectDelegate + 'static,
+    <D::Item as SelectItem>::Value: PartialEq + Clone,
+{
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<D> Element for FitMenu<D>
+where
+    D: SelectDelegate + 'static,
+    <D::Item as SelectItem>::Value: PartialEq + Clone,
+{
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // The last frame's box, as the dropdown places its open list by that frame's bounds too.
+        let box_width = window.with_element_state(id.expect("FitMenu has an id"), |width, _| {
+            let width: Pixels = width.unwrap_or_default();
+            (width, width)
+        });
+        let style = window.text_style();
+        // The rows' `text_base`.
+        let size = rems(1.).to_pixels(window.rem_size());
+        let longest = self
+            .labels
+            .iter()
+            .map(|label| {
+                let run = style.to_run(label.len());
+                window
+                    .text_system()
+                    .shape_line(label.clone(), size, &[run], None)
+                    .width
+            })
+            .fold(Pixels::ZERO, |widest, width| if width > widest { width } else { widest });
+        let mut select = self.select.take().expect("laid out once");
+        if let Some(width) = menu_width(longest, box_width) {
+            select = select.menu_width(width);
+        }
+        let mut child = select.into_any_element();
+        let layout = child.request_layout(window, cx);
+        self.child = Some(child);
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_element_state(id.expect("FitMenu has an id"), |_: Option<Pixels>, _| {
+            ((), bounds.size.width)
+        });
+        if let Some(child) = &mut self.child {
+            child.prepaint(window, cx);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(child) = &mut self.child {
+            child.paint(window, cx);
+        }
+    }
+}
+
 /// Room left between a control brought into view and the edge of the column.
 const REVEAL_MARGIN: Pixels = px(8.);
 
@@ -812,9 +956,67 @@ impl Element for FollowFocus {
 
 #[cfg(test)]
 mod tests {
-    use gpui::size;
+    use gpui::{AppContext, TestAppContext, size};
+    use gpui_kit::test::TestWindowExt;
 
     use super::*;
+    use crate::{
+        api::fake::FakeApi,
+        test_support::{answer_polls, config_json, open_app},
+    };
+
+    /// admin.css `.form-group select` (at most 280 px) and `.log-picker` (the log box takes the row
+    /// beside Refresh and the 8 px gap). `wizard::tests` has the wizard's encoder dropdown.
+    #[gpui::test]
+    fn dropdowns_take_their_container_width(cx: &mut TestAppContext) {
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        fake.reply("GET", "/api/config", Ok(config_json()));
+        let (_, window) = open_app(cx, fake);
+        let bounds = |cx: &mut TestAppContext, tab: &'static str, id: &'static str| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click(tab, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(id).bounds()
+            })
+            .unwrap()
+        };
+
+        for (tab, id) in [
+            ("tab-monitor", "playlist-select"),
+            ("tab-playback", "pb-encoder"),
+            ("tab-webhooks", "wh-preview-select"),
+        ] {
+            assert_eq!(bounds(cx, tab, id).size.width, px(280.), "{id}");
+        }
+
+        // The log view below spans the row; its `input-state` sits inside a 1 px border.
+        let select = bounds(cx, "tab-monitor", "log-select");
+        let (refresh, view) = cx
+            .update_window(window, |_, window, _| {
+                let view = window.within("log-view").find("input-state").bounds();
+                (window.find("log-refresh").bounds(), view)
+            })
+            .unwrap();
+        assert_eq!(select.left(), view.left() - px(1.));
+        assert_eq!(refresh.left() - select.right(), px(8.));
+        assert_eq!(refresh.right(), view.right() + px(1.));
+    }
+
+    #[test]
+    fn the_open_list_is_never_narrower_than_the_box() {
+        // Entries that fit: the box's own width.
+        assert_eq!(menu_width(px(100.), px(280.)), None);
+        assert_eq!(menu_width(px(240.), px(280.)), None);
+        // A longer one: its label, the row around it and the check mark.
+        assert_eq!(menu_width(px(240.5), px(280.)), Some(px(281.)));
+        assert_eq!(menu_width(px(360.), px(280.)), Some(px(400.)));
+    }
 
     #[test]
     fn reveal_offset_scrolls_only_as_far_as_needed() {

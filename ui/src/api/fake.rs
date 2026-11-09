@@ -15,12 +15,14 @@ pub struct Request {
 }
 
 type Answer = Result<Value, ApiError>;
+type Wait = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
 struct Script {
     standing: HashMap<(&'static str, String), Answer>,
     once: HashMap<(&'static str, String), VecDeque<Answer>>,
     texts: HashMap<String, Result<String, ApiError>>,
+    slow: HashMap<(&'static str, String), Wait>,
     requests: Vec<Request>,
     token_forgets: usize,
 }
@@ -56,6 +58,24 @@ impl FakeApi {
             .push_back(answer);
     }
 
+    /// Runs `wait` inside every call to `method` and `path` until `fast`: given a clock advance, the
+    /// call takes test time while the rest of the app runs on, as a blocking call does.
+    pub fn slow(&self, method: &'static str, path: &str, wait: impl Fn() + Send + Sync + 'static) {
+        self.script
+            .lock()
+            .unwrap()
+            .slow
+            .insert((method, path.to_string()), Arc::new(wait));
+    }
+
+    pub fn fast(&self, method: &'static str, path: &str) {
+        self.script
+            .lock()
+            .unwrap()
+            .slow
+            .remove(&(method, path.to_string()));
+    }
+
     pub fn text(&self, path: &str, answer: Result<String, ApiError>) {
         self.script
             .lock()
@@ -81,17 +101,25 @@ impl FakeApi {
     }
 
     fn answer(&self, method: &'static str, path: &str, body: Option<Value>) -> Answer {
-        let mut s = self.script.lock().unwrap();
-        s.requests.push(Request {
-            method,
-            path: path.to_string(),
-            body,
-        });
-        let key = (method, path.to_string());
-        if let Some(a) = s.once.get_mut(&key).and_then(VecDeque::pop_front) {
-            return a;
+        let (answer, wait) = {
+            let mut s = self.script.lock().unwrap();
+            s.requests.push(Request {
+                method,
+                path: path.to_string(),
+                body,
+            });
+            let key = (method, path.to_string());
+            let answer = match s.once.get_mut(&key).and_then(VecDeque::pop_front) {
+                Some(a) => a,
+                None => s.standing.get(&key).cloned().unwrap_or(Err(ApiError::Unreachable)),
+            };
+            (answer, s.slow.get(&key).cloned())
+        };
+        // Unlocked: the wait runs the app, which may call the fake again.
+        if let Some(wait) = wait {
+            wait();
         }
-        s.standing.get(&key).cloned().unwrap_or(Err(ApiError::Unreachable))
+        answer
     }
 }
 

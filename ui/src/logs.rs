@@ -19,7 +19,7 @@ use crate::{
     app::AppHandle,
     logic::admin::{format_bytes, local_date_time},
     theme::{BG, MONO_FONT, SURFACE},
-    widgets::{btn, reveal_on_focus},
+    widgets::{btn, fit_menu, reveal_on_focus},
 };
 
 const SELECT_A_FILE: &str = "Select a log file to view.";
@@ -113,6 +113,8 @@ type Options = Vec<LogOption>;
 pub struct LogViewer {
     app: AppHandle,
     select: Entity<SelectState<Options>>,
+    /// The dropdown's entries, which size its open list.
+    labels: Vec<SharedString>,
     _chosen: Subscription,
     view: Entity<TextareaState>,
     /// The option's value: the file in the dropdown, `None` for a placeholder or before the list.
@@ -137,6 +139,7 @@ impl LogViewer {
         Self {
             app,
             select,
+            labels: Vec::new(),
             _chosen: chosen,
             view,
             chosen: None,
@@ -208,6 +211,7 @@ impl LogViewer {
         cx: &mut Context<Self>,
     ) {
         self.chosen = chosen.clone();
+        self.labels = options.iter().map(|option| option.label.clone()).collect();
         self.select.update(cx, |select, cx| {
             select.set_items(options, window, cx);
             select.set_selected_value(&chosen, window, cx);
@@ -327,7 +331,8 @@ impl Render for LogViewer {
                     .gap(px(8.))
                     .mb(px(8.))
                     .child(
-                        div().flex_1().min_w_0().child(reveal_on_focus(
+                        div().flex_1().min_w_0().child(reveal_on_focus(fit_menu(
+                            "log-menu",
                             Select::new(&self.select)
                                 .id("log-select")
                                 .large()
@@ -337,7 +342,8 @@ impl Render for LogViewer {
                                 .h(px(40.))
                                 .px(px(12.))
                                 .bg(rgb(BG)),
-                        )),
+                            self.labels.iter().cloned(),
+                        ))),
                     )
                     .child(reveal_on_focus(
                         btn(Button::new("log-refresh").label("Refresh"))
