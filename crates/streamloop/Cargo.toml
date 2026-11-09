@@ -9,5 +9,11 @@ streamloop-common = { path = "../common" }
 streamloop-control = { path = "../control" }
 streamloop-supervisor = { path = "../../supervisor" }
 
+[features]
+# Broken builds for install-session.mjs's rollback runs, never in a release: supervisor mode, or
+# control mode, exits 1 at start.
+test-supervisor-fails = []
+test-control-fails = []
+
 [dev-dependencies]
 serde_json = "1"

@@ -40,6 +40,8 @@ Test-only environment variables, never set by `config.json` or a release:
 - `STREAMLOOP_TEST_RELEASES=<file>`: the updater reads its release list from this JSON file (GitHub's shape) instead of GitHub, and takes asset URLs only from `http://127.0.0.1:<port>/`.
 - `STREAMLOOP_TEST_BREAK_AT_S=<seconds>` (control process only): a staged update lands at this encoder uptime instead of 47 h 45 min.
 
+Test-only builds, never released: the `streamloop` crate's features `test-supervisor-fails` and `test-control-fails` make supervisor mode or control mode exit 1 at start, for the rollback runs of `install-session.mjs`. A test in `release_layout.rs` fails if the release build turns either on. The updater stages only an exe that prints the release's `X.Y.Z`, so test builds take a plain version (`STREAMLOOP_BUILD_VERSION=3.1.1`), not a `-dev` one.
+
 ## Commands
 
 ```bash
@@ -54,7 +56,7 @@ cargo test --workspace      # all Rust tests: supervisor, common, control, the e
 node supervisor/scripts/api-parity.mjs record --server rust --out FILE   # the dashboard's requests against target\release\streamloop.exe and a fake supervisor (ports 4417, 7654, 8791 free)
 node supervisor/scripts/api-parity.mjs compare supervisor/scripts/api-parity/node.json FILE   # exit 0 when the answers match Node's, apart from the differences it names
 node supervisor/scripts/node-session.mjs A|B|C|treekill [--port N]   # end-to-end runs of streamloop.exe (control process and supervisor) against local MediaMTX; each ends with its verdict; --port when 7654 is taken
-node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
+node supervisor/scripts/install-session.mjs all|<run>[,<run>...]|build   # dist/'s full ZIP in a temp folder against local MediaMTX and a local release list; runs: install, update (planned break, Update Now, a landing while stopped), rollback (by the control process), rollback-bat (by START.bat), move (from v3.0.5), faults (the gate's fault checks); build only makes the test exes
 node supervisor/scripts/update-session.mjs all|<run>[,<run>...]|build   # full update, rollback and bootstrap proof (runs: full-on, full-off, app-only, locked, broken, bootstrap, two-windows) on N and N+1 (the dist version's patch + 1 and + 2) repacked from the dist/ ZIPs; build only repacks them
 cargo build --release       # in ui/: the app, ui/target/release/streamloop-ui.exe
 node ui/scripts/ui-session.mjs dev|full|full-fail|update   # a real install, local MediaMTX and a Discord catcher, for driving the app through every dashboard action
@@ -73,7 +75,7 @@ Before pushing and building a 3.x release (2.x releases come from the `2.x` bran
 5. Create the GitHub release with `gh release create ... --prerelease --latest=false` and upload the ZIP, the exe, both `.sha256` files and `node-version.txt`. The updater takes the exe's checksum from `streamloop-vX.Y.Z.exe.sha256`; `node-version.txt` tells an install its Node is out of date.
 6. **3.x releases are never marked latest**, and 3.x is `--prerelease` while it is on trial: 2.x installs older than 2.3.7 still read GitHub's "latest release" and would otherwise swap 3.0 into a 2.x folder; 2.3.7 and later only take releases with their own major version.
 7. **Existing installs.** The updater delivers `streamloop.exe` only. yt-dlp keeps itself current through `yt-dlp -U` on start (`autoUpdateYtdlp`). A release that changes Node, ffmpeg or the token server says in `RELEASE_NOTES.md` that installs need the full ZIP: Stop, close the window, extract the ZIP into the folder it was first extracted into (`C:\StreamLoop3`, so its top folder `streamloop\` lands on `C:\StreamLoop3\streamloop`, never into the install itself, which would make `streamloop\streamloop\`), start, press Start. Config, key and `data\` survive because the ZIP ships no `config.json`.
-8. Prove a release candidate with `node build/verify-release.mjs dist/streamloop-vX.Y.Z.zip` and the install runs in `supervisor/scripts/` (`install-session.mjs`, which Task 22 moves to the one-exe layout).
+8. Prove a release candidate with `node build/verify-release.mjs dist/streamloop-vX.Y.Z.zip` and `node supervisor/scripts/install-session.mjs all`, started from PowerShell. It installs the ZIP into `%TEMP%\sl3 install Ö`, takes it live, lands test builds 3.1.1 to 3.1.3 at a planned break moved to 300 s, by Update Now and while stopped, proves both rollbacks with broken 3.1.1 builds, moves a v3.0.5 install onto it (with Stop, and with its supervisor still streaming), and runs the gate's fault checks. Each run prints PASS or FAIL and writes `supervisor\results\install\<run>\results.json`.
 
 ## Switching back to 2.x
 

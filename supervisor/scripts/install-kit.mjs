@@ -1,6 +1,6 @@
-// Helpers shared by install-session.mjs and update-session.mjs: an install started from its own
-// START.bat, its Node API, the RTMP reader, file hashes, the interrupt teardown and the sweep of
-// what a killed harness left. Every child is spawned hidden.
+// Helpers shared by install-session.mjs, update-session.mjs and R3's ui-session.mjs: an install started
+// from its own START.bat, its control process's API (Node's in a 3.0 install), the RTMP reader, file
+// hashes, the interrupt teardown and the sweep of what a killed harness left. Every child is spawned hidden.
 // useOut() names the results folder that note(), the console logs and requests.jsonl go to.
 import * as cp from 'node:child_process';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync, existsSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { join, relative, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
-import { FFPROBE, redact } from './lib.mjs';
+import { FFPROBE, redact, exeMode } from './lib.mjs';
 
 export const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
 export const run = (cmd, args, opts = {}) => new Promise((resolve) => {
@@ -20,6 +20,12 @@ export const INGEST = 'rtmp://127.0.0.1:1935/live';
 export const READ_URL = `${INGEST}/${KEY}`;
 export const NODE_API = 'http://127.0.0.1:7654/api';
 export const SUP = 'http://127.0.0.1:4417';
+/** The API nodeUp() and api() talk to: NODE_API unless useApiPort() named another port. */
+let apiBase = NODE_API;
+export function useApiPort(port) {
+  apiBase = `http://127.0.0.1:${port}/api`;
+  return apiBase;
+}
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const iso = (ms = Date.now()) => new Date(ms).toISOString();
 export class Stop extends Error {}
@@ -39,7 +45,7 @@ export const note = (msg, data) => {
 
 export async function ps() {
   const r = await run('powershell', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop-supervisor.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','mediamtx.exe') } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json"],
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop.exe','streamloop-supervisor.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','mediamtx.exe') } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8' });
   const v = JSON.parse(r.stdout || '[]');
   return Array.isArray(v) ? v : [v];
@@ -69,28 +75,37 @@ export function startBat(root, label, extraEnv = {}) {
 }
 
 export let token = '';
+async function fetchToken() {
+  try {
+    const res = await fetch(`${apiBase}/token`, { signal: AbortSignal.timeout(2000) });
+    return res.ok ? (await res.json()).token : null;
+  } catch { return null; }
+}
+/** Waits for the API (the control process, or a 3.0 install's Node) and takes its token. */
 export async function nodeUp(label, timeoutMs = 120_000) {
   const t0 = Date.now();
-  const r = await waitFor(`Node (${label})`, async () => {
-    try {
-      const res = await fetch(`${NODE_API}/token`, { signal: AbortSignal.timeout(2000) });
-      return res.ok ? (await res.json()).token : null;
-    } catch { return null; }
-  }, timeoutMs, 500);
-  if (!r.value) throw new Stop(`Node did not answer (${label})`);
+  const r = await waitFor(`the API (${label})`, fetchToken, timeoutMs, 500);
+  if (!r.value) throw new Stop(`the API did not answer (${label})`);
   token = r.value;
-  note(`Node up (${label})`, { ms: Date.now() - t0 });
+  note(`API up (${label})`, { ms: Date.now() - t0 });
   return Date.now() - t0;
 }
 export async function api(method, path, body) {
-  const headers = method === 'POST' ? { 'x-api-token': token, 'content-type': 'application/json' } : {};
   let status = 0;
   let text = '';
-  try {
-    const res = await fetch(NODE_API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
-    status = res.status;
-    text = await res.text();
-  } catch (err) { text = String(err); }
+  // A restarted control process has a new token: one 403 takes the new one and tries again.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers = method === 'POST' ? { 'x-api-token': token, 'content-type': 'application/json' } : {};
+    try {
+      const res = await fetch(apiBase + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
+      status = res.status;
+      text = await res.text();
+    } catch (err) { status = 0; text = String(err); }
+    if (status !== 403 || method !== 'POST' || attempt > 0) break;
+    const fresh = await fetchToken();
+    if (!fresh || fresh === token) break;
+    token = fresh;
+  }
   const recorded = path === '/stream-key' ? '[stream key, not recorded]' : body;
   // Not redacted: both harnesses grep their output folder for the key, which catches Node echoing it.
   appendFileSync(join(OUT, 'requests.jsonl'), `${JSON.stringify({ at: iso(), method, path, request: recorded ?? null, status, response: text.slice(0, 4000) })}\n`);
@@ -145,12 +160,17 @@ export function resetReader() {
   packets.length = 0;
   reconnects.length = 0;
 }
+/** What a viewer got in [fromMs, toMs]: packets, reader reconnects and the longest stretch with no packet,
+ *  the window's edges included (a window with no packet is all gap). */
 export function gapStats(fromMs, toMs) {
   const win = packets.filter((p) => p.ms >= fromMs && p.ms <= toMs);
-  let maxWallGapMs = 0;
+  const end = Math.min(toMs, Date.now());
+  let maxWallGapMs = win.length ? Math.max(win[0].ms - fromMs, end - win.at(-1).ms) : end - fromMs;
   for (let i = 1; i < win.length; i += 1) maxWallGapMs = Math.max(maxWallGapMs, win[i].ms - win[i - 1].ms);
   return { packets: win.length, readerReconnects: reconnects.filter((t) => t > fromMs && t <= toMs).length, maxWallGapMs };
 }
+/** No reader reconnect, packets throughout and no stretch of `limitMs` or more without one. */
+export const noDrop = (g, limitMs = 1000) => g != null && g.packets > 0 && g.readerReconnects === 0 && g.maxWallGapMs < limitMs;
 
 export function hashTree(dir) {
   const h = createHash('sha256');
@@ -188,10 +208,20 @@ export async function extract(zip, dest) {
   if (r.status !== 0) throw new Stop(`tar failed on ${zip}: ${r.stderr}`);
   return Date.now() - t0;
 }
-/** No browser, no yt-dlp self-update, no update check: the test must not open a window or touch yt-dlp\. */
-export function quietConfig(file) {
+/** Extracts `zip` over what `dest` holds, as a user does when moving an install. A file in use is left as
+ *  it was: `failed` names each entry tar could not write. */
+export async function extractOver(zip, dest) {
+  mkdirSync(dest, { recursive: true });
+  const t0 = Date.now();
+  const r = await run(TAR, ['-xf', zip, '-C', dest], { timeout: 600_000, encoding: 'utf8' });
+  const failed = String(r.stderr ?? '').split(/\r?\n/).filter((l) => l.trim() && !/Error exit delayed/i.test(l));
+  return { ms: Date.now() - t0, status: r.status, failed };
+}
+/** No browser, no yt-dlp self-update, no update check: the test must not open a window or touch yt-dlp\.
+ *  `overrides` sets more keys, or turns one of these back on. */
+export function quietConfig(file, overrides = {}) {
   const c = JSON.parse(readFileSync(file, 'utf8'));
-  Object.assign(c, { autoOpenAdmin: false, autoUpdateYtdlp: false, autoUpdateCheck: false });
+  Object.assign(c, { autoOpenAdmin: false, autoUpdateYtdlp: false, autoUpdateCheck: false }, overrides);
   writeFileSync(file, JSON.stringify(c, null, 2));
 }
 /** Runs a snippet under an install's own Node and tsx, from that app's folder. */
@@ -228,10 +258,12 @@ export function under(procs, dirs, ascii = null) {
 }
 export const runningFrom = async (dirs, ascii = null) => under(await allProcesses(), dirs, ascii);
 
-// START.bat first, so it cannot restart Node; Node before the supervisor, so its launcher cannot relaunch it.
-const KILL_ORDER = ['cmd.exe', 'node.exe', 'streamloop-supervisor.exe'];
+// START.bat first, so it cannot restart the control process (Node in a 3.0 install); that before the
+// supervisor, so its launcher cannot relaunch it. streamloop.exe ranks by its mode word.
+const KILL_ORDER = ['cmd.exe', 'node.exe', 'streamloop.exe control', 'streamloop.exe launch', 'streamloop.exe supervisor', 'streamloop-supervisor.exe'];
 export async function killAll(procs) {
-  const rank = (p) => { const i = KILL_ORDER.indexOf(String(p.Name).toLowerCase()); return i < 0 ? KILL_ORDER.length : i; };
+  const key = (p) => { const name = String(p.Name).toLowerCase(); return name === 'streamloop.exe' ? `${name} ${exeMode(p.CommandLine)}` : name; };
+  const rank = (p) => { const i = KILL_ORDER.indexOf(key(p)); return i < 0 ? KILL_ORDER.length : i; };
   const killed = [];
   for (const p of [...procs].sort((a, b) => rank(a) - rank(b))) {
     await run('taskkill', ['/F', '/T', '/PID', String(p.ProcessId)]);

@@ -64,13 +64,16 @@ const results = {};
 
 // preflight
 const httpOk = async (url) => { try { return (await fetch(url, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } };
-const rtmpUp = () => new Promise((resolve) => {
-  const s = net.connect(1935, '127.0.0.1');
+const portOpen = (port) => new Promise((resolve) => {
+  const s = net.connect(port, '127.0.0.1');
   s.on('connect', () => { s.destroy(); resolve(true); });
   s.on('error', () => resolve(false));
 });
+const rtmpUp = () => portOpen(1935);
+// Another session's supervisor or control process would be driven, and stopped by stopAll, as this run's.
+for (const port of [4417, PORT]) if (await portOpen(port)) { note(`${port} already answers, so another session's StreamLoop runs: stop`); process.exit(2); }
 if (!(await httpOk(TOKEN_SERVER_PING))) { note('PO-token server not answering: stop'); process.exit(2); }
-note('token server answers /ping');
+note('token server answers /ping, 4417 and the API port free');
 let mediamtx = null;
 if (!(await rtmpUp())) {
   mediamtx = spawn(join(TOOLS, 'mediamtx.exe'), [], { cwd: TOOLS, stdio: 'ignore' });
@@ -241,11 +244,12 @@ function runRecorder() {
   rec.on('close', () => { if (!recStop) sleep(1000).then(runRecorder); });
 }
 
-/** What a viewer got in [fromMs, toMs]: reader reconnects, the longest wall-clock stretch with no
- *  packet, and the largest video dts step (a cut or a restart shows as a jump). */
+/** What a viewer got in [fromMs, toMs]: reader reconnects, the longest stretch with no packet, the window's
+ *  edges included, and the largest video dts step (a cut or a restart shows as a jump). */
 function gapStats(fromMs, toMs) {
   const win = packets.filter((p) => p.ms >= fromMs && p.ms <= toMs);
-  let maxWallGapMs = 0;
+  const end = Math.min(toMs, Date.now());
+  let maxWallGapMs = win.length ? Math.max(win[0].ms - fromMs, end - win.at(-1).ms) : end - fromMs;
   for (let i = 1; i < win.length; i += 1) maxWallGapMs = Math.max(maxWallGapMs, win[i].ms - win[i - 1].ms);
   const video = win.filter((p) => p.s === 0);
   let maxDtsStep = 0;
@@ -720,8 +724,8 @@ async function runSmoke() {
 function verdictChecks() {
   const checks = [];
   const check = (name, ok, figure) => checks.push({ name, ok: Boolean(ok), figure: figure ?? null });
-  // No reader reconnect and no stall a viewer would see.
-  const noDrop = (g) => g != null && g.readerReconnects === 0 && g.maxWallGapMs < 1000;
+  // Packets throughout, no reader reconnect and no stall a viewer would see.
+  const noDrop = (g) => g != null && g.packets > 0 && g.readerReconnects === 0 && g.maxWallGapMs < 1000;
   const only = (list, patterns) => list.length === patterns.length && patterns.every((re) => list.filter((m) => re.test(m)).length === 1);
   const r = results;
   check('the run finished without an error', !r.error, r.error ?? null);

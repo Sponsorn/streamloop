@@ -77,6 +77,21 @@ fn there_is_no_update_layout() {
 }
 
 #[test]
+fn the_release_build_enables_no_test_feature() {
+    // Arrange
+    let prepare = read("build/prepare-release.js");
+    let manifest = read("crates/streamloop/Cargo.toml");
+    let builds: Vec<&str> = prepare.lines().filter(|l| l.contains("cargo build")).collect();
+    let defaults: Vec<&str> = manifest.lines().filter(|l| l.trim_start().starts_with("default")).collect();
+
+    // Assert
+    assert!(manifest.contains("test-supervisor-fails = []") && manifest.contains("test-control-fails = []"));
+    assert!(!builds.is_empty(), "no cargo build in prepare-release.js");
+    assert!(builds.iter().all(|l| !l.contains("--features") && !l.contains("--all-features") && !l.contains(" -F")), "{builds:?}");
+    assert!(defaults.iter().all(|l| !l.contains("test-")), "{defaults:?}");
+}
+
+#[test]
 fn cargo_and_package_json_versions_match() {
     // Arrange
     let package: serde_json::Value = serde_json::from_str(&read("package.json")).unwrap();

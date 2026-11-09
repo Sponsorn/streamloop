@@ -38,12 +38,19 @@ for (let i = 0; i < rest.length; i += 1) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const rtmpUp = () => new Promise((resolve) => {
-  const socket = net.connect(1935, '127.0.0.1');
+const portOpen = (port) => new Promise((resolve) => {
+  const socket = net.connect(port, '127.0.0.1');
   socket.on('connect', () => { socket.destroy(); resolve(true); });
   socket.on('error', () => resolve(false));
 });
+const rtmpUp = () => portOpen(1935);
 const httpOk = async (url) => { try { return (await fetch(url)).ok; } catch { return false; } };
+
+// Another session's supervisor would be driven and shut down as this one's.
+if (await portOpen(4417)) {
+  console.error('4417 already answers, so another session\'s supervisor runs. Stop it first.');
+  process.exit(2);
+}
 
 if (!(await httpOk(TOKEN_SERVER_PING))) {
   console.error(`PO-token server not answering at ${TOKEN_SERVER_PING}.`);
