@@ -4,8 +4,9 @@
 use std::time::Duration;
 
 use gpui::{
-    App, Context, ElementId, FocusHandle, FontWeight, IntoElement, Render, SharedString, Task,
-    Window, div, linear_color_stop, linear_gradient, prelude::*, px, rgb, white,
+    App, Context, ElementId, EventEmitter, FocusHandle, FontWeight, IntoElement, Render,
+    SharedString, Task, Window, div, linear_color_stop, linear_gradient, prelude::*, px, rgb,
+    white,
 };
 use gpui_kit::{
     base::TestSupportExt,
@@ -38,6 +39,11 @@ const REDRAW_EVERY: Duration = Duration::from_secs(1);
 
 /// admin.css `.update-banner`'s gradient runs from the accent to this violet.
 const BANNER_END: u32 = 0x8b5cf6;
+
+/// The banner's text each time the restart wait redraws a running update's last step.
+pub struct LastStep(pub SharedString);
+
+impl EventEmitter<LastStep> for UpdateFlow {}
 
 /// The update banner's state and the update that Update Now starts. The banner's button and
 /// Settings' Update Now both call `apply`. It also keeps admin.js's `lastProgress`, `lastSwapLog`
@@ -248,6 +254,9 @@ impl UpdateFlow {
         self.text = update_progress_text(progress, &self.swap_log, now_ms(cx)).into();
         self.shown = true;
         self.button = None;
+        if update_running(Some(progress)) {
+            cx.emit(LastStep(self.text.clone()));
+        }
         cx.notify();
     }
 
@@ -860,7 +869,7 @@ mod tests {
         fake.slow("GET", "/api/status", move || {
             executor.advance_clock(Duration::from_secs(3))
         });
-        // Two failed polls start the wait.
+        // Step until the wait's first try, which two failed polls start; a slow call in a step adds 3 s.
         let tries = status_tries(&fake);
         while status_tries(&fake) == tries {
             advance(cx, 1000);

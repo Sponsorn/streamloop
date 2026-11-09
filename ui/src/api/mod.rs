@@ -42,8 +42,9 @@ pub trait Api: Send + Sync + 'static {
 pub fn timeout_for(method: &str, path: &str) -> Duration {
     let path = path.split('?').next().unwrap_or(path);
     let secs = match (method, path) {
-        // A check right after Node starts waits for it to hash the install's parts.
-        ("POST", "/api/yt-dlp/update") | ("POST", "/api/update/check") => 300,
+        ("POST", "/api/yt-dlp/update") => 300,
+        // An update check right after Node starts waits for it to hash the install's parts.
+        ("POST", "/api/update/check") => 300,
         ("POST", "/api/setup-check/run")
         | ("GET", "/api/playlist/videos")
         | ("POST", "/api/stream-key")

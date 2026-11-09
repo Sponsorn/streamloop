@@ -51,6 +51,8 @@ cargo build --release       # in supervisor/: the supervisor binary
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
 node supervisor/scripts/update-session.mjs all|<run>[,<run>...]|build   # full update, rollback and bootstrap proof (runs: full-on, full-off, app-only, locked, broken, bootstrap, two-windows) on N and N+1 (the dist version's patch + 1 and + 2) repacked from the dist/ ZIPs; build only repacks them
+cargo build --release       # in ui/: the app, ui/target/release/streamloop-ui.exe
+node ui/scripts/ui-session.mjs dev|full|full-fail|update   # a real install, local MediaMTX and a Discord catcher, for driving the app through every dashboard action
 ```
 
 No linter is configured. TypeScript strict mode is enabled via `tsconfig.json`.

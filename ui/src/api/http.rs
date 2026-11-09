@@ -16,7 +16,10 @@ impl HttpApi {
     pub fn new(port: u16) -> Self {
         HttpApi {
             base: format!("http://127.0.0.1:{port}"),
-            agent: ureq::AgentBuilder::new().build(),
+            // A poll's three GETs run at once, so each keeps its connection for the next poll.
+            agent: ureq::AgentBuilder::new()
+                .max_idle_connections_per_host(4)
+                .build(),
             token: Mutex::new(None),
         }
     }
@@ -189,8 +192,7 @@ mod tests {
 
         fn finish(mut self) -> Vec<Seen> {
             self.thread.take().unwrap().join().unwrap();
-            let seen = self.seen.lock().unwrap().clone();
-            seen
+            self.seen.lock().unwrap().clone()
         }
     }
 

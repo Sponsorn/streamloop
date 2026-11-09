@@ -269,10 +269,10 @@ pub fn encoder_select_state<V: 'static>(
     cx.new(|cx| SelectState::new(options, Some(IndexPath::new(0)), window, cx))
 }
 
-/// admin.css `.form-group select`: the encoder dropdown `id`, at most 280 px wide.
+/// admin.css `.form-group select`: the encoder dropdown `id`, at most 280 px wide, its menu `{id}-menu`.
 pub fn encoder_select(state: &Entity<EncoderSelect>, id: &'static str) -> Div {
     div().w_full().max_w(px(280.)).child(reveal_on_focus(fit_menu(
-        "encoder-menu",
+        format!("{id}-menu"),
         Select::new(state)
             .id(id)
             .large()

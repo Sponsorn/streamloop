@@ -9,12 +9,11 @@ use crate::logic::status_view::{app_download_text, format_time, update_banner_vi
 
 /// A YouTube URL gives its `list` parameter (None when it has none); anything else comes back as typed.
 pub fn extract_playlist_id(raw: &str) -> Option<String> {
-    if let Ok(url) = url::Url::parse(raw) {
-        if let Some(host) = url.host_str() {
-            if host.contains("youtube.com") || host.contains("youtu.be") {
-                return url.query_pairs().find(|(k, _)| k == "list").map(|(_, v)| v.into_owned());
-            }
-        }
+    if let Ok(url) = url::Url::parse(raw)
+        && let Some(host) = url.host_str()
+        && (host.contains("youtube.com") || host.contains("youtu.be"))
+    {
+        return url.query_pairs().find(|(k, _)| k == "list").map(|(_, v)| v.into_owned());
     }
     Some(raw.to_string())
 }

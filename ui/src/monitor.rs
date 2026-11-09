@@ -7,7 +7,7 @@ use std::{
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, FontWeight, IntoElement, Render, SharedString,
-    Window, div, prelude::*, px, relative, rgb,
+    Subscription, Window, div, prelude::*, px, relative, rgb,
 };
 use gpui_kit::{
     base::{SelectableText, TestTextExt},
@@ -33,7 +33,7 @@ use crate::{
     },
     logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
-    update::UpdateFlow,
+    update::{LastStep, UpdateFlow},
     videos::VideoList,
     widgets::{
         ActionView, Busy, PAGE_LINE_HEIGHT, action_button, btn, reveal_on_focus, run_action,
@@ -63,11 +63,12 @@ pub struct MonitorView {
     /// The status the stream card last drew. While a full update runs, admin.js `renderStream`
     /// returns before the Twitch and encoder lines, so they keep what they showed.
     card_status: Option<Status>,
-    /// While a full update runs, its progress at the last poll's time, as the banner shows it.
+    /// While a full update runs, its progress as the banner shows it: from the last poll or the restart wait's redraw.
     updating: Option<String>,
     events: Option<Vec<Event>>,
     pub(crate) videos: VideoList,
     pub(crate) logs: Entity<LogViewer>,
+    _last_step: Subscription,
 }
 
 impl MonitorView {
@@ -77,6 +78,10 @@ impl MonitorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let last_step = cx.subscribe(&flow, |this, _, LastStep(text), cx| {
+            this.updating = Some(text.to_string());
+            cx.notify();
+        });
         Self {
             videos: VideoList::new(app.clone(), window, cx),
             logs: cx.new(|cx| LogViewer::new(app.clone(), window, cx)),
@@ -87,6 +92,7 @@ impl MonitorView {
             card_status: None,
             updating: None,
             events: None,
+            _last_step: last_step,
         }
     }
 
@@ -492,7 +498,7 @@ fn empty_log(text: &str) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
     use chrono::{DateTime, Local};
     use gpui::{AnyWindowHandle, AppContext, ScrollDelta, TestAppContext, point};
@@ -505,10 +511,11 @@ mod tests {
     use super::*;
     use crate::{
         api::{ApiError, fake::FakeApi},
-        app::{AppView, POLL_EVERY},
+        app::{AppView, POLL_EVERY, now_ms},
         dashboard::Tab,
+        logic::format_elapsed,
         test_support::{
-            UPDATE_RUNNING, banner_text, events_json, full_offer_json, open_app, painted,
+            UPDATE_RUNNING, banner_text, count, events_json, full_offer_json, open_app, painted,
             progress_json, shows, status_json, update_json,
         },
     };
@@ -908,6 +915,72 @@ mod tests {
         painted_twice(cx, "Downloading, 42%, 7 s");
         cx.executor().advance_clock(Duration::from_millis(500));
         painted_twice(cx, "Downloading, 42%, 9 s");
+    }
+
+    #[gpui::test]
+    fn stream_line_counts_with_the_banner_while_node_is_down(cx: &mut TestAppContext) {
+        let (fake, window, app) = open_monitor(cx, status_json("live", false), events_json(0));
+        let started = cx.update(|cx| now_ms(cx)) - 1000;
+        let swap = full_offer_json("ready", progress_json(cx, "swap", "running", 1.));
+        fake.reply("GET", "/api/update/status", Ok(swap));
+        cx.executor().advance_clock(POLL_EVERY);
+        let replacing = |at: i64| format!("Replacing files, {}", format_elapsed(at - started));
+        let monitor = monitor(cx, &app);
+        let reason = |cx: &mut TestAppContext| monitor.read_with(cx, |m, _| m.card_line().reason);
+        assert_eq!(reason(cx), Some(replacing(cx.update(|cx| now_ms(cx)))));
+
+        // Each change of the stream line's reason, with the test clock's time.
+        let history: Rc<RefCell<Vec<(i64, String)>>> = Rc::default();
+        let log = history.clone();
+        cx.update(|cx| {
+            cx.observe(&monitor, move |monitor, cx| {
+                let reason = monitor.read(cx).card_line().reason.unwrap_or_default();
+                let mut log = log.borrow_mut();
+                if log.last().map(|(_, last)| last) != Some(&reason) {
+                    log.push((now_ms(cx), reason));
+                }
+            })
+            .detach()
+        });
+
+        // Node goes down, and every GET /api/status takes 3 s, as a refused connect takes 2 s.
+        for path in ["/api/status", "/api/events", "/api/update/status"] {
+            fake.reply("GET", path, Err(ApiError::Unreachable));
+        }
+        let down = cx.update(|cx| now_ms(cx));
+        let executor = cx.executor();
+        fake.slow("GET", "/api/status", move || {
+            executor.advance_clock(Duration::from_secs(3))
+        });
+        // The restart wait's tries are the GET /api/status reads beside the polls'.
+        let tries = |fake: &FakeApi| count(fake, "GET", "/api/status") - count(fake, "GET", "/api/events");
+        let before = tries(&fake);
+        while tries(&fake) == before {
+            cx.executor().advance_clock(Duration::from_secs(1));
+        }
+        for _ in 0..15 {
+            cx.executor().advance_clock(Duration::from_secs(1));
+            let text = replacing(cx.update(|cx| now_ms(cx)));
+            assert_eq!(reason(cx).as_deref(), Some(text.as_str()));
+            assert_eq!(banner_text(cx, window).as_deref(), Some(text.as_str()));
+            let found = painted(cx, window).into_iter().filter(|t| *t == text).count();
+            assert_eq!(found, 2, "{text} in the banner and on the stream line");
+        }
+
+        // The stream line moved on every second of the wait, one second at a time.
+        let counted: Vec<(i64, String)> = history
+            .borrow()
+            .iter()
+            .filter(|(at, _)| *at > down)
+            .cloned()
+            .collect();
+        assert!(counted.len() >= 15, "{counted:?}");
+        for pair in counted.windows(2) {
+            assert_eq!(pair[1].0 - pair[0].0, 1000, "{pair:?}");
+        }
+        for (at, text) in &counted {
+            assert_eq!(text, &replacing(*at));
+        }
     }
 
     #[gpui::test]

@@ -9,9 +9,13 @@ use serde_json::Value;
 pub struct Status {
     pub stream: Stream,
     pub supervisor: Option<Supervisor>,
+    #[serde(deserialize_with = "lenient")]
     pub launcher: String,
     pub twitch: Option<Twitch>,
+    #[serde(deserialize_with = "lenient")]
     pub first_run: bool,
+    /// Negative after the clock steps back, which reads as 0.
+    #[serde(deserialize_with = "lenient")]
     pub uptime_ms: u64,
 }
 
@@ -28,6 +32,7 @@ pub struct Supervisor {
     pub playing: Option<Playing>,
     pub encoder: Option<Encoder>,
     pub youtube: Option<Youtube>,
+    #[serde(deserialize_with = "lenient")]
     pub playlist_count: Option<u32>,
 }
 
@@ -46,8 +51,11 @@ pub struct Playing {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Encoder {
+    #[serde(deserialize_with = "lenient")]
     pub alive: bool,
+    #[serde(deserialize_with = "lenient")]
     pub speed: Option<f64>,
+    #[serde(deserialize_with = "lenient")]
     pub restarts: u32,
 }
 
@@ -62,9 +70,13 @@ pub struct Youtube {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Twitch {
+    #[serde(deserialize_with = "lenient")]
     pub enabled: bool,
+    #[serde(deserialize_with = "lenient")]
     pub channel_live: Option<bool>,
+    #[serde(deserialize_with = "lenient")]
     pub consecutive_mismatches: u32,
+    #[serde(deserialize_with = "lenient")]
     pub mismatch_threshold: u32,
     pub readback: Option<Readback>,
 }
@@ -279,7 +291,6 @@ pub struct DiscordConfig {
     pub bot_name: String,
     pub avatar_url: String,
     pub role_ping: String,
-    pub events: IndexMap<String, bool>,
     pub templates: IndexMap<String, String>,
 }
 
@@ -336,9 +347,6 @@ impl Config {
                 bot_name: text(d, "botName"),
                 avatar_url: text(d, "avatarUrl"),
                 role_ping: text(d, "rolePing"),
-                events: map("events")
-                    .map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_bool().unwrap_or_default())).collect())
-                    .unwrap_or_default(),
                 templates: map("templates")
                     .map(|m| m.iter().map(|(k, x)| (k.clone(), x.as_str().unwrap_or_default().to_string())).collect())
                     .unwrap_or_default(),
@@ -399,6 +407,42 @@ mod tests {
         assert_eq!(status.stream.state, "");
         assert!(status.supervisor.is_none() && status.twitch.is_none());
         assert_eq!(status.uptime_ms, 0);
+    }
+
+    /// The stub's status with the field at `pointer` set to `value`, and with that field left out.
+    fn with_and_without(pointer: &str, value: Value) -> (Result<Status, serde_json::Error>, Status) {
+        let mut raw: Value = serde_json::from_str(STUB_STATUS).unwrap();
+        let (parent, key) = pointer.rsplit_once('/').unwrap();
+        *raw.pointer_mut(pointer).unwrap() = value;
+        let with = serde_json::from_value(raw.clone());
+        raw.pointer_mut(parent).unwrap().as_object_mut().unwrap().remove(key);
+        (with, serde_json::from_value(raw).unwrap())
+    }
+
+    #[test]
+    fn status_reads_a_negative_uptime_as_zero() {
+        let (status, without) = with_and_without("/uptimeMs", json!(-5000));
+
+        let status = status.unwrap();
+        assert_eq!(status.uptime_ms, 0);
+        assert_eq!(format!("{status:?}"), format!("{without:?}"));
+        assert_eq!(status.supervisor.unwrap().playing.unwrap().title.as_deref(), Some("First video"));
+    }
+
+    #[test]
+    fn one_wrongly_typed_scalar_leaves_the_rest_of_the_status_readable() {
+        for (pointer, wrong) in [
+            ("/launcher", json!(5)),
+            ("/supervisor/playlistCount", json!("4")),
+            ("/supervisor/encoder/alive", json!("yes")),
+            ("/twitch/mismatchThreshold", json!(2.5)),
+        ] {
+            let (status, without) = with_and_without(pointer, wrong);
+
+            let status = status.unwrap_or_else(|err| panic!("{pointer}: {err}"));
+            assert_eq!(format!("{status:?}"), format!("{without:?}"), "{pointer}");
+            assert_eq!(status.stream.state, "live", "{pointer}");
+        }
     }
 
     #[test]

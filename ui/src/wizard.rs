@@ -110,7 +110,7 @@ pub struct WizardView {
     step: usize,
     collected: Collected,
     playlists: Entity<PlaylistRows>,
-    /// Masked. The key stays here until a Finish whose settings save works.
+    /// Masked. Cleared once a Finish has saved both the key and the settings.
     stream_key: Entity<InputState>,
     ingest: Entity<InputState>,
     discord: Entity<InputState>,
@@ -996,7 +996,7 @@ impl WizardView {
             )
     }
 
-    /// index.html `.wiz-nav`: Back, which keeps its place while hidden, and the next button.
+    /// index.html `.wiz-nav`: Back, or an empty slot while it is hidden, then the next button on the right.
     fn render_nav(&self, cx: &mut Context<Self>) -> Div {
         let back: AnyElement = if self.back_hidden {
             div().into_any_element()
@@ -1181,7 +1181,7 @@ fn verify_icon(id: &'static str, mark: Mark) -> AnyElement {
             Label::new(glyph)
                 .text_size(px(18.))
                 // The page's line height, which makes each `.wiz-verify-item` 54 px tall.
-                .line_height(relative(1.6))
+                .line_height(relative(PAGE_LINE_HEIGHT))
                 .text_color(rgb(color)),
         );
     if mark != Mark::Working {

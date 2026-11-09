@@ -21,7 +21,7 @@ use crate::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
         TOAST_SUCCESS_BG, TOAST_SUCCESS_BORDER,
     },
-    widgets::PAGE_LINE_HEIGHT,
+    widgets::{PAGE_LINE_HEIGHT, RestartNote},
     wizard::WizardView,
 };
 
@@ -255,8 +255,9 @@ impl AppView {
         }));
     }
 
-    /// A page reload: the token is read again, then Connecting, then the wizard or the dashboard with every form loaded fresh.
+    /// A page reload: the restart notes go, the token is read again, then Connecting, then the wizard or the dashboard with every form loaded fresh.
     pub fn start_over(&mut self, cx: &mut Context<Self>) {
+        RestartNote::hide_all(cx);
         self.handle.client.forget_token();
         self.connect(cx);
     }
@@ -553,6 +554,22 @@ mod tests {
         cx.executor().advance_clock(POLL_EVERY);
         assert!(!shows(cx, window, BANNER));
         assert_eq!(fake.token_forgets(), 1);
+    }
+
+    #[gpui::test]
+    fn start_over_hides_the_restart_notes(cx: &mut TestAppContext) {
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let (app, _) = open_app(cx, fake);
+        let notes = [crate::playback::NOTE, crate::settings::NOTE];
+        cx.update(|cx| notes.iter().for_each(|note| note.show(cx)));
+        assert!(cx.update(|cx| notes.iter().all(|note| note.shown(cx))));
+
+        app.update(cx, |app, cx| app.start_over(cx));
+        cx.run_until_parked();
+
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+        assert!(cx.update(|cx| notes.iter().all(|note| !note.shown(cx))));
     }
 
     #[gpui::test]
