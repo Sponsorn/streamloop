@@ -13,4 +13,5 @@ pub mod setup_check;
 pub mod supervisor_client;
 pub mod timeline;
 pub mod twitch;
+pub mod updater;
 pub mod ytdlp_update;

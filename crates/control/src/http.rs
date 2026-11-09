@@ -97,7 +97,16 @@ pub trait Http: Send + Sync {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, HttpError>;
     /// Streams the body of a GET to `dest` and returns the byte count. A non-2xx answer is an error and writes nothing.
     async fn download(&self, url: &str, dest: &Path) -> Result<u64, HttpError>;
+
+    /// `download` that calls `progress(received, total)` after each chunk; `total` is the content-length when the server sent one.
+    async fn download_with_progress(&self, url: &str, dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
+        let _ = progress;
+        self.download(url, dest).await
+    }
 }
+
+/// Bytes received so far, and the expected total when known.
+pub type Progress<'a> = dyn Fn(u64, Option<u64>) + Send + Sync + 'a;
 
 pub struct ReqwestHttp {
     client: reqwest::Client,
@@ -176,16 +185,22 @@ impl Http for ReqwestHttp {
     }
 
     async fn download(&self, url: &str, dest: &Path) -> Result<u64, HttpError> {
+        self.download_with_progress(url, dest, &|_, _| {}).await
+    }
+
+    async fn download_with_progress(&self, url: &str, dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
         use tokio::io::AsyncWriteExt;
         let mut res = self.client.get(url).send().await.map_err(map_error)?;
         if !res.status().is_success() {
             return Err(HttpError::other(format!("HTTP {}", res.status().as_u16())));
         }
+        let expected = res.content_length();
         let mut file = tokio::fs::File::create(dest).await.map_err(|e| HttpError::other(e.to_string()))?;
         let mut total = 0u64;
         while let Some(chunk) = res.chunk().await.map_err(map_error)? {
             file.write_all(&chunk).await.map_err(|e| HttpError::other(e.to_string()))?;
             total += chunk.len() as u64;
+            progress(total, expected);
         }
         file.flush().await.map_err(|e| HttpError::other(e.to_string()))?;
         Ok(total)
@@ -241,12 +256,19 @@ impl Http for FakeHttp {
     }
 
     async fn download(&self, url: &str, dest: &Path) -> Result<u64, HttpError> {
+        self.download_with_progress(url, dest, &|_, _| {}).await
+    }
+
+    /// The body arrives as one chunk; `total` is the route's content-length header, if it set one.
+    async fn download_with_progress(&self, url: &str, dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
         let res = self.answer(HttpRequest::get(url))?;
         if !(200..300).contains(&res.status) {
             return Err(HttpError::other(format!("HTTP {}", res.status)));
         }
         tokio::fs::write(dest, &res.body).await.map_err(|e| HttpError::other(e.to_string()))?;
-        Ok(res.body.len() as u64)
+        let len = res.body.len() as u64;
+        progress(len, res.header("content-length").and_then(|v| v.parse().ok()));
+        Ok(len)
     }
 }
 
@@ -291,5 +313,23 @@ mod tests {
         // Assert
         assert_eq!(n, 5);
         assert_eq!(std::fs::read(&dest).unwrap(), b"12345");
+    }
+
+    #[tokio::test]
+    async fn fake_download_reports_the_body_as_one_chunk_with_its_content_length() {
+        // Arrange
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("a.exe");
+        let http = FakeHttp::new();
+        http.route("https://dl.example/", |_| {
+            let mut res = HttpResponse::new(200, "1234");
+            res.headers.push(("content-length".into(), "4".into()));
+            Ok(res)
+        });
+        let seen = Mutex::new(Vec::new());
+        // Act
+        http.download_with_progress("https://dl.example/a.exe", &dest, &|got, total| seen.lock().unwrap().push((got, total))).await.unwrap();
+        // Assert
+        assert_eq!(*seen.lock().unwrap(), vec![(4, Some(4))]);
     }
 }
