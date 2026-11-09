@@ -140,7 +140,12 @@ if (await portOpen(1935)) {
 // the install
 
 note('extracting', { zip: ZIP, to: S, ms: await extract(ZIP, S) });
-quietConfig(join(ROOT, 'app', 'config.example.json'));
+const example = join(ROOT, 'app', 'config.example.json');
+quietConfig(example);
+// A wizard left at its default ingest then streams to local MediaMTX, never the dummy key to Twitch.
+const config = JSON.parse(readFileSync(example, 'utf8'));
+config.supervisor = { ...config.supervisor, ingestUrl: INGEST };
+writeFileSync(example, JSON.stringify(config, null, 2));
 const env = { STREAMLOOP_TEST_HLS_URL: HLS, ...(LISTED.length ? { STREAMLOOP_TEST_RELEASES: releasesFile } : {}) };
 bat = startBat(ROOT, MODE, env);
 await nodeUp(`${MODE} first start`);
