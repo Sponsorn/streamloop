@@ -2667,6 +2667,11 @@ pub fn launch_main(args: Vec<String>) -> i32 {
     })
 }
 
+/// Served between the port bind and the first status publish. It carries the version so the control process, which restarts a supervisor of another version, never mistakes a fresh one for an old one.
+fn placeholder_status() -> Value {
+    json!({"state": "starting", "version": streamloop_common::version::VERSION, "encoder": {"alive": false}})
+}
+
 /// `streamloop.exe supervisor ARGS`: runs until killed; returns only an exit code for a start that failed.
 pub fn run(argv: Vec<String>) -> i32 {
     let args = match parse_args(&argv) {
@@ -2677,7 +2682,7 @@ pub fn run(argv: Vec<String>) -> i32 {
         }
     };
     let (tx, rx) = channel::<Msg>();
-    let snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
+    let snapshot: api::Snapshot = Arc::new(Mutex::new(placeholder_status()));
     let settings = match bind_then_settings(&args, PORT, tx.clone(), snapshot.clone()) {
         Ok(s) => s,
         Err(code) => return code,
@@ -4693,6 +4698,15 @@ mod tests {
 
         assert!(reply["streamKeyProblem"].is_string(), "the fixture has no key: {reply}");
         assert_eq!(through_common::<streamloop_common::api::ReloadReply>(&reply), reply);
+    }
+
+    #[test]
+    fn placeholder_status_reports_the_exe_version_and_starting() {
+        let status = placeholder_status();
+
+        assert_eq!(status["version"], streamloop_common::version::VERSION);
+        assert_eq!(status["state"], "starting");
+        assert_eq!(status["encoder"]["alive"], false);
     }
 
     #[test]

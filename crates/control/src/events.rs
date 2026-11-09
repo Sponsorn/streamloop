@@ -375,6 +375,14 @@ pub fn describe(e: &SupervisorEvent) -> Described {
         "supervisor-back" => alert("Supervisor is answering again", K::Recovery, vec![("step", "Supervisor answering again".into())], AlertLevel::Info),
         "supervisor-missing" => critical("The supervisor program is missing from the install.".into()),
         "supervisor-launched" => plain("Supervisor launched"),
+        "supervisor-version-restart" => plain(format!(
+            "Restarting the supervisor: it runs {}, this is {}.",
+            match get(e, "running") {
+                Some(Value::String(v)) if !v.is_empty() => v.clone(),
+                _ => "an unknown version".to_string(),
+            },
+            one(get(e, "expected"))
+        )),
         // The launch helper's own event; "Supervisor launched" already covers a normal launch.
         "launched" => plain(if get(e, "breakaway") == Some(&Value::Bool(false)) { "Supervisor launched inside the caller's job and may stop with it" } else { "" }),
         // The launch guard reports each block once, so this alerts once per block, not per check.

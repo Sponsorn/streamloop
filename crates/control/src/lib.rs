@@ -3,6 +3,7 @@ pub mod app;
 pub mod clock;
 pub mod events;
 pub mod http;
+pub mod launcher;
 pub mod logging;
 pub mod runner;
 pub mod setup_check;
