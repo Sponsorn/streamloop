@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { PART_KEY_FILES, SWAP_FOLDERS } from '../components.js';
 
 const launcherPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'START.bat');
 const lines = readFileSync(launcherPath, 'utf-8').split(/\r?\n/);
@@ -69,9 +70,69 @@ describe('START.bat', () => {
     expect(heal).toContain('move "%ROOT%_update_tmp\\app" "%APP%"');
   });
 
-  it('heals app only, never node', () => {
-    const heal = lines.slice(lines.indexOf(':heal')).join('\n');
-    expect(heal).not.toMatch(/_update_old_node|_update_tmp\\node/);
+  it('heals every part folder as well as app', () => {
+    // Arrange
+    const heal = lines.slice(lines.indexOf(':heal'), lines.indexOf(':heal_part')).join('\n');
+    const healPart = lines.slice(lines.indexOf(':heal_part')).join('\n');
+
+    // Assert
+    expect(heal).toContain('for %%F in (%PARTS%) do call :heal_part %%F');
+    expect(healPart).toContain('if exist "%ROOT%%~1\\!KEY_%~1!" goto :eof');
+    expect(healPart).toContain('if exist "%ROOT%_update_old_%~1\\!KEY_%~1!" (');
+    expect(healPart).toContain('rename "%ROOT%_update_old_%~1" %~1');
+    expect(healPart).toContain('move "%ROOT%_update_tmp\\%~1" "%ROOT%%~1"');
+    expect(healPart).toContain('rename "%ROOT%_update_bad_%~1" %~1');
+  });
+
+  it('puts the previous version back when a swap or a rollback was cut off before it finished', () => {
+    // Arrange
+    const heal = lines.slice(lines.indexOf(':heal'), lines.indexOf(':heal_part'));
+    const marker = heal.indexOf('if exist "%SWAPPING%" (');
+    const branch = heal.slice(marker, heal.indexOf(')', marker) + 1).map((l) => l.trim());
+
+    // Assert
+    expect(lines).toContain('set "SWAPPING=%ROOT%data\\update-swapping"');
+    expect(marker).toBeGreaterThan(-1);
+    expect(branch).toEqual(expect.arrayContaining([
+      'call :restore_parts',
+      'call :restore_app',
+      'if exist "%CHECKING%" del /f /q "%CHECKING%"',
+    ]));
+  });
+
+  it('marks a rollback in progress until it is done, so heal can finish one that was cut off', () => {
+    // Arrange
+    const section = lines.slice(lines.indexOf(':rollback'), lines.indexOf(':heal')).map((l) => l.trim());
+    const marked = section.indexOf('type nul > "%SWAPPING%"');
+
+    // Assert
+    expect(marked).toBeGreaterThan(-1);
+    expect(marked).toBeLessThan(section.indexOf('call :restore_parts'));
+    expect(section.indexOf('if "!RESTORE_FAILED!"=="0" del /f /q "%SWAPPING%" 2>nul')).toBeGreaterThan(section.indexOf('call :restore_app'));
+  });
+
+  it('calls a swap off without restoring anything when an earlier leftover cannot be removed', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':swap_one')).map((l) => l.trim());
+    const refused = swapParts.indexOf('if "%REFUSED%"=="1" (');
+    const refusal = swapParts.slice(refused, swapParts.indexOf('goto :eof', refused) + 1);
+
+    // Assert
+    expect(swapParts.indexOf('call :clear_leftovers')).toBeLessThan(refused);
+    expect(refused).toBeLessThan(swapParts.indexOf('type nul > "%SWAPPING%"'));
+    expect(refusal).toContain('set "PARTS_RESULT=failed"');
+    expect(refusal).not.toContain('call :restore_parts');
+  });
+
+  it('keeps the current part when its previous copy cannot be put back whole', () => {
+    // Arrange
+    const restoreOne = lines.slice(lines.indexOf(':restore_one'), lines.indexOf(':restore_app')).map((l) => l.trim());
+    const restored = restoreOne.indexOf('call :log %~1 restored the previous version');
+
+    // Assert: _update_bad_ is only removed once the restored folder holds its key file.
+    expect(restoreOne.filter((l) => l.includes('rmdir /s /q "%ROOT%_update_bad_%~1"'))).toHaveLength(2);
+    expect(restoreOne[restored + 1]).toBe('if exist "%ROOT%_update_bad_%~1" rmdir /s /q "%ROOT%_update_bad_%~1" 2>nul');
+    expect(restoreOne).toContain('if not exist "%ROOT%%~1" if exist "%ROOT%_update_bad_%~1" rename "%ROOT%_update_bad_%~1" %~1 2>nul');
   });
 
   it('keeps the heal routine after the last goto loop, so it only runs via call', () => {
@@ -95,10 +156,168 @@ describe('START.bat', () => {
     expect(lines[abort + 1].trim()).toBe('if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul');
   });
 
-  it('never swaps yt-dlp or node, which the supervisor and token server hold', () => {
-    const text = lines.join('\n');
-    expect(text).not.toMatch(/_update_tmp\\(yt-dlp|node)|_update_old_(ytdlp|node)/);
-    expect(text).not.toMatch(/rename "%ROOT%(yt-dlp|node)"/);
+  it('lists the same swap folders and key files as components.js', () => {
+    // Arrange
+    const parts = lines.find((l) => l.startsWith('set "PARTS='))?.match(/^set "PARTS=(.*)"$/)?.[1].split(' ');
+    const keys = Object.fromEntries(
+      lines
+        .map((l) => /^set "KEY_([\w-]+)=(.*)"$/.exec(l))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => [m[1], `${m[1]}/${m[2].replaceAll('\\', '/')}`]),
+    );
+
+    // Assert
+    expect(parts).toEqual(SWAP_FOLDERS);
+    expect(keys).toEqual(PART_KEY_FILES);
+  });
+
+  it('swaps each staged part folder into _update_old_<folder>', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':swap_one')).join('\n');
+    const swapOne = lines.slice(lines.indexOf(':swap_one'), lines.indexOf(':rename_tries')).join('\n');
+    const tries = lines.slice(lines.indexOf(':rename_tries'), lines.indexOf(':end_processes')).join('\n');
+    const block = lines.slice(lines.indexOf('if %ERRORLEVEL% equ 75 ('), lines.indexOf('if %ERRORLEVEL% equ 0 (')).join('\n');
+
+    // Assert: binaries first in PARTS order, app after them.
+    expect(swapParts).toContain('for %%F in (%PARTS%) do if exist "%ROOT%_update_tmp\\%%F" set "STAGED=!STAGED! %%F"');
+    expect(block.indexOf('call :swap_parts')).toBeGreaterThan(-1);
+    expect(block.indexOf('call :swap_parts')).toBeLessThan(block.indexOf('rename "%ROOT%app" _update_old'));
+    expect(swapOne).toContain('call :rename_tries "%~1" "_update_old_%~1" %~1');
+    expect(swapOne).toContain('move "%ROOT%_update_tmp\\%~1" "%ROOT%%~1"');
+    expect(swapOne).toContain('"%ROOT%node\\node.exe" --version >nul 2>&1');
+    expect(swapOne).toContain('copy /y "%ROOT%_update_old_yt-dlp\\yt-dlp.exe" "%ROOT%yt-dlp\\yt-dlp.exe"');
+    expect(tries).toContain('for /L %%i in (1,1,3) do (');
+    expect(tries).toContain('call :end_processes %~1');
+    expect(tries).toContain('ping -n 4 127.0.0.1 >nul');
+  });
+
+  it('ends what runs from a folder before its first rename, held or not', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':swap_one')).map((l) => l.trim());
+    const restoreParts = lines.slice(lines.indexOf(':restore_parts'), lines.indexOf(':restore_one')).map((l) => l.trim());
+    const restoreApp = lines.slice(lines.indexOf(':restore_app'), lines.indexOf(':app_failed')).map((l) => l.trim());
+
+    // Assert
+    expect(swapParts.indexOf('call :end_processes %STAGED%')).toBeGreaterThan(-1);
+    expect(swapParts.indexOf('call :end_processes %STAGED%')).toBeLessThan(swapParts.findIndex((l) => l.includes('call :swap_one')));
+    expect(restoreParts.indexOf('if defined AWAY call :end_processes %AWAY%')).toBeLessThan(restoreParts.findIndex((l) => l.includes('call :restore_one')));
+    expect(restoreApp.indexOf('call :end_processes app')).toBeLessThan(restoreApp.indexOf('call :rename_tries "app" "_update_bad_app" app'));
+  });
+
+  it('keeps the old app in _update_old after a part swap, for a rollback', () => {
+    // Assert
+    expect(lines.map((l) => l.trim())).toContain(
+      'if not "!PARTS_RESULT!"=="swapped" if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul',
+    );
+  });
+
+  it('rolls back on exit 76', () => {
+    // Arrange
+    const exit76 = lines.indexOf('if %ERRORLEVEL% equ 76 goto rollback');
+    const section = lines
+      .slice(lines.indexOf(':rollback'), lines.indexOf(':heal'))
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('::'));
+
+    // Assert
+    expect(exit76).toBeGreaterThan(lines.indexOf('if %ERRORLEVEL% equ 0 ('));
+    expect(section).toEqual(expect.arrayContaining([
+      'call :restore_parts',
+      'call :restore_app',
+      'if exist "%CHECKING%" del /f /q "%CHECKING%"',
+    ]));
+    expect(section.slice(-2)).toEqual(['set "STREAMLOOP_START=rollback"', 'goto loop']);
+  });
+
+  it('carries the newer config.json and logs into the app it restores', () => {
+    // Arrange
+    const restore = lines.slice(lines.indexOf(':restore_app'), lines.indexOf(':app_failed')).join('\n');
+
+    // Assert
+    expect(restore).toContain('if exist "%ROOT%_update_old\\src\\server\\index.ts" (');
+    expect(restore).toContain('copy /y "%ROOT%_update_bad_app\\config.json" "%APP%\\config.json"');
+    expect(restore).toContain('xcopy "%ROOT%_update_bad_app\\logs" "%APP%\\logs\\" /E /I /Y');
+  });
+
+  it('rolls back on the third crash during an update check', () => {
+    // Arrange
+    const crash = lines.slice(lines.indexOf('if %ERRORLEVEL% equ 76 goto rollback'), lines.indexOf(':rollback')).map((l) => l.trim());
+    const counted = crash.indexOf('set /a CHECK_CRASHES+=1');
+
+    // Assert
+    expect(crash).toContain('if exist "%CHECKING%" (');
+    expect(counted).toBeGreaterThan(-1);
+    expect(crash[counted + 1]).toBe('if !CHECK_CRASHES! geq 3 (');
+    expect(crash.slice(counted + 1, counted + 6)).toContain('goto rollback');
+    expect(crash).toContain('set "NEXT_START=update"');
+    expect(lines).toContain('set "CHECKING=%ROOT%data\\update-checking"');
+  });
+
+  it('marks the health check as due after a part swap, so a crash before Node writes the marker counts', () => {
+    // Arrange
+    const block = lines.slice(lines.indexOf('if %ERRORLEVEL% equ 75 ('), lines.indexOf('if %ERRORLEVEL% equ 0 (')).map((l) => l.trim());
+    const swapped = block.indexOf('if "!PARTS_RESULT!"=="swapped" (');
+    const marked = block.indexOf('type nul > "%CHECKING%"');
+
+    // Assert
+    expect(swapped).toBeGreaterThan(-1);
+    expect(block.slice(swapped, marked)).toContain('set "NEXT_START=update"');
+    expect(marked - swapped).toBeLessThan(5);
+    expect(marked).toBeLessThan(block.indexOf('if exist "%ROOT%START.bat.new" ('));
+  });
+
+  it('writes update-checking before it removes update-swapping, so new parts are never left with neither marker', () => {
+    // Arrange
+    const block = lines.slice(lines.indexOf('if %ERRORLEVEL% equ 75 ('), lines.indexOf('if %ERRORLEVEL% equ 0 (')).map((l) => l.trim());
+    const marked = block.indexOf('type nul > "%CHECKING%"');
+    const unswapped = block.flatMap((l, i) => (l.includes('del /f /q "%SWAPPING%"') ? [i] : []));
+    const unmarkedForRollback = block.indexOf('if "!NEXT_START!"=="rollback" if exist "%CHECKING%" del /f /q "%CHECKING%"');
+
+    // Assert
+    expect(unswapped.length).toBeGreaterThan(0);
+    for (const i of unswapped) expect(marked).toBeLessThan(i);
+    // A rollback drops update-checking first, so the old version is never taken for unchecked new parts.
+    expect(unmarkedForRollback).toBeGreaterThan(-1);
+    expect(unmarkedForRollback).toBeLessThan(unswapped[unswapped.length - 1]);
+  });
+
+  it('drops update-checking before update-swapping when a part swap is put back', () => {
+    // Arrange
+    const swapParts = lines.slice(lines.indexOf(':swap_parts'), lines.indexOf(':clear_leftovers')).map((l) => l.trim());
+    const restored = swapParts.indexOf('call :restore_parts');
+    const after = swapParts.slice(restored);
+
+    // Assert
+    expect(restored).toBeGreaterThan(-1);
+    expect(after.indexOf('if exist "%CHECKING%" del /f /q "%CHECKING%"')).toBeGreaterThan(-1);
+    expect(after.indexOf('if exist "%CHECKING%" del /f /q "%CHECKING%"'))
+      .toBeLessThan(after.indexOf('if "!RESTORE_FAILED!"=="0" if exist "%SWAPPING%" del /f /q "%SWAPPING%"'));
+  });
+
+  const psLines = lines.filter((l) => /powershell/i.test(l) && !/^\s*(::|rem\b)/i.test(l));
+
+  it('passes folder paths to PowerShell through the environment, never in the command text', () => {
+    // Arrange
+    const ps = psLines;
+
+    // Assert
+    expect(ps.length).toBeGreaterThan(0);
+    for (const l of ps) {
+      expect(l).not.toMatch(/%ROOT%|!ROOT!|%~dp0|%APP%|%~1|%~2|%\*|%%F|%SWAP_LOG%/);
+      expect(l).toContain('$env:SL_DIRS');
+      expect(l).toContain('$env:SL_ROOT');
+    }
+  });
+
+  it('writes the swap log statuses the dashboard reads', () => {
+    // Arrange
+    const statuses = new Set(
+      lines.flatMap((l) => [...l.matchAll(/call :log \S+ (\S+)/g)].map((m) => m[1])),
+    );
+
+    // Assert
+    expect([...statuses].sort()).toEqual(['failed', 'ok', 'restored', 'retry']);
+    expect(psLines.join('\n')).toContain("' killed '");
   });
 
   it('keeps the launcher trampoline for a changed START.bat', () => {
@@ -126,6 +345,40 @@ describe('START.bat', () => {
     // Assert
     expect(text).not.toMatch(/timeout \/t/i);
     expect(text).toContain('ping -n 11 127.0.0.1 >nul');
+  });
+
+  it('starts as first, or as the kind of start its first argument names', () => {
+    // Arrange
+    const loop = lines.indexOf(':loop');
+    const first = lines.indexOf('set "STREAMLOOP_START=first"');
+
+    // Assert
+    expect(first).toBeGreaterThan(-1);
+    expect(first).toBeLessThan(loop);
+    expect(lines[first + 1]).toBe('for %%A in (restart update rollback) do if /i "%~1"=="%%A" set "STREAMLOOP_START=%%A"');
+  });
+
+  it('names the next start before each goto loop: restart, update after a part swap, rollback', () => {
+    // Arrange
+    const gotos = lines.map((l, i) => (l.trim() === 'goto loop' ? i : -1)).filter((i) => i >= 0);
+    const values = new Set(
+      lines.flatMap((l) => [...l.matchAll(/set "(?:STREAMLOOP_START|NEXT_START)=([^"]+)"/g)].map((m) => m[1])),
+    );
+
+    // Assert
+    expect(gotos.length).toBeGreaterThan(0);
+    for (const g of gotos) expect(lines[g - 1].trim()).toMatch(/^set "STREAMLOOP_START=(rollback|!NEXT_START!|%NEXT_START%)"$/);
+    expect([...values].filter((v) => !/^(%%A|!NEXT_START!|%NEXT_START%)$/.test(v)).sort()).toEqual(
+      ['first', 'restart', 'rollback', 'update'],
+    );
+  });
+
+  it('keeps STREAMLOOP_START across the launcher trampoline', () => {
+    // Arrange
+    const generated = lines.filter((l) => /^\s+>>? "!TRAMP!" echo /.test(l)).join('\n');
+
+    // Assert
+    expect(generated).toContain('start "StreamLoop 3" "%%~dp0START.bat" !NEXT_START!');
   });
 
   it('uses CRLF line endings, which cmd needs for labels and goto', () => {

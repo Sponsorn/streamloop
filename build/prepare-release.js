@@ -10,6 +10,9 @@
  *   node build/prepare-release.js --slim   update ZIP (streamloop-vX.Y.Z-update.zip): app\ and
  *                                          START.bat only, the parts the updater swaps
  *
+ * The full build also writes dist\components.json (a release asset): the version, NODE_VERSION and a
+ * hash per part, which the updater compares with the install. The update build leaves it alone.
+ *
  * Both write NODE_VERSION to app\node-version.txt and dist\node-version.txt (a release
  * asset), a .sha256 per ZIP, and run verify-release.mjs on the ZIP.
  *
@@ -23,6 +26,7 @@ import { createHash } from 'crypto';
 import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, createReadStream, createWriteStream } from 'fs';
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
+import { hashParts } from '../src/server/components.js';
 
 const NODE_VERSION = '22.23.4';
 const NODE_ARCH = 'win-x64';
@@ -75,7 +79,7 @@ async function main() {
 
   // Only this mode's outputs go, so the full and update builds can run back to back.
   mkdirSync(DIST, { recursive: true });
-  for (const p of [RELEASE, WORK, join(DIST, zipFilename), join(DIST, checksumFilename), join(DIST, 'node-version.txt')]) {
+  for (const p of [RELEASE, WORK, join(DIST, zipFilename), join(DIST, checksumFilename), join(DIST, 'node-version.txt'), ...(SLIM ? [] : [join(DIST, 'components.json')])]) {
     rmSync(p, { recursive: true, force: true });
   }
   mkdirSync(WORK, { recursive: true });
@@ -153,6 +157,14 @@ async function main() {
 
   cpSync(join(ROOT, 'scripts', 'START.bat'), join(RELEASE, 'START.bat'));
 
+  // the updater compares these hashes with the install's to see which parts a release changes
+  const componentsPath = join(DIST, 'components.json');
+  if (!SLIM) {
+    const components = { version: pkg.version, node: NODE_VERSION, parts: await hashParts(RELEASE) };
+    writeFileSync(componentsPath, `${JSON.stringify(components, null, 2)}
+`);
+  }
+
   // antivirus may still hold freshly written files, so the ZIP is retried
   console.log('Creating ZIP...');
   const zipPath = join(DIST, zipFilename);
@@ -178,6 +190,7 @@ async function main() {
   console.log(`  ZIP: ${zipPath}`);
   console.log(`  SHA-256: ${checksumPath}`);
   console.log(`  Node version asset: ${join(DIST, 'node-version.txt')}`);
+  if (!SLIM) console.log(`  Components asset: ${componentsPath}`);
 }
 
 async function downloadFile(url, dest) {

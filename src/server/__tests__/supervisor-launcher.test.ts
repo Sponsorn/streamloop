@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
 import { EventEmitter } from 'events';
-import { installRoot, SupervisorLauncher } from '../supervisor-launcher.js';
+import { installRoot, shouldHold, SupervisorLauncher } from '../supervisor-launcher.js';
 import type { SupervisorClient, SupervisorStatus } from '../supervisor-client.js';
 import { SPAWN_CWD } from '../spawn-cwd.js';
 import { FFMPEG_MISSING, launchGuard, OBS_RUNNING, type Encoder, type RunFn } from '../setup-check.js';
@@ -13,7 +13,7 @@ class FakeChild extends EventEmitter {
   unref = vi.fn();
 }
 
-function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: boolean; beforeLaunch?: () => Promise<string | null> } = {}) {
+function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: boolean; beforeLaunch?: () => Promise<string | null>; holdForStart?: boolean } = {}) {
   let answering = opts.answering ?? false;
   const client = {
     status: vi.fn(async (): Promise<SupervisorStatus | null> => (answering ? { state: 'playing' } : null)),
@@ -33,6 +33,7 @@ function setup(opts: { root?: string | null; answering?: boolean; debugFaults?: 
     onEvent: (kind) => events.push(kind),
     debugFaults: opts.debugFaults,
     beforeLaunch: opts.beforeLaunch,
+    holdForStart: opts.holdForStart,
   });
   return { launcher, client, spawnImpl, children, events, setAnswering: (v: boolean) => { answering = v; } };
 }
@@ -515,6 +516,187 @@ describe('stopped-by-user marker', () => {
     expect(launcher.isStoppedByUser()).toBe(false);
   });
 });
+describe('hold for start', () => {
+  const waiting = (): string => join(root, 'data', 'waiting-for-start');
+
+  it('holds the launch while waiting for Start and reports ready', async () => {
+    // Arrange
+    const { launcher, spawnImpl } = setup({ holdForStart: true });
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(600_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(launcher.state()).toBe('ready');
+  });
+
+  it('attaches to a supervisor that answers while held', async () => {
+    // Arrange
+    const { launcher, spawnImpl } = setup({ holdForStart: true, answering: true });
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(4_000);
+    launcher.stop();
+
+    // Assert
+    expect(launcher.state()).toBe('running');
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  it('launches after Start', async () => {
+    // Arrange
+    const { launcher, spawnImpl } = setup({ holdForStart: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    // Act
+    launcher.launchNow();
+    await vi.advanceTimersByTimeAsync(2_000);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('release launches unless the stream was stopped by the user', async () => {
+    // Arrange
+    const free = setup({ holdForStart: true });
+    free.launcher.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    mkdirSync(join(root, 'data'), { recursive: true });
+    writeFileSync(join(root, 'data', 'stopped-by-user'), '');
+    const stopped = setup({ holdForStart: true });
+    stopped.launcher.start();
+
+    // Act
+    free.launcher.release();
+    stopped.launcher.release();
+    await vi.advanceTimersByTimeAsync(3_000);
+    free.launcher.stop();
+    stopped.launcher.stop();
+
+    // Assert
+    expect(free.spawnImpl).toHaveBeenCalledTimes(1);
+    expect(stopped.spawnImpl).not.toHaveBeenCalled();
+    expect(stopped.launcher.state()).toBe('stopped-by-user');
+  });
+
+  it('keeps the waiting marker until Start', async () => {
+    // Arrange
+    const { launcher } = setup({ holdForStart: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const whileHeld = existsSync(waiting());
+
+    // Act
+    launcher.launchNow();
+    launcher.stop();
+
+    // Assert
+    expect(whileHeld).toBe(true);
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('removes the waiting marker on attach', async () => {
+    // Arrange
+    const { launcher } = setup({ holdForStart: true, answering: true });
+    const before = existsSync(waiting());
+
+    // Act
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    launcher.stop();
+
+    // Assert
+    expect(before).toBe(true);
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('relaunches a supervisor that dies after it was attached while held', async () => {
+    // Arrange
+    const { launcher, spawnImpl, events, setAnswering } = setup({ holdForStart: true, answering: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    // Act
+    setAnswering(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    launcher.stop();
+
+    // Assert
+    expect(events).toContain('supervisor-down');
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes a waiting marker left by an earlier window when this start does not hold', () => {
+    // Arrange
+    mkdirSync(join(root, 'data'), { recursive: true });
+    writeFileSync(waiting(), '');
+
+    // Act
+    setup({ holdForStart: false });
+
+    // Assert
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('release launches on the next poll', async () => {
+    // Arrange
+    const { launcher, spawnImpl } = setup({ holdForStart: true });
+    launcher.start();
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Act
+    launcher.release();
+    await vi.advanceTimersByTimeAsync(100);
+    launcher.stop();
+
+    // Assert
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('release removes the waiting marker', () => {
+    // Arrange
+    const { launcher } = setup({ holdForStart: true });
+
+    // Act
+    launcher.release();
+
+    // Assert
+    expect(existsSync(waiting())).toBe(false);
+  });
+
+  it('writes no marker when not held', () => {
+    // Arrange + Act
+    setup();
+
+    // Assert
+    expect(existsSync(waiting())).toBe(false);
+  });
+});
+
+describe('shouldHold', () => {
+  it.each([
+    ['first', true, false, false],
+    ['first', false, false, true],
+    ['first', false, true, true],
+    ['rollback', true, false, false],
+    ['rollback', false, false, true],
+    ['restart', false, false, false],
+    ['restart', true, true, true],
+    ['restart', false, true, true],
+    ['update', true, false, true],
+    ['update', false, false, true],
+  ] as const)('%s with autoStartStream %s and marker %s holds: %s', (start, auto, marker, expected) => {
+    // Act + Assert
+    expect(shouldHold(start, auto, marker)).toBe(expected);
+  });
+});
+
 describe('launch guard', () => {
   type Sup = { encoder: Encoder; preferredEncoder?: Encoder };
   function guarded(o: {

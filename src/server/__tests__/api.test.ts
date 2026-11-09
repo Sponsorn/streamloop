@@ -10,6 +10,8 @@ import { logger } from '../logger.js';
 import type { AppConfig } from '../types.js';
 import type { SupervisorStatus } from '../supervisor-client.js';
 import type { LauncherState } from '../supervisor-launcher.js';
+import { UpdateRefusedError, type UpdateInfo } from '../updater.js';
+import { writeUpdateState, type UpdateState } from '../update-state.js';
 
 const TOKEN = 'test-token';
 const KEY = 'live_TESTKEY';
@@ -28,7 +30,7 @@ function makeConfig(): AppConfig {
       ingestUrl: 'rtmp://live.twitch.tv/app', streamKeyProtected: BLOB, encoder: 'h264_nvenc', cacheBudgetMb: 300,
       readAheadSeconds: 20, playerClient: 'mweb,web_embedded', overlay: true, freezeSeconds: 20, silenceSeconds: 30,
     },
-    autoUpdateCheck: true, updateCheckIntervalMs: 21600000, autoUpdateYtdlp: true, autoOpenAdmin: true,
+    autoUpdateCheck: true, updateCheckIntervalMs: 21600000, autoUpdateYtdlp: true, autoOpenAdmin: true, autoStartStream: true,
     twitchClientId: 'id', twitchClientSecret: 'secret', twitchChannel: 'chan', twitchLivenessEnabled: false,
     twitchPollIntervalMs: 60000, ytdlCookiesFromBrowser: '',
   };
@@ -47,6 +49,14 @@ interface Harness {
   applyConfig: ReturnType<typeof vi.fn>;
   protect: ReturnType<typeof vi.fn>;
   config: { value: AppConfig };
+  update: { value: UpdateInfo; apply: ReturnType<typeof vi.fn> };
+}
+
+function idleUpdate(): UpdateInfo {
+  return {
+    currentVersion: '3.0.5', latestVersion: '3.0.6', updateAvailable: true, status: 'idle', error: null,
+    isDevMode: false, nodeNotice: null, kind: 'full', parts: ['supervisor'], sameVersion: false, downloadPercent: null,
+  };
 }
 
 function harness(): Harness {
@@ -74,6 +84,7 @@ function harness(): Harness {
   });
   const applyConfig = vi.fn((c: AppConfig) => { config.value = c; });
   const protect = vi.fn(async () => BLOB);
+  const update = { value: idleUpdate(), apply: vi.fn(async (): Promise<{ done: Promise<void> }> => ({ done: Promise.resolve() })) };
   const deps = {
     getConfig: () => config.value,
     applyConfig,
@@ -86,7 +97,7 @@ function harness(): Harness {
     protect,
     playlistCache: { fetch: vi.fn(async () => ({ videos: [{ id: 'v1' }, { id: 'v2' }] })), clear: vi.fn() },
     ytdlpPath: 'yt-dlp.exe',
-    updater: {},
+    updater: { getStatus: () => update.value, startUpdate: update.apply },
     triggerRestart: vi.fn(),
     triggerShutdown: vi.fn(),
     getDiscord: () => ({}),
@@ -95,7 +106,7 @@ function harness(): Harness {
     apiToken: TOKEN,
     runSetupCheck,
   } as unknown as ApiDependencies;
-  return { deps, sup, launcherState, client, launcher, save, applyConfig, protect, config, runSetupCheck };
+  return { deps, sup, launcherState, client, launcher, save, applyConfig, protect, config, runSetupCheck, update };
 }
 
 let server: Server;
@@ -266,6 +277,14 @@ WshShell.Run """${bat}""", 1, False`;
       expect(body.stream.state).toBe('stopped');
       expect(body.stream.reason).toMatch(/stopped from the dashboard/i);
     expect(body.stream.reason).toMatch(/until you press Start/i);
+    });
+
+    it('shows Ready to stream while the launcher waits for Start', async () => {
+      h.launcherState.value = 'ready';
+
+      const body = await (await get('/status')).json();
+
+      expect(body.stream).toEqual({ state: 'stopped', reason: 'Ready to stream. Press Start.' });
     });
 
     it('is starting with the launcher reason while a Start waits for the stopped supervisor', async () => {
@@ -811,6 +830,124 @@ WshShell.Run """${bat}""", 1, False`;
       expect(h.save).not.toHaveBeenCalled();
       expect(h.client.control).not.toHaveBeenCalled();
     });
+
+  describe('during a full update', () => {
+    const running: UpdateState = {
+      from: '3.0.5', to: '3.0.6', parts: ['supervisor'], folders: ['supervisor', 'yt-dlp'], step: 'check', result: 'running',
+      reason: null, startedAt: '2026-11-08T10:00:00.000Z', stepStartedAt: '2026-11-08T10:02:00.000Z', baseline: null,
+    };
+    const refused: Array<[string, unknown]> = [
+      ['/stream/stop', {}], ['/stream/start', {}], ['/player/next', {}], ['/player/prev', {}], ['/player/restart', {}],
+      ['/player/jump', { index: 1 }], ['/playlist/switch', { playlistIndex: 1 }], ['/config', { autoOpenAdmin: false }],
+      ['/stream-key', { key: KEY }], ['/update/apply', {}], ['/yt-dlp/update', {}], ['/setup-check/run', {}],
+    ];
+
+    async function expectRefused(): Promise<void> {
+      for (const [path, body] of refused) {
+        const res = await post(path, body);
+        expect([path, res.status, (await res.json()).error]).toEqual([path, 409, 'An update is running. Try again when it is done.']);
+      }
+      expect(h.launcher.markStoppedByUser).not.toHaveBeenCalled();
+      expect(h.client.shutdown).not.toHaveBeenCalled();
+      expect(h.launcher.launchNow).not.toHaveBeenCalled();
+      expect(h.client.control).not.toHaveBeenCalled();
+      expect(h.client.reload).not.toHaveBeenCalled();
+      expect(h.save).not.toHaveBeenCalled();
+      expect(h.protect).not.toHaveBeenCalled();
+      expect(h.update.apply).not.toHaveBeenCalled();
+      expect(h.runSetupCheck).not.toHaveBeenCalled();
+    }
+
+    it('refuses Stop, Start, controls and config saves while an update runs', async () => {
+      // Arrange: the new version runs its health check; the updater of this Node is idle.
+      writeUpdateState(join(tmp, 'root'), running);
+      h.sup.value = playing();
+
+      // Act + Assert
+      await expectRefused();
+    });
+
+    it('refuses them while the update downloads, before any state is written', async () => {
+      for (const status of ['downloading', 'extracting', 'ready'] as const) {
+        // Arrange
+        h.update.value = { ...idleUpdate(), status };
+
+        // Act + Assert
+        await expectRefused();
+      }
+    });
+
+    it('refuses to apply while an update check runs, and still takes Stop', async () => {
+      // Arrange
+      h.update.value = { ...idleUpdate(), status: 'checking' };
+
+      // Act
+      const apply = await post('/update/apply');
+      const stop = await post('/stream/stop');
+
+      // Assert
+      expect([apply.status, (await apply.json()).error]).toEqual([409, 'An update is running. Try again when it is done.']);
+      expect(h.update.apply).not.toHaveBeenCalled();
+      expect(stop.status).toBe(200);
+    });
+
+    it('takes commands again once the update has a result', async () => {
+      // Arrange
+      writeUpdateState(join(tmp, 'root'), { ...running, step: 'start', result: 'ok' });
+
+      // Act
+      const res = await post('/stream/start');
+
+      // Assert
+      expect(res.status).toBe(200);
+      expect(h.launcher.launchNow).toHaveBeenCalledOnce();
+    });
+
+    it('answers 409 with the reason when the update is refused, and restarts nothing', async () => {
+      // Arrange
+      h.update.apply.mockRejectedValueOnce(new UpdateRefusedError('Close the other StreamLoop window first.'));
+
+      // Act
+      const res = await post('/update/apply');
+
+      // Assert
+      expect([res.status, (await res.json()).error]).toEqual([409, 'Close the other StreamLoop window first.']);
+      expect(h.deps.triggerRestart).not.toHaveBeenCalled();
+    });
+
+    it('answers once the update runs and restarts when it is staged', async () => {
+      // Act
+      const res = await post('/update/apply');
+
+      // Assert
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(h.deps.triggerRestart).toHaveBeenCalledOnce(), { timeout: 3000 });
+    });
+
+    it('GET /update/status adds the progress and the swap log', async () => {
+      // Arrange
+      writeUpdateState(join(tmp, 'root'), running);
+      writeFileSync(join(tmp, 'root', 'data', 'update-swap.log'), 'supervisor ok swapped\r\nyt-dlp ok swapped\r\n');
+
+      // Act
+      const body = await (await get('/update/status')).json();
+
+      // Assert
+      expect(body).toEqual({
+        ...idleUpdate(),
+        progress: running,
+        swapLog: [{ folder: 'supervisor', status: 'ok', detail: 'swapped' }, { folder: 'yt-dlp', status: 'ok', detail: 'swapped' }],
+      });
+    });
+
+    it('GET /update/status has no progress before any full update', async () => {
+      // Act
+      const body = await (await get('/update/status')).json();
+
+      // Assert
+      expect(body).toMatchObject({ progress: null, swapLog: [] });
+    });
+  });
 
   it('has no exit-75 test hook unless test hooks are on', async () => {
     // Act

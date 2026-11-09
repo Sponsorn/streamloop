@@ -1,4 +1,4 @@
-//! One exe, three jobs: `supervisor`, `launch` and `protect` run the supervisor crate; anything else is control mode.
+//! One exe: `supervisor`, `launch`, `protect` and `check` run the supervisor crate; anything else is control mode.
 
 use streamloop_common::version::VERSION;
 
@@ -9,6 +9,7 @@ fn main() {
         Some("supervisor") => streamloop_supervisor::run(rest()),
         Some("launch") => streamloop_supervisor::launch_main(rest()),
         Some("protect") => streamloop_supervisor::protect_main(),
+        Some("check") => streamloop_supervisor::check_main(rest()),
         Some("--version") => {
             println!("{VERSION}");
             0

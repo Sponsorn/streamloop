@@ -1,5 +1,7 @@
 // Pure decisions for the dashboard, kept out of admin.js so vitest can import them.
 
+import { stepLabel, failureText } from './update-text.js';
+
 const STREAM_WORDS = {
   live: { word: 'Live', level: 'ok' },
   recovering: { word: 'Recovering', level: 'warn' },
@@ -162,4 +164,70 @@ export function savePatch(original, edited) {
   const patch = changedFields(original, edited);
   if (patch.supervisor && patch.supervisor.encoder) patch.supervisor.preferredEncoder = patch.supervisor.encoder;
   return patch;
+}
+
+/** "45 s", "1 min 20 s", "12 min": seconds only under 10 minutes. */
+export function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const min = Math.floor(total / 60);
+  const sec = total % 60;
+  if (min === 0) return `${sec} s`;
+  if (min >= 10 || sec === 0) return `${min} min`;
+  return `${min} min ${sec} s`;
+}
+
+const PART_LABELS = { node: 'Node', supervisor: 'Supervisor', ffmpeg: 'ffmpeg', pot: 'Token server', 'ytdlp-plugin': 'yt-dlp plugin' };
+
+/** The offer: the full update's banner, the same-version button copy, or today's app-only text. */
+export function updateOfferText(status) {
+  if (status.kind === 'full') {
+    if (status.sameVersion) return `Update parts to ${status.latestVersion}`;
+    const names = (status.parts || []).map((p) => PART_LABELS[p] || p).join(', ');
+    return `Full update: the stream goes off air while these parts are replaced: ${names}.`;
+  }
+  return `Version ${status.latestVersion} is available (current: ${status.currentVersion})`;
+}
+
+/** The banner while an app-only update downloads; a full update shows updateProgressText instead. */
+export function appDownloadText(status) {
+  const percent = typeof status.downloadPercent === 'number' ? `, ${status.downloadPercent}%` : '';
+  return `Downloading v${status.latestVersion}${percent}...`;
+}
+
+/** True while a full update owns the stream: the dashboard shows its progress instead of the stream status. */
+export function updateRunning(progress) {
+  return !!progress && progress.result === 'running';
+}
+
+/** The progress line: the step with its elapsed time while running, else the result. */
+export function updateProgressText(progress, swapLog, nowMs) {
+  if (progress.result === 'ok') return progress.step === 'done' ? `Back on air on ${progress.to}.` : `Updated to ${progress.to}. Ready to stream.`;
+  if (progress.result !== 'running') return failureText(progress);
+  const since = Date.parse(progress.stepStartedAt);
+  const percent = progress.step === 'download' && typeof progress.downloadPercent === 'number' ? `${progress.downloadPercent}%, ` : '';
+  let text = `${stepLabel(progress.step)}, ${percent}${formatElapsed(Number.isNaN(since) ? 0 : nowMs - since)}`;
+  const last = progress.step === 'swap' && swapLog && swapLog[swapLog.length - 1];
+  if (last && last.status === 'retry') text += ` (trying ${last.folder} again)`;
+  return text;
+}
+
+const OK_BANNER_MS = 10 * 60 * 1000;
+
+/** What the update banner shows. keepText: the text is the update's own (progress or result), not the offer's.
+ *  A failed result keeps its text beside the offer; ok gives way to it after 10 minutes, "Ready" once streamState is live. */
+export function updateBannerView(status, nowMs, streamState = null) {
+  const p = status.progress;
+  // From and to other versions than the running one: a later update replaced it.
+  const history = p && p.result !== 'running' && p.from !== status.currentVersion && p.to !== status.currentVersion;
+  const readyWhileLive = p && p.result === 'ok' && p.step !== 'done' && streamState === 'live';
+  if (p && !history && !readyWhileLive) {
+    const text = updateProgressText(p, status.swapLog || [], nowMs);
+    if (p.result === 'running') return { visible: true, text, showButton: false, keepText: true };
+    if (p.result === 'failed' || p.result === 'rolled-back') {
+      return { visible: true, text, showButton: !!status.updateAvailable, keepText: true };
+    }
+    const since = Date.parse(p.stepStartedAt);
+    if (p.result === 'ok' && nowMs - since < OK_BANNER_MS) return { visible: true, text, showButton: false, keepText: true };
+  }
+  return { visible: !!status.updateAvailable, text: '', showButton: true, keepText: false };
 }

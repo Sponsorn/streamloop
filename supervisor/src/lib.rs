@@ -277,6 +277,8 @@ pub enum Msg {
     Detect { generation: u64, d: Detect },
     DlProgress { index: usize, percent: f64 },
     Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String, used_token: bool },
+    /// An ingest probe's answer; `outage` names the encoder outage it was sent for.
+    Ingest { outage: u64, up: bool },
 }
 
 enum Job {
@@ -361,6 +363,13 @@ fn spare_wanted(due: Option<(usize, Instant)>, index: usize, now: Instant, spare
     spare.is_none_or(|s| s.index != index || s.id != id || expire_of(&s.r, s.at, ttl, now_s).is_some_and(|e| rules::refresh_due(now_s, e, margin_s)))
 }
 
+/// Does `addr` (host:port) resolve and take a TCP connection? Blocks, so it runs off the control loop.
+fn ingest_answers(addr: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let first = addr.to_socket_addrs().ok().and_then(|mut a| a.next());
+    first.is_some_and(|a| std::net::TcpStream::connect_timeout(&a, INGEST_CONNECT_TIMEOUT).is_ok())
+}
+
 struct Feeder {
     seq: u64,
     child: Arc<Mutex<Child>>,
@@ -399,7 +408,14 @@ struct Encoder {
     restarts: u32,
     failures: u32,
     restart_at: Option<Instant>,
+    /// Counts encoder outages, so a late probe answer from an earlier one is dropped.
+    outage: u64,
     ingest_was_down: bool,
+    /// The restart was moved up because the ingest answered again.
+    ingest_back: bool,
+    /// An ingest probe is in flight; at most one runs at a time.
+    probing: bool,
+    probe_at: Instant,
     /// ffmpeg's own `speed=` (latest), None until it reports one.
     speed: Option<f64>,
     /// The detector durations this encoder runs with; a reload applies at its next start.
@@ -554,6 +570,9 @@ struct Ctl {
 }
 
 const STALL: Duration = Duration::from_secs(10);
+/// While the encoder is down, how often the ingest is tried, and how long one try may take to connect.
+const INGEST_PROBE_EVERY: Duration = Duration::from_secs(2);
+const INGEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// Videos in a row whose download failed for good before it is a critical event (once per streak).
 const DOWNLOAD_FAILS_CRITICAL: u32 = 3;
 const FILLER_BELOW_S: f64 = 2.0;
@@ -590,7 +609,7 @@ impl Ctl {
             cache,
             videos: vec![],
             seams: vec![],
-            enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, ingest_was_down: false, speed: None, watch: media::WatchdogCfg::default() },
+            enc: Encoder { child: None, media: 0.0, last_progress: now, started: now, restarts: 0, failures: 0, restart_at: None, outage: 0, ingest_was_down: false, ingest_back: false, probing: false, probe_at: now, speed: None, watch: media::WatchdogCfg::default() },
             cpu: Cpu::default(),
             watch: Watch::default(),
             live: None,
@@ -1091,7 +1110,11 @@ impl Ctl {
         self.enc.started = Instant::now();
         self.enc.last_progress = Instant::now();
         self.enc.restart_at = None;
-        self.logs.event("info", "encoder-start", json!({"generation": generation, "restarts": self.enc.restarts}));
+        let mut ev = json!({"generation": generation, "restarts": self.enc.restarts});
+        if std::mem::take(&mut self.enc.ingest_back) {
+            ev["ingestBack"] = json!(true);
+        }
+        self.logs.event("info", "encoder-start", ev);
     }
 
     fn encoder_down(&mut self, why: &str) {
@@ -1115,7 +1138,8 @@ impl Ctl {
         self.enc.failures += 1;
         let wait = rules::encoder_backoff_s(self.enc.failures - 1);
         self.enc.restart_at = Some(Instant::now() + Duration::from_secs(wait));
-        self.enc.ingest_was_down = false;
+        self.enc.outage += 1;
+        (self.enc.ingest_was_down, self.enc.ingest_back, self.enc.probe_at) = (false, false, Instant::now());
         self.step = "encoder-restart";
         self.step_offset = BASE;
         self.ring_settled_at = 0;
@@ -1128,13 +1152,29 @@ impl Ctl {
         }
     }
 
-    /// Is the RTMP ingest accepting connections? Only probed while the encoder is down.
-    fn ingest_up(&self) -> bool {
-        let target = config::target_url(&self.settings);
-        let hostport = target.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or("");
-        use std::net::ToSocketAddrs;
-        let addr = hostport.to_socket_addrs().ok().and_then(|mut a| a.next());
-        addr.is_some_and(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(300)).is_ok())
+    /// While the encoder is down: is the ingest accepting connections again?
+    /// On its own thread, since a DNS lookup during an outage can take seconds.
+    fn ingest_work(&mut self) {
+        if self.enc.probing || Instant::now() < self.enc.probe_at {
+            return;
+        }
+        (self.enc.probing, self.enc.probe_at) = (true, Instant::now() + INGEST_PROBE_EVERY);
+        let (addr, outage, tx) = (rules::ingest_addr(&self.settings.ingest_url), self.enc.outage, self.tx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Ingest { outage, up: addr.is_some_and(|a| ingest_answers(&a)) });
+        });
+    }
+
+    /// An ingest seen down that answers again moves the restart up to now, instead of sitting out the backoff.
+    fn on_ingest(&mut self, outage: u64, up: bool) {
+        self.enc.probing = false;
+        if outage != self.enc.outage || self.enc.child.is_some() || self.enc.restart_at.is_none() {
+            return;
+        }
+        if up && self.enc.ingest_was_down && !self.enc.ingest_back {
+            (self.enc.restart_at, self.enc.ingest_back) = (Some(Instant::now()), true);
+        }
+        self.enc.ingest_was_down |= !up;
     }
 
 
@@ -1209,18 +1249,10 @@ impl Ctl {
             }
         }
         if self.enc.child.is_none() {
-            let due = self.enc.restart_at.is_some_and(|t| now >= t);
-            // A dead ingest that comes back restarts at once instead of sitting out the backoff.
-            let back = if self.enc.restart_at.is_some() {
-                let up = self.ingest_up();
-                let back = up && self.enc.ingest_was_down;
-                self.enc.ingest_was_down |= !up;
-                back
-            } else {
-                false
-            };
-            if due || back {
+            if self.enc.restart_at.is_some_and(|t| now >= t) {
                 self.start_encoder();
+            } else if self.enc.restart_at.is_some() {
+                self.ingest_work();
             }
             return;
         }
@@ -1558,6 +1590,7 @@ impl Ctl {
             Msg::ExtraList(id, result) => self.on_extra_list(id, result),
             Msg::Resolved { index, id, purpose, result } => self.on_resolved(index, &id, purpose, result),
             Msg::FeederExit { seq, code, frames } => self.on_feeder_exit(seq, code, frames),
+            Msg::Ingest { outage, up } => self.on_ingest(outage, up),
             Msg::EncProgress { generation, media, speed } => {
                 let mut q = self.shared.q.lock().unwrap();
                 if generation == q.generation && self.enc.child.is_some() {
@@ -2514,6 +2547,98 @@ fn token_watchdog(state: Arc<Mutex<TokenState>>, paths: Paths, logs: Logs) {
     }
 }
 
+/// Not 4417 (the live supervisor's) and not 4416 (its token server's), so a check never meets either.
+const CHECK_TOKEN_PORT: u16 = 4418;
+
+/// `streamloop.exe check`: proves this binary runs, reads the config and can start the
+/// token server. It binds no supervisor port, enters no job, and writes nothing but the token
+/// server's daily log.
+fn self_check(args: &Args) -> Result<(), String> {
+    let settings = read_settings(args)?;
+    let p = &args.paths;
+    for path in [&p.ffmpeg, &p.ytdlp, &p.deno, &p.plugins, &p.token_server, &p.node, &p.slate] {
+        if !path.exists() {
+            return Err(format!("{} is missing", path.display()));
+        }
+    }
+    let out = procs::command(&p.ffmpeg).arg("-version").output().map_err(|e| format!("ffmpeg did not start: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("ffmpeg -version exited with {}", out.status));
+    }
+    let logs = Logs::new(p.data.join("logs"), &settings.stream_key);
+    let _ = std::fs::create_dir_all(&logs.dir);
+    // Something else on the port would answer for a token server that never started.
+    if ytdlp::ping(CHECK_TOKEN_PORT) {
+        return Err(format!("port {CHECK_TOKEN_PORT} is already in use"));
+    }
+    let mut child = ytdlp::spawn_token_server(&p.node, &p.token_server, CHECK_TOKEN_PORT, &logs).map_err(|e| format!("the token server did not start: {e}"))?;
+    let spawned = Instant::now();
+    let (answered, exited) = {
+        let child = std::cell::RefCell::new(&mut child);
+        wait_for_token_server(
+            || spawned.elapsed(),
+            || child.borrow_mut().try_wait().ok().flatten().map(|s| s.to_string()),
+            || ytdlp::ping(CHECK_TOKEN_PORT),
+            std::thread::sleep,
+        )
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    token_verdict(answered, exited)
+}
+
+/// A fresh token server gets as long as token_watchdog gives it before its first ping, so a slow
+/// first start (antivirus scanning a just-swapped node\ or pot\) does not fail the check.
+const CHECK_TOKEN_GRACE: Duration = Duration::from_secs(15);
+
+/// Pings every second until the token server answers or exits, or the grace from its spawn is over.
+/// Returns whether it answered and how it exited, if it did.
+fn wait_for_token_server(
+    since_spawn: impl Fn() -> Duration,
+    mut exited: impl FnMut() -> Option<String>,
+    mut ping: impl FnMut() -> bool,
+    mut sleep: impl FnMut(Duration),
+) -> (bool, Option<String>) {
+    loop {
+        if let Some(status) = exited() {
+            return (false, Some(status));
+        }
+        if ping() {
+            return (true, exited());
+        }
+        if since_spawn() >= CHECK_TOKEN_GRACE {
+            return (false, exited());
+        }
+        sleep(Duration::from_secs(1));
+    }
+}
+
+/// A ping only counts while the token server we started is still running.
+fn token_verdict(answered: bool, exited: Option<String>) -> Result<(), String> {
+    match (exited, answered) {
+        (Some(status), _) => Err(format!("the token server exited ({status})")),
+        (None, true) => Ok(()),
+        (None, false) => Err("the token server did not answer".into()),
+    }
+}
+
+/// `streamloop.exe check ARGS`: `ok` on stdout and 0, or the reason on stderr and 1. The
+/// `streamloop-supervisor check:` prefix stays while Node's health check strips it.
+pub fn check_main(args: Vec<String>) -> i32 {
+    match parse_args(&args).and_then(|a| self_check(&a)) {
+        Ok(()) => {
+            if writeln!(std::io::stdout().lock(), "ok").is_err() {
+                return 1;
+            }
+            0
+        }
+        Err(e) => {
+            logs::echo(&mut std::io::stderr().lock(), &format!("streamloop-supervisor check: {e}"));
+            1
+        }
+    }
+}
+
 /// `streamloop.exe protect`: plain key on stdin, DPAPI blob on stdout. Returns the exit code.
 pub fn protect_main() -> i32 {
     match protect_stdin() {
@@ -2889,6 +3014,82 @@ mod tests {
         assert_eq!(ctl.control("restart-encoder", None, None), Ok(json!({"accepted": true, "alreadyRestarting": true})), "a restart is already pending");
         ctl.waiting_for_key = true;
         assert!(ctl.control("restart-encoder", None, None).is_err(), "no encoder until a key arrives");
+    }
+
+    /// The encoder went down for the 5th time in a row, so the restart waits out the 60 s step.
+    fn ingest_ctl(name: &str) -> Ctl {
+        let mut ctl = test_ctl(name, &["a", "b"]);
+        ctl.seams.push(Seam { offset: BASE, index: 0, source: Source::File, start_pos: 3.0 });
+        (ctl.enc.child, ctl.enc.failures) = (Some(exited_child()), 4);
+        ctl.encoder_down("test");
+        ctl
+    }
+
+    fn restart_in_s(ctl: &Ctl) -> u64 {
+        ctl.enc.restart_at.expect("no restart scheduled").saturating_duration_since(Instant::now()).as_secs()
+    }
+
+    #[test]
+    fn an_ingest_seen_down_that_answers_again_restarts_the_encoder_at_once() {
+        // Arrange
+        let mut ctl = ingest_ctl("ingest-back");
+        let outage = ctl.enc.outage;
+        assert!(restart_in_s(&ctl) > 50, "the test needs the 60 s step");
+
+        // Act
+        ctl.handle(Msg::Ingest { outage, up: false });
+        ctl.handle(Msg::Ingest { outage, up: true });
+
+        // Assert
+        assert_eq!(restart_in_s(&ctl), 0, "the restart still waits out the backoff");
+        assert!(ctl.enc.ingest_back);
+    }
+
+    #[test]
+    fn an_ingest_that_never_went_down_leaves_the_backoff_alone() {
+        let mut ctl = ingest_ctl("ingest-always-up");
+        let outage = ctl.enc.outage;
+
+        ctl.handle(Msg::Ingest { outage, up: true });
+
+        assert!(restart_in_s(&ctl) > 50, "an encoder that failed with the ingest up restarted early");
+    }
+
+    #[test]
+    fn a_probe_from_an_earlier_outage_does_not_count_toward_this_one() {
+        let mut ctl = ingest_ctl("ingest-stale");
+        let outage = ctl.enc.outage;
+
+        ctl.handle(Msg::Ingest { outage: outage - 1, up: false });
+        ctl.handle(Msg::Ingest { outage, up: true });
+
+        assert!(restart_in_s(&ctl) > 50, "a down from an earlier outage cut this backoff short");
+    }
+
+    #[test]
+    fn the_ingest_is_probed_off_the_control_loop_one_probe_at_a_time_every_2_s() {
+        // Arrange: nothing listens on the discard port, so the probe answers down
+        let mut ctl = ingest_ctl("ingest-probe");
+        ctl.settings.ingest_url = "rtmp://127.0.0.1:9/live".into();
+        let (tx, rx) = channel();
+        ctl.tx = tx;
+
+        // Act
+        let started = Instant::now();
+        ctl.ingest_work();
+        ctl.ingest_work();
+        let spawn_s = started.elapsed().as_secs_f64();
+        let first = rx.recv_timeout(Duration::from_secs(5)).expect("no probe result");
+        let second_in_flight = rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        ctl.handle(first);
+        ctl.ingest_work();
+        let probed_again_at_once = rx.recv_timeout(Duration::from_millis(300)).is_ok();
+
+        // Assert
+        assert!(spawn_s < 0.1, "the probe ran on the control loop ({spawn_s:.2} s)");
+        assert!(!second_in_flight, "two probes were in flight");
+        assert!(!probed_again_at_once, "the next probe did not wait");
+        assert!(ctl.enc.ingest_was_down && !ctl.enc.probing);
     }
 
     /// Video 1 on air from timeline 0 at position 0; the stretch began at 5 s, the encoder is at `media`.
@@ -4519,5 +4720,83 @@ mod tests {
         ctl.enc.started = Instant::now() - Duration::from_secs(90);
 
         assert_eq!(ctl.status()["encoder"]["uptimeS"], Value::Null);
+    }
+
+    #[test]
+    fn check_names_the_first_missing_install_file() {
+        let args = startup_args("check-missing", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+
+        let r = self_check(&args);
+
+        let e = r.unwrap_err();
+        assert!(e.contains("ffmpeg.exe") && e.ends_with("is missing"), "{e}");
+    }
+
+    #[test]
+    fn check_refuses_a_config_the_supervisor_would_refuse() {
+        let args = startup_args("check-refused", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "no-such-encoder"}}));
+        let reason = read_settings(&args).err().unwrap();
+
+        let r = self_check(&args);
+
+        assert_eq!(r.unwrap_err(), reason);
+    }
+    #[test]
+    fn check_fails_when_the_token_server_exited_even_if_something_answered() {
+        let r = token_verdict(true, Some("exit code: 1".into()));
+
+        assert_eq!(r.unwrap_err(), "the token server exited (exit code: 1)");
+    }
+
+    #[test]
+    fn check_names_a_token_server_that_exited_before_answering() {
+        assert!(token_verdict(false, Some("exit code: 1".into())).unwrap_err().contains("exited"));
+    }
+
+    #[test]
+    fn check_passes_only_on_an_answer_from_a_running_token_server() {
+        assert!(token_verdict(true, None).is_ok());
+        assert_eq!(token_verdict(false, None).unwrap_err(), "the token server did not answer");
+    }
+
+    /// A clock that moves only when the wait sleeps, and the pings it was asked for, by second.
+    fn token_wait(answer_at_s: Option<u64>, exit_at_s: Option<u64>) -> ((bool, Option<String>), Vec<u64>) {
+        let now = std::cell::Cell::new(Duration::ZERO);
+        let pings = std::cell::RefCell::new(Vec::new());
+        let r = wait_for_token_server(
+            || now.get(),
+            || exit_at_s.filter(|&s| now.get().as_secs() >= s).map(|_| "exit code: 1".to_string()),
+            || {
+                pings.borrow_mut().push(now.get().as_secs());
+                answer_at_s.is_some_and(|s| now.get().as_secs() >= s)
+            },
+            |d| now.set(now.get() + d),
+        );
+        (r, pings.into_inner())
+    }
+
+    #[test]
+    fn check_waits_for_a_slow_token_server_as_the_watchdog_does() {
+        let ((answered, exited), pings) = token_wait(Some(12), None);
+
+        assert!(answered && exited.is_none());
+        assert_eq!(pings.last(), Some(&12));
+    }
+
+    #[test]
+    fn check_pings_every_second_for_15_s_from_the_spawn_before_it_gives_up() {
+        let ((answered, exited), pings) = token_wait(None, None);
+
+        assert!(!answered && exited.is_none());
+        assert_eq!(pings, (0..=15).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn check_stops_waiting_when_the_token_server_exits() {
+        let ((answered, exited), pings) = token_wait(None, Some(5));
+
+        assert!(!answered);
+        assert_eq!(exited.as_deref(), Some("exit code: 1"));
+        assert_eq!(pings, (0..5).collect::<Vec<u64>>());
     }
 }

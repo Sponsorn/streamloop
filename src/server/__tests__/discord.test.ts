@@ -43,6 +43,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}, discordOverrides: Partia
     autoUpdateCheck: true,
     autoUpdateYtdlp: true,
     autoOpenAdmin: true,
+    autoStartStream: true,
     updateCheckIntervalMs: 21600000,
     twitchClientId: '',
     twitchClientSecret: '',

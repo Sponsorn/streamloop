@@ -7,7 +7,7 @@ import { saveConfig as saveConfigFile, isFirstRun, getConfigPath, DEFAULT_DISCOR
 import { logger } from './logger.js';
 import type { AppConfig } from './types.js';
 import type { PlaylistMetadataCache } from './playlist-metadata.js';
-import type { Updater } from './updater.js';
+import { UpdateRefusedError, type Updater } from './updater.js';
 import type { DiscordNotifier } from './discord.js';
 import type { TwitchLivenessChecker } from './twitch.js';
 import { protectStreamKey, type SupervisorClient, type SupervisorStatus } from './supervisor-client.js';
@@ -15,6 +15,7 @@ import type { LauncherState, SupervisorLauncher } from './supervisor-launcher.js
 import type { EventLog } from './event-log.js';
 import { updateYtdlp } from './ytdlp-updater.js';
 import { readSetupReport, runSetupCheck as runSetupCheckDefault, type SetupReport } from './setup-check.js';
+import { readSwapLog, readUpdateState } from './update-state.js';
 
 export interface ApiDependencies {
   getConfig: () => AppConfig;
@@ -93,6 +94,7 @@ export function streamState(
   // So does a Start that waits for that old supervisor to exit.
   if (waitReason) return { state: 'starting', reason: waitReason };
   if (!sup) {
+    if (launcher === 'ready') return { state: 'stopped', reason: 'Ready to stream. Press Start.' };
     if (blockReason) return { state: 'off-air', reason: blockReason };
     if (launcher === 'starting') return { state: 'starting', reason: 'The supervisor is starting.' };
     if (launcher === 'missing') return { state: 'off-air', reason: 'The supervisor program was not found in the install folder.' };
@@ -119,6 +121,8 @@ export function streamState(
       return { state: 'off-air', reason: `The supervisor reports an unknown state: ${String(sup.state)}.` };
   }
 }
+
+export const UPDATE_RUNNING = 'An update is running. Try again when it is done.';
 
 const SUPERVISOR_EXE_MISSING = 'The supervisor program was not found in the install folder. Reinstall StreamLoop from the full ZIP.';
 
@@ -176,6 +180,31 @@ export function createApiRouter(deps: ApiDependencies): Router {
     if (deps.launcher.isStoppedByUser()) return 'The stream is stopped. Start it first.';
     if (deps.launcher.state() !== 'running') return 'The supervisor is not running.';
     return null;
+  }
+
+  /** From the download until the new version's check has a result, including while this Node is the new one. */
+  function updateRunning(): boolean {
+    const { status } = deps.updater.getStatus();
+    if (status === 'downloading' || status === 'extracting' || status === 'ready') return true;
+    return deps.root !== null && readUpdateState(deps.root)?.result === 'running';
+  }
+
+  /** Stop, Start, controls and saves would race the stop, the swap or the check. */
+  function refuseDuringUpdate(_req: Request, res: Response, next: NextFunction): void {
+    if (updateRunning()) {
+      res.status(409).json({ error: UPDATE_RUNNING });
+      return;
+    }
+    next();
+  }
+
+  /** An apply during a check would install from the offer the check is replacing; Stop, Start and saves still go through. */
+  function refuseApply(req: Request, res: Response, next: NextFunction): void {
+    if (deps.updater.getStatus().status === 'checking') {
+      res.status(409).json({ error: UPDATE_RUNNING });
+      return;
+    }
+    refuseDuringUpdate(req, res, next);
   }
 
   /** Saves, takes the new config in and asks the supervisor to read it. */
@@ -243,7 +272,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json(maskConfig(deps.getConfig()));
   });
 
-  router.post('/config', async (req, res) => {
+  router.post('/config', refuseDuringUpdate, async (req, res) => {
     try {
       const body = req.body as Record<string, unknown>;
       if (body.twitchClientSecret === '********') delete body.twitchClientSecret;
@@ -272,7 +301,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
-  router.post('/stream-key', async (req, res) => {
+  router.post('/stream-key', refuseDuringUpdate, async (req, res) => {
     const key = (req.body as { key?: unknown }).key;
     if (typeof key !== 'string' || !key.trim()) {
       return res.status(400).json({ error: 'No stream key given' });
@@ -371,7 +400,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
   // --- Update endpoints ---
 
   router.get('/update/status', (_req, res) => {
-    res.json(deps.updater.getStatus());
+    res.json({
+      ...deps.updater.getStatus(),
+      progress: deps.root ? readUpdateState(deps.root) : null,
+      swapLog: deps.root ? readSwapLog(deps.root) : [],
+    });
   });
 
   router.post('/update/check', async (_req, res) => {
@@ -383,10 +416,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
-  router.post('/update/apply', (_req, res) => {
-    // Respond immediately — the dashboard polls /update/status for progress
+  router.post('/update/apply', refuseApply, async (_req, res) => {
+    // Answers once the update runs; the dashboard polls /update/status for its progress.
     try {
-      deps.updater.downloadAndApply()
+      const { done } = await deps.updater.startUpdate();
+      done
         .then(() => {
           setTimeout(() => deps.triggerRestart(), 1000);
         })
@@ -395,6 +429,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
         });
       res.json({ ok: true, message: 'Update started' });
     } catch (err) {
+      if (err instanceof UpdateRefusedError) return res.status(409).json({ error: err.message });
       logger.error({ err }, 'Failed to start update');
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -425,7 +460,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }
   });
 
-  router.post('/playlist/switch', async (req, res) => {
+  router.post('/playlist/switch', refuseDuringUpdate, async (req, res) => {
     const { playlistIndex, videoIndex, videoId } = req.body as { playlistIndex: unknown; videoIndex?: unknown; videoId?: unknown };
     const playlists = deps.getConfig().playlists;
     if (typeof playlistIndex !== 'number' || !Number.isInteger(playlistIndex) || playlistIndex < 0 || playlistIndex >= playlists.length) {
@@ -459,10 +494,10 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({ ok: true });
   }
 
-  router.post('/player/next', (_req, res) => control(res, 'next'));
-  router.post('/player/prev', (_req, res) => control(res, 'prev'));
-  router.post('/player/restart', (_req, res) => control(res, 'restart'));
-  router.post('/player/jump', (req, res) => {
+  router.post('/player/next', refuseDuringUpdate, (_req, res) => control(res, 'next'));
+  router.post('/player/prev', refuseDuringUpdate, (_req, res) => control(res, 'prev'));
+  router.post('/player/restart', refuseDuringUpdate, (_req, res) => control(res, 'restart'));
+  router.post('/player/jump', refuseDuringUpdate, (req, res) => {
     const { index, id } = req.body as { index: unknown; id?: unknown };
     if (!isVideoIndex(index)) {
       return res.status(400).json({ error: 'Invalid video index' });
@@ -475,7 +510,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   // --- Stream endpoints ---
 
-  router.post('/stream/stop', async (_req, res) => {
+  router.post('/stream/stop', refuseDuringUpdate, async (_req, res) => {
     // Mark first, so the launcher does not relaunch while the supervisor shuts down.
     deps.launcher.markStoppedByUser();
     const answered = await deps.client.shutdown();
@@ -483,7 +518,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({ ok: true });
   });
 
-  router.post('/stream/start', (_req, res) => {
+  router.post('/stream/start', refuseDuringUpdate, (_req, res) => {
     deps.launcher.launchNow();
     logger.info('Stream started from the dashboard');
     res.json({ ok: true });
@@ -499,7 +534,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   // Recommendations are not applied here; the dashboard saves them through POST /config.
-  router.post('/setup-check/run', async (req, res) => {
+  router.post('/setup-check/run', refuseDuringUpdate, async (req, res) => {
     const root = deps.root;
     if (!root) return res.status(503).json({ error: NO_ROOT });
     // The wizard sends its playlist before it is saved; otherwise the one playing sizes the cache.
@@ -570,7 +605,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   // --- yt-dlp endpoints ---
 
-  router.post('/yt-dlp/update', async (_req, res) => {
+  router.post('/yt-dlp/update', refuseDuringUpdate, async (_req, res) => {
     const result = await updateYtdlp(deps.ytdlpPath);
     if (result.ok) {
       // A newer yt-dlp may resolve more playlist entries than the old one did,

@@ -4,8 +4,9 @@
 //    wizard's API calls (system check included) take it to live against local MediaMTX.
 // 2. The slim ZIP's app\ is staged into _update_tmp\ by the installed updater's stageUpdate, and the
 //    env-gated POST /api/test/exit-75 hook makes START.bat swap it in while a yt-dlp download runs.
-//    Then the installed updater's checkForUpdate runs on GitHub's real release list plus one made-up
-//    3.x prerelease (fetch is stubbed, nothing is written to GitHub).
+//    Then the installed updater's checkForUpdate runs on GitHub's real release list plus a made-up
+//    prerelease one patch above the installed version (fetch is stubbed, nothing is written to
+//    GitHub). The run fails unless that prerelease is offered and 2.3.8 still picks no 3.x release.
 // 3. Stop from 3.0's dashboard, kill 3.0's Node tree, start the v2.3.8 full ZIP from
 //    %TEMP%\sl2 install\, read its stream guard, stop it, start 3.0 again: stopped until Start.
 // 4. Key grep over both installs, leftover processes, both installs removed.
@@ -13,22 +14,20 @@
 // The stage 5 gate instead: step 1 into %TEMP%\sl3 gate Ö\ with STREAMLOOP_DEBUG_FAULTS=1 and the
 // webhook on a local catcher, then one fault at a time through POST /debug/fault, each checked
 // before the next (see faults()). Then the key grep, leftovers and removal as above.
-// node-session.mjs runs its session on import, so the few helpers needed are repeated here.
-// Nothing opens a window: every child is spawned hidden.
-import * as cp from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync, statSync, openSync, closeSync, cpSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { join, relative } from 'node:path';
+// The helpers shared with update-session.mjs are in install-kit.mjs. Nothing opens a window.
+// Ctrl+C or Ctrl+Break tears the installs down; a start after a killed run first sweeps what it left.
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync, statSync, cpSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import net from 'node:net';
 import http from 'node:http';
-import { dailyFiles, EVENTS, TOKEN_SERVER_PING, FFPROBE, PLAYLIST, redact } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_SERVER_PING, PLAYLIST, redact } from './lib.mjs';
+import {
+  spawn, run, KEY, INGEST, READ_URL, NODE_API, SUP, sleep, iso, Stop, useOut, note, ps, waitFor, startBat, token, nodeUp, api,
+  nodeStatus, supStatus, waitLive, packets, reconnects, runReader, stopReader, gapStats, hashTree, sha256File, grepTree, extract, quietConfig,
+  tsxEval, portOpen, sweepLeftovers, onInterrupt, quickStop, tempFolders,
+} from './install-kit.mjs';
 
-const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
-const run = (cmd, args, opts = {}) => new Promise((resolve) => {
-  cp.execFile(cmd, args, { windowsHide: true, maxBuffer: 64 * 1024 * 1024, ...opts }, (err, stdout, stderr) => resolve({ status: err ? (err.code ?? 1) : 0, stdout, stderr }));
-});
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const FULL_ZIP = join(REPO, 'dist', `streamloop-v${VERSION}.zip`);
@@ -36,186 +35,40 @@ const SLIM_ZIP = join(REPO, 'dist', `streamloop-v${VERSION}-update.zip`);
 const V2_TAG = 'v2.3.8';
 const V2_URL = `https://github.com/Sponsorn/streamloop/releases/download/${V2_TAG}/streamloop-${V2_TAG}.zip`;
 const RELEASES_API = 'https://api.github.com/repos/Sponsorn/streamloop/releases?per_page=50';
-const TAR = 'C:\\Windows\\System32\\tar.exe';
 const TOOLS = join(REPO, 'spikes', 'tools');
-const KEY = 'live_TESTKEY';
-const INGEST = 'rtmp://127.0.0.1:1935/live';
-const READ_URL = `${INGEST}/${KEY}`;
-const NODE_API = 'http://127.0.0.1:7654/api';
-const SUP = 'http://127.0.0.1:4417';
 const GATE = process.argv[2] === 'faults';
 const S3 = join(tmpdir(), GATE ? 'sl3 gate Ö' : 'sl3 install Ö');
 const S2 = join(tmpdir(), 'sl2 install');
 const ROOT3 = join(S3, 'streamloop');
 const OUT = join(REPO, 'supervisor', 'results', GATE ? 'gate' : 'install');
 const V2_CACHE = join(REPO, 'supervisor', 'results', 'v2-zip');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const iso = (ms = Date.now()) => new Date(ms).toISOString();
 
-rmSync(OUT, { recursive: true, force: true });
-mkdirSync(OUT, { recursive: true });
-const note = (msg, data) => {
-  const line = redact(`${iso()} ${msg}${data === undefined ? '' : ` ${JSON.stringify(data)}`}`, KEY);
-  console.log(line);
-  appendFileSync(join(OUT, 'session.log'), `${line}\n`);
-};
+useOut(OUT);
 const results = {};
-class Stop extends Error {}
 
-async function ps() {
-  const r = await run('powershell', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop-supervisor.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','mediamtx.exe') } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json"],
-    { encoding: 'utf8' });
-  const v = JSON.parse(r.stdout || '[]');
-  return Array.isArray(v) ? v : [v];
-}
 // PowerShell's output codepage can mangle the Ö, so match the ASCII part of the install folders.
-const inInstall = (p) => /sl[23] install|sl3 gate/.test(p.CommandLine ?? '');
+const IN_TEMP = tempFolders(['sl3 install', 'sl2 install', 'sl3 gate']);
+const inInstall = (p) => IN_TEMP.test(p.CommandLine ?? '');
 const isTestNode = (p) => p.Name === 'node.exe' && inInstall(p) && /src[\\/]server[\\/]index\.ts/.test(p.CommandLine ?? '');
 const supervisors = async () => (await ps()).filter((p) => p.Name === 'streamloop-supervisor.exe').map((p) => p.ProcessId);
 
-async function waitFor(what, fn, timeoutMs, everyMs = 1000) {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await fn();
-    if (v) return { ms: Date.now() - t0, value: v };
-    if (Date.now() - t0 > timeoutMs) { note(`timed out waiting for ${what}`, { timeoutMs }); return { ms: null, value: null }; }
-    await sleep(everyMs);
-  }
-}
-
-// One START.bat in a hidden cmd. Its console output goes to a file; stdin is NUL, so its
-// `pause` lines return at once.
-function startBat(root, label, extraEnv = {}) {
-  const log = openSync(join(OUT, `console-${label}.log`), 'a');
-  const pathNoFfmpeg = (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
-  const child = spawn('cmd.exe', ['/d', '/s', '/c', `""${join(root, 'START.bat')}""`], {
-    windowsVerbatimArguments: true, stdio: ['ignore', log, log], cwd: root,
-    env: { ...process.env, PATH: pathNoFfmpeg, ...extraEnv },
-  });
-  child.on('exit', (code) => { closeSync(log); note(`START.bat (${label}) exited`, { code }); });
-  return child;
-}
 const ENV3 = GATE ? { STREAMLOOP_DEBUG_FAULTS: '1' } : { STREAMLOOP_TEST_HOOKS: '1' };
 
-let token = '';
-async function nodeUp(label, timeoutMs = 120_000) {
-  const t0 = Date.now();
-  const r = await waitFor(`Node (${label})`, async () => {
-    try {
-      const res = await fetch(`${NODE_API}/token`, { signal: AbortSignal.timeout(2000) });
-      return res.ok ? (await res.json()).token : null;
-    } catch { return null; }
-  }, timeoutMs, 500);
-  if (!r.value) throw new Stop(`Node did not answer (${label})`);
-  token = r.value;
-  note(`Node up (${label})`, { ms: Date.now() - t0 });
-  return Date.now() - t0;
-}
-async function api(method, path, body) {
-  const headers = method === 'POST' ? { 'x-api-token': token, 'content-type': 'application/json' } : {};
-  let status = 0;
-  let text = '';
-  try {
-    const res = await fetch(NODE_API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
-    status = res.status;
-    text = await res.text();
-  } catch (err) { text = String(err); }
-  const recorded = path === '/stream-key' ? '[stream key, not recorded]' : body;
-  // Not redacted, so the key grep catches Node echoing the key.
-  appendFileSync(join(OUT, 'requests.jsonl'), `${JSON.stringify({ at: iso(), method, path, request: recorded ?? null, status, response: text.slice(0, 4000) })}\n`);
-  let json = null;
-  try { json = JSON.parse(text); } catch { /* not json */ }
-  return { status, json };
-}
-const nodeStatus = async () => (await api('GET', '/status')).json;
-const supStatus = async () => { try { return await (await fetch(`${SUP}/status`, { signal: AbortSignal.timeout(3000) })).json(); } catch { return null; } };
-
-/** Waits for live; a YouTube breaker that opens stops the run (no retry loop against YouTube). */
-async function waitLive(what, timeoutMs = 240_000) {
-  return waitFor(what, async () => {
-    const s = await nodeStatus();
-    if (s?.supervisor?.youtube?.breaker === 'open') throw new Stop(`YouTube breaker open (${what}): ${JSON.stringify(s.supervisor.youtube)}`);
-    return s?.stream?.state === 'live' ? s : null;
-  }, timeoutMs, 2000);
+/** The tag one patch above `version`, with any suffix dropped. */
+function mockTagAbove(version) {
+  const [major, minor, patch] = version.replace(/^v/, '').split('-')[0].split('.').map(Number);
+  return `v${major}.${minor}.${patch + 1}`;
 }
 
-// reader: one ffprobe on the RTMP output, reconnecting
-const packets = [];
-const reconnects = [];
-let readerStop = false;
-let probe = null;
-function runReader() {
-  if (readerStop) return;
-  const seg = reconnects.length;
-  reconnects.push(Date.now());
-  probe = spawn(FFPROBE, ['-v', 'error', '-show_entries', 'packet=stream_index,dts_time', '-of', 'csv=p=0', READ_URL], { stdio: ['ignore', 'pipe', 'ignore'] });
-  let tail = '';
-  probe.stdout.on('data', (chunk) => {
-    const lines = (tail + chunk).split(/\r?\n/);
-    tail = lines.pop();
-    const now = Date.now();
-    for (const line of lines) {
-      const [si, dts] = line.split(',');
-      if (dts && dts !== 'N/A') packets.push({ ms: now, s: Number(si), dts: Number(dts), seg });
-    }
-  });
-  probe.on('close', () => { if (!readerStop) sleep(1000).then(runReader); });
-}
-function gapStats(fromMs, toMs) {
-  const win = packets.filter((p) => p.ms >= fromMs && p.ms <= toMs);
-  let maxWallGapMs = 0;
-  for (let i = 1; i < win.length; i += 1) maxWallGapMs = Math.max(maxWallGapMs, win[i].ms - win[i - 1].ms);
-  return { packets: win.length, readerReconnects: reconnects.filter((t) => t > fromMs && t <= toMs).length, maxWallGapMs };
-}
-
-function hashTree(dir) {
-  const h = createHash('sha256');
-  let files = 0;
-  const walk = (d) => {
-    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const p = join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else { files += 1; h.update(relative(dir, p)); h.update(readFileSync(p)); }
-    }
+/** The installed updater must pick and offer the made-up release, and 2.x must not pick a 3.x release from that list. */
+function updaterGate(result, mockTag) {
+  const mocked = result?.mocked;
+  const checks = {
+    pickedTheMock: result?.pickMocked === mockTag,
+    offeredTheMock: mocked?.status === 'idle' && mocked?.updateAvailable === true && mocked?.latestVersion === mockTag.slice(1),
+    twoXPicksNo3x: Boolean(result) && !/^v?3\./.test(result.pickMockedAs238 ?? ''),
   };
-  walk(dir);
-  return { files, sha256: h.digest('hex') };
-}
-function grepTree(dir, needle) {
-  const hits = [];
-  let files = 0;
-  const walk = (d) => {
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const p = join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile()) { files += 1; if (readFileSync(p).includes(needle)) hits.push(relative(dir, p)); }
-    }
-  };
-  if (existsSync(dir)) walk(dir);
-  return { files, hits };
-}
-const sha256File = (f) => createHash('sha256').update(readFileSync(f)).digest('hex');
-
-async function extract(zip, dest) {
-  rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dest, { recursive: true });
-  const t0 = Date.now();
-  const r = await run(TAR, ['-xf', zip, '-C', dest], { timeout: 600_000 });
-  if (r.status !== 0) throw new Stop(`tar failed on ${zip}: ${r.stderr}`);
-  return Date.now() - t0;
-}
-/** No browser, no yt-dlp self-update, no update check: the test must not open a window or touch yt-dlp\. */
-function quietConfig(file) {
-  const c = JSON.parse(readFileSync(file, 'utf8'));
-  Object.assign(c, { autoOpenAdmin: false, autoUpdateYtdlp: false, autoUpdateCheck: false });
-  writeFileSync(file, JSON.stringify(c, null, 2));
-}
-/** Runs a snippet under an install's own Node and tsx, from that app's folder. */
-async function tsxEval(root, code, env = {}) {
-  const r = await run(join(root, 'node', 'node.exe'), [join(root, 'app', 'node_modules', 'tsx', 'dist', 'cli.mjs'), '-e', code],
-    { cwd: join(root, 'app'), encoding: 'utf8', timeout: 60_000, env: { ...process.env, ...env } });
-  return { status: r.status, stdout: r.stdout.trim(), stderr: r.stderr.trim().slice(0, 2000) };
+  return { checks, pass: Object.values(checks).every(Boolean) };
 }
 
 /** 2.x's own stream guard, under 2.x's own Node: true holds 2.x's OBS stream off. */
@@ -223,13 +76,11 @@ const guard2 = (root2) => tsxEval(root2, "import(process.env.MOD).then(async (m)
   { MOD: pathToFileURL(join(root2, 'app', 'src', 'server', 'stream-guard.ts')).href });
 
 // preflight
-const portOpen = (port) => new Promise((resolve) => {
-  const s = net.connect(port, '127.0.0.1');
-  s.on('connect', () => { s.destroy(); resolve(true); });
-  s.on('error', () => resolve(false));
-});
 async function tokenServerOk() { try { return (await fetch(TOKEN_SERVER_PING, { signal: AbortSignal.timeout(5000) })).ok; } catch { return false; } }
 for (const f of [FULL_ZIP, SLIM_ZIP]) if (!existsSync(f)) { note(`missing ${f}`); process.exit(2); }
+const swept = await sweepLeftovers({ dirs: [S3, S2], ascii: tempFolders(GATE ? ['sl3 gate', 'sl2 install'] : ['sl3 install', 'sl2 install']), mediamtx: join(TOOLS, 'mediamtx.exe') });
+if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
+if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
 if (!(await tokenServerOk())) { note('PO-token server not answering: stop'); process.exit(2); }
 if (await portOpen(7654) || await portOpen(4417)) { note('7654 or 4417 already taken: stop'); process.exit(2); }
 note('preflight: token server answers /ping, 7654 and 4417 free');
@@ -346,12 +197,14 @@ async function step2() {
   r.ytdlpUnchanged = r.ytdlpAfter.sha256 === r.ytdlpBefore.sha256 && r.ytdlpBefore.sha256 === results.ytdlpAtInstall.sha256;
   note('step 2 swap', r);
 
-  // The installed updater on GitHub's real release list (one read-only GET) plus a made-up 3.x prerelease.
+  // The installed updater on GitHub's real release list (one read-only GET) plus a made-up 3.x prerelease to offer.
   const real = await fetch(RELEASES_API, { headers: { 'User-Agent': 'streamloop-install-session', Accept: 'application/vnd.github.v3+json' }, signal: AbortSignal.timeout(15_000) });
   const list = await real.json();
   writeFileSync(join(OUT, 'releases-real.json'), JSON.stringify(list.map((x) => ({ tag_name: x.tag_name, draft: x.draft, prerelease: x.prerelease, assets: x.assets.map((a) => ({ name: a.name, browser_download_url: a.browser_download_url })) })), null, 2));
-  const dl1 = (n) => ({ name: n, browser_download_url: `https://github.com/Sponsorn/streamloop/releases/download/v3.0.1/${n}` });
-  const fake = { tag_name: 'v3.0.1', draft: false, prerelease: true, assets: ['streamloop-v3.0.1.zip', 'streamloop-v3.0.1.sha256', 'streamloop-v3.0.1-update.zip', 'streamloop-v3.0.1-update.sha256', 'node-version.txt'].map(dl1) };
+  const installed = JSON.parse(readFileSync(join(ROOT3, 'app', 'package.json'), 'utf8')).version;
+  const mockTag = mockTagAbove(installed);
+  const dl1 = (n) => ({ name: n, browser_download_url: `https://github.com/Sponsorn/streamloop/releases/download/${mockTag}/${n}` });
+  const fake = { tag_name: mockTag, draft: false, prerelease: true, assets: [`streamloop-${mockTag}.zip`, `streamloop-${mockTag}.sha256`, `streamloop-${mockTag}-update.zip`, `streamloop-${mockTag}-update.sha256`, 'node-version.txt'].map(dl1) };
   writeFileSync(join(OUT, 'releases-mocked.json'), JSON.stringify([fake, ...JSON.parse(readFileSync(join(OUT, 'releases-real.json'), 'utf8'))], null, 2));
   // fetch is stubbed inside that process: the list comes from the files, node-version.txt says 22.23.4.
   const code = `(async () => {
@@ -372,14 +225,16 @@ async function step2() {
     process.exit(0);
   })()`;
   const upd = await tsxEval(ROOT3, code, {
-    REAL: join(OUT, 'releases-real.json'), MOCKED: join(OUT, 'releases-mocked.json'), V: VERSION,
+    REAL: join(OUT, 'releases-real.json'), MOCKED: join(OUT, 'releases-mocked.json'), V: installed,
     MOD: pathToFileURL(join(ROOT3, 'app', 'src', 'server', 'updater.ts')).href,
   });
   let parsed = null;
   try { parsed = JSON.parse(upd.stdout.split(/\r?\n/).find((l) => l.startsWith('{"pickReal'))); } catch { /* reported raw */ }
-  r.updater = { realReleases: list.map((x) => `${x.tag_name}${x.prerelease ? ' (pre)' : ''}`), result: parsed ?? upd };
+  // The real list's result is only recorded: what GitHub holds changes from release to release.
+  r.updater = { realReleases: list.map((x) => `${x.tag_name}${x.prerelease ? ' (pre)' : ''}`), installed, mockTag, result: parsed ?? upd, gate: updaterGate(parsed, mockTag) };
   note('step 2 updater', r.updater);
   results.step2 = r;
+  if (!r.updater.gate.pass) throw new Stop(`the updater check failed: ${Object.keys(r.updater.gate.checks).filter((k) => !r.updater.gate.checks[k]).join(', ')}`);
 }
 
 async function step3() {
@@ -663,8 +518,7 @@ async function faults() {
 }
 
 async function cleanup() {
-  readerStop = true;
-  probe?.kill();
+  stopReader();
   if (await portOpen(7654)) {
     if (!token) await nodeUp('cleanup', 5000).catch(() => null);
     await api('POST', '/stream/stop');
@@ -678,7 +532,23 @@ async function cleanup() {
   mediamtx?.kill();
   await sleep(3000);
 }
+let cleaning = null;
+const cleanupOnce = () => (cleaning ??= cleanup());
+function removeInstalls() {
+  for (const d of [S3, S2]) {
+    try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch (err) { note(`could not remove ${d}`, { error: String(err) }); }
+  }
+  note('installs removed', { sl3: !existsSync(S3), sl2: !existsSync(S2) });
+}
 
+onInterrupt(async () => {
+  stopReader();
+  note('quick stop', await quickStop([bat3, bat2], [S3, S2]));
+  mediamtx?.kill();
+  await cleanupOnce();
+  catcher?.close();
+  removeInstalls();
+});
 try {
   await step1();
   if (GATE) await faults();
@@ -687,7 +557,7 @@ try {
   results.failed = String(err?.stack ?? err);
   note('run stopped', { error: results.failed });
 }
-await cleanup();
+await cleanupOnce();
 if (existsSync(join(ROOT3, 'data', 'logs'))) cpSync(join(ROOT3, 'data', 'logs'), join(OUT, 'supervisor-logs'), { recursive: true });
 
 const tl = await run('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8' });
@@ -706,8 +576,5 @@ results.keyGrep = { sl3: grepTree(S3, KEY), sl2: grepTree(S2, KEY), scriptOutput
 writeFileSync(join(OUT, 'results.json'), redact(JSON.stringify(results, null, 2), KEY));
 note('key grep', results.keyGrep);
 note('after cleanup', { tasklist: results.tasklist, testNodesLeft: results.testNodesLeft, tokenServer: results.tokenServerAfter });
-for (const d of [S3, S2]) {
-  try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch (err) { note(`could not remove ${d}`, { error: String(err) }); }
-}
-note('installs removed', { sl3: !existsSync(S3), sl2: !existsSync(S2) });
+removeInstalls();
 process.exit(results.failed ? 1 : 0);
