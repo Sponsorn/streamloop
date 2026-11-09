@@ -60,6 +60,8 @@ const COPIED_FOR: Duration = Duration::from_secs(2);
 const AUTOSTART_LABEL: &str = "Run on Windows startup";
 const AUTO_OPEN_LABEL: &str = "Open the web dashboard when StreamLoop starts";
 const AUTO_OPEN_DESC: &str = "Opens the web dashboard in your browser each time the server starts";
+const AUTO_START_LABEL: &str = "Start the stream when StreamLoop starts";
+const AUTO_START_DESC: &str = "When off, StreamLoop comes up without streaming and waits for Start";
 const CHECK_LABEL: &str = "Check for Updates";
 const YTDLP_LABEL: &str = "Update yt-dlp";
 const YTDLP_HINT: &str = "yt-dlp updates itself on startup. Update it by hand if playlists show fewer videos than expected.";
@@ -105,6 +107,7 @@ pub struct SettingsView {
     /// `#autostart-target`.
     autostart_target: SharedString,
     auto_open: bool,
+    auto_start_stream: bool,
     checking: bool,
     check_result: SharedString,
     /// `#settings-update-btn` shows after a check that found an update, unless in dev mode.
@@ -161,6 +164,7 @@ impl SettingsView {
             autostart: false,
             autostart_target: "-".into(),
             auto_open: true,
+            auto_start_stream: true,
             checking: false,
             check_result: SharedString::default(),
             update_now_shown: false,
@@ -221,6 +225,7 @@ impl SettingsView {
         );
         put_text(&self.channel, &settings.twitch_channel, window, cx);
         self.auto_open = settings.auto_open_admin;
+        self.auto_start_stream = settings.auto_start_stream;
         self.loaded = config;
         self.form_loaded = true;
         cx.notify();
@@ -445,6 +450,32 @@ impl SettingsView {
                         cx,
                     );
                     this.auto_open = !on;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// admin.js `handleAutoStartStreamToggle`: a failed save puts the switch back.
+    fn change_auto_start_stream(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.auto_start_stream = on;
+        cx.notify();
+        let client = self.app.client.clone();
+        cx.spawn(async move |this, cx| {
+            let answer = cx
+                .background_spawn(async move { client.save_config(json!({ "autoStartStream": on })) })
+                .await;
+            this.update(cx, |this, cx| match answer {
+                Ok(saved) => reload_warning(&this.app, &saved, cx),
+                Err(err) => {
+                    this.app.toast(
+                        format!("Could not change the setting: {err}"),
+                        ToastKind::Error,
+                        cx,
+                    );
+                    this.auto_start_stream = !on;
                     cx.notify();
                 }
             })
@@ -819,6 +850,12 @@ impl SettingsView {
             .on_click(
                 cx.listener(|this, checked: &bool, _, cx| this.change_auto_open(*checked, cx)),
             );
+        let auto_start_stream = Switch::new("auto-start-stream-toggle")
+            .checked(self.auto_start_stream)
+            .accessibility_label(AUTO_START_LABEL)
+            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                this.change_auto_start_stream(*checked, cx)
+            }));
         let target: SharedString = format!("Autostart: {}", self.autostart_target).into();
         // admin.css `.section-gap`.
         section("Startup")
@@ -831,6 +868,10 @@ impl SettingsView {
             .child(
                 // admin.css `.toggle-row-stacked`.
                 toggle_row(AUTO_OPEN_LABEL, &[AUTO_OPEN_DESC.into()], auto_open).mt(px(8.)),
+            )
+            .child(
+                toggle_row(AUTO_START_LABEL, &[AUTO_START_DESC.into()], auto_start_stream)
+                    .mt(px(8.)),
             )
     }
 
@@ -1074,7 +1115,7 @@ mod tests {
     }
 
     /// Controls the wheel can be sent to: the window draws only part of the tab.
-    const LANDMARKS: [&str; 15] = [
+    const LANDMARKS: [&str; 16] = [
         "tab-settings",
         "set-add-playlist",
         "set-ingest",
@@ -1088,6 +1129,7 @@ mod tests {
         "set-btn",
         "autostart-toggle",
         "auto-open-toggle",
+        "auto-start-stream-toggle",
         "update-ytdlp-btn",
         "shutdown-btn",
     ];
@@ -1919,6 +1961,61 @@ mod tests {
     }
 
     #[gpui::test]
+    fn auto_start_stream_loads_on_unless_the_config_has_false(cx: &mut TestAppContext) {
+        let mut without_key = config_json();
+        without_key.as_object_mut().unwrap().remove("autoStartStream");
+        let (_, window, _) = open_settings(cx, without_key);
+        reveal(cx, window, "auto-start-stream-toggle");
+        assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(true));
+
+        let mut off = config_json();
+        off["autoStartStream"] = json!(false);
+        let (_, window, _) = open_settings(cx, off);
+        reveal(cx, window, "auto-start-stream-toggle");
+        assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(false));
+    }
+
+    #[gpui::test]
+    fn auto_start_stream_flips_back_when_the_save_fails(cx: &mut TestAppContext) {
+        let (fake, window, _) = open_settings(cx, config_json());
+        reveal(cx, window, "auto-start-stream-toggle");
+        assert!(shows(cx, window, "Start the stream when StreamLoop starts"));
+        assert!(shows(
+            cx,
+            window,
+            "When off, StreamLoop comes up without streaming and waits for Start"
+        ));
+        assert_eq!(
+            named(cx, window, "auto-start-stream-toggle").0.as_deref(),
+            Some("Start the stream when StreamLoop starts")
+        );
+        assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(true));
+
+        click(cx, window, "auto-start-stream-toggle");
+        cx.run_until_parked();
+
+        assert_eq!(config_posts(&fake), [json!({ "autoStartStream": false })]);
+        assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(false));
+
+        fake.reply(
+            "POST",
+            "/api/config",
+            Err(ApiError::Server("EPERM: operation not permitted".into())),
+        );
+        click(cx, window, "auto-start-stream-toggle");
+        assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(true));
+        cx.run_until_parked();
+
+        assert_eq!(config_posts(&fake)[1], json!({ "autoStartStream": true }));
+        assert!(shows(
+            cx,
+            window,
+            "Could not change the setting: EPERM: operation not permitted"
+        ));
+        assert_eq!(checked(cx, window, "auto-start-stream-toggle"), Some(false));
+    }
+
+    #[gpui::test]
     fn ytdlp_update_reports_the_version(cx: &mut TestAppContext) {
         let (fake, window, _) = open_settings(cx, config_json());
         reveal(cx, window, "update-ytdlp-btn");
@@ -2041,6 +2138,7 @@ mod tests {
             "set-btn".into(),
             "autostart-toggle".into(),
             "auto-open-toggle".into(),
+            "auto-start-stream-toggle".into(),
             "check-update-btn".into(),
             "update-ytdlp-btn".into(),
             "shutdown-btn".into(),
@@ -2184,6 +2282,7 @@ mod tests {
                 "set-btn".into(),
                 "autostart-toggle".into(),
                 "auto-open-toggle".into(),
+                "auto-start-stream-toggle".into(),
                 "check-update-btn".into(),
                 "settings-update-btn".into(),
                 "update-ytdlp-btn".into(),

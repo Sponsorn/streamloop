@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::api::types::{Playing, PlaylistRef, Supervisor, UpdateStatus};
-use crate::logic::status_view::format_time;
+use crate::logic::status_view::{app_download_text, format_time, update_banner_view, update_offer_text};
 
 /// A YouTube URL gives its `list` parameter (None when it has none); anything else comes back as typed.
 pub fn extract_playlist_id(raw: &str) -> Option<String> {
@@ -151,32 +151,44 @@ pub fn check_number(field: &NumberField, text: &str) -> Result<f64, String> {
     }
 }
 
+/// The update banner: its text, and the button's label and enabled flag (None while the button is hidden).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Banner {
     pub text: String,
-    pub button: &'static str,
-    pub enabled: bool,
+    pub button: Option<(String, bool)>,
 }
 
-/// A version the server left out prints as an empty string where admin.js prints "undefined".
-pub fn update_banner(status: &UpdateStatus) -> Option<Banner> {
-    if !status.update_available {
+/// admin.js `renderUpdateBanner`. A version the server left out prints as an empty string where
+/// admin.js prints "undefined".
+pub fn update_banner(status: &UpdateStatus, now_ms: i64, stream_state: Option<&str>) -> Option<Banner> {
+    let view = update_banner_view(status, now_ms, stream_state);
+    if !view.visible {
         return None;
     }
     let latest = status.latest_version.as_deref().unwrap_or("");
-    let current = status.current_version.as_deref().unwrap_or("");
-    let banner = |text: String, button, enabled| Some(Banner { text, button, enabled });
-    match status.status.as_str() {
-        "downloading" => banner(format!("Downloading v{latest}..."), "Downloading...", false),
-        "extracting" => banner(format!("Installing v{latest}..."), "Installing...", false),
-        "ready" => banner("Update installed. Restarting...".to_string(), "Restarting...", false),
-        "error" => banner(format!("Update failed: {}", status.error.as_deref().unwrap_or("")), "Retry", true),
-        _ => banner(
-            format!("Version {latest} is available (current: {current})"),
-            if status.is_dev_mode { "Dev Mode" } else { "Update Now" },
-            !status.is_dev_mode,
-        ),
-    }
+    let own = |text: String| if view.keep_text { view.text.clone() } else { text };
+    let button = |label: &str, enabled| view.show_button.then(|| (label.to_string(), enabled));
+    let (text, button) = if !view.show_button {
+        (own(String::new()), None)
+    } else {
+        match status.status.as_str() {
+            "downloading" => (own(app_download_text(status)), button("Downloading...", false)),
+            "extracting" => (own(format!("Installing v{latest}...")), button("Installing...", false)),
+            "ready" => (own("Update installed. Restarting...".to_string()), button("Restarting...", false)),
+            "error" => (own(format!("Update failed: {}", status.error.as_deref().unwrap_or(""))), button("Retry", true)),
+            _ => {
+                let label = if status.is_dev_mode {
+                    "Dev Mode".to_string()
+                } else if status.kind.as_deref() == Some("full") && status.same_version {
+                    update_offer_text(status)
+                } else {
+                    "Update Now".to_string()
+                };
+                (own(update_offer_text(status)), button(&label, !status.is_dev_mode))
+            }
+        }
+    };
+    Some(Banner { text, button })
 }
 
 pub fn check_update_result(status: &UpdateStatus) -> String {
@@ -307,6 +319,7 @@ fn local_format(ts: &str, fmt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::UpdateProgress;
     use crate::api::types::Encoder;
     use serde_json::json;
 
@@ -420,20 +433,91 @@ mod tests {
         }
     }
 
-    fn b(text: &str, button: &'static str, enabled: bool) -> Option<Banner> {
-        Some(Banner { text: text.into(), button, enabled })
+    const NOW: i64 = 1_794_132_000_000;
+
+    fn b(text: &str, button: &str, enabled: bool) -> Option<Banner> {
+        Some(Banner { text: text.into(), button: Some((button.into(), enabled)) })
+    }
+
+    fn banner(status: &UpdateStatus) -> Option<Banner> {
+        update_banner(status, NOW, None)
     }
 
     #[test]
     fn banner_per_state() {
-        assert_eq!(update_banner(&status(true, "idle")), b("Version 3.0.6 is available (current: 3.0.5)", "Update Now", true));
+        assert_eq!(banner(&status(true, "idle")), b("Version 3.0.6 is available (current: 3.0.5)", "Update Now", true));
         let dev = UpdateStatus { is_dev_mode: true, ..status(true, "idle") };
-        assert_eq!(update_banner(&dev), b("Version 3.0.6 is available (current: 3.0.5)", "Dev Mode", false));
-        assert_eq!(update_banner(&status(true, "downloading")), b("Downloading v3.0.6...", "Downloading...", false));
-        assert_eq!(update_banner(&status(true, "extracting")), b("Installing v3.0.6...", "Installing...", false));
-        assert_eq!(update_banner(&status(true, "ready")), b("Update installed. Restarting...", "Restarting...", false));
-        assert_eq!(update_banner(&status(true, "error")), b("Update failed: boom", "Retry", true));
-        assert_eq!(update_banner(&status(false, "idle")), None);
+        assert_eq!(banner(&dev), b("Version 3.0.6 is available (current: 3.0.5)", "Dev Mode", false));
+        assert_eq!(banner(&status(true, "downloading")), b("Downloading v3.0.6...", "Downloading...", false));
+        assert_eq!(banner(&status(true, "extracting")), b("Installing v3.0.6...", "Installing...", false));
+        assert_eq!(banner(&status(true, "ready")), b("Update installed. Restarting...", "Restarting...", false));
+        assert_eq!(banner(&status(true, "error")), b("Update failed: boom", "Retry", true));
+        assert_eq!(banner(&status(false, "idle")), None);
+    }
+
+    fn progress(result: &str) -> UpdateProgress {
+        UpdateProgress {
+            from: "3.0.5".into(),
+            to: "3.0.6".into(),
+            step: "swap".into(),
+            result: result.into(),
+            reason: Some("boom".into()),
+            started_at: "2026-11-08T10:00:00.000Z".into(),
+            step_started_at: "2026-11-08T10:00:00.000Z".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn banner_of_a_running_full_update_shows_its_progress_and_no_button() {
+        let s = UpdateStatus { current_version: Some("3.0.5".into()), progress: Some(progress("running")), ..status(true, "idle") };
+
+        let shown = update_banner(&s, NOW + 5_000, None);
+
+        assert_eq!(shown, Some(Banner { text: "Replacing files, 5 s".into(), button: None }));
+    }
+
+    #[test]
+    fn banner_of_a_failed_update_keeps_the_failure_text_and_offers_update_now() {
+        let s = UpdateStatus { current_version: Some("3.0.5".into()), progress: Some(progress("failed")), ..status(true, "idle") };
+
+        let shown = update_banner(&s, NOW + 3_600_000, None);
+
+        assert_eq!(
+            shown,
+            b("The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.", "Update Now", true)
+        );
+    }
+
+    #[test]
+    fn banner_of_a_same_version_full_offer_puts_the_offer_on_the_button() {
+        let s = UpdateStatus {
+            current_version: Some("3.0.5".into()),
+            latest_version: Some("3.0.5".into()),
+            kind: Some("full".into()),
+            parts: vec!["pot".into()],
+            same_version: true,
+            ..status(true, "idle")
+        };
+
+        assert_eq!(banner(&s), b("Update parts to 3.0.5", "Update parts to 3.0.5", true));
+    }
+
+    #[test]
+    fn banner_of_a_full_offer_names_the_parts_and_keeps_update_now() {
+        let s = UpdateStatus { kind: Some("full".into()), parts: vec!["node".into()], ..status(true, "idle") };
+
+        assert_eq!(
+            banner(&s),
+            b("Full update: the stream goes off air while these parts are replaced: Node.", "Update Now", true)
+        );
+    }
+
+    #[test]
+    fn banner_of_an_app_only_download_shows_the_percentage() {
+        let s = UpdateStatus { download_percent: Some(42.0), ..status(true, "downloading") };
+
+        assert_eq!(banner(&s), b("Downloading v3.0.6, 42%...", "Downloading...", false));
     }
 
     #[test]

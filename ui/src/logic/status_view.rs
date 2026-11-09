@@ -1,6 +1,7 @@
 //! Port of `src/admin/status-view.js`: the texts and colour levels the dashboard shows.
 
-use crate::api::types::{AutostartStatus, PlaylistRef, SetupReport, Stream, Twitch, Youtube};
+use crate::api::types::{AutostartStatus, PlaylistRef, SetupReport, Stream, SwapLine, Twitch, UpdateProgress, UpdateStatus, Youtube};
+use super::update_text::{failure_text, step_label};
 use chrono::{DateTime, Local, Timelike};
 use serde_json::{Map, Value};
 
@@ -290,6 +291,131 @@ pub fn save_patch(original: &Value, edited: &Value) -> Value {
         }
     }
     patch
+}
+
+/// "45 s", "1 min 20 s", "12 min": seconds only under 10 minutes.
+pub fn format_elapsed(ms: i64) -> String {
+    let total = ms.div_euclid(1000).max(0);
+    let (min, sec) = (total / 60, total % 60);
+    if min == 0 {
+        format!("{sec} s")
+    } else if min >= 10 || sec == 0 {
+        format!("{min} min")
+    } else {
+        format!("{min} min {sec} s")
+    }
+}
+
+const PART_LABELS: [(&str, &str); 5] = [
+    ("node", "Node"),
+    ("supervisor", "Supervisor"),
+    ("ffmpeg", "ffmpeg"),
+    ("pot", "Token server"),
+    ("ytdlp-plugin", "yt-dlp plugin"),
+];
+
+/// A number as JavaScript prints it in a template string: `42`, not `42.0`.
+fn js_number(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
+
+/// The offer: the full update's banner, the same-version button copy, or the app-only text.
+pub fn update_offer_text(status: &UpdateStatus) -> String {
+    let latest = status.latest_version.as_deref().unwrap_or("");
+    if status.kind.as_deref() == Some("full") {
+        if status.same_version {
+            return format!("Update parts to {latest}");
+        }
+        let names: Vec<&str> = status
+            .parts
+            .iter()
+            .map(|p| PART_LABELS.iter().find(|(key, _)| key == p).map_or(p.as_str(), |(_, label)| label))
+            .collect();
+        return format!("Full update: the stream goes off air while these parts are replaced: {}.", names.join(", "));
+    }
+    format!("Version {latest} is available (current: {})", status.current_version.as_deref().unwrap_or(""))
+}
+
+/// The banner while an app-only update downloads; a full update shows `update_progress_text` instead.
+pub fn app_download_text(status: &UpdateStatus) -> String {
+    let percent = status.download_percent.map(|p| format!(", {}%", js_number(p))).unwrap_or_default();
+    format!("Downloading v{}{percent}...", status.latest_version.as_deref().unwrap_or(""))
+}
+
+/// True while a full update owns the stream: the dashboard shows its progress instead of the stream status.
+pub fn update_running(progress: Option<&UpdateProgress>) -> bool {
+    progress.is_some_and(|p| p.result == "running")
+}
+
+/// `Date.parse` of an ISO time as milliseconds since the epoch; None is JS's NaN.
+fn parse_ms(iso: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(iso).ok().map(|t| t.timestamp_millis())
+}
+
+/// The progress line: the step with its elapsed time while running, else the result.
+pub fn update_progress_text(p: &UpdateProgress, swap_log: &[SwapLine], now_ms: i64) -> String {
+    if p.result == "ok" {
+        return if p.step == "done" {
+            format!("Back on air on {}.", p.to)
+        } else {
+            format!("Updated to {}. Ready to stream.", p.to)
+        };
+    }
+    if p.result != "running" {
+        return failure_text(p);
+    }
+    let percent = match p.download_percent {
+        Some(n) if p.step == "download" => format!("{}%, ", js_number(n)),
+        _ => String::new(),
+    };
+    let elapsed = parse_ms(&p.step_started_at).map_or(0, |since| now_ms - since);
+    let mut text = format!("{}, {percent}{}", step_label(&p.step), format_elapsed(elapsed));
+    if let Some(last) = swap_log.last().filter(|l| p.step == "swap" && l.status == "retry") {
+        text.push_str(&format!(" (trying {} again)", last.folder));
+    }
+    text
+}
+
+const OK_BANNER_MS: i64 = 10 * 60 * 1000;
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct BannerView {
+    pub visible: bool,
+    pub text: String,
+    pub show_button: bool,
+    /// The text is the update's own (progress or result), not the offer's.
+    pub keep_text: bool,
+}
+
+/// What the update banner shows. A failed result keeps its text beside the offer; ok gives way to
+/// it after 10 minutes, and "Ready" goes once `stream_state` is live.
+pub fn update_banner_view(status: &UpdateStatus, now_ms: i64, stream_state: Option<&str>) -> BannerView {
+    if let Some(p) = &status.progress {
+        let running = p.result == "running";
+        let current = status.current_version.as_deref();
+        // From and to other versions than the running one: a later update replaced it.
+        let history = !running && Some(p.from.as_str()) != current && Some(p.to.as_str()) != current;
+        let ready_while_live = p.result == "ok" && p.step != "done" && stream_state == Some("live");
+        if !history && !ready_while_live {
+            let text = update_progress_text(p, &status.swap_log, now_ms);
+            let shown = |show_button| BannerView { visible: true, text: text.clone(), show_button, keep_text: true };
+            if running {
+                return shown(false);
+            }
+            if p.result == "failed" || p.result == "rolled-back" {
+                return shown(status.update_available);
+            }
+            let fresh = parse_ms(&p.step_started_at).is_some_and(|since| now_ms - since < OK_BANNER_MS);
+            if p.result == "ok" && fresh {
+                return shown(false);
+            }
+        }
+    }
+    BannerView { visible: status.update_available, text: String::new(), show_button: true, keep_text: false }
 }
 
 #[cfg(test)]
@@ -754,6 +880,338 @@ mod tests {
         #[test]
         fn takes_the_first_list_when_the_one_on_air_has_left_the_config() {
             assert_eq!(playing_list_index(&lists(), Some("PLgone")), 0);
+        }
+    }
+
+    mod full_update {
+        use super::*;
+        use crate::api::types::{SwapLine, UpdateProgress, UpdateStatus};
+
+        const T0_ISO: &str = "2026-11-08T10:00:00.000Z";
+
+        fn t0() -> i64 {
+            DateTime::parse_from_rfc3339(T0_ISO).unwrap().timestamp_millis()
+        }
+
+        fn at(s: i64) -> i64 {
+            t0() + s * 1000
+        }
+
+        fn state(over: impl FnOnce(&mut UpdateProgress)) -> UpdateProgress {
+            let mut p = UpdateProgress {
+                from: "3.0.5".into(),
+                to: "3.0.6".into(),
+                parts: vec!["node".into()],
+                folders: vec!["node".into()],
+                step: "swap".into(),
+                result: "running".into(),
+                reason: None,
+                started_at: T0_ISO.into(),
+                step_started_at: T0_ISO.into(),
+                download_percent: None,
+            };
+            over(&mut p);
+            p
+        }
+
+        #[test]
+        fn formats_elapsed_times() {
+            assert_eq!(format_elapsed(0), "0 s");
+            assert_eq!(format_elapsed(45_000), "45 s");
+            assert_eq!(format_elapsed(80_000), "1 min 20 s");
+            assert_eq!(format_elapsed(12 * 60_000 + 5_000), "12 min");
+            assert_eq!(format_elapsed(-5), "0 s");
+        }
+
+        #[test]
+        fn floors_elapsed_milliseconds() {
+            assert_eq!(format_elapsed(999), "0 s");
+            assert_eq!(format_elapsed(-1500), "0 s");
+            assert_eq!(format_elapsed(1999), "1 s");
+        }
+
+        fn offer_base() -> UpdateStatus {
+            UpdateStatus {
+                current_version: Some("3.0.5".into()),
+                latest_version: Some("3.0.6".into()),
+                kind: Some("app".into()),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn offer_text_keeps_the_app_only_text() {
+            assert_eq!(update_offer_text(&offer_base()), "Version 3.0.6 is available (current: 3.0.5)");
+        }
+
+        #[test]
+        fn offer_text_names_the_parts_of_a_full_update() {
+            let status = UpdateStatus {
+                kind: Some("full".into()),
+                parts: vec!["node".into(), "ffmpeg".into(), "ytdlp-plugin".into()],
+                ..offer_base()
+            };
+
+            assert_eq!(
+                update_offer_text(&status),
+                "Full update: the stream goes off air while these parts are replaced: Node, ffmpeg, yt-dlp plugin."
+            );
+        }
+
+        #[test]
+        fn offer_text_offers_a_same_version_parts_update() {
+            let status = UpdateStatus {
+                latest_version: Some("3.0.5".into()),
+                kind: Some("full".into()),
+                parts: vec!["pot".into()],
+                same_version: true,
+                ..offer_base()
+            };
+
+            assert_eq!(update_offer_text(&status), "Update parts to 3.0.5");
+        }
+
+        #[test]
+        fn offer_text_prints_an_unknown_part_as_itself() {
+            let status = UpdateStatus { kind: Some("full".into()), parts: vec!["supervisor".into(), "mystery".into()], ..offer_base() };
+
+            assert_eq!(
+                update_offer_text(&status),
+                "Full update: the stream goes off air while these parts are replaced: Supervisor, mystery."
+            );
+        }
+
+        #[test]
+        fn progress_text_shows_the_step_and_its_elapsed_time() {
+            assert_eq!(update_progress_text(&state(|_| {}), &[], at(80)), "Replacing files, 1 min 20 s");
+            assert_eq!(update_progress_text(&state(|p| p.step = "stop".into()), &[], at(5)), "Stopping the stream, 5 s");
+            assert_eq!(update_progress_text(&state(|p| p.step = "download".into()), &[], at(0)), "Downloading, 0 s");
+            assert_eq!(update_progress_text(&state(|p| p.step = "check".into()), &[], at(3)), "Checking the new version, 3 s");
+            assert_eq!(update_progress_text(&state(|p| p.step = "start".into()), &[], at(3)), "Starting the stream, 3 s");
+        }
+
+        #[test]
+        fn progress_text_shows_the_download_percentage_only_while_downloading() {
+            let download = |percent| state(|p| {
+                p.step = "download".into();
+                p.download_percent = percent;
+            });
+
+            assert_eq!(update_progress_text(&download(Some(42.0)), &[], at(70)), "Downloading, 42%, 1 min 10 s");
+            assert_eq!(update_progress_text(&download(None), &[], at(70)), "Downloading, 1 min 10 s");
+            assert_eq!(update_progress_text(&download(Some(42.5)), &[], at(70)), "Downloading, 42.5%, 1 min 10 s");
+            let stop = state(|p| {
+                p.step = "stop".into();
+                p.download_percent = Some(100.0);
+            });
+            assert_eq!(update_progress_text(&stop, &[], at(5)), "Stopping the stream, 5 s");
+        }
+
+        #[test]
+        fn progress_text_mentions_a_swap_retry() {
+            let log = [SwapLine { folder: "node".into(), status: "retry".into(), detail: "in use".into() }];
+
+            assert_eq!(update_progress_text(&state(|_| {}), &log, at(10)), "Replacing files, 10 s (trying node again)");
+        }
+
+        #[test]
+        fn progress_text_ignores_a_retry_that_is_not_the_last_line_or_not_the_swap() {
+            let retry = SwapLine { folder: "node".into(), status: "retry".into(), detail: String::new() };
+            let done = SwapLine { folder: "node".into(), status: "ok".into(), detail: String::new() };
+
+            assert_eq!(update_progress_text(&state(|_| {}), &[retry.clone(), done], at(10)), "Replacing files, 10 s");
+            assert_eq!(update_progress_text(&state(|p| p.step = "stop".into()), &[retry], at(10)), "Stopping the stream, 10 s");
+        }
+
+        #[test]
+        fn progress_text_counts_zero_elapsed_when_the_step_time_does_not_parse() {
+            let broken = state(|p| p.step_started_at = "not a date".into());
+
+            assert_eq!(update_progress_text(&broken, &[], at(80)), "Replacing files, 0 s");
+        }
+
+        #[test]
+        fn progress_text_shows_the_ready_copy_when_the_update_went_through_and_back_on_air_once_the_stream_is_up() {
+            let ok = |step: &str| state(|p| {
+                p.step = step.into();
+                p.result = "ok".into();
+            });
+
+            assert_eq!(update_progress_text(&ok("start"), &[], at(1)), "Updated to 3.0.6. Ready to stream.");
+            assert_eq!(update_progress_text(&ok("done"), &[], at(1)), "Back on air on 3.0.6.");
+        }
+
+        #[test]
+        fn progress_text_shows_the_failure_with_step_and_reason() {
+            let failed = state(|p| {
+                p.result = "failed".into();
+                p.reason = Some("ffmpeg is still running.".into());
+            });
+            let back = state(|p| {
+                p.step = "check".into();
+                p.result = "rolled-back".into();
+                p.reason = Some("No encoder works.".into());
+            });
+
+            assert_eq!(
+                update_progress_text(&failed, &[], at(1)),
+                "The update to 3.0.6 failed at replacing files: ffmpeg is still running. Still on 3.0.5."
+            );
+            assert_eq!(
+                update_progress_text(&back, &[], at(1)),
+                "The update to 3.0.6 failed at checking the new version: No encoder works. Still on 3.0.5."
+            );
+        }
+
+        #[test]
+        fn failure_text_names_a_missing_reason() {
+            let failed = state(|p| p.result = "failed".into());
+
+            assert_eq!(
+                failure_text(&failed),
+                "The update to 3.0.6 failed at replacing files: no reason was recorded. Still on 3.0.5."
+            );
+        }
+
+        #[test]
+        fn step_label_prints_an_unknown_step_as_itself() {
+            assert_eq!(step_label("done"), "Back on air");
+            assert_eq!(step_label("warp"), "warp");
+        }
+
+        #[test]
+        fn download_text_adds_the_percentage_of_an_app_only_download_when_the_server_knows_it() {
+            let status = |percent| UpdateStatus { latest_version: Some("3.0.7".into()), download_percent: percent, ..Default::default() };
+
+            assert_eq!(app_download_text(&status(Some(42.0))), "Downloading v3.0.7, 42%...");
+            assert_eq!(app_download_text(&status(None)), "Downloading v3.0.7...");
+        }
+
+        #[test]
+        fn update_running_is_true_only_while_the_result_is_running() {
+            assert!(update_running(Some(&state(|_| {}))));
+            assert!(!update_running(Some(&state(|p| p.result = "ok".into()))));
+            assert!(!update_running(None));
+        }
+
+        fn status(over: impl FnOnce(&mut UpdateStatus)) -> UpdateStatus {
+            let mut s = UpdateStatus { current_version: Some("3.0.6".into()), status: "idle".into(), ..Default::default() };
+            over(&mut s);
+            s
+        }
+
+        fn view(visible: bool, text: &str, show_button: bool, keep_text: bool) -> BannerView {
+            BannerView { visible, text: text.into(), show_button, keep_text }
+        }
+
+        #[test]
+        fn banner_view_hides_the_button_while_an_update_runs() {
+            let s = status(|s| {
+                s.update_available = true;
+                s.progress = Some(state(|p| p.reason = Some("boom".into())));
+            });
+
+            assert_eq!(update_banner_view(&s, at(5), None), view(true, "Replacing files, 5 s", false, true));
+        }
+
+        #[test]
+        fn banner_view_keeps_the_failure_text_and_still_shows_the_button_when_an_update_is_available() {
+            let s = status(|s| {
+                s.update_available = true;
+                s.progress = Some(state(|p| {
+                    p.result = "failed".into();
+                    p.reason = Some("boom".into());
+                }));
+            });
+
+            let v = update_banner_view(&s, at(3600), None);
+
+            assert!(v.visible);
+            assert_eq!(v.text, "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.");
+            assert!(v.show_button);
+            assert!(v.keep_text);
+        }
+
+        #[test]
+        fn banner_view_shows_the_failure_without_a_button_when_no_update_is_available() {
+            let s = status(|s| s.progress = Some(state(|p| p.result = "rolled-back".into())));
+
+            assert!(!update_banner_view(&s, at(0), None).show_button);
+        }
+
+        #[test]
+        fn banner_view_shows_ok_for_10_minutes_and_then_falls_back_to_the_offer() {
+            let ok = state(|p| {
+                p.result = "ok".into();
+                p.step = "done".into();
+            });
+            let plain = status(|s| s.progress = Some(ok.clone()));
+            let offered = status(|s| {
+                s.update_available = true;
+                s.progress = Some(ok);
+            });
+
+            assert_eq!(update_banner_view(&plain, at(9 * 60), None), view(true, "Back on air on 3.0.6.", false, true));
+            assert_eq!(update_banner_view(&plain, at(11 * 60), None), view(false, "", true, false));
+            let v = update_banner_view(&offered, at(11 * 60), None);
+            assert!(v.visible && v.show_button && !v.keep_text);
+        }
+
+        #[test]
+        fn banner_view_treats_an_unparsable_step_time_as_past_the_ok_window() {
+            let ok = state(|p| {
+                p.result = "ok".into();
+                p.step = "done".into();
+                p.step_started_at = "garbage".into();
+            });
+            let s = status(|s| s.progress = Some(ok));
+
+            assert_eq!(update_banner_view(&s, at(1), None), view(false, "", true, false));
+        }
+
+        #[test]
+        fn banner_view_drops_the_ready_banner_once_the_stream_is_live_and_keeps_back_on_air() {
+            let progress = |step: &str| status(|s| {
+                s.progress = Some(state(|p| {
+                    p.result = "ok".into();
+                    p.step = step.into();
+                }))
+            });
+
+            let ready = progress("start");
+            let back = progress("done");
+
+            let waiting = update_banner_view(&ready, at(5), Some("stopped"));
+            assert!(waiting.visible);
+            assert_eq!(waiting.text, "Updated to 3.0.6. Ready to stream.");
+            let live = update_banner_view(&ready, at(5), Some("live"));
+            assert!(!live.visible && !live.keep_text);
+            let air = update_banner_view(&back, at(5), Some("live"));
+            assert!(air.visible);
+            assert_eq!(air.text, "Back on air on 3.0.6.");
+        }
+
+        #[test]
+        fn banner_view_hides_a_finished_update_that_neither_came_from_nor_went_to_the_running_version() {
+            // A failed full update from 3.0.5 to 3.0.6, then an app-only update to 3.0.8.
+            let failed = state(|p| {
+                p.result = "failed".into();
+                p.reason = Some("boom".into());
+            });
+            let at_version = |current: &str, available: bool| status(|s| {
+                s.current_version = Some(current.into());
+                s.update_available = available;
+                s.progress = Some(failed.clone());
+            });
+
+            let later = update_banner_view(&at_version("3.0.8", false), at(5), None);
+            let offer = update_banner_view(&at_version("3.0.8", true), at(5), None);
+            let still_old = update_banner_view(&at_version("3.0.5", false), at(5), None);
+
+            assert!(!later.visible && !later.keep_text);
+            assert!(offer.visible && offer.show_button && !offer.keep_text);
+            assert!(still_old.visible && still_old.keep_text);
+            assert_eq!(still_old.text, "The update to 3.0.6 failed at replacing files: boom. Still on 3.0.5.");
         }
     }
 }

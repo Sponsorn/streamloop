@@ -106,6 +106,7 @@ pub fn config_json() -> Value {
         "updateCheckIntervalMs": 21_600_000,
         "autoUpdateYtdlp": true,
         "autoOpenAdmin": true,
+        "autoStartStream": true,
         "twitchClientId": "",
         "twitchClientSecret": "",
         "twitchChannel": "",

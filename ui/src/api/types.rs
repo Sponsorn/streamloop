@@ -93,6 +93,37 @@ pub struct UpdateStatus {
     pub error: Option<String>,
     pub is_dev_mode: bool,
     pub node_notice: Option<String>,
+    pub kind: Option<String>,
+    pub parts: Vec<String>,
+    pub same_version: bool,
+    pub download_percent: Option<f64>,
+    pub progress: Option<UpdateProgress>,
+    pub swap_log: Vec<SwapLine>,
+}
+
+/// `update-state.json` as `/api/update/status` serves it; `baseline` is left out.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub from: String,
+    pub to: String,
+    pub parts: Vec<String>,
+    pub folders: Vec<String>,
+    pub step: String,
+    pub result: String,
+    pub reason: Option<String>,
+    pub started_at: String,
+    pub step_started_at: String,
+    pub download_percent: Option<f64>,
+}
+
+/// One line of the swap log, from `readSwapLog`.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct SwapLine {
+    pub folder: String,
+    pub status: String,
+    pub detail: String,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -206,6 +237,7 @@ pub struct Config {
     pub twitch_client_secret: String,
     pub twitch_channel: String,
     pub auto_open_admin: bool,
+    pub auto_start_stream: bool,
     pub ytdl_cookies_from_browser: String,
 }
 
@@ -297,6 +329,7 @@ impl Config {
             twitch_client_secret: text(v, "twitchClientSecret"),
             twitch_channel: text(v, "twitchChannel"),
             auto_open_admin: flag_default_on(v, "autoOpenAdmin"),
+            auto_start_stream: flag_default_on(v, "autoStartStream"),
             ytdl_cookies_from_browser: text(v, "ytdlCookiesFromBrowser"),
         }
     }
@@ -370,6 +403,52 @@ mod tests {
             assert!(update.is_dev_mode && update.update_available);
             assert_eq!(update.node_notice.as_deref(), Some("Install the full ZIP"));
         }
+    }
+
+    #[test]
+    fn update_status_reads_the_full_update_fields() {
+        let raw = json!({
+            "status": "idle", "updateAvailable": true, "kind": "full", "parts": ["node", "pot"],
+            "sameVersion": true, "downloadPercent": 42.5,
+            "progress": {
+                "from": "3.0.5", "to": "3.0.6", "parts": ["node"], "folders": ["node"], "step": "swap",
+                "result": "running", "reason": null, "startedAt": "2026-11-08T10:00:00.000Z",
+                "stepStartedAt": "2026-11-08T10:00:05.000Z", "baseline": {"encoder": "libx264", "works": true},
+                "downloadPercent": 7
+            },
+            "swapLog": [{"folder": "node", "status": "retry", "detail": "in use"}]
+        })
+        .to_string();
+
+        let update: UpdateStatus = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(update.kind.as_deref(), Some("full"));
+        assert_eq!(update.parts, ["node", "pot"]);
+        assert!(update.same_version);
+        assert_eq!(update.download_percent, Some(42.5));
+        let progress = update.progress.unwrap();
+        assert_eq!((progress.from.as_str(), progress.to.as_str(), progress.step.as_str()), ("3.0.5", "3.0.6", "swap"));
+        assert_eq!(progress.result, "running");
+        assert_eq!(progress.reason, None);
+        assert_eq!(progress.step_started_at, "2026-11-08T10:00:05.000Z");
+        assert_eq!(progress.download_percent, Some(7.0));
+        assert_eq!(update.swap_log, [SwapLine { folder: "node".into(), status: "retry".into(), detail: "in use".into() }]);
+    }
+
+    #[test]
+    fn update_status_without_the_full_update_fields_takes_the_defaults() {
+        let update: UpdateStatus = serde_json::from_str(r#"{"status": "idle", "progress": null}"#).unwrap();
+
+        assert_eq!(update.kind, None);
+        assert!(update.parts.is_empty() && !update.same_version && update.swap_log.is_empty());
+        assert!(update.download_percent.is_none() && update.progress.is_none());
+    }
+
+    #[test]
+    fn auto_start_stream_is_on_unless_the_config_says_false() {
+        assert!(Config::from_value(&json!({})).auto_start_stream);
+        assert!(Config::from_value(&json!({"autoStartStream": true})).auto_start_stream);
+        assert!(!Config::from_value(&json!({"autoStartStream": false})).auto_start_stream);
     }
 
     #[test]

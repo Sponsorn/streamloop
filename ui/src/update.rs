@@ -78,11 +78,14 @@ impl UpdateFlow {
             .clone()
             .filter(|notice| !notice.is_empty())
             .map(Into::into);
-        match update_banner(status) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        match update_banner(status, now_ms, None) {
             Some(banner) => {
                 self.shown = true;
                 self.text = banner.text.into();
-                self.set_button(banner.button, banner.enabled);
+                if let Some((label, enabled)) = banner.button {
+                    self.set_button(label, enabled);
+                }
             }
             None => self.shown = false,
         }
@@ -153,7 +156,7 @@ impl UpdateFlow {
         }));
     }
 
-    fn set_button(&mut self, label: &'static str, enabled: bool) {
+    fn set_button(&mut self, label: impl Into<SharedString>, enabled: bool) {
         self.button = label.into();
         self.enabled = enabled;
     }
