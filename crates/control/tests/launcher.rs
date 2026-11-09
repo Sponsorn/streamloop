@@ -1240,6 +1240,43 @@ async fn reports_no_outage_while_held() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn does_not_spawn_when_a_landing_suspends_during_a_slow_guard() {
+    // Arrange: the guard starts at 4 s and takes 3 s
+    let r = guarded(GuardSetup { delay: Duration::from_secs(3), ..guard_setup() }, false);
+    r.launcher.start();
+    r.advance(5_000).await;
+    // Act
+    r.launcher.suspend();
+    r.advance(20_000).await;
+    r.launcher.stop();
+    // Assert
+    assert_eq!(r.spawner.count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_start_while_suspended_launches_once_and_keeps_the_hold() {
+    // Arrange
+    let r = rig(Setup { own_version: Some(OWN), ..Setup::default() });
+    r.launcher.suspend();
+    r.launcher.start();
+    r.advance(30_000).await;
+    // Act: the launched supervisor is another version and then dies
+    r.launcher.launch_now();
+    r.advance(2_000).await;
+    let launched = r.spawner.count();
+    r.answering(Some("3.1.1"));
+    r.advance(10_000).await;
+    r.silent();
+    r.advance(600_000).await;
+    r.launcher.stop();
+    // Assert
+    assert_eq!(launched, 1);
+    assert_eq!(r.spawner.count(), 1);
+    assert_eq!(r.shutdowns(), 0);
+    assert_eq!(r.count("supervisor-down"), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn relaunches_after_resume() {
     // Arrange
     let r = rig(Setup::default());

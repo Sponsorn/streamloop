@@ -396,6 +396,22 @@ impl Updater {
         should_land(&self.inner.policy, auto_check, staged.as_deref(), rolled_back.as_deref(), sup, stopped, off_air_for)
     }
 
+    /// Step 1 of a landing: the status reads `ready` until the process exits or the landing fails.
+    pub fn landing_started(&self) {
+        let mut st = self.inner.lock();
+        st.status = UpdateStatus::Ready;
+        st.error = None;
+    }
+
+    /// A landing that did not go through: the status reads `error` with the reason. Forgetting the
+    /// staged exe keeps the next poll from landing it again before a new stage.
+    pub fn landing_failed(&self, reason: &str) {
+        let mut st = self.inner.lock();
+        st.status = UpdateStatus::Error;
+        st.error = Some(reason.to_string());
+        st.staged = None;
+    }
+
     fn stage_in_background(&self) {
         let inner = self.inner.clone();
         match inner.stage_lock.clone().try_lock_owned() {

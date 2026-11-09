@@ -1,0 +1,716 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use streamloop_common::api::{ControlCmd, EncoderStatus, ReloadRequest, SupervisorStatus};
+use streamloop_common::paths::Layout;
+use streamloop_control::clock::TestClock;
+use streamloop_control::discord::{EmbedField, Level, Notifier};
+use streamloop_control::events::Alert;
+use streamloop_control::http::FakeHttp;
+use streamloop_control::landing::{
+    confirm_or_roll_back, land, settle_unfinished_update, Confirmation, LandedRecord, LandingDeps, LandingGate, CONFIRM_WITHIN,
+};
+use streamloop_control::launcher::{Launcher, LauncherOptions, SpawnHandle, Spawner};
+use streamloop_control::runner::{FakeRunner, RunOutput};
+use streamloop_control::supervisor_client::{ControlResult, ReloadResult, SupervisorApi};
+use streamloop_control::timeline::{EventLog, EventStore};
+use streamloop_control::updater::{BreakPolicy, UpdateStatus, Updater, UpdaterOptions, GITHUB_RELEASES_URL};
+use tokio::time::Instant;
+
+const OLD: &str = "3.1.0";
+const NEW: &str = "3.1.1";
+const OLD_EXE: &[u8] = b"the running streamloop.exe";
+const NEW_EXE: &[u8] = b"the new streamloop.exe";
+const PID: u32 = 4242;
+const INSTALLING: &str = "Installing StreamLoop 3.1.1. The stream restarts.";
+const UPDATED: &str = "Updated to StreamLoop 3.1.1.";
+const WENT_BACK: &str = "The update to 3.1.1 did not come up, so StreamLoop went back to 3.1.0.";
+
+// Harness
+
+fn status(version: &str, encoder_alive: bool) -> SupervisorStatus {
+    SupervisorStatus {
+        state: Some("playing".into()),
+        version: Some(version.into()),
+        encoder: Some(EncoderStatus { alive: Some(encoder_alive), uptime_s: Some(encoder_alive.then_some(100)), ..EncoderStatus::default() }),
+        ..SupervisorStatus::default()
+    }
+}
+
+/// The supervisor on 4417: answers what the test sets, and stops answering on `/shutdown` unless told to ignore it.
+#[derive(Default)]
+struct Sup {
+    status: Mutex<Option<SupervisorStatus>>,
+    ignores_shutdown: AtomicBool,
+    shutdowns: AtomicUsize,
+    /// Runs inside the shutdown call, so after the stop and before the swap.
+    on_shutdown: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl Sup {
+    fn answer(&self, s: Option<SupervisorStatus>) {
+        *self.status.lock().unwrap() = s;
+    }
+
+    fn answering(&self) -> bool {
+        self.status.lock().unwrap().is_some()
+    }
+}
+
+#[async_trait]
+impl SupervisorApi for Sup {
+    async fn status(&self) -> Option<SupervisorStatus> {
+        self.status.lock().unwrap().clone()
+    }
+
+    async fn control(&self, _: ControlCmd, _: Option<u32>, _: Option<String>, _: Option<String>) -> ControlResult {
+        ControlResult::default()
+    }
+
+    async fn reload(&self, _: ReloadRequest) -> ReloadResult {
+        ReloadResult::default()
+    }
+
+    async fn shutdown(&self) -> bool {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        let hook = self.on_shutdown.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        if !self.ignores_shutdown.load(Ordering::SeqCst) {
+            self.answer(None);
+        }
+        true
+    }
+}
+
+/// The exe, its arguments and the exe's bytes at the launch.
+type Spawn = (PathBuf, Vec<String>, Vec<u8>);
+
+/// Records each launch; the supervisor it starts answers with that exe's version, on air.
+struct Spawns {
+    sup: Arc<Sup>,
+    calls: Mutex<Vec<Spawn>>,
+}
+
+struct HandedOff;
+
+#[async_trait]
+impl SpawnHandle for HandedOff {
+    async fn exit_code(self: Box<Self>) -> Option<i32> {
+        Some(0)
+    }
+}
+
+impl Spawner for Spawns {
+    fn spawn(&self, exe: &Path, args: &[String]) -> std::io::Result<Box<dyn SpawnHandle>> {
+        let bytes = std::fs::read(exe)?;
+        let version = if bytes == NEW_EXE { NEW } else { OLD };
+        self.sup.answer(Some(status(version, true)));
+        self.calls.lock().unwrap().push((exe.to_path_buf(), args.to_vec(), bytes));
+        Ok(Box::new(HandedOff))
+    }
+}
+
+impl Spawns {
+    fn all(&self) -> Vec<Spawn> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[derive(Default)]
+struct Posts(Mutex<Vec<String>>);
+
+impl Posts {
+    fn push(&self, s: String) {
+        self.0.lock().unwrap().push(s);
+    }
+
+    fn all(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Notifier for Posts {
+    async fn notify_critical(&self, message: &str) {
+        self.push(format!("critical: {message}"));
+    }
+
+    async fn notify_event(&self, alert: Alert) {
+        let vars: Vec<String> = alert.vars.iter().map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default())).collect();
+        self.push(format!("{}/{}: {}", alert.kind.as_str(), alert.level.as_str(), vars.join(",")));
+    }
+
+    async fn notify_twitch_mismatch(&self, _: &str) {
+        unreachable!("the landing never reports a Twitch mismatch")
+    }
+
+    async fn notify_twitch_restart(&self, _: &str) {
+        unreachable!("the landing never reports a Twitch restart")
+    }
+
+    async fn send(&self, content: &str, level: Level, _: Option<Vec<EmbedField>>) {
+        self.push(format!("send/{}: {content}", level.as_str()));
+    }
+
+    async fn flush(&self) {
+        self.push("flush".into());
+    }
+}
+
+type Kills = Arc<Mutex<Vec<(u32, Instant)>>>;
+
+struct Rig {
+    deps: LandingDeps,
+    sup: Arc<Sup>,
+    spawns: Arc<Spawns>,
+    kills: Kills,
+    posts: Arc<Posts>,
+    layout: Layout,
+    _dir: tempfile::TempDir,
+}
+
+/// An install in a temp root with a space and an Ö, running `version` from `exe_bytes`.
+fn rig(version: &str, exe_bytes: &[u8], http: Arc<FakeHttp>, runner: Arc<FakeRunner>) -> Rig {
+    let dir = tempfile::Builder::new().prefix("sl3 Ö land").tempdir().unwrap();
+    let layout = Layout::new(dir.path());
+    std::fs::create_dir_all(&layout.app_dir).unwrap();
+    std::fs::write(&layout.exe, exe_bytes).unwrap();
+    let clock = Arc::new(TestClock::new(UNIX_EPOCH + Duration::from_secs(1_792_929_600)));
+    let sup = Arc::new(Sup::default());
+    let spawns = Arc::new(Spawns { sup: sup.clone(), calls: Mutex::new(Vec::new()) });
+    let posts = Arc::new(Posts::default());
+    let kills: Kills = Arc::new(Mutex::new(Vec::new()));
+    let updater = Updater::new(UpdaterOptions {
+        current: version.into(),
+        dev_mode: false,
+        http,
+        runner,
+        clock: clock.clone(),
+        layout: layout.clone(),
+        releases_url: GITHUB_RELEASES_URL.into(),
+        test_releases: None,
+        bundled_node: None,
+        policy: BreakPolicy::default(),
+    });
+    let launcher = Launcher::new(LauncherOptions {
+        layout: layout.clone(),
+        client: sup.clone(),
+        spawner: spawns.clone(),
+        clock: clock.clone(),
+        debug_faults: false,
+        guard: None,
+        own_version: Some(version.into()),
+        on_event: Box::new(|_, _| {}),
+        hold_for_start: false,
+    });
+    let (port_sup, kill_sup, kill_log) = (sup.clone(), sup.clone(), kills.clone());
+    let deps = LandingDeps {
+        layout: layout.clone(),
+        updater,
+        launcher,
+        client: sup.clone(),
+        notifier: posts.clone(),
+        timeline: Arc::new(EventLog::new(EventStore::new(&layout.app_logs, clock.clone()))),
+        clock,
+        kill_tree: Arc::new(move |pid| {
+            kill_log.lock().unwrap().push((pid, Instant::now()));
+            kill_sup.answer(None);
+        }),
+        pid_on_port: Arc::new(move |port| (port == 4417 && port_sup.answering()).then_some(PID)),
+        gate: LandingGate::default(),
+    };
+    Rig { deps, sup, spawns, kills, posts, layout, _dir: dir }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+const GH: &str = "https://github.com/Sponsorn/streamloop/releases/download";
+
+/// GitHub offers NEW, whose exe is `NEW_EXE`.
+fn offering_new() -> Arc<FakeHttp> {
+    let http = Arc::new(FakeHttp::new());
+    let names = [format!("streamloop-v{NEW}.zip"), format!("streamloop-v{NEW}.exe"), format!("streamloop-v{NEW}.exe.sha256")];
+    let assets: Vec<Value> = names.iter().map(|n| json!({ "name": n, "browser_download_url": format!("{GH}/v{NEW}/{n}") })).collect();
+    let list = json!([{ "tag_name": format!("v{NEW}"), "draft": false, "prerelease": true, "assets": assets }]).to_string();
+    http.respond(GITHUB_RELEASES_URL, 200, &list);
+    http.respond(&format!("{GH}/v{NEW}/streamloop-v{NEW}.exe"), 200, std::str::from_utf8(NEW_EXE).unwrap());
+    http.respond(&format!("{GH}/v{NEW}/streamloop-v{NEW}.exe.sha256"), 200, &format!("{}  streamloop-v{NEW}.exe\n", sha256_hex(NEW_EXE)));
+    http
+}
+
+/// The old control process: OLD on air, NEW staged in `_update\`, the launcher watching.
+async fn landing_rig() -> Rig {
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(Ok(RunOutput::ok(&format!("{NEW}\r\n"))));
+    let r = rig(OLD, OLD_EXE, offering_new(), runner);
+    r.deps.updater.check().await;
+    r.deps.updater.wait_for_stage().await;
+    assert_eq!(r.deps.updater.staged_version().as_deref(), Some(NEW), "the exe was staged");
+    r.sup.answer(Some(status(OLD, true)));
+    r.deps.launcher.start();
+    r
+}
+
+const STATE_AT_START: &str = r#"{
+  "from": "3.1.0",
+  "to": "3.1.1",
+  "parts": [],
+  "folders": [],
+  "step": "start",
+  "result": "running",
+  "reason": null,
+  "startedAt": "2026-10-25T12:00:00.000Z",
+  "stepStartedAt": "2026-10-25T12:00:21.000Z",
+  "baseline": null
+}"#;
+
+/// The new control process right after a landing: NEW in place, OLD kept as `.old`, the record in `_update\`.
+fn confirming_rig(on_air: bool) -> (Rig, LandedRecord) {
+    let r = rig(NEW, NEW_EXE, Arc::new(FakeHttp::new()), Arc::new(FakeRunner::new()));
+    std::fs::write(&r.layout.exe_old, OLD_EXE).unwrap();
+    std::fs::create_dir_all(&r.layout.update_dir).unwrap();
+    let record = LandedRecord { from: OLD.into(), to: NEW.into(), on_air };
+    std::fs::write(&r.layout.landed, serde_json::to_string(&record).unwrap()).unwrap();
+    std::fs::create_dir_all(&r.layout.data).unwrap();
+    std::fs::write(&r.layout.update_state, STATE_AT_START).unwrap();
+    (r, record)
+}
+
+impl Rig {
+    /// Lets a launch the landing asked for run through the launcher's poll.
+    async fn settle(&self) {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+
+    fn read(&self, path: &Path) -> Vec<u8> {
+        std::fs::read(path).unwrap_or_default()
+    }
+
+    fn timeline(&self) -> Vec<String> {
+        self.deps.timeline.entries().into_iter().map(|e| e.message).collect()
+    }
+
+    fn update_state(&self) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(&self.layout.update_state).unwrap()).unwrap()
+    }
+
+    fn rolled_back(&self) -> Option<LandedRecord> {
+        LandedRecord::read(&self.layout.rolled_back)
+    }
+}
+
+// land
+
+#[tokio::test(start_paused = true)]
+async fn swaps_the_exe_and_keeps_the_old_one() {
+    // Arrange
+    let r = landing_rig().await;
+    // Act
+    let result = land(&r.deps).await;
+    // Assert
+    assert_eq!(result, Ok(()));
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert_eq!(r.read(&r.layout.exe_old), OLD_EXE);
+    assert!(!r.layout.staged_exe.exists());
+    assert_eq!(LandedRecord::read(&r.layout.landed), Some(LandedRecord { from: OLD.into(), to: NEW.into(), on_air: true }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn launches_from_the_new_exe_after_the_swap() {
+    // Arrange
+    let r = landing_rig().await;
+    // Act
+    land(&r.deps).await.unwrap();
+    r.settle().await;
+    // Assert
+    let spawns = r.spawns.all();
+    assert_eq!(spawns.len(), 1);
+    let (exe, args, bytes) = &spawns[0];
+    assert_eq!(exe, &r.layout.exe);
+    assert_eq!(bytes.as_slice(), NEW_EXE);
+    assert_eq!(args, &["launch".to_string(), "--root".to_string(), r.layout.root.to_string_lossy().into_owned()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn does_not_launch_when_stopped_from_the_dashboard() {
+    // Arrange
+    let r = landing_rig().await;
+    r.deps.launcher.mark_stopped_by_user();
+    r.sup.answer(None);
+    // Act
+    let result = land(&r.deps).await;
+    r.settle().await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    // Assert
+    assert_eq!(result, Ok(()));
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert!(r.spawns.all().is_empty());
+    assert_eq!(LandedRecord::read(&r.layout.landed).map(|l| l.on_air), Some(false));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_second_rename_restores_the_old_exe() {
+    // Arrange: the staged exe is gone by the time it is moved into place
+    let r = landing_rig().await;
+    let staged = r.layout.staged_exe.clone();
+    *r.sup.on_shutdown.lock().unwrap() = Some(Box::new(move || std::fs::remove_file(&staged).unwrap()));
+    // Act
+    let result = land(&r.deps).await;
+    r.settle().await;
+    // Assert
+    assert!(result.is_err());
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert!(!r.layout.exe_old.exists());
+    assert!(!r.layout.landed.exists());
+    assert_eq!(r.deps.updater.status().status, UpdateStatus::Error);
+    let spawns = r.spawns.all();
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].2.as_slice(), OLD_EXE);
+}
+
+#[cfg(windows)]
+#[tokio::test(start_paused = true)]
+async fn a_locked_staged_exe_leaves_the_old_one_in_place() {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    // Arrange: antivirus holds the staged exe open without share-delete for the whole landing
+    let r = landing_rig().await;
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(&r.layout.staged_exe).unwrap();
+    // Act
+    let result = land(&r.deps).await;
+    r.settle().await;
+    drop(lock);
+    // Assert
+    let reason = result.unwrap_err();
+    assert!(reason.starts_with("The new streamloop.exe could not be moved into place"), "{reason}");
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert_eq!(r.read(&r.layout.staged_exe), NEW_EXE);
+    assert!(!r.layout.exe_old.exists());
+    assert!(!r.layout.landed.exists());
+    assert_eq!(r.deps.updater.status().status, UpdateStatus::Error);
+    let spawns = r.spawns.all();
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].2.as_slice(), OLD_EXE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn ends_a_supervisor_that_ignores_shutdown_after_20_s() {
+    // Arrange
+    let r = landing_rig().await;
+    r.sup.ignores_shutdown.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    // Act
+    let result = land(&r.deps).await;
+    // Assert
+    let kills = r.kills.lock().unwrap().clone();
+    assert_eq!(kills.len(), 1);
+    assert_eq!(kills[0].0, PID);
+    let at = kills[0].1.duration_since(started);
+    assert!(at >= Duration::from_secs(20) && at < Duration::from_secs(21), "killed at {at:?}");
+    assert_eq!(result, Ok(()));
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_landings_at_once_swap_once() {
+    // Arrange
+    let r = landing_rig().await;
+    // Act
+    let (first, second) = tokio::join!(land(&r.deps), land(&r.deps));
+    r.settle().await;
+    // Assert
+    assert_eq!((first, second), (Ok(()), Ok(())));
+    assert_eq!(r.sup.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert_eq!(r.read(&r.layout.exe_old), OLD_EXE);
+    assert_eq!(r.spawns.all().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn installing_goes_to_the_timeline_and_to_discord_under_recovery_before_the_exit() {
+    // Arrange
+    let r = landing_rig().await;
+    // Act
+    land(&r.deps).await.unwrap();
+    // Assert
+    assert!(r.timeline().contains(&INSTALLING.to_string()));
+    let posts = r.posts.all();
+    let info = posts.iter().position(|p| p == &format!("recovery/info: step={INSTALLING}")).expect("the info was sent");
+    assert!(posts[info..].contains(&"flush".to_string()), "flushed after the info: {posts:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn writes_the_update_progress_in_masters_shape() {
+    // Arrange
+    let r = landing_rig().await;
+    // Act
+    land(&r.deps).await.unwrap();
+    // Assert
+    let text = std::fs::read_to_string(&r.layout.update_state).unwrap();
+    let keys = ["\"from\"", "\"to\"", "\"parts\"", "\"folders\"", "\"step\"", "\"result\"", "\"reason\"", "\"startedAt\"", "\"stepStartedAt\"", "\"baseline\""];
+    let at: Vec<usize> = keys.iter().map(|k| text.find(k).unwrap_or_else(|| panic!("{k} missing in {text}"))).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "keys out of master's order: {text}");
+    let s = r.update_state();
+    assert_eq!((s["from"].as_str(), s["to"].as_str()), (Some(OLD), Some(NEW)));
+    assert_eq!((s["parts"].clone(), s["folders"].clone(), s["baseline"].clone()), (json!([]), json!([]), Value::Null));
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("start"), Some("running")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_swap_is_recorded_for_the_dashboard_and_discord() {
+    // Arrange
+    let r = landing_rig().await;
+    let staged = r.layout.staged_exe.clone();
+    *r.sup.on_shutdown.lock().unwrap() = Some(Box::new(move || std::fs::remove_file(&staged).unwrap()));
+    // Act
+    let reason = land(&r.deps).await.unwrap_err();
+    // Assert
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str(), s["reason"].as_str()), (Some("swap"), Some("failed"), Some(reason.as_str())));
+    assert_eq!(r.deps.updater.status().error.as_deref(), Some(reason.as_str()));
+    let failure = format!("The update to 3.1.1 failed at replacing files: {}. Still on 3.1.0.", reason.trim_end_matches('.'));
+    assert!(r.timeline().contains(&failure), "{:?}", r.timeline());
+    assert!(r.posts.all().contains(&format!("send/warn: {failure}")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_is_in_progress_from_its_first_step_until_it_fails() {
+    // Arrange: the supervisor takes its 20 s, and the swap then fails
+    let r = landing_rig().await;
+    let before = r.deps.landing_in_progress();
+    r.sup.ignores_shutdown.store(true, Ordering::SeqCst);
+    let staged = r.layout.staged_exe.clone();
+    *r.sup.on_shutdown.lock().unwrap() = Some(Box::new(move || std::fs::remove_file(&staged).unwrap()));
+    // Act
+    let (result, during) = tokio::join!(land(&r.deps), async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        r.deps.landing_in_progress()
+    });
+    // Assert
+    assert!(result.is_err());
+    assert_eq!((before, during, r.deps.landing_in_progress()), (false, true, false));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_that_went_through_stays_in_progress_until_the_exit() {
+    // Arrange
+    let r = landing_rig().await;
+    // Act
+    land(&r.deps).await.unwrap();
+    // Assert
+    assert!(r.deps.landing_in_progress());
+    assert_eq!(r.deps.updater.status().status, UpdateStatus::Ready);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_after_a_failed_stage_stages_the_exe_first() {
+    // Arrange: the background stage got a wrong --version answer, the second try a right one
+    let runner = Arc::new(FakeRunner::new());
+    runner.push(Ok(RunOutput::ok("3.0.9\r\n")));
+    runner.push(Ok(RunOutput::ok(&format!("{NEW}\r\n"))));
+    let r = rig(OLD, OLD_EXE, offering_new(), runner);
+    r.deps.updater.check().await;
+    r.deps.updater.wait_for_stage().await;
+    assert_eq!(r.deps.updater.staged_version(), None, "the first stage failed");
+    r.sup.answer(Some(status(OLD, true)));
+    r.deps.launcher.start();
+    // Act
+    let result = land(&r.deps).await;
+    // Assert
+    assert_eq!(result, Ok(()));
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_after_one_went_through_lands_nothing_more() {
+    // Arrange
+    let r = landing_rig().await;
+    land(&r.deps).await.unwrap();
+    // Act
+    let again = land(&r.deps).await;
+    r.settle().await;
+    // Assert
+    assert_eq!(again, Ok(()));
+    assert_eq!(r.sup.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(r.read(&r.layout.exe_old), OLD_EXE);
+    assert_eq!(r.spawns.all().len(), 1);
+}
+
+// confirm_or_roll_back
+
+#[tokio::test(start_paused = true)]
+async fn confirms_when_the_new_version_streams() {
+    // Arrange: the new supervisor comes up on air 30 s into the window
+    let (r, record) = confirming_rig(true);
+    let sup = r.sup.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        sup.answer(Some(status(NEW, true)));
+    });
+    let started = Instant::now();
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record, CONFIRM_WITHIN).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert!(started.elapsed() < Duration::from_secs(180));
+    assert!(!r.layout.landed.exists());
+    assert!(!r.layout.exe_old.exists());
+    assert!(!r.layout.update_dir.exists());
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert!(r.timeline().contains(&UPDATED.to_string()));
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("done"), Some("ok")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn confirms_an_off_air_landing_without_an_encoder() {
+    // Arrange
+    let (r, record) = confirming_rig(false);
+    r.sup.answer(Some(status(NEW, false)));
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record, CONFIRM_WITHIN).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert!(!r.layout.landed.exists());
+    assert!(!r.layout.exe_old.exists());
+    assert!(r.timeline().contains(&UPDATED.to_string()));
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("start"), Some("ok")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn confirms_a_landing_made_while_stopped_from_the_dashboard() {
+    // Arrange: nothing was launched after the swap, so nothing answers
+    let (r, record) = confirming_rig(false);
+    r.deps.launcher.mark_stopped_by_user();
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record, CONFIRM_WITHIN).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert!(!r.layout.exe_old.exists());
+}
+
+#[tokio::test(start_paused = true)]
+async fn rolls_back_when_the_new_supervisor_never_answers() {
+    // Arrange
+    let (r, record) = confirming_rig(true);
+    let started = Instant::now();
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record.clone(), CONFIRM_WITHIN).await;
+    r.settle().await;
+    // Assert
+    assert_eq!(outcome, Confirmation::RolledBack);
+    assert!(started.elapsed() >= Duration::from_secs(180));
+    assert_eq!(r.read(&r.layout.exe_bad), NEW_EXE);
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert!(!r.layout.exe_old.exists());
+    assert!(!r.layout.landed.exists());
+    assert_eq!(r.rolled_back(), Some(record));
+    assert_eq!(r.rolled_back().map(|l| l.to), Some(NEW.to_string()));
+    assert!(r.posts.all().contains(&format!("critical: {WENT_BACK}")));
+    assert!(r.timeline().contains(&WENT_BACK.to_string()));
+    let spawns = r.spawns.all();
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].2.as_slice(), OLD_EXE);
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("check"), Some("rolled-back")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn rolls_back_when_the_encoder_never_comes_up_after_an_on_air_landing() {
+    // Arrange: the new supervisor answers, but its encoder never runs
+    let (r, record) = confirming_rig(true);
+    r.sup.answer(Some(status(NEW, false)));
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record.clone(), CONFIRM_WITHIN).await;
+    r.settle().await;
+    // Assert
+    assert_eq!(outcome, Confirmation::RolledBack);
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert_eq!(r.read(&r.layout.exe_bad), NEW_EXE);
+    assert_eq!(r.rolled_back(), Some(record));
+    assert!(r.posts.all().contains(&format!("critical: {WENT_BACK}")));
+    assert_eq!(r.sup.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(r.spawns.all().last().map(|s| s.2.clone()), Some(OLD_EXE.to_vec()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn drops_a_record_this_exe_did_not_land() {
+    // Arrange: the old control process died between writing the record and the swap, so OLD runs again
+    let r = rig(OLD, OLD_EXE, Arc::new(FakeHttp::new()), Arc::new(FakeRunner::new()));
+    std::fs::create_dir_all(&r.layout.update_dir).unwrap();
+    std::fs::write(&r.layout.staged_exe, NEW_EXE).unwrap();
+    let record = LandedRecord { from: OLD.into(), to: NEW.into(), on_air: true };
+    std::fs::write(&r.layout.landed, serde_json::to_string(&record).unwrap()).unwrap();
+    std::fs::create_dir_all(&r.layout.data).unwrap();
+    std::fs::write(&r.layout.update_state, STATE_AT_START.replace("\"start\"", "\"swap\"")).unwrap();
+    let started = Instant::now();
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record, CONFIRM_WITHIN).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(!r.layout.landed.exists());
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert!(!r.layout.exe_bad.exists());
+    assert_eq!(r.sup.shutdowns.load(Ordering::SeqCst), 0);
+    assert!(!r.timeline().contains(&UPDATED.to_string()));
+    let s = r.update_state();
+    assert_eq!((s["result"].as_str(), s["reason"].as_str()), (Some("failed"), Some("StreamLoop was restarted during the update.")));
+}
+
+// settle_unfinished_update
+
+#[tokio::test(start_paused = true)]
+async fn settle_marks_a_check_that_start_bat_cut_off_as_rolled_back() {
+    // Arrange: START.bat put OLD back and moved the record, leaving the progress at the check
+    let (r, _) = confirming_rig(true);
+    std::fs::remove_file(&r.layout.landed).unwrap();
+    std::fs::write(&r.layout.update_state, STATE_AT_START.replace("\"start\"", "\"check\"")).unwrap();
+    // Act
+    settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), OLD).await;
+    // Assert
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("check"), Some("rolled-back")));
+    assert_eq!(s["reason"].as_str(), Some("The updated StreamLoop stopped before it was confirmed."));
+}
+
+#[tokio::test(start_paused = true)]
+async fn settle_marks_a_landing_cut_off_before_the_swap_as_failed() {
+    // Arrange
+    let (r, _) = confirming_rig(true);
+    std::fs::remove_file(&r.layout.landed).unwrap();
+    std::fs::write(&r.layout.update_state, STATE_AT_START.replace("\"start\"", "\"stop\"")).unwrap();
+    // Act
+    settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), OLD).await;
+    // Assert
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("stop"), Some("failed")));
+    assert_eq!(s["reason"].as_str(), Some("StreamLoop was restarted during the update."));
+}
+
+#[tokio::test(start_paused = true)]
+async fn settle_leaves_an_update_that_has_its_record_or_has_ended_alone() {
+    // Arrange: one still has its record to confirm; the other ended long ago
+    let (with_record, _) = confirming_rig(true);
+    let (ended, _) = confirming_rig(true);
+    std::fs::remove_file(&ended.layout.landed).unwrap();
+    let done = STATE_AT_START.replace("\"running\"", "\"ok\"");
+    std::fs::write(&ended.layout.update_state, &done).unwrap();
+    // Act
+    settle_unfinished_update(&with_record.layout, with_record.deps.clock.as_ref(), OLD).await;
+    settle_unfinished_update(&ended.layout, ended.deps.clock.as_ref(), OLD).await;
+    // Assert
+    assert_eq!(std::fs::read_to_string(&with_record.layout.update_state).unwrap(), STATE_AT_START);
+    assert_eq!(std::fs::read_to_string(&ended.layout.update_state).unwrap(), done);
+}

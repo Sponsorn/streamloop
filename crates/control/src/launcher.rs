@@ -140,8 +140,17 @@ struct State {
     /// Why the last supervisor refused config.json (exit 3), until one answers.
     refused: Option<String>,
     suspended: bool,
+    /// A Start while suspended: one launch goes through, and the hold stays on.
+    launch_once: bool,
     last_version_restart: Option<SystemTime>,
     last_status: Option<SupervisorStatus>,
+}
+
+impl State {
+    /// Suspended for a landing, with no Start waiting to go through.
+    fn held_back(&self) -> bool {
+        self.suspended && !self.launch_once
+    }
 }
 
 struct LastExit {
@@ -237,6 +246,7 @@ impl Launcher {
                 waiting_for_start: opts.hold_for_start,
                 refused: None,
                 suspended: false,
+                launch_once: false,
                 last_version_restart: None,
                 last_status: None,
             }),
@@ -327,6 +337,7 @@ impl Launcher {
     }
 
     /// An operator Start: no backoff, and the spawn still goes through the one guarded poll.
+    /// While suspended it launches once and the hold stays on: a landing starts the new exe this way.
     pub fn launch_now(&self) {
         self.inner.end_hold();
         let _ = std::fs::remove_file(&self.inner.layout.stopped_marker);
@@ -335,6 +346,7 @@ impl Launcher {
             let mut st = self.inner.state.lock().unwrap();
             st.stopped_by_user = false;
             st.spawns = 0;
+            st.launch_once = true;
             if st.draining {
                 // The old supervisor still holds the port; launch once it stops answering, with no outage.
                 st.start_wait_since = Some(now);
@@ -359,7 +371,10 @@ impl Launcher {
 
     /// No relaunch and no outage alert until `resume`: an update is landing and the supervisor is meant to be gone.
     pub fn suspend(&self) {
-        self.inner.state.lock().unwrap().suspended = true;
+        let mut st = self.inner.state.lock().unwrap();
+        st.suspended = true;
+        // A Start from before the hold must not launch during it.
+        st.launch_once = false;
     }
 
     pub fn resume(&self) {
@@ -479,7 +494,7 @@ impl Inner {
                     st.phase = LauncherState::StoppedByUser;
                     return Next::Done;
                 }
-                if st.waiting_for_start || st.suspended {
+                if st.waiting_for_start || st.held_back() {
                     return Next::Done;
                 }
                 if st.phase == LauncherState::Running {
@@ -525,7 +540,7 @@ impl Inner {
         let t = self.clock.now();
         {
             let st = self.state.lock().unwrap();
-            if st.suspended {
+            if st.held_back() {
                 return;
             }
             if st.spawns > 0 {
@@ -555,7 +570,7 @@ impl Inner {
             if let Some(guard) = guard.as_mut() {
                 let held = guard.check().await;
                 let mut st = self.state.lock().unwrap();
-                if !st.running || st.stopped_by_user {
+                if !st.running || st.stopped_by_user || st.held_back() {
                     return;
                 }
                 st.held = held.clone();
@@ -579,6 +594,7 @@ impl Inner {
             let mut st = self.state.lock().unwrap();
             st.spawn_seq += 1;
             st.spawns += 1;
+            st.launch_once = false;
             st.last_spawn_at = Some(spawned_at);
             st.phase = LauncherState::Starting;
             st.spawn_seq

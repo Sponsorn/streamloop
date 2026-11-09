@@ -4,6 +4,7 @@ pub mod clock;
 pub mod discord;
 pub mod events;
 pub mod http;
+pub mod landing;
 pub mod launcher;
 pub mod logging;
 pub mod playlists;
