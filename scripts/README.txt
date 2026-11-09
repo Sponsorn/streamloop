@@ -2,9 +2,9 @@ StreamLoop 3 - 24/7 YouTube playlist to Twitch
 ================================================
 
 StreamLoop 3 plays a YouTube playlist and streams it to Twitch on its own.
-It needs no OBS and no mpv: ffmpeg encodes the stream and a small
-supervisor program keeps it running, skipping or retrying videos that
-fail. It can send alerts to a Discord webhook.
+It needs no OBS and no mpv: ffmpeg encodes the stream and streamloop.exe
+keeps it running, skipping or retrying videos that fail. It can send
+alerts to a Discord webhook.
 
 It installs beside StreamLoop 2.x and does not touch a 2.x folder.
 
@@ -22,6 +22,10 @@ Install
 
 Node.js, ffmpeg and yt-dlp are all in the folder. Nothing else needs
 installing.
+
+Coming from StreamLoop 3.0? Install the same way you install an update
+that needs the full ZIP (see Updates): your settings, stream key and
+timeline are kept.
 
 First run
 ---------
@@ -50,14 +54,21 @@ restarts of the PC.
 
 Updates
 -------
-The dashboard offers new 3.x versions. An update replaces only the app\
-folder and keeps your settings and stream key; the stream stays up while
-it installs.
+The dashboard offers new 3.x versions. An update replaces streamloop.exe
+and keeps your settings and stream key. It downloads in the background,
+then installs by itself: just before Twitch ends the broadcast at its
+48-hour limit, or within a minute when the stream is off air. Update Now
+installs it at once. An update that installs while the stream is on air
+restarts it, and the stream is off air for about 10 seconds.
+
+If the new version does not start properly, StreamLoop goes back to the
+previous one by itself, and installs that version again only when you
+press Update Now.
 
 yt-dlp updates itself each time StreamLoop starts. Some releases also
-change Node.js, the supervisor, ffmpeg or the token server. The release
-notes say so, and the dashboard tells you when a release brings a new
-Node.js. For those:
+change ffmpeg, the token server or Node.js, which an update does not
+replace. Their release notes say they need the full ZIP, and the
+dashboard tells you when a release brings a new Node.js. For those:
 
 1. Press Stop and close the START.bat window.
 2. Extract the new full ZIP into the same folder as the first time
@@ -84,21 +95,25 @@ moves it there from the other.
 
 Folders
 -------
-  START.bat     Starts StreamLoop. Double-click to run.
-  app\          The dashboard and server, with config.json (your settings)
-  supervisor\   The program that runs the stream
-  ffmpeg\       The encoder
-  yt-dlp\       Fetches the videos from YouTube
-  pot\          Token server that yt-dlp needs for YouTube
-  node\         Node.js
-  data\         Logs, the download cache and the resume point
+  START.bat       Starts StreamLoop. Double-click to run.
+  streamloop.exe  StreamLoop itself: the dashboard and the stream
+  app\            Your settings (config.json), StreamLoop's log and timeline
+  supervisor\     The standby picture shown while no video is ready
+  ffmpeg\         The encoder
+  yt-dlp\         Fetches the videos from YouTube
+  pot\            Token server that yt-dlp needs for YouTube
+  node\           Node.js, which runs the token server
+  data\           Logs, the download cache and the resume point
 
 Troubleshooting
 ---------------
-- "Port 7654 is in use": StreamLoop 2.x, or another copy of 3, is
-  running. Stop it, and 3 starts by itself.
+- The window says "Another StreamLoop is already running": StreamLoop
+  2.x, or another copy of 3, holds port 7654, and this one stays down.
+  Close the other one, then start START.bat again.
 - "OBS is running": close OBS. The stream then starts by itself.
 - The stream key is rejected: set it again under Settings in the
   dashboard.
+- The window shows a [RECOVER] line: an update did not start properly,
+  and StreamLoop went back to the version before it.
 - The logs are under Logs in the dashboard, and in data\logs and
   app\logs.

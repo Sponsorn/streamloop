@@ -225,6 +225,9 @@ async fn an_unknown_admin_file_is_the_same_404_page_naming_the_path() {
 
 #[tokio::test]
 async fn the_dashboards_own_tests_are_not_served() {
+    // Arrange
+    let test_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/admin/__tests__/status-view.test.ts");
+    assert!(test_file.is_file(), "{} is missing, so this test proves nothing", test_file.display());
     // Act
     let r = call(app(), get_req("/admin/__tests__/status-view.test.ts")).await;
     // Assert

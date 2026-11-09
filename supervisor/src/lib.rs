@@ -2623,7 +2623,7 @@ fn token_verdict(answered: bool, exited: Option<String>) -> Result<(), String> {
 }
 
 /// `streamloop.exe check ARGS`: `ok` on stdout and 0, or the reason on stderr and 1. The
-/// `streamloop-supervisor check:` prefix stays while Node's health check strips it.
+/// `streamloop-supervisor check:` prefix stays: the landing's check in the control process strips it.
 pub fn check_main(args: Vec<String>) -> i32 {
     match parse_args(&args).and_then(|a| self_check(&a)) {
         Ok(()) => {
