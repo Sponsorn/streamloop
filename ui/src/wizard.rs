@@ -2171,6 +2171,47 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_failed_autostart_is_a_toast_and_the_wait_goes_on(cx: &mut TestAppContext) {
+        let (fake, window, _, view) = open_wizard(cx, first_run_config());
+        fake.reply(
+            "POST",
+            "/api/autostart",
+            Err(ApiError::Server(
+                "Autostart points to another StreamLoop install.".into(),
+            )),
+        );
+        fake.reply("GET", "/api/status", Ok(stream_json("live", None)));
+        walk_to_extras(cx, window, &view);
+        click(cx, window, "wiz-autostart");
+        next(cx, window);
+        next(cx, window);
+        let mut saved = first_save_json();
+        saved["reloadError"] = json!("timeout");
+        saved["reloadErrorCode"] = json!("ETIMEDOUT");
+        fake.reply("POST", "/api/config", Ok(saved));
+
+        next(cx, window);
+        assert!(shows(
+            cx,
+            window,
+            "Could not turn on autostart: Autostart points to another StreamLoop install."
+        ));
+        // Finish's own save warns about a reload that failed for another reason (D6).
+        assert!(shows(
+            cx,
+            window,
+            "Saved, but the supervisor could not reload: timeout"
+        ));
+        assert_eq!(
+            marks(cx, &view),
+            [Mark::Passed, Mark::Passed, Mark::Working]
+        );
+
+        cx.executor().advance_clock(Duration::from_secs(2));
+        assert!(shows(cx, window, "The stream is live."));
+    }
+
+    #[gpui::test]
     fn closing_the_window_stops_the_live_wait(cx: &mut TestAppContext) {
         let (fake, window, _, view) = open_wizard(cx, first_run_config());
         walk_to_finish(cx, window, &view);
