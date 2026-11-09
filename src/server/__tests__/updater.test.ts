@@ -280,7 +280,8 @@ describe('stageUpdate with a flat ZIP', () => {
 });
 
 // One patch above the installed version, so the release below is always an update.
-const [major, minor, patch] = (JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version: string }).version.split('.').map(Number);
+const INSTALLED = (JSON.parse(readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
+const [major, minor, patch] = INSTALLED.split('-')[0].split('.').map(Number);
 const NEXT = `${major}.${minor}.${patch + 1}`;
 
 describe('Updater node notice', () => {
@@ -463,7 +464,7 @@ describe('Updater part comparison', () => {
   const sameParts = { node: HASH('1'), supervisor: HASH('2'), ffmpeg: HASH('3'), pot: HASH('4'), 'ytdlp-plugin': HASH('5') };
   const components = (parts: Record<string, string> = sameParts) =>
     JSON.stringify({ version: NEXT, node: '22.23.4', parts });
-  const current = `${major}.${minor}.${patch}`;
+  const current = `${INSTALLED}`;
 
   function releaseAssets(version: string, withComponents: boolean) {
     const base = [asset(`streamloop-v${version}-update.zip`), asset(`streamloop-v${version}-update.zip.sha256`),
@@ -809,7 +810,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(h.resume).not.toHaveBeenCalled();
     expect(h.reportFailure).not.toHaveBeenCalled();
     expect(readState()).toMatchObject({
-      from: `${major}.${minor}.${patch}`, to: NEXT, parts: ['supervisor'], folders: ['supervisor', 'yt-dlp'],
+      from: `${INSTALLED}`, to: NEXT, parts: ['supervisor'], folders: ['supervisor', 'yt-dlp'],
       step: 'swap', result: 'running', reason: null, baseline: { encoder: 'h264_nvenc', works: true },
     });
     expect(updater.getStatus().status).toBe('ready');
@@ -881,7 +882,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(h.stop).not.toHaveBeenCalled();
     expect(readState()).toMatchObject({ step: 'download', result: 'failed' });
     expect(h.reportFailure.mock.calls).toEqual([[
-      `The update to ${NEXT} failed at downloading: ffmpeg\\ is not whole, so _update_old_ffmpeg from an earlier update was kept. Still on ${major}.${minor}.${patch}.`,
+      `The update to ${NEXT} failed at downloading: ffmpeg\\ is not whole, so _update_old_ffmpeg from an earlier update was kept. Still on ${INSTALLED}.`,
     ]]);
   });
 
@@ -901,7 +902,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(h.resume).toHaveBeenCalledTimes(1);
     expect(updater.getStatus()).toMatchObject({ status: 'error', error: 'ffmpeg\\ffmpeg.exe is still running.' });
     expect(h.reportFailure.mock.calls).toEqual([[
-      `The update to ${NEXT} failed at stopping the stream: ffmpeg\\ffmpeg.exe is still running. Still on ${major}.${minor}.${patch}.`,
+      `The update to ${NEXT} failed at stopping the stream: ffmpeg\\ffmpeg.exe is still running. Still on ${INSTALLED}.`,
     ]]);
   });
 
@@ -942,7 +943,7 @@ describe.skipIf(process.platform !== 'win32')('Updater full update', () => {
     expect(readState()).toMatchObject({ step: 'stop', result: 'failed', reason: 'another StreamLoop window is open' });
     expect(existsSync(join(root, '_update_tmp'))).toBe(false);
     expect(h.reportFailure.mock.calls).toEqual([[
-      `The update to ${NEXT} failed at stopping the stream: another StreamLoop window is open. Still on ${major}.${minor}.${patch}.`,
+      `The update to ${NEXT} failed at stopping the stream: another StreamLoop window is open. Still on ${INSTALLED}.`,
     ]]);
   });
 

@@ -1,34 +1,25 @@
-// Paths each release ZIP must hold, relative to its top folder (streamloop/).
-// The full list covers every path supervisor/src/paths.rs resolves (release-layout.test.ts),
-// except app/config.json: Node creates it from the example, so a reinstall keeps the user's.
-const APP = [
-  'app/package.json',
-  'app/node-version.txt',
-  'app/config.example.json',
-  'app/src/server/index.ts',
-  'app/node_modules/tsx/dist/cli.mjs',
-  'START.bat',
-];
+// Paths the release ZIP must hold, relative to its top folder (streamloop/).
+// crates/streamloop/tests/release_layout.rs checks that this list covers every path
+// the Layout struct in crates/common/src/paths.rs names, except the ones made at run time:
+// app/config.json (created from the example on first start, so a reinstall keeps the user's),
+// the update files and the logs.
 
 /** @type {string[]} */
 export const FULL_LAYOUT = [
-  ...APP,
-  'node/node.exe',
-  'supervisor/streamloop-supervisor.exe',
+  'START.bat',
+  'streamloop.exe',
+  'app/config.example.json',
   'supervisor/slate.mp4',
   'ffmpeg/ffmpeg.exe',
   'yt-dlp/yt-dlp.exe',
   'yt-dlp/deno.exe',
-  'yt-dlp/plugins',
   'yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip',
   'pot/package.json',
   'pot/build/main.js',
   'pot/node_modules',
+  'node/node.exe',
   'data',
 ];
-
-/** An update only swaps app\ and the launcher. @type {string[]} */
-export const UPDATE_LAYOUT = APP;
 
 /**
  * The layout paths absent from a `tar -tf` listing; a path counts as a file or a folder.

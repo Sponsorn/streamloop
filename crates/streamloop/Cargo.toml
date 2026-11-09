@@ -8,3 +8,6 @@ publish.workspace = true
 streamloop-common = { path = "../common" }
 streamloop-control = { path = "../control" }
 streamloop-supervisor = { path = "../../supervisor" }
+
+[dev-dependencies]
+serde_json = "1"
