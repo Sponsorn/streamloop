@@ -96,6 +96,7 @@ impl std::error::Error for HttpError {}
 pub trait Http: Send + Sync {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, HttpError>;
     /// Streams the body of a GET to `dest` and returns the byte count. A non-2xx answer is an error and writes nothing.
+    /// `DOWNLOAD_STALL` with nothing from the server, before the answer or between chunks, is a `Timeout` error.
     async fn download(&self, url: &str, dest: &Path) -> Result<u64, HttpError>;
 
     /// `download` that calls `progress(received, total)` after each chunk; `total` is the content-length when the server sent one.
@@ -108,6 +109,42 @@ pub trait Http: Send + Sync {
 /// Bytes received so far, and the expected total when known.
 pub type Progress<'a> = dyn Fn(u64, Option<u64>) + Send + Sync + 'a;
 
+/// A download that gets nothing from the server for this long fails, so a dead connection cannot hold it forever.
+pub const DOWNLOAD_STALL: Duration = Duration::from_secs(60);
+
+fn stalled(after: Duration) -> HttpError {
+    HttpError::timeout(format!("no data arrived for {} seconds", after.as_secs()))
+}
+
+#[async_trait]
+trait Chunks: Send {
+    /// The next piece of the body, `None` at its end.
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, HttpError>;
+}
+
+#[async_trait]
+impl Chunks for reqwest::Response {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, HttpError> {
+        self.chunk().await.map(|c| c.map(|b| b.to_vec())).map_err(map_error)
+    }
+}
+
+async fn write_body(body: &mut dyn Chunks, dest: &Path, expected: Option<u64>, progress: &Progress<'_>, stall: Duration) -> Result<u64, HttpError> {
+    use tokio::io::AsyncWriteExt;
+    let io = |e: std::io::Error| HttpError::other(e.to_string());
+    let mut file = tokio::fs::File::create(dest).await.map_err(io)?;
+    let mut total = 0u64;
+    loop {
+        let chunk = tokio::time::timeout(stall, body.next_chunk()).await.map_err(|_| stalled(stall))??;
+        let Some(chunk) = chunk else { break };
+        file.write_all(&chunk).await.map_err(io)?;
+        total += chunk.len() as u64;
+        progress(total, expected);
+    }
+    file.flush().await.map_err(io)?;
+    Ok(total)
+}
+
 pub struct ReqwestHttp {
     client: reqwest::Client,
 }
@@ -115,6 +152,21 @@ pub struct ReqwestHttp {
 impl ReqwestHttp {
     pub fn new() -> Self {
         Self { client: reqwest::Client::builder().build().expect("the TLS backend initialises") }
+    }
+
+    /// Follows a redirect only to a URL `allow` accepts, at most 10 hops; any other redirect is an error.
+    pub fn following_only(allow: impl Fn(&reqwest::Url) -> bool + Send + Sync + 'static) -> Self {
+        let policy = reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if allow(attempt.url()) {
+                attempt.follow()
+            } else {
+                let refused = format!("refused a redirect to {}", attempt.url());
+                attempt.error(refused)
+            }
+        });
+        Self { client: reqwest::Client::builder().redirect(policy).build().expect("the TLS backend initialises") }
     }
 }
 
@@ -156,6 +208,10 @@ fn map_error(e: reqwest::Error) -> HttpError {
         }
         return HttpError::connect(code, e.to_string());
     }
+    // A redirect policy's own refusal says more than reqwest's "error following redirect".
+    if let Some(source) = e.is_redirect().then(|| e.source()).flatten() {
+        return HttpError::other(source.to_string());
+    }
     HttpError::other(e.to_string())
 }
 
@@ -189,21 +245,28 @@ impl Http for ReqwestHttp {
     }
 
     async fn download_with_progress(&self, url: &str, dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
-        use tokio::io::AsyncWriteExt;
-        let mut res = self.client.get(url).send().await.map_err(map_error)?;
+        let answer = tokio::time::timeout(DOWNLOAD_STALL, self.client.get(url).send()).await.map_err(|_| stalled(DOWNLOAD_STALL))?;
+        let mut res = answer.map_err(map_error)?;
         if !res.status().is_success() {
             return Err(HttpError::other(format!("HTTP {}", res.status().as_u16())));
         }
         let expected = res.content_length();
-        let mut file = tokio::fs::File::create(dest).await.map_err(|e| HttpError::other(e.to_string()))?;
-        let mut total = 0u64;
-        while let Some(chunk) = res.chunk().await.map_err(map_error)? {
-            file.write_all(&chunk).await.map_err(|e| HttpError::other(e.to_string()))?;
-            total += chunk.len() as u64;
-            progress(total, expected);
+        write_body(&mut res, dest, expected, progress, DOWNLOAD_STALL).await
+    }
+}
+
+/// Sends `first`, then nothing more, the way a dead connection behaves.
+struct StalledBody {
+    first: Option<Vec<u8>>,
+}
+
+#[async_trait]
+impl Chunks for StalledBody {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, HttpError> {
+        match self.first.take() {
+            Some(first) => Ok(Some(first)),
+            None => std::future::pending().await,
         }
-        file.flush().await.map_err(|e| HttpError::other(e.to_string()))?;
-        Ok(total)
     }
 }
 
@@ -213,6 +276,7 @@ type Handler = Arc<dyn Fn(&HttpRequest) -> Result<HttpResponse, HttpError> + Sen
 #[derive(Default)]
 pub struct FakeHttp {
     routes: Mutex<Vec<(String, Handler)>>,
+    stalls: Mutex<Vec<(String, Vec<u8>)>>,
     requests: Mutex<Vec<HttpRequest>>,
 }
 
@@ -229,6 +293,11 @@ impl FakeHttp {
     pub fn respond(&self, prefix: &str, status: u16, body: &str) {
         let body = body.to_string();
         self.route(prefix, move |_| Ok(HttpResponse::new(status, body.clone())));
+    }
+
+    /// The next download under `prefix` gets `first` and then nothing, until `DOWNLOAD_STALL` ends it.
+    pub fn stall_next(&self, prefix: &str, first: &[u8]) {
+        self.stalls.lock().unwrap().push((prefix.to_string(), first.to_vec()));
     }
 
     pub fn requests(&self) -> Vec<HttpRequest> {
@@ -261,6 +330,14 @@ impl Http for FakeHttp {
 
     /// The body arrives as one chunk; `total` is the route's content-length header, if it set one.
     async fn download_with_progress(&self, url: &str, dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
+        let stalled = {
+            let mut stalls = self.stalls.lock().unwrap();
+            stalls.iter().position(|(p, _)| url.starts_with(p.as_str())).map(|i| stalls.remove(i).1)
+        };
+        if let Some(first) = stalled {
+            self.requests.lock().unwrap().push(HttpRequest::get(url));
+            return write_body(&mut StalledBody { first: Some(first) }, dest, None, progress, DOWNLOAD_STALL).await;
+        }
         let res = self.answer(HttpRequest::get(url))?;
         if !(200..300).contains(&res.status) {
             return Err(HttpError::other(format!("HTTP {}", res.status)));
@@ -331,5 +408,38 @@ mod tests {
         http.download_with_progress("https://dl.example/a.exe", &dest, &|got, total| seen.lock().unwrap().push((got, total))).await.unwrap();
         // Assert
         assert_eq!(*seen.lock().unwrap(), vec![(4, Some(4))]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_body_that_stops_coming_fails_after_the_stall_time() {
+        // Arrange
+        let dir = tempfile::tempdir().unwrap();
+        let http = FakeHttp::new();
+        http.stall_next("https://dl.example/", b"half");
+        let started = tokio::time::Instant::now();
+        // Act
+        let err = http.download("https://dl.example/a.exe", &dir.path().join("a.exe")).await.unwrap_err();
+        // Assert
+        assert_eq!(err, HttpError::timeout("no data arrived for 60 seconds"));
+        assert!(started.elapsed() >= DOWNLOAD_STALL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_never_answers_fails_the_download_after_the_stall_time() {
+        // Arrange: accepts the connection and then says nothing
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/a.exe", listener.local_addr().unwrap());
+        let silent = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let started = tokio::time::Instant::now();
+        // Act
+        let err = ReqwestHttp::new().download(&url, &dir.path().join("a.exe")).await.unwrap_err();
+        // Assert
+        assert_eq!(err, HttpError::timeout("no data arrived for 60 seconds"));
+        assert!(started.elapsed() >= DOWNLOAD_STALL);
+        silent.abort();
     }
 }

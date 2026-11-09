@@ -10,10 +10,10 @@ use streamloop_common::api::{EncoderStatus, SupervisorStatus};
 use streamloop_common::paths::Layout;
 use streamloop_control::clock::TestClock;
 use streamloop_control::http::{FakeHttp, Http, HttpError, HttpRequest, HttpResponse, Progress};
-use streamloop_control::runner::{FakeRunner, RunError, RunErrorKind, RunOutput};
+use streamloop_control::runner::{FakeRunner, ProcessRunner, RunError, RunErrorKind, RunOutput, RunSpec, Runner};
 use streamloop_control::updater::{
-    compare_versions, notice_text, parse_node_version, pick_release, select_exe_assets, should_land, BreakPolicy, DownloadCounter,
-    GithubAsset, GithubRelease, NoticeState, UpdateStatus, Updater, UpdaterOptions, GITHUB_RELEASES_URL,
+    compare_versions, notice_text, parse_node_version, pick_release, redirect_allowed, select_exe_assets, should_land, updater_http,
+    BreakPolicy, DownloadCounter, GithubAsset, GithubRelease, NoticeState, UpdateStatus, Updater, UpdaterOptions, GITHUB_RELEASES_URL,
 };
 
 const CURRENT: &str = "3.1.0";
@@ -478,6 +478,14 @@ fn notice_adds_the_node_notice_after_a_space() {
 }
 
 #[test]
+fn notice_says_about_1_hour_in_the_last_stretch() {
+    assert_eq!(
+        notice_text(NoticeState::OnAir, Some(1), None).as_deref(),
+        Some("It installs by itself in about 1 hour, just before Twitch's 48-hour cut. Update Now installs it at once and restarts the stream.")
+    );
+}
+
+#[test]
 fn notice_without_known_hours_on_air_falls_back_to_update_now() {
     assert_eq!(notice_text(NoticeState::OnAir, None, None).as_deref(), Some(UPDATE_NOW));
 }
@@ -571,6 +579,10 @@ impl Harness {
         self.clock.advance(Duration::from_secs(61));
     }
 
+    fn part(&self) -> std::path::PathBuf {
+        self.layout.update_dir.join("streamloop.exe.part")
+    }
+
     async fn staged(&self, v: &str) -> Updater {
         self.offer(v);
         self.runner.push(Ok(RunOutput::ok(&format!("{v}\r\n"))));
@@ -609,9 +621,10 @@ async fn stages_a_verified_exe() {
     // Assert
     assert_eq!((info.status, info.update_available, info.latest_version.as_deref(), info.kind.as_deref()), (UpdateStatus::Idle, true, Some(NEXT), Some("app")));
     assert_eq!(std::fs::read(&h.layout.staged_exe).unwrap(), EXE_BYTES);
+    assert!(!h.part().exists());
     let calls = h.runner.calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(Path::new(&calls[0].program), h.layout.staged_exe.as_path());
+    assert_eq!(Path::new(&calls[0].program), h.part().as_path(), "--version runs before the rename");
     assert_eq!(calls[0].args, vec!["--version".to_string()]);
     assert_eq!(calls[0].timeout, Duration::from_secs(10));
     let after = updater.status();
@@ -631,6 +644,7 @@ async fn refuses_a_checksum_mismatch_and_deletes_the_file() {
     updater.wait_for_stage().await;
     // Assert
     assert!(!h.layout.staged_exe.exists());
+    assert!(!h.part().exists());
     assert!(h.runner.calls().is_empty(), "a file that failed its checksum never runs");
     let info = updater.status();
     assert_eq!(info.status, UpdateStatus::Idle);
@@ -998,11 +1012,12 @@ struct GatedHttp {
     gate_list: Mutex<bool>,
     gate_download: Mutex<bool>,
     open: tokio::sync::Notify,
+    download_dests: Mutex<Vec<std::path::PathBuf>>,
 }
 
 impl GatedHttp {
     fn new(inner: Arc<FakeHttp>) -> Self {
-        Self { inner, gate_list: Mutex::new(false), gate_download: Mutex::new(false), open: tokio::sync::Notify::new() }
+        Self { inner, gate_list: Mutex::new(false), gate_download: Mutex::new(false), open: tokio::sync::Notify::new(), download_dests: Mutex::new(Vec::new()) }
     }
 
     async fn wait_open(&self) {
@@ -1026,6 +1041,7 @@ impl Http for GatedHttp {
     }
 
     async fn download_with_progress(&self, url: &str, dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
+        self.download_dests.lock().unwrap().push(dest.to_path_buf());
         if std::mem::take(&mut *self.gate_download.lock().unwrap()) {
             progress(EXE_BYTES.len() as u64 / 2, Some(EXE_BYTES.len() as u64));
             self.wait_open().await;
@@ -1047,14 +1063,16 @@ async fn until(mut done: impl FnMut() -> bool) {
 
 #[tokio::test]
 async fn refuses_to_stage_while_a_check_runs_and_the_check_forgets_the_last_offer() {
-    // Arrange: a first check stages the update; a second one, past the cooldown, waits on GitHub
+    // Arrange: a first check finds the update but its stage fails; a second one, past the cooldown, waits on GitHub
     let h = Harness::new();
     h.offer(NEXT);
+    h.runner.push(Ok(RunOutput::ok("3.0.9")));
     h.runner.push(Ok(RunOutput::ok(NEXT)));
     let http = Arc::new(GatedHttp::new(h.http.clone()));
     let updater = Updater::new(h.options(http.clone()));
     updater.check().await;
     updater.wait_for_stage().await;
+    assert_eq!(updater.staged_version(), None, "the first stage failed");
     *http.gate_list.lock().unwrap() = true;
     h.past_cooldown();
     // Act
@@ -1073,14 +1091,19 @@ async fn refuses_to_stage_while_a_check_runs_and_the_check_forgets_the_last_offe
     assert_eq!(staged_during, None);
     assert_eq!(stage, Err("Update already in progress".to_string()));
     assert_eq!((after.status, after.update_available), (UpdateStatus::Idle, true));
+    updater.wait_for_stage().await;
     assert_eq!(updater.staged_version().as_deref(), Some(NEXT));
 }
 
 #[tokio::test]
 async fn offers_nothing_to_stage_after_a_check_that_failed() {
-    // Arrange
+    // Arrange: an offer whose stage failed, so nothing is staged
     let h = Harness::new();
-    let updater = h.staged(NEXT).await;
+    h.offer(NEXT);
+    h.runner.push(Ok(RunOutput::ok("3.0.9")));
+    let updater = h.updater();
+    updater.check().await;
+    updater.wait_for_stage().await;
     h.http.respond(GITHUB_RELEASES_URL, 500, "");
     h.past_cooldown();
     // Act
@@ -1187,4 +1210,317 @@ async fn takes_downloads_only_from_github_over_https() {
     // Assert
     assert_eq!((github.status, objects.status), (UpdateStatus::Idle, UpdateStatus::Idle));
     assert_eq!((plain.status, other.status), (UpdateStatus::Error, UpdateStatus::Error));
+}
+
+// A stalled or broken download
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_download_fails_after_60_s_and_the_next_check_tries_again() {
+    // Arrange: the first download sends a few bytes and then nothing
+    let h = Harness::new();
+    h.offer(NEXT);
+    h.http.stall_next(&exe_url(NEXT), b"the new");
+    h.runner.push(Ok(RunOutput::ok(NEXT)));
+    let updater = h.updater();
+    let started = tokio::time::Instant::now();
+    // Act
+    updater.check().await;
+    updater.wait_for_stage().await;
+    let waited = started.elapsed();
+    let stalled = updater.status();
+    let part_left = h.part().exists();
+    h.past_cooldown();
+    updater.check().await;
+    updater.wait_for_stage().await;
+    // Assert
+    assert!(waited >= Duration::from_secs(60));
+    assert_eq!((stalled.status, stalled.download_percent), (UpdateStatus::Idle, None));
+    assert_eq!(stalled.node_notice.as_deref(), Some("The download failed: no data arrived for 60 seconds. It is tried again at the next check."));
+    assert!(!part_left);
+    assert_eq!(h.downloads(), 2);
+    assert_eq!(updater.staged_version().as_deref(), Some(NEXT));
+}
+
+/// Answers from `inner`, and panics in the middle of a download.
+struct PanickingHttp(Arc<FakeHttp>);
+
+#[async_trait]
+impl Http for PanickingHttp {
+    async fn send(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
+        self.0.send(req).await
+    }
+
+    async fn download(&self, _url: &str, _dest: &Path) -> Result<u64, HttpError> {
+        unreachable!()
+    }
+
+    async fn download_with_progress(&self, _url: &str, _dest: &Path, progress: &Progress<'_>) -> Result<u64, HttpError> {
+        progress(1, Some(2));
+        panic!("the download blew up");
+    }
+}
+
+#[tokio::test]
+async fn a_stage_that_panics_does_not_leave_the_status_downloading() {
+    // Arrange
+    let h = Harness::new();
+    h.offer(NEXT);
+    let updater = Updater::new(h.options(Arc::new(PanickingHttp(h.http.clone()))));
+    // Act
+    updater.check().await;
+    updater.wait_for_stage().await;
+    // Assert
+    let info = updater.status();
+    assert_eq!((info.status, info.download_percent), (UpdateStatus::Idle, None));
+    assert_eq!(info.node_notice.as_deref(), Some("The download failed: it stopped before it finished. It is tried again at the next check."));
+}
+
+// The part file
+
+#[tokio::test]
+async fn downloads_to_a_part_file_and_renames_it_once_checked() {
+    // Arrange
+    let h = Harness::new();
+    h.offer(NEXT);
+    h.runner.push(Ok(RunOutput::ok(NEXT)));
+    let http = Arc::new(GatedHttp::new(h.http.clone()));
+    *http.gate_download.lock().unwrap() = true;
+    let updater = Updater::new(h.options(http.clone()));
+    // Act
+    updater.check().await;
+    until(|| updater.status().download_percent.is_some()).await;
+    let staged_during = h.layout.staged_exe.exists();
+    http.open.notify_waiters();
+    updater.wait_for_stage().await;
+    // Assert
+    assert_eq!(*http.download_dests.lock().unwrap(), vec![h.part()]);
+    assert!(!staged_during, "nothing sits at the landing path while the download runs");
+    assert_eq!(std::fs::read(&h.layout.staged_exe).unwrap(), EXE_BYTES);
+    assert!(!h.part().exists());
+}
+
+#[tokio::test]
+async fn a_leftover_part_file_is_replaced_by_the_next_stage() {
+    // Arrange: a crash mid-download left a truncated part file
+    let h = Harness::new();
+    std::fs::create_dir_all(&h.layout.update_dir).unwrap();
+    std::fs::write(h.part(), b"trunc").unwrap();
+    // Act
+    let updater = h.staged(NEXT).await;
+    // Assert
+    assert_eq!(updater.staged_version().as_deref(), Some(NEXT));
+    assert_eq!(std::fs::read(&h.layout.staged_exe).unwrap(), EXE_BYTES);
+    assert!(!h.part().exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn the_version_check_can_run_an_exe_named_part() {
+    // Arrange: Windows starts a program by its contents, whatever its extension
+    let dir = tempfile::tempdir().unwrap();
+    let part = dir.path().join("cmd.exe.part");
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    std::fs::copy(Path::new(&system_root).join("System32").join("cmd.exe"), &part).unwrap();
+    // Act
+    let out = ProcessRunner.run(RunSpec::new(&part.to_string_lossy(), &["/C", "echo", "part"], Duration::from_secs(10))).await.unwrap();
+    // Assert
+    assert_eq!((out.code, out.stdout_text().trim()), (Some(0), "part"));
+}
+
+// Redirects
+
+#[test]
+fn redirects_go_only_to_githubs_hosts_or_to_the_test_server() {
+    for url in [
+        "https://github.com/a",
+        "https://objects.githubusercontent.com/a",
+        "https://release-assets.githubusercontent.com/a",
+        "https://api.github.com/a",
+    ] {
+        assert!(redirect_allowed(url, false), "{url}");
+    }
+    for url in ["http://github.com/a", "https://example.com/a", "https://github.com.evil.example/a", "http://127.0.0.1:8791/a"] {
+        assert!(!redirect_allowed(url, false), "{url}");
+    }
+    assert!(redirect_allowed("http://127.0.0.1:8791/a", true));
+    assert!(!redirect_allowed("https://github.com/a", true));
+}
+
+/// On 127.0.0.1: `/hop` redirects to `/exe` on itself, `/away` to example.com, `/exe` sends `EXE_BYTES`.
+async fn redirecting_server() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let own = base.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let own = own.clone();
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        return;
+                    }
+                    head.extend_from_slice(&buf[..n]);
+                }
+                let path = String::from_utf8_lossy(&head).split_whitespace().nth(1).unwrap_or("/").to_string();
+                let redirect = |to: &str| format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let answer = match path.as_str() {
+                    "/hop" => redirect(&format!("{own}/exe")),
+                    "/away" => redirect("https://example.com/evil.exe"),
+                    "/exe" => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", EXE_BYTES.len(), std::str::from_utf8(EXE_BYTES).unwrap()),
+                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                };
+                socket.write_all(answer.as_bytes()).await.unwrap();
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    base
+}
+
+#[tokio::test]
+async fn follows_download_redirects_only_to_allowed_hosts() {
+    // Arrange
+    let base = redirecting_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("a.exe");
+    // Act
+    let local = updater_http(true).download(&format!("{base}/hop"), &dest).await;
+    let away = updater_http(true).download(&format!("{base}/away"), &dir.path().join("b.exe")).await;
+    let local_without_hook = updater_http(false).download(&format!("{base}/hop"), &dir.path().join("c.exe")).await;
+    // Assert
+    assert_eq!(local.unwrap(), EXE_BYTES.len() as u64);
+    assert_eq!(std::fs::read(&dest).unwrap(), EXE_BYTES);
+    assert_eq!(away.unwrap_err().message, "refused a redirect to https://example.com/evil.exe");
+    assert!(!dir.path().join("b.exe").exists());
+    assert_eq!(local_without_hook.unwrap_err().message, format!("refused a redirect to {base}/exe"));
+}
+
+// When the notice says off air, and the hour
+
+#[tokio::test]
+async fn status_says_about_1_hour_when_the_break_is_an_hour_away() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    // Act
+    updater.observe(Some(&live(171_900 - 3600)), false, true);
+    // Assert
+    assert_eq!(
+        updater.status().node_notice.as_deref(),
+        Some("It installs by itself in about 1 hour, just before Twitch's 48-hour cut. Update Now installs it at once and restarts the stream.")
+    );
+}
+
+#[tokio::test]
+async fn a_few_seconds_without_an_encoder_keep_the_on_air_text() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    updater.observe(Some(&live(0)), false, true);
+    h.clock.advance(Duration::from_secs(10));
+    // Act
+    updater.observe(Some(&no_encoder()), false, true);
+    // Assert
+    assert_eq!(updater.status().node_notice.as_deref(), Some(ON_AIR_48));
+}
+
+#[tokio::test]
+async fn the_off_air_text_shows_from_240_s_without_an_encoder() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    updater.observe(Some(&live(0)), false, true);
+    updater.observe(None, false, true);
+    // Act
+    h.clock.advance(Duration::from_secs(239));
+    updater.observe(None, false, true);
+    let at_239 = updater.status().node_notice;
+    h.clock.advance(Duration::from_secs(1));
+    updater.observe(None, false, true);
+    let at_240 = updater.status().node_notice;
+    // Assert
+    assert_eq!(at_239.as_deref(), Some(ON_AIR_48));
+    assert_eq!(at_240.as_deref(), Some(OFF_AIR));
+}
+
+#[tokio::test]
+async fn with_no_encoder_seen_yet_the_notice_waits_until_off_air_is_true() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    // Act
+    updater.observe(None, false, true);
+    let at_start = updater.status().node_notice;
+    h.clock.advance(Duration::from_secs(240));
+    updater.observe(None, false, true);
+    let at_240 = updater.status().node_notice;
+    // Assert
+    assert_eq!(at_start, None);
+    assert_eq!(at_240.as_deref(), Some(OFF_AIR));
+}
+
+// A failed check and a staged update
+
+#[tokio::test]
+async fn a_failed_check_keeps_a_staged_update_and_it_still_lands() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    h.http.respond(GITHUB_RELEASES_URL, 500, "");
+    h.past_cooldown();
+    // Act
+    let failed = updater.check().await;
+    let due = updater.observe(Some(&live(171_900)), false, true);
+    // Assert
+    assert_eq!((failed.status, failed.update_available), (UpdateStatus::Error, true));
+    assert_eq!(updater.staged_version().as_deref(), Some(NEXT));
+    assert!(due);
+}
+
+#[tokio::test]
+async fn a_successful_check_without_the_release_drops_the_staged_update() {
+    // Arrange: the release was pulled
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    h.http.respond(GITHUB_RELEASES_URL, 200, "[]");
+    h.past_cooldown();
+    // Act
+    let info = updater.check().await;
+    let due = updater.observe(Some(&live(171_900)), false, true);
+    // Assert
+    assert_eq!((info.status, info.update_available), (UpdateStatus::Idle, false));
+    assert_eq!(updater.staged_version(), None);
+    assert!(!due);
+}
+
+#[tokio::test]
+async fn a_check_that_ends_during_a_landing_leaves_the_status_ready() {
+    // Arrange: staged, then a check waits on GitHub while a landing starts
+    let h = Harness::new();
+    h.offer(NEXT);
+    h.runner.push(Ok(RunOutput::ok(NEXT)));
+    let http = Arc::new(GatedHttp::new(h.http.clone()));
+    let updater = Updater::new(h.options(http.clone()));
+    updater.check().await;
+    updater.wait_for_stage().await;
+    *http.gate_list.lock().unwrap() = true;
+    h.past_cooldown();
+    let checking = tokio::spawn({
+        let updater = updater.clone();
+        async move { updater.check().await }
+    });
+    until(|| updater.status().status == UpdateStatus::Checking).await;
+    // Act
+    let staged_during = updater.staged_version();
+    updater.landing_started();
+    http.open.notify_waiters();
+    let after = checking.await.unwrap();
+    // Assert
+    assert_eq!(staged_during.as_deref(), Some(NEXT));
+    assert_eq!(after.status, UpdateStatus::Ready);
 }

@@ -15,7 +15,7 @@ use streamloop_common::paths::Layout;
 use tokio::sync::OwnedMutexGuard;
 
 use crate::clock::Clock;
-use crate::http::{Http, HttpErrorKind, HttpRequest};
+use crate::http::{Http, HttpErrorKind, HttpRequest, ReqwestHttp};
 use crate::runner::{RunErrorKind, RunSpec, Runner};
 
 pub const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/Sponsorn/streamloop/releases?per_page=50";
@@ -32,6 +32,11 @@ const CHECK_COOLDOWN: Duration = Duration::from_secs(60);
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const PERCENT_EVERY: Duration = Duration::from_secs(1);
 const ALLOWED_DOWNLOAD_HOSTS: [&str; 2] = ["github.com", "objects.githubusercontent.com"];
+/// GitHub sends release downloads on to release-assets.githubusercontent.com, and API answers may move within the API.
+const REDIRECT_HOSTS: [&str; 4] = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "api.github.com"];
+/// The off-air text promises a landing within a minute, so it shows from this long before `off_air_after`.
+const OFF_AIR_NOTICE_LEAD: Duration = Duration::from_secs(60);
+const STAGE_CUT_OFF: &str = "it stopped before it finished";
 const GITHUB_SILENT: &str = "GitHub did not answer within 10 seconds.";
 const UPDATE_NOW: &str = "Update Now installs it and restarts the stream.";
 
@@ -210,7 +215,9 @@ struct Offer {
 #[derive(Debug, Clone)]
 struct View {
     live: bool,
+    /// The encoder uptime at the last poll with a live encoder; a short outage keeps it.
     uptime_s: Option<u64>,
+    off_air_for: Duration,
     stopped: bool,
     auto_check: bool,
     rolled_back: Option<String>,
@@ -318,17 +325,22 @@ impl Updater {
             }
             st.status = UpdateStatus::Checking;
             st.error = None;
-            st.node_notice = None;
             st.stage_failure = None;
-            // The last offer goes too, so a failed check leaves nothing half-known to stage or land.
-            st.update_available = false;
-            st.offer = None;
+            // An offer with nothing staged goes, so a failed check leaves nothing half-known to stage.
+            // A staged exe stays offered, and can land, until a check that answers says otherwise.
+            if self.inner.staged_locked(&st).is_none() {
+                st.update_available = false;
+                st.offer = None;
+                st.node_notice = None;
+            }
         }
 
         let result = self.inner.find_update().await;
 
         let to_stage = {
             let mut st = self.inner.lock();
+            // A landing that started meanwhile owns the status.
+            let checking = st.status == UpdateStatus::Checking;
             match result {
                 Ok(found) => {
                     tracing::info!(current = %self.inner.current, latest = %found.latest, available = found.offer.is_some(), "Update check complete");
@@ -336,16 +348,20 @@ impl Updater {
                     st.update_available = found.offer.is_some();
                     st.offer = found.offer;
                     st.node_notice = found.node_notice;
-                    st.status = UpdateStatus::Idle;
                     st.last_check = Some(now);
+                    if checking {
+                        st.status = UpdateStatus::Idle;
+                    }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Update check failed");
-                    st.status = UpdateStatus::Error;
-                    st.error = Some(e);
+                    if checking {
+                        st.status = UpdateStatus::Error;
+                        st.error = Some(e);
+                    }
                 }
             }
-            !self.inner.dev_mode && st.offer.is_some() && self.inner.staged_locked(&st).is_none()
+            checking && !self.inner.dev_mode && st.offer.is_some() && self.inner.staged_locked(&st).is_none()
         };
         if to_stage {
             self.stage_in_background();
@@ -390,7 +406,8 @@ impl Updater {
             st.off_air_since = Some(now);
         }
         let off_air_for = st.off_air_since.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
-        st.view = Some(View { live, uptime_s: encoder_uptime(sup), stopped, auto_check, rolled_back: rolled_back.clone() });
+        let uptime_s = if live { encoder_uptime(sup) } else { st.view.as_ref().and_then(|v| v.uptime_s) };
+        st.view = Some(View { live, uptime_s, off_air_for, stopped, auto_check, rolled_back: rolled_back.clone() });
         let staged = self.inner.staged_locked(&st);
         drop(st);
         should_land(&self.inner.policy, auto_check, staged.as_deref(), rolled_back.as_deref(), sup, stopped, off_air_for)
@@ -468,8 +485,12 @@ impl Inner {
         if view.rolled_back.as_deref() == Some(staged.as_str()) {
             return (NoticeState::UpdateNowOnly, None);
         }
-        if view.stopped || !view.live {
+        let landing_soon = self.policy.off_air_after.saturating_sub(OFF_AIR_NOTICE_LEAD);
+        if view.stopped || (!view.live && view.off_air_for >= landing_soon) {
             return (NoticeState::OffAir, None);
+        }
+        if !view.live && view.uptime_s.is_none() {
+            return (NoticeState::Quiet, None);
         }
         (NoticeState::OnAir, view.uptime_s.map(|u| hours_until(self.policy.break_at_s, u)))
     }
@@ -481,11 +502,11 @@ impl Inner {
     }
 
     fn allowed(&self, url: &str) -> bool {
-        let Ok(u) = reqwest::Url::parse(url) else { return false };
-        if self.test_releases.is_some() {
-            return u.scheme() == "http" && u.host_str() == Some("127.0.0.1") && u.port().is_some();
-        }
-        u.scheme() == "https" && u.host_str().is_some_and(|h| ALLOWED_DOWNLOAD_HOSTS.contains(&h))
+        reqwest::Url::parse(url).is_ok_and(|u| url_allowed(&u, &ALLOWED_DOWNLOAD_HOSTS, self.test_releases.is_some()))
+    }
+
+    fn part_path(&self) -> PathBuf {
+        self.layout.update_dir.join("streamloop.exe.part")
     }
 
     fn user_agent(&self) -> String {
@@ -576,6 +597,9 @@ impl Inner {
     async fn stage_holding(self: Arc<Self>, _guard: OwnedMutexGuard<()>) -> Result<(), String> {
         let offer = {
             let mut st = self.lock();
+            if st.status == UpdateStatus::Ready {
+                return Err("Update already in progress".into());
+            }
             let Some(offer) = st.offer.clone() else {
                 return Err("No update available to apply".into());
             };
@@ -588,9 +612,12 @@ impl Inner {
             st.staged = None;
             offer
         };
+        let mut cut_off = CutOffStage { inner: &self, armed: true };
         tracing::info!(version = %offer.version, url = %offer.exe_url, "Downloading the update");
         let result = self.download_and_verify(&offer).await;
+        cut_off.armed = false;
         if result.is_err() {
+            remove_file(&self.part_path());
             remove_file(&self.layout.staged_exe);
         }
         let mut st = self.lock();
@@ -611,12 +638,17 @@ impl Inner {
         result
     }
 
+    /// Downloads to `streamloop.exe.part` and renames it only once both checks pass, so a crash
+    /// mid-download never leaves a partial exe where a landing would take it.
     async fn download_and_verify(&self, offer: &Offer) -> Result<(), String> {
-        let dest = &self.layout.staged_exe;
+        let part = self.part_path();
         std::fs::create_dir_all(&self.layout.update_dir).map_err(|e| format!("{} could not be created ({e})", self.layout.update_dir.display()))?;
-        if dest.exists() {
-            std::fs::remove_file(dest).map_err(|e| format!("an earlier {} could not be removed ({e})", dest.display()))?;
+        for earlier in [&part, &self.layout.staged_exe] {
+            if earlier.exists() {
+                std::fs::remove_file(earlier).map_err(|e| format!("an earlier {} could not be removed ({e})", earlier.display()))?;
+            }
         }
+        let dest = &part;
 
         let counter = Mutex::new(DownloadCounter::new());
         let report = |received: u64, total: Option<u64>| {
@@ -651,14 +683,54 @@ impl Inner {
         if printed != offer.version {
             return Err(format!("the downloaded exe reports version {printed}, not {}", offer.version));
         }
-        Ok(())
+        std::fs::rename(&part, &self.layout.staged_exe).map_err(|e| format!("{} could not be renamed ({e})", part.display()))
     }
+}
+
+/// Puts the status back when a stage ends early, by a panic or by a caller that dropped it,
+/// so `downloading` never sticks.
+struct CutOffStage<'a> {
+    inner: &'a Inner,
+    armed: bool,
+}
+
+impl Drop for CutOffStage<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        remove_file(&self.inner.part_path());
+        let mut st = self.inner.lock();
+        st.download_percent = None;
+        if st.status == UpdateStatus::Downloading {
+            st.status = UpdateStatus::Idle;
+        }
+        st.stage_failure.get_or_insert_with(|| STAGE_CUT_OFF.to_string());
+    }
+}
+
+/// `https` on one of `hosts`, or under the test hook only `http://127.0.0.1:<port>`.
+fn url_allowed(url: &reqwest::Url, hosts: &[&str], test_hook: bool) -> bool {
+    if test_hook {
+        return url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.port().is_some();
+    }
+    url.scheme() == "https" && url.host_str().is_some_and(|h| hosts.contains(&h))
+}
+
+pub fn redirect_allowed(url: &str, test_hook: bool) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| url_allowed(&u, &REDIRECT_HOSTS, test_hook))
+}
+
+/// The updater's HTTP client: it follows redirects only to GitHub's hosts, or to 127.0.0.1 under
+/// the test hook (`STREAMLOOP_TEST_RELEASES`).
+pub fn updater_http(test_hook: bool) -> ReqwestHttp {
+    ReqwestHttp::following_only(move |u| url_allowed(u, &REDIRECT_HOSTS, test_hook))
 }
 
 fn remove_file(path: &Path) {
     if let Err(e) = std::fs::remove_file(path) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(path = %path.display(), error = %e, "Could not remove the staged exe");
+            tracing::warn!(path = %path.display(), error = %e, "Could not remove a file of the staged update");
         }
     }
 }
@@ -824,7 +896,10 @@ pub fn notice_text(state: NoticeState, hours: Option<u32>, node_notice: Option<S
     let own = match state {
         NoticeState::Quiet => None,
         NoticeState::OnAir => Some(match hours {
-            Some(n) => format!("It installs by itself in about {n} hours, just before Twitch's 48-hour cut. Update Now installs it at once and restarts the stream."),
+            Some(n) => {
+                let hours = if n == 1 { "1 hour".to_string() } else { format!("{n} hours") };
+                format!("It installs by itself in about {hours}, just before Twitch's 48-hour cut. Update Now installs it at once and restarts the stream.")
+            }
             None => UPDATE_NOW.to_string(),
         }),
         NoticeState::OffAir => Some("It installs within a minute, since the stream is off air.".to_string()),
