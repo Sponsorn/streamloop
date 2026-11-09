@@ -25,15 +25,13 @@ cp config.example.json config.json   # Then edit config.json with your settings
 
 `config.json` is gitignored to prevent committing credentials. `config.example.json` is the tracked template.
 
-**Dev setup with the supervisor.** In dev, Node reads `config.json` from its working directory, and the supervisor reads `ROOT\app\config.json`. They must be the same file, so run Node from `ROOT\app`:
+**Dev setup with the supervisor.**
 
 1. `cargo build --release` at the repo root (the Cargo workspace; the exe is `target\release\streamloop.exe`).
-2. `node supervisor/scripts/dev-root.mjs` builds a dev root in the install layout (default `%TEMP%\streamloop-devroot`); copy `target\release\streamloop.exe` to `ROOT\supervisor\streamloop-supervisor.exe`, the name Node's launcher still runs.
-3. Start Node with cwd `ROOT\app` and `STREAMLOOP_ROOT=ROOT`, running the repo's tsx on the repo's `src/server/index.ts` by absolute path. `installRoot()` uses `STREAMLOOP_ROOT` when there is no `node\` folder next to the app.
+2. `node supervisor/scripts/dev-root.mjs` builds a dev root in the install layout (default `%TEMP%\streamloop-devroot`), with `target\release\streamloop.exe` hard-linked as `ROOT\streamloop.exe`. After a rebuild, the next `dev-root.mjs` run (every session starts with one) links the new exe.
+3. Run `ROOT\streamloop.exe`. With `app\` beside it, its folder is the root, as in an install: the updater may stage there, so turn `autoUpdateCheck` off in a dev config. `target\release\streamloop.exe --root ROOT` runs the same root from anywhere; a root given by `--root` or `STREAMLOOP_ROOT` is dev mode, where the updater only checks. Either way it reads `ROOT\app\config.json`, writes its log and timeline to `ROOT\app\logs\`, and its launcher starts `ROOT\streamloop.exe launch`.
 
-Node's own logs and timeline still go to the repo's `logs/` in dev, since `logger.ts` and `index.ts` resolve them from the source folder. `supervisor/scripts/node-session.mjs` does all of this for the end-to-end runs.
-
-**Dev setup without Node (the Rust control process).** Build and make a dev root as in steps 1 and 2, copy `target\release\streamloop.exe` to `ROOT\streamloop.exe` (the exe its launcher runs), then run `target\release\streamloop.exe --root ROOT` from anywhere. It reads `ROOT\app\config.json` and writes its log and timeline to `ROOT\app\logs\`. A `--root` (or `STREAMLOOP_ROOT`) root is dev mode: the updater checks and never stages. At every start it removes the 3.0 leftovers, `ROOT\supervisor\streamloop-supervisor.exe` among them, so a Node run in the same root afterwards needs that copy made again.
+At every start the control process removes the 3.0 leftovers, `ROOT\supervisor\streamloop-supervisor.exe` among them. The Node backend, until R1 removes it, still runs that file: to run Node against a dev root, copy the exe there and start Node with cwd `ROOT\app` and `STREAMLOOP_ROOT=ROOT` through the repo's tsx. `supervisor/scripts/node-session.mjs` runs the end-to-end sessions against `ROOT\streamloop.exe`, started from a launcher console the way `START.bat` starts it.
 
 Test-only environment variables, never set by `config.json` or a release:
 - `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`). The flag belongs to the supervisor process, not to Node: a Node restarted without the variable attaches to the running supervisor, and `/debug/fault` stays open until that supervisor is restarted.
@@ -55,7 +53,7 @@ cargo build --release       # at the repo root: target\release\streamloop.exe (t
 cargo test --workspace      # all Rust tests: supervisor, common, control, the exe's CLI
 node supervisor/scripts/api-parity.mjs record --server rust --out FILE   # the dashboard's requests against target\release\streamloop.exe and a fake supervisor (ports 4417, 7654, 8791 free)
 node supervisor/scripts/api-parity.mjs compare supervisor/scripts/api-parity/node.json FILE   # exit 0 when the answers match Node's, apart from the differences it names
-node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
+node supervisor/scripts/node-session.mjs A|B|C|treekill [--port N]   # end-to-end runs of streamloop.exe (control process and supervisor) against local MediaMTX; each ends with its verdict; --port when 7654 is taken
 node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
 node supervisor/scripts/update-session.mjs all|<run>[,<run>...]|build   # full update, rollback and bootstrap proof (runs: full-on, full-off, app-only, locked, broken, bootstrap, two-windows) on N and N+1 (the dist version's patch + 1 and + 2) repacked from the dist/ ZIPs; build only repacks them
 cargo build --release       # in ui/: the app, ui/target/release/streamloop-ui.exe

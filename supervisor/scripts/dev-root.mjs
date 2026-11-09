@@ -1,7 +1,7 @@
 // A dev install root in the product layout (paths.rs), so a run never finds a tool on PATH.
 //   node dev-root.mjs [root]      (default: %TEMP%\streamloop-devroot)
-// Files are hard links (a copy when linking fails), folders are junctions. app\ and data\ are
-// left to session.mjs.
+// Files are hard links (a copy when linking fails), folders are junctions. ROOT\streamloop.exe is
+// the built target\release\streamloop.exe. app\ and data\ are left to the sessions.
 import { mkdirSync, linkSync, copyFileSync, symlinkSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ const REPO = fileURLToPath(new URL('../..', import.meta.url));
 export const DEFAULT_ROOT = join(tmpdir(), 'streamloop-devroot');
 
 export const SOURCES = {
+  'streamloop.exe': join(REPO, 'target', 'release', 'streamloop.exe'),
   'ffmpeg/ffmpeg.exe': FFMPEG,
   'yt-dlp/yt-dlp.exe': join(REPO, 'yt-dlp', 'yt-dlp.exe'),
   'yt-dlp/deno.exe': join(REPO, 'yt-dlp', 'deno.exe'),
@@ -38,6 +39,8 @@ export function makeDevRoot(root = DEFAULT_ROOT) {
     mkdirSync(join(target, '..'), { recursive: true });
     if (rel in FOLDERS) { if (!existsSync(target)) symlinkSync(source, target, 'junction'); } else place(target, source);
   }
+  // A 3.0 root's supervisor exe: streamloop.exe runs the supervisor now.
+  rmSync(join(root, 'supervisor', 'streamloop-supervisor.exe'), { force: true });
   mkdirSync(join(root, 'app'), { recursive: true });
   return root;
 }

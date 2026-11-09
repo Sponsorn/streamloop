@@ -727,6 +727,9 @@ pub async fn serve(w: Wiring) -> i32 {
 
 /// `streamloop.exe [--root DIR]`; `args` is every argument after the exe name.
 pub fn run(args: Vec<String>) -> i32 {
+    // The supervisor outlives this process; holding its output file, it would stop a launcher that
+    // redirects to that file from starting the control process again.
+    streamloop_common::procs::keep_std_handles_from_children();
     let Some(flag) = root_flag(&args) else {
         eprintln!("{USAGE}");
         return EXIT_USAGE;

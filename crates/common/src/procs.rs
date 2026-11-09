@@ -15,6 +15,29 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     c
 }
 
+/// Keeps `handle` out of every child this process starts from now on.
+#[cfg(windows)]
+pub fn keep_from_children(handle: std::os::windows::io::RawHandle) {
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    // SAFETY: only the handle's inherit flag changes; a null or invalid handle makes the call fail, and
+    // that leaves nothing to keep.
+    unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+}
+
+/// Keeps this process's stdin, stdout and stderr out of its children. A child that outlives it, such as
+/// the supervisor `launch` starts, would otherwise hold its console or the file its output went to.
+/// A child given `Stdio::inherit` still gets them, through a copy made for that child.
+#[cfg(windows)]
+pub fn keep_std_handles_from_children() {
+    use std::os::windows::io::AsRawHandle;
+    keep_from_children(std::io::stdin().as_raw_handle());
+    keep_from_children(std::io::stdout().as_raw_handle());
+    keep_from_children(std::io::stderr().as_raw_handle());
+}
+
+#[cfg(not(windows))]
+pub fn keep_std_handles_from_children() {}
+
 /// (pid, parent pid) of every process, from one snapshot; empty when the snapshot fails.
 #[cfg(windows)]
 fn processes() -> Vec<(u32, u32)> {
@@ -179,5 +202,35 @@ mod tests {
             started.iter().all(|pid| !all.iter().any(|(p, _)| p == pid))
         });
         assert!(gone, "{started:?} still run");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_child_does_not_hold_a_file_kept_from_children() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        const FILE_SHARE_READ: u32 = 1;
+        // Arrange: a log opened as cmd's `>>` opens it, shared for reading only, through an inheritable handle
+        let dir = std::env::temp_dir().join(format!("sl-common-procs-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("console.log");
+        let file = std::fs::OpenOptions::new().create(true).append(true).share_mode(FILE_SHARE_READ).open(&log).unwrap();
+        // SAFETY: `file` owns the handle for the whole call; only its inherit flag changes.
+        unsafe { SetHandleInformation(file.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let mut cmd = command(system.join("PING.EXE"));
+        cmd.args(["-n", "5", "127.0.0.1"]).stdout(Stdio::null()).stderr(Stdio::null());
+        // Act
+        keep_from_children(file.as_raw_handle());
+        let mut child = cmd.spawn().unwrap();
+        drop(file);
+        let reopened = std::fs::OpenOptions::new().append(true).open(&log);
+        let _ = child.kill();
+        let _ = child.wait();
+        // Assert
+        assert!(reopened.is_ok(), "the child still holds the log: {:?}", reopened.err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

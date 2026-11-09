@@ -117,9 +117,9 @@ export function firstEventAfter(events, wallMs, kinds) {
   return events.find((e) => e.wallMs >= wallMs && kinds.includes(e.kind)) ?? null;
 }
 
-/** Processes the supervisor must not leave behind: any ffmpeg on a pipe or started from the dev
- *  root (feeders/encoder; the session's recorder and readers aren't), any yt-dlp, and a token
- *  server it owns (-p 4416). */
+/** Processes a run must not leave behind: any ffmpeg on a pipe or started from the dev root
+ *  (feeders/encoder; the session's recorder and readers aren't), any yt-dlp, a token server the
+ *  supervisor owns (-p 4416), and a streamloop.exe in any mode that names the root. */
 export function leaks(processes, root = null) {
   const norm = (text) => text.toLowerCase().replaceAll('\\', '/');
   const fromRoot = (cmd) => root != null && norm(cmd).includes(norm(root));
@@ -129,8 +129,19 @@ export function leaks(processes, root = null) {
     if (name === 'ffmpeg.exe') return cmd.includes('pipe:') || fromRoot(cmd);
     if (name === 'yt-dlp.exe') return true;
     if (name === 'node.exe') return /main\.js/.test(cmd) && /-p\s+4416/.test(cmd);
+    if (name === 'streamloop.exe') return fromRoot(cmd);
     return false;
   });
+}
+
+const EXE_MODES = ['supervisor', 'launch', 'protect', 'check', '--version'];
+
+/** The mode word after the exe on a streamloop.exe command line: `supervisor` (the core), `launch`
+ *  (the intermediate), or `control` when there is none (nothing, or `--root DIR`). */
+export function exeMode(commandLine) {
+  const args = String(commandLine ?? '').trim().replace(/^("[^"]*"|\S+)\s*/, '');
+  const word = args.split(/\s+/)[0];
+  return EXE_MODES.includes(word) ? word : 'control';
 }
 
 /** The supervisor's events log: `supervisor-events-DATE.jsonl` from 3.0.5, `events-DATE.jsonl` before. */

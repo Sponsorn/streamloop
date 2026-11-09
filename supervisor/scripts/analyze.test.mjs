@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   epochAt, effectiveSeams, viewAt, readerReach, riseAt, lagSpikes, slateEdge, resumeErrorSec, deletionOk,
-  firstEventAfter, leaks, splitCsv, median, dailyFiles, EVENTS, redact, cpuRows, watchdogPlace, wallAtMedia,
+  firstEventAfter, leaks, splitCsv, median, dailyFiles, EVENTS, redact, cpuRows, watchdogPlace, wallAtMedia, exeMode,
 } from './lib.mjs';
 
 describe('epochAt', () => {
@@ -219,6 +219,42 @@ describe('leaks with a dev root', () => {
       { Name: 'ffmpeg.exe', CommandLine: 'C:/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin/ffmpeg.exe -i rtmp://x -c copy rec.mkv' },
     ];
     expect(leaks(ps, 'C:/Temp/streamloop-devroot')).toEqual([ps[0]]);
+  });
+
+  it('flags a streamloop.exe of the root in any mode and leaves another install\'s alone', () => {
+    // Arrange
+    const ps = [
+      { Name: 'streamloop.exe', CommandLine: '"C:\\Temp\\streamloop-devroot\\streamloop.exe"' },
+      { Name: 'streamloop.exe', CommandLine: '"C:\\Temp\\streamloop-devroot\\streamloop.exe" supervisor --root C:\\Temp\\streamloop-devroot --debug-faults' },
+      { Name: 'streamloop.exe', CommandLine: 'C:\\repo\\target\\release\\streamloop.exe supervisor --root C:\\Temp\\streamloop-devroot' },
+      { Name: 'streamloop.exe', CommandLine: '"C:\\Temp\\sl3 ui\\streamloop\\streamloop.exe"' },
+    ];
+
+    // Act
+    const found = leaks(ps, 'C:/Temp/streamloop-devroot');
+
+    // Assert
+    expect(found).toEqual([ps[0], ps[1], ps[2]]);
+  });
+});
+
+describe('exeMode', () => {
+  it('reads the supervisor and launch modes from the word after the exe, quoted or not', () => {
+    // Arrange
+    const core = '"C:\\Temp\\dev root\\streamloop.exe" supervisor --root "C:\\Temp\\dev root" --debug-faults';
+    const intermediate = 'C:\\Temp\\devroot\\streamloop.exe launch --root C:\\Temp\\devroot';
+
+    // Act + Assert
+    expect(exeMode(core)).toBe('supervisor');
+    expect(exeMode(intermediate)).toBe('launch');
+  });
+
+  it('takes a command line with no mode word for the control process', () => {
+    // Act + Assert
+    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe"')).toBe('control');
+    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe"  ')).toBe('control');
+    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe" --root C:\\Temp\\devroot')).toBe('control');
+    expect(exeMode('C:\\Temp\\devroot\\streamloop.exe constructor')).toBe('control');
   });
 });
 
