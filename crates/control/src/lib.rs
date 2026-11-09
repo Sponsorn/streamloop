@@ -1,6 +1,7 @@
 pub mod api;
 pub mod app;
 pub mod clock;
+pub mod discord;
 pub mod events;
 pub mod http;
 pub mod launcher;
