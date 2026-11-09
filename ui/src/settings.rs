@@ -4,19 +4,15 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AppContext, ClipboardItem, Context, Div, Entity, FontStyle, FontWeight,
-    HighlightStyle, IntoElement, Render, SharedString, StyledText, Subscription, Window, div,
-    prelude::*, px, relative, rgb,
+    AnyElement, AppContext, ClipboardItem, Context, Div, Entity, FontWeight, HighlightStyle,
+    IntoElement, Render, SharedString, Subscription, Window, div, prelude::*, px, relative, rgb,
 };
-use gpui_kit::{
-    base::TestTextExt,
-    component::{
-        Disableable, Icon, IconName, Sizable,
-        button::{Button, ButtonVariants},
-        input::InputState,
-        label::Label,
-        switch::Switch,
-    },
+use gpui_kit::component::{
+    Disableable, Sizable,
+    button::{Button, ButtonVariants},
+    input::InputState,
+    label::Label,
+    switch::Switch,
 };
 use serde_json::{Value, json};
 
@@ -28,11 +24,12 @@ use crate::{
         admin::{check_update_result, stream_key_state, without_blanks},
         autostart_label, changed_fields,
     },
-    theme::{ACCENT, BG, BORDER, MONO_FONT, MUTED, SURFACE, TEXT},
+    theme::{ACCENT, BG, BORDER, MONO_FONT, MUTED, TEXT},
     update::{UpdateFlow, update_button},
     widgets::{
-        ActionView, Busy, PlaylistRowIds, PlaylistRows, RestartNote, SAVE_RESET, btn, form_group,
-        put_text, reload_warning, reveal_on_focus, section, settings_panel, text_input, text_of,
+        ActionView, Busy, PlaylistRowIds, PlaylistRows, RestartNote, Run, SAVE_RESET, btn,
+        form_group, hint, list_item, put_text, reload_warning, reveal_on_focus, rich, section,
+        settings_panel, summary_button, text_input, text_of, toggle_row,
     },
 };
 
@@ -663,26 +660,12 @@ impl SettingsView {
 
     /// index.html's `details.wiz-collapsible`: the summary opens and closes the steps.
     fn render_howto(&self, cx: &mut Context<Self>) -> Div {
-        let marker = if self.howto_open {
-            IconName::ChevronDown
-        } else {
-            IconName::ChevronRight
-        };
-        let summary = Button::new("set-twitch-howto")
-            .text()
-            .accessibility_label(HOWTO)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(Icon::new(marker).size(px(12.)).text_color(rgb(ACCENT)))
-                    .child(Label::new(HOWTO).text_size(px(13.)).text_color(rgb(ACCENT))),
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
+        let summary = summary_button("set-twitch-howto", HOWTO, self.howto_open).on_click(
+            cx.listener(|this, _, _, cx| {
                 this.howto_open = !this.howto_open;
                 cx.notify();
-            }));
+            }),
+        );
         div()
             .mt(px(8.))
             .child(div().flex().py(px(4.)).child(reveal_on_focus(summary)))
@@ -960,60 +943,6 @@ impl Render for SettingsView {
     }
 }
 
-/// A run of `rich` text: plain, `<strong>` or `<em>`.
-#[derive(Clone, Copy)]
-enum Run {
-    Plain(&'static str),
-    Strong(&'static str),
-    Em(&'static str),
-}
-
-/// One wrapping line of text with its `<strong>` runs drawn in `strong` and `<em>` runs in italics.
-/// Size and colour come from the surrounding element.
-fn rich(runs: &[Run], strong: HighlightStyle) -> impl IntoElement + use<> {
-    let mut text = String::new();
-    let mut highlights = Vec::new();
-    for run in runs {
-        let start = text.len();
-        let (words, style) = match *run {
-            Run::Plain(words) => (words, None),
-            Run::Strong(words) => (words, Some(strong)),
-            Run::Em(words) => (
-                words,
-                Some(HighlightStyle {
-                    font_style: Some(FontStyle::Italic),
-                    ..HighlightStyle::default()
-                }),
-            ),
-        };
-        text.push_str(words);
-        if let Some(style) = style {
-            highlights.push((start..text.len(), style));
-        }
-    }
-    let text = SharedString::from(text);
-    div()
-        .child(StyledText::new(text.clone()).with_highlights(highlights))
-        .test_text(text)
-}
-
-/// One `<li>` of the numbered steps: its number in the 20 px gutter of the `<ol>`.
-fn list_item(marker: String, content: AnyElement) -> Div {
-    div()
-        .flex()
-        .mb(px(4.))
-        .child(
-            div()
-                .w(px(20.))
-                .flex_shrink_0()
-                .flex()
-                .justify_end()
-                .pr(px(4.))
-                .child(marker),
-        )
-        .child(div().flex_1().min_w_0().child(content))
-}
-
 /// One `<li>` of `.wiz-sublist`: a disc in its 16 px margin.
 fn bullet(content: impl IntoElement) -> Div {
     div()
@@ -1027,41 +956,6 @@ fn bullet(content: impl IntoElement) -> Div {
                 .child("•"),
         )
         .child(div().flex_1().min_w_0().child(content))
-}
-
-/// admin.css `.hint`.
-fn hint(text: impl Into<SharedString>) -> Label {
-    Label::new(text)
-        .mt(px(2.))
-        .text_size(px(11.))
-        .text_color(rgb(MUTED))
-}
-
-/// admin.css `.toggle-row`: the label and its descriptions, the switch on the right.
-fn toggle_row(label: &'static str, descs: &[SharedString], toggle: Switch) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(px(12.))
-        .px(px(16.))
-        .py(px(12.))
-        .bg(rgb(SURFACE))
-        .border_1()
-        .border_color(rgb(BORDER))
-        .rounded(px(8.))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(Label::new(label).text_size(px(14.)))
-                .children(descs.iter().map(|desc| {
-                    Label::new(desc.clone())
-                        .text_size(px(12.))
-                        .text_color(rgb(MUTED))
-                })),
-        )
-        .child(reveal_on_focus(toggle))
 }
 
 /// admin.css `.action-row`: its buttons, then the `.result-line`.

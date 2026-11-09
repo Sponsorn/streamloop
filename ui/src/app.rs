@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyView, AnyWindowHandle, App, AppContext, AsyncApp, Context, EmptyView, Entity, FocusHandle,
-    FontWeight, IntoElement, PromptButton, PromptLevel, Render, SharedString, Subscription, Task,
-    WeakEntity, Window, div, prelude::*, px, rgb,
+    AnyWindowHandle, App, AppContext, AsyncApp, Context, Entity, FocusHandle, FontWeight,
+    IntoElement, PromptButton, PromptLevel, Render, SharedString, Subscription, Task, WeakEntity,
+    Window, div, prelude::*, px, rgb,
 };
 use gpui_kit::component::label::Label;
 
@@ -21,6 +21,7 @@ use crate::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
         TOAST_SUCCESS_BG, TOAST_SUCCESS_BORDER,
     },
+    wizard::WizardView,
 };
 
 /// admin.js polls every 2 s; the Connecting screen tries as often.
@@ -112,7 +113,7 @@ impl AppHandle {
 
 enum Body {
     Connecting,
-    Wizard(AnyView),
+    Wizard(Entity<WizardView>),
     Dashboard(Entity<DashboardView>),
 }
 
@@ -183,6 +184,13 @@ impl AppView {
     pub fn dashboard(&self) -> Option<Entity<DashboardView>> {
         match &self.body {
             Body::Dashboard(dashboard) => Some(dashboard.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn wizard(&self) -> Option<Entity<WizardView>> {
+        match &self.body {
+            Body::Wizard(wizard) => Some(wizard.clone()),
             _ => None,
         }
     }
@@ -261,8 +269,9 @@ impl AppView {
         }));
     }
 
-    fn show_wizard(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let wizard = cx.new(|_| EmptyView).into();
+    fn show_wizard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app = self.handle.clone();
+        let wizard = cx.new(|cx| WizardView::new(app, window, cx));
         self.set_body(Body::Wizard(wizard), cx);
     }
 

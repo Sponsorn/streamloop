@@ -19,6 +19,7 @@ pub mod update;
 pub mod videos;
 pub mod webhooks;
 pub mod widgets;
+pub mod wizard;
 
 use std::sync::Arc;
 

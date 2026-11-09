@@ -11,6 +11,11 @@ const PORT = Number(process.env.STUB_PORT) || 7654;
 // STUB_UPDATE=1: v3.0.6 is on offer. Applying it walks downloading, extracting and ready as Node's
 // updater does, then the stub restarts as Node does on exit 75: down for 5 s, back with a new token.
 const UPDATE_MODE = process.env.STUB_UPDATE === '1';
+// STUB_FIRST_RUN=1: a fresh install. The config is config.example.json's, so `firstRun` is true
+// until a config with a real playlist is saved; the stream then starts and is live 10 s later.
+const FIRST_RUN_MODE = process.env.STUB_FIRST_RUN === '1';
+const LIVE_AFTER_SAVE_MS = 10_000;
+let liveAt = null;
 let token = 'stub-token';
 const SEAM_EVERY_S = 120;
 const EXTRA_EVENT_EVERY_S = 15;
@@ -110,7 +115,22 @@ setInterval(() => {
   if (state.position % EXTRA_EVENT_EVERY_S === 0) addEvent(extraEvent());
 }, 1000);
 
+/** src/server/config.ts `isFirstRun`. */
+const isFirstRun = () => config.playlists.length === 1 && config.playlists[0].id.includes('xxxxx');
+
 function status() {
+  if (FIRST_RUN_MODE && (liveAt === null || Date.now() < liveAt)) {
+    return {
+      stream: liveAt === null
+        ? { state: 'off-air', reason: 'The supervisor is not answering.' }
+        : { state: 'starting', reason: 'The supervisor is starting.' },
+      supervisor: null,
+      launcher: 'starting',
+      twitch: { enabled: false },
+      firstRun: isFirstRun(),
+      uptimeMs: Date.now() - nodeStarted,
+    };
+  }
   const list = lists[state.list];
   const v = current();
   const gib = 1024 ** 3;
@@ -138,7 +158,7 @@ function status() {
       enabled: true, channelLive: !state.stopped, consecutiveMismatches: 0, mismatchThreshold: 3,
       readback: { state: 'moving', lastCheckAt: new Date().toISOString() },
     },
-    firstRun: false,
+    firstRun: isFirstRun(),
     systemMemory: {
       totalGB: +(total / gib).toFixed(1), freeGB: +(free / gib).toFixed(1),
       usedGB: +((total - free) / gib).toFixed(1), usedPercent: Math.round(((total - free) / total) * 100),
@@ -161,10 +181,15 @@ function maskedConfig() {
 
 // The config a save changes, as Node keeps config.json.
 const config = maskedConfig();
+if (FIRST_RUN_MODE) {
+  config.playlists = example.playlists;
+  config.twitchChannel = '';
+  config.supervisor.streamKeySet = false;
+}
 
 // The saved webhook URL and Twitch secret, kept apart from `config` so every answer masks them as Node does.
-let webhookUrl = 'https://discord.com/api/webhooks/0/stub';
-let twitchClientSecret = 'stub-secret';
+let webhookUrl = FIRST_RUN_MODE ? '' : 'https://discord.com/api/webhooks/0/stub';
+let twitchClientSecret = FIRST_RUN_MODE ? '' : 'stub-secret';
 delete config.twitchClientSecret;
 
 /** `GET /api/config`, with the webhook URL and the Twitch secret masked. */
@@ -205,6 +230,14 @@ function saveConfig(patch) {
     config[key] = nested ? { ...config[key], ...value } : value;
   }
   const restartRequired = RESTART_KEYS.some((key) => config.supervisor[key] !== before[key]);
+  if (FIRST_RUN_MODE && liveAt === null) {
+    if (!isFirstRun()) liveAt = Date.now() + LIVE_AFTER_SAVE_MS;
+    // No supervisor runs yet, so Node's reload is refused.
+    return [200, {
+      ok: true, config: servedConfig(), restartRequired,
+      reloadError: 'connect ECONNREFUSED 127.0.0.1:4417', reloadErrorCode: 'ECONNREFUSED',
+    }];
+  }
   return [200, { ok: true, config: servedConfig(), restartRequired, reloadError: null, reloadErrorCode: null }];
 }
 
@@ -217,7 +250,9 @@ function setStreamKey(body) {
 
 // StreamLoop.vbs in the Startup folder, as Node reads it back.
 const THIS_BAT = 'C:\\StreamLoop3\\streamloop\\START.bat';
-let autostart = { enabled: true, target: THIS_BAT, thisInstall: true };
+let autostart = FIRST_RUN_MODE
+  ? { enabled: false, target: null, thisInstall: false }
+  : { enabled: true, target: THIS_BAT, thisInstall: true };
 
 /** `POST /api/autostart`: writes or removes the file; another install's file answers 409. */
 function setAutostart(body) {

@@ -1,12 +1,8 @@
 //! The dashboard (index.html `#view-dashboard`): the banners, the header and the four tabs.
 
-use std::{cell::RefCell, rc::Rc};
-
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, Context, Element, ElementId, Entity, FocusHandle,
-    FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point,
-    Render, ScrollHandle, WeakFocusHandle, Window, div, point, prelude::*, px, rgb,
-    transparent_black,
+    AnyView, App, AppContext, Context, Entity, FontWeight, Hsla, IntoElement, Render, ScrollHandle,
+    Window, div, prelude::*, px, rgb, transparent_black,
 };
 use gpui_kit::component::{
     Selectable,
@@ -24,13 +20,10 @@ use crate::{
     theme::{BORDER, MAX_WIDTH, MUTED, RED, SURFACE, SURFACE_HOVER, TEXT, WHITE},
     update::UpdateFlow,
     webhooks::WebhooksView,
-    widgets::reveal_on_focus,
+    widgets::{FollowFocus, Followed, reveal_on_focus},
 };
 
 const LOST_TEXT: &str = "Can't reach the server. The dashboard may be out of date.";
-
-/// Room left between a control brought into view and the edge of the column.
-const REVEAL_MARGIN: Pixels = px(8.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -157,8 +150,7 @@ pub struct DashboardView {
     uptime_ms: Option<u64>,
     connection_lost: bool,
     scroll: ScrollHandle,
-    /// The focus the column last followed.
-    followed: Rc<RefCell<Option<WeakFocusHandle>>>,
+    followed: Followed,
 }
 
 impl DashboardView {
@@ -193,13 +185,13 @@ impl DashboardView {
             uptime_ms: None,
             connection_lost: false,
             scroll: ScrollHandle::new(),
-            followed: Rc::default(),
+            followed: Followed::default(),
         }
     }
 
     /// How far the column is scrolled down.
     #[cfg(test)]
-    pub(crate) fn scroll_offset(&self) -> Pixels {
+    pub(crate) fn scroll_offset(&self) -> gpui::Pixels {
         -self.scroll.offset().y
     }
 
@@ -323,123 +315,6 @@ fn tab_colors(active: bool, cx: &App) -> ButtonCustomVariant {
     }
 }
 
-/// The scroll offset that brings `target` fully into `viewport` with `margin` to spare, or `None`
-/// when it is fully in view already.
-fn reveal_offset(
-    viewport: Bounds<Pixels>,
-    offset: Point<Pixels>,
-    max_offset: Point<Pixels>,
-    target: Bounds<Pixels>,
-    margin: Pixels,
-) -> Option<Point<Pixels>> {
-    if target.top() >= viewport.top() && target.bottom() <= viewport.bottom() {
-        return None;
-    }
-    let (top, bottom) = (viewport.top() + margin, viewport.bottom() - margin);
-    let delta = if target.top() < top || target.size.height > bottom - top {
-        top - target.top()
-    } else {
-        bottom - target.bottom()
-    };
-    let y = (offset.y + delta).clamp(-max_offset.y, px(0.));
-    (y != offset.y).then_some(point(offset.x, y))
-}
-
-/// The dashboard's scrolling column. When the keyboard moves the focus, it scrolls to the bounds the
-/// focused control asked for with `Window::request_autoscroll`; other frames leave the wheel free.
-struct FollowFocus {
-    column: AnyElement,
-    scroll: ScrollHandle,
-    followed: Rc<RefCell<Option<WeakFocusHandle>>>,
-}
-
-impl IntoElement for FollowFocus {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl Element for FollowFocus {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.column.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.take_autoscroll();
-        self.column.prepaint(window, cx);
-        let target = window.take_autoscroll();
-        let focused = window.focused(cx);
-        let moved = {
-            let mut followed = self.followed.borrow_mut();
-            let moved = match (followed.as_ref(), focused.as_ref()) {
-                (Some(before), Some(now)) => before != now,
-                (None, None) => false,
-                _ => true,
-            };
-            *followed = focused.as_ref().map(FocusHandle::downgrade);
-            moved
-        };
-        if !moved || !window.last_input_was_keyboard() {
-            return;
-        }
-        let Some(target) = target else {
-            return;
-        };
-        let scroll = &self.scroll;
-        if let Some(offset) = reveal_offset(
-            scroll.bounds(),
-            scroll.offset(),
-            scroll.max_offset(),
-            target,
-            REVEAL_MARGIN,
-        ) {
-            scroll.set_offset(offset);
-            // This frame is laid out already; the next one draws the column at its new offset.
-            window.request_animation_frame();
-        }
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.column.paint(window, cx);
-    }
-}
-
 fn lost_banner() -> impl IntoElement {
     div()
         .w_full()
@@ -482,11 +357,7 @@ impl Render for DashboardView {
                         .children(panel),
                 ),
             );
-        FollowFocus {
-            column: column.into_any_element(),
-            scroll: self.scroll.clone(),
-            followed: self.followed.clone(),
-        }
+        FollowFocus::new(column, &self.scroll, &self.followed)
     }
 }
 
@@ -494,7 +365,7 @@ impl Render for DashboardView {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use gpui::{AppContext, TestAppContext, WindowOptions, point, size};
+    use gpui::{AppContext, TestAppContext, WindowOptions};
     use gpui_kit::test::TestWindowExt;
 
     use super::*;
@@ -619,32 +490,6 @@ mod tests {
                 "poll Settings 5000 1 false",
             ]
         );
-    }
-
-    #[test]
-    fn reveal_offset_scrolls_only_as_far_as_needed() {
-        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(800.)));
-        let max = point(px(0.), px(3000.));
-        let at =
-            |y: f32, height: f32| Bounds::new(point(px(10.), px(y)), size(px(50.), px(height)));
-        let reveal = |offset: f32, target| {
-            reveal_offset(viewport, point(px(0.), px(offset)), max, target, px(8.))
-                .map(|offset| offset.y)
-        };
-
-        // Fully in view, however close to an edge: nothing moves.
-        assert_eq!(reveal(-500., at(0., 30.)), None);
-        assert_eq!(reveal(-500., at(770., 30.)), None);
-        // Below: its bottom lands 8 px above the viewport's.
-        assert_eq!(reveal(-500., at(790., 30.)), Some(px(-500. - 28.)));
-        assert_eq!(reveal(-500., at(900., 30.)), Some(px(-500. - 138.)));
-        // Above: its top lands 8 px below the viewport's.
-        assert_eq!(reveal(-500., at(-100., 30.)), Some(px(-500. + 108.)));
-        // Taller than the viewport: its top.
-        assert_eq!(reveal(-500., at(900., 900.)), Some(px(-500. - 892.)));
-        // Never past either end.
-        assert_eq!(reveal(-2990., at(900., 30.)), Some(px(-3000.)));
-        assert_eq!(reveal(-20., at(-100., 30.)), Some(px(0.)));
     }
 
     #[gpui::test]

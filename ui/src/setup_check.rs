@@ -9,12 +9,17 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, Font, FontFallbacks, Global, IntoElement, SharedString, div, font, prelude::*,
-    px, rgb,
+    AnyElement, App, AppContext, Context, Div, Entity, Font, FontFallbacks, Global, IntoElement,
+    SharedString, Window, div, font, prelude::*, px, rgb,
 };
 use gpui_kit::{
     base::TestSupportExt,
-    component::{label::Label, tooltip::Tooltip},
+    component::{
+        IndexPath, Sizable,
+        label::Label,
+        select::{Select, SelectItem, SelectState},
+        tooltip::Tooltip,
+    },
 };
 use serde_json::{Value, json};
 
@@ -24,8 +29,9 @@ use crate::{
         client::Client,
         types::{SaveResult, SetupReport},
     },
-    logic::{DependencyRow, Level, dependency_rows, encoder_label, save_patch},
-    theme::{ERROR_TEXT, FONT, GREEN, MUTED, level_color},
+    logic::{DependencyRow, ENCODER_NAMES, Level, dependency_rows, encoder_label, save_patch},
+    theme::{BG, ERROR_TEXT, FONT, GREEN, MUTED, level_color},
+    widgets::reveal_on_focus,
 };
 
 /// The run button's label once a check has run or failed.
@@ -182,7 +188,7 @@ pub fn report_view(report: &SetupReport) -> impl IntoElement {
 
 /// Segoe UI with Segoe UI Symbol behind it, so ✔ and ✘ draw as text in the row's colour, as the
 /// browser draws them. Windows' own fallback would draw ✔ from the colour emoji font.
-fn marks_font() -> Font {
+pub fn marks_font() -> Font {
     Font {
         fallbacks: Some(FontFallbacks::from_fonts(vec!["Segoe UI Symbol".into()])),
         ..font(FONT)
@@ -215,6 +221,66 @@ fn dependency(index: usize, row: DependencyRow) -> AnyElement {
     })
     .test_support()
     .into_any_element()
+}
+
+/// One encoder dropdown entry: its config value and the name `ENCODER_NAMES` shows.
+#[derive(Clone)]
+pub struct EncoderOption {
+    value: SharedString,
+    name: SharedString,
+}
+
+impl SelectItem for EncoderOption {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    // The closed box and the menu rows draw the name as a Label, like the app's other text.
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(Label::new(self.name.clone()).into_any_element())
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        Label::new(self.name.clone())
+    }
+
+    fn value(&self) -> &SharedString {
+        &self.value
+    }
+}
+
+/// The encoder dropdown's state: the `ENCODER_NAMES` options in order.
+pub type EncoderSelect = SelectState<Vec<EncoderOption>>;
+
+/// A new encoder dropdown that shows the first option, as a `<select>` does before a script sets it.
+pub fn encoder_select_state<V: 'static>(
+    window: &mut Window,
+    cx: &mut Context<V>,
+) -> Entity<EncoderSelect> {
+    let options: Vec<EncoderOption> = ENCODER_NAMES
+        .iter()
+        .map(|(value, name)| EncoderOption {
+            value: (*value).into(),
+            name: (*name).into(),
+        })
+        .collect();
+    cx.new(|cx| SelectState::new(options, Some(IndexPath::new(0)), window, cx))
+}
+
+/// admin.css `.form-group select`: the encoder dropdown `id`, at most 280 px wide.
+pub fn encoder_select(state: &Entity<EncoderSelect>, id: &'static str) -> Div {
+    div().w_full().max_w(px(280.)).child(reveal_on_focus(
+        Select::new(state)
+            .id(id)
+            .large()
+            .placeholder("")
+            .accessibility_label("Encoder")
+            .h(px(40.))
+            .px(px(12.))
+            .bg(rgb(BG)),
+    ))
 }
 
 /// admin.js `applySetup`: saves the picked encoder and cache size where they differ from the

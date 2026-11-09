@@ -3,15 +3,14 @@
 use std::collections::HashSet;
 
 use gpui::{
-    AnyElement, App, AppContext, Context, Div, Entity, IntoElement, Render, SharedString,
-    Subscription, Window, div, prelude::*, px, rgb,
+    AppContext, Context, Div, Entity, IntoElement, Render, SharedString, Subscription, Window, div,
+    prelude::*, px, rgb,
 };
 use gpui_kit::component::{
-    Disableable, IndexPath, Sizable,
+    Disableable,
     button::{Button, ButtonVariants},
     input::InputState,
     label::Label,
-    select::{Select, SelectItem, SelectState},
     switch::Switch,
 };
 use serde_json::{Value, json};
@@ -21,12 +20,14 @@ use crate::{
     app::{AppHandle, ToastKind},
     dashboard::TabView,
     logic::{
-        ENCODER_NAMES,
         admin::{PLAYBACK_FIELDS, check_number, local_date_time, without_blanks},
         save_patch,
     },
-    setup_check::{CHECKING_LABEL, RUN_LABEL, ReportArea, SetupCheck, apply_setup},
-    theme::{BG, MUTED},
+    setup_check::{
+        CHECKING_LABEL, EncoderSelect, RUN_LABEL, ReportArea, SetupCheck, apply_setup,
+        encoder_select, encoder_select_state,
+    },
+    theme::MUTED,
     widgets::{
         ActionView, Busy, RestartNote, SAVE_RESET, btn, form_group, put_text, reload_warning,
         reveal_on_focus, section, settings_panel, text_input, text_of,
@@ -71,39 +72,11 @@ const NUMBER_INPUTS: [(&str, &str, &str); 4] = [
     ),
 ];
 
-/// One encoder dropdown entry: its config value and the name `ENCODER_NAMES` shows.
-#[derive(Clone)]
-struct EncoderOption {
-    value: SharedString,
-    name: SharedString,
-}
-
-impl SelectItem for EncoderOption {
-    type Value = SharedString;
-
-    fn title(&self) -> SharedString {
-        self.name.clone()
-    }
-
-    // The closed box and the menu rows draw the name as a Label, like the app's other text.
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(Label::new(self.name.clone()).into_any_element())
-    }
-
-    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        Label::new(self.name.clone())
-    }
-
-    fn value(&self) -> &SharedString {
-        &self.value
-    }
-}
-
 /// The Playback tab, with admin.js's playback variables as fields.
 pub struct PlaybackView {
     app: AppHandle,
     busy: Busy,
-    encoder: Entity<SelectState<Vec<EncoderOption>>>,
+    encoder: Entity<EncoderSelect>,
     pub(crate) overlay: bool,
     /// In `PLAYBACK_FIELDS` order.
     numbers: [Entity<InputState>; 4],
@@ -131,15 +104,7 @@ pub struct PlaybackView {
 
 impl PlaybackView {
     pub fn new(app: AppHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let options: Vec<EncoderOption> = ENCODER_NAMES
-            .iter()
-            .map(|(value, name)| EncoderOption {
-                value: (*value).into(),
-                name: (*name).into(),
-            })
-            .collect();
-        // A <select> shows its first option until the form loads.
-        let encoder = cx.new(|cx| SelectState::new(options, Some(IndexPath::new(0)), window, cx));
+        let encoder = encoder_select_state(window, cx);
         Self {
             app,
             busy: Busy::default(),
@@ -422,7 +387,7 @@ impl PlaybackView {
 
     /// The form's values in page order: encoder, read-ahead, cache, player client, cookies, freeze, silence.
     #[cfg(test)]
-    fn values(&self, cx: &App) -> Vec<String> {
+    fn values(&self, cx: &gpui::App) -> Vec<String> {
         let encoder = self.encoder.read(cx).selected_value().cloned();
         let [read_ahead, cache, freeze, silence] = &self.numbers;
         let mut values = vec![encoder.map(|e| e.to_string()).unwrap_or_default()];
@@ -437,19 +402,6 @@ impl PlaybackView {
             values.push(text_of(input, cx));
         }
         values
-    }
-
-    fn render_encoder(&self) -> Div {
-        div().w_full().max_w(px(280.)).child(reveal_on_focus(
-            Select::new(&self.encoder)
-                .id("pb-encoder")
-                .large()
-                .placeholder("")
-                .accessibility_label("Encoder")
-                .h(px(40.))
-                .px(px(12.))
-                .bg(rgb(BG)),
-        ))
     }
 
     /// index.html's `.toggle-row-plain` for the overlay.
@@ -550,7 +502,7 @@ impl Render for PlaybackView {
                     settings_panel()
                         .child(form_group(
                             "Encoder",
-                            self.render_encoder(),
+                            encoder_select(&self.encoder, "pb-encoder"),
                             Some(ENCODER_HINT),
                         ))
                         .child(self.render_overlay(cx)),

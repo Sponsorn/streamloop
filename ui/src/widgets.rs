@@ -1,20 +1,22 @@
 //! Controls the views share: the action button (admin.js `runAction`), the restart note, the
-//! config save's reload warning, the settings forms' layout and inputs, and the focus reveal.
+//! config save's reload warning, the settings forms' layout, inputs and text, and the focus reveal.
 
-use std::{collections::HashSet, time::Duration};
+use std::{cell::RefCell, collections::HashSet, rc::Rc, time::Duration};
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Div, Element, ElementId, Entity, FontWeight,
-    Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Render,
-    SharedString, Styled, Subscription, Window, div, prelude::*, px, rgb, rgba,
+    AnyElement, App, AppContext, Bounds, Context, Div, Element, ElementId, Entity, FocusHandle,
+    FontStyle, FontWeight, Global, GlobalElementId, HighlightStyle, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Point, Render, ScrollHandle, SharedString, Styled, StyledText,
+    Subscription, WeakFocusHandle, Window, div, point, prelude::*, px, rgb, rgba,
 };
 use gpui_kit::{
-    base::TestSupportExt,
+    base::{TestSupportExt, TestTextExt},
     component::{
-        Disableable, Sizable,
+        Disableable, Icon, IconName, Sizable,
         button::{Button, ButtonCustomVariant, ButtonVariants},
         input::{Input, InputState, TextareaState},
         label::Label,
+        switch::Switch,
     },
 };
 
@@ -29,7 +31,7 @@ use crate::{
         admin::{PlaylistEntry, collect_playlists},
         is_benign_reload_error,
     },
-    theme::{BG, BORDER, MUTED, RED, SURFACE},
+    theme::{ACCENT, BG, BORDER, MUTED, RED, SURFACE},
 };
 
 /// admin.js puts a save button's label back 1.5 s after a save.
@@ -250,6 +252,113 @@ pub fn form_group(label: &str, control: impl IntoElement, hint: Option<&str>) ->
                 .text_size(px(11.))
                 .text_color(rgb(MUTED))
         }))
+}
+
+/// admin.css `.hint`.
+pub fn hint(text: impl Into<SharedString>) -> Label {
+    Label::new(text)
+        .mt(px(2.))
+        .text_size(px(11.))
+        .text_color(rgb(MUTED))
+}
+
+/// admin.css `.toggle-row`: the label and its descriptions, the switch on the right.
+pub fn toggle_row(label: &'static str, descs: &[SharedString], toggle: Switch) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .px(px(16.))
+        .py(px(12.))
+        .bg(rgb(SURFACE))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .rounded(px(8.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Label::new(label).text_size(px(14.)))
+                .children(descs.iter().map(|desc| {
+                    Label::new(desc.clone())
+                        .text_size(px(12.))
+                        .text_color(rgb(MUTED))
+                })),
+        )
+        .child(reveal_on_focus(toggle))
+}
+
+/// The summary of index.html's `details.wiz-collapsible`: accent text after a chevron that points
+/// down while `open`. The caller toggles `open` on click.
+pub fn summary_button(id: &'static str, text: &'static str, open: bool) -> Button {
+    let marker = if open {
+        IconName::ChevronDown
+    } else {
+        IconName::ChevronRight
+    };
+    Button::new(id).text().accessibility_label(text).child(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(Icon::new(marker).size(px(12.)).text_color(rgb(ACCENT)))
+            .child(Label::new(text).text_size(px(13.)).text_color(rgb(ACCENT))),
+    )
+}
+
+/// A run of `rich` text: plain, `<strong>` or `<em>`.
+#[derive(Clone, Copy)]
+pub enum Run {
+    Plain(&'static str),
+    Strong(&'static str),
+    Em(&'static str),
+}
+
+/// One wrapping line of text with its `<strong>` runs drawn in `strong` and `<em>` runs in italics.
+/// Size and colour come from the surrounding element.
+pub fn rich(runs: &[Run], strong: HighlightStyle) -> impl IntoElement + use<> {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for run in runs {
+        let start = text.len();
+        let (words, style) = match *run {
+            Run::Plain(words) => (words, None),
+            Run::Strong(words) => (words, Some(strong)),
+            Run::Em(words) => (
+                words,
+                Some(HighlightStyle {
+                    font_style: Some(FontStyle::Italic),
+                    ..HighlightStyle::default()
+                }),
+            ),
+        };
+        text.push_str(words);
+        if let Some(style) = style {
+            highlights.push((start..text.len(), style));
+        }
+    }
+    let text = SharedString::from(text);
+    div()
+        .child(StyledText::new(text.clone()).with_highlights(highlights))
+        .test_text(text)
+}
+
+/// One `<li>` of a numbered list: its number in the 20 px gutter of the `<ol>`.
+pub fn list_item(marker: String, content: AnyElement) -> Div {
+    div()
+        .flex()
+        .mb(px(4.))
+        .child(
+            div()
+                .w(px(20.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .pr(px(4.))
+                .child(marker),
+        )
+        .child(div().flex_1().min_w_0().child(content))
 }
 
 /// admin.css `.form-group input`; `.invalid` turns the border red.
@@ -564,5 +673,172 @@ impl Element for FocusReveal {
         cx: &mut App,
     ) {
         self.0.paint(window, cx);
+    }
+}
+
+/// Room left between a control brought into view and the edge of the column.
+const REVEAL_MARGIN: Pixels = px(8.);
+
+/// The focus a `FollowFocus` last followed, kept by its view between frames.
+pub type Followed = Rc<RefCell<Option<WeakFocusHandle>>>;
+
+/// The scroll offset that brings `target` fully into `viewport` with `margin` to spare, or `None`
+/// when it is fully in view already.
+fn reveal_offset(
+    viewport: Bounds<Pixels>,
+    offset: Point<Pixels>,
+    max_offset: Point<Pixels>,
+    target: Bounds<Pixels>,
+    margin: Pixels,
+) -> Option<Point<Pixels>> {
+    if target.top() >= viewport.top() && target.bottom() <= viewport.bottom() {
+        return None;
+    }
+    let (top, bottom) = (viewport.top() + margin, viewport.bottom() - margin);
+    let delta = if target.top() < top || target.size.height > bottom - top {
+        top - target.top()
+    } else {
+        bottom - target.bottom()
+    };
+    let y = (offset.y + delta).clamp(-max_offset.y, px(0.));
+    (y != offset.y).then_some(point(offset.x, y))
+}
+
+/// A scrolling column. When the keyboard moves the focus, it scrolls to the bounds the focused
+/// control asked for with `Window::request_autoscroll`; other frames leave the wheel free.
+pub struct FollowFocus {
+    column: AnyElement,
+    scroll: ScrollHandle,
+    followed: Followed,
+}
+
+impl FollowFocus {
+    /// `column` is the scrolling element, tracked by `scroll`.
+    pub fn new(column: impl IntoElement, scroll: &ScrollHandle, followed: &Followed) -> Self {
+        Self {
+            column: column.into_any_element(),
+            scroll: scroll.clone(),
+            followed: followed.clone(),
+        }
+    }
+}
+
+impl IntoElement for FollowFocus {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for FollowFocus {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.column.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.take_autoscroll();
+        self.column.prepaint(window, cx);
+        let target = window.take_autoscroll();
+        let focused = window.focused(cx);
+        let moved = {
+            let mut followed = self.followed.borrow_mut();
+            let moved = match (followed.as_ref(), focused.as_ref()) {
+                (Some(before), Some(now)) => before != now,
+                (None, None) => false,
+                _ => true,
+            };
+            *followed = focused.as_ref().map(FocusHandle::downgrade);
+            moved
+        };
+        if !moved || !window.last_input_was_keyboard() {
+            return;
+        }
+        let Some(target) = target else {
+            return;
+        };
+        let scroll = &self.scroll;
+        if let Some(offset) = reveal_offset(
+            scroll.bounds(),
+            scroll.offset(),
+            scroll.max_offset(),
+            target,
+            REVEAL_MARGIN,
+        ) {
+            scroll.set_offset(offset);
+            // This frame is laid out already; the next one draws the column at its new offset.
+            window.request_animation_frame();
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.column.paint(window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::size;
+
+    use super::*;
+
+    #[test]
+    fn reveal_offset_scrolls_only_as_far_as_needed() {
+        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(1000.), px(800.)));
+        let max = point(px(0.), px(3000.));
+        let at =
+            |y: f32, height: f32| Bounds::new(point(px(10.), px(y)), size(px(50.), px(height)));
+        let reveal = |offset: f32, target| {
+            reveal_offset(viewport, point(px(0.), px(offset)), max, target, px(8.))
+                .map(|offset| offset.y)
+        };
+
+        // Fully in view, however close to an edge: nothing moves.
+        assert_eq!(reveal(-500., at(0., 30.)), None);
+        assert_eq!(reveal(-500., at(770., 30.)), None);
+        // Below: its bottom lands 8 px above the viewport's.
+        assert_eq!(reveal(-500., at(790., 30.)), Some(px(-500. - 28.)));
+        assert_eq!(reveal(-500., at(900., 30.)), Some(px(-500. - 138.)));
+        // Above: its top lands 8 px below the viewport's.
+        assert_eq!(reveal(-500., at(-100., 30.)), Some(px(-500. + 108.)));
+        // Taller than the viewport: its top.
+        assert_eq!(reveal(-500., at(900., 900.)), Some(px(-500. - 892.)));
+        // Never past either end.
+        assert_eq!(reveal(-2990., at(900., 30.)), Some(px(-3000.)));
+        assert_eq!(reveal(-20., at(-100., 30.)), Some(px(0.)));
     }
 }
