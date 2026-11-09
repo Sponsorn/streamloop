@@ -22,6 +22,7 @@ use crate::{
     playback::PlaybackView,
     settings::SettingsView,
     theme::{BORDER, MAX_WIDTH, MUTED, RED, SURFACE, SURFACE_HOVER, TEXT, WHITE},
+    update::UpdateFlow,
     webhooks::WebhooksView,
     widgets::reveal_on_focus,
 };
@@ -134,6 +135,7 @@ impl<T: TabView> AnyTab for Entity<T> {
 fn build_tab(
     tab: Tab,
     app: &AppHandle,
+    flow: &Entity<UpdateFlow>,
     window: &mut Window,
     cx: &mut Context<DashboardView>,
 ) -> Box<dyn AnyTab> {
@@ -141,12 +143,16 @@ fn build_tab(
         Tab::Monitor => Box::new(cx.new(|cx| MonitorView::new(app.clone(), window, cx))),
         Tab::Playback => Box::new(cx.new(|cx| PlaybackView::new(app.clone(), window, cx))),
         Tab::Webhooks => Box::new(cx.new(|cx| WebhooksView::new(app.clone(), window, cx))),
-        Tab::Settings => Box::new(cx.new(|cx| SettingsView::new(app.clone(), window, cx))),
+        Tab::Settings => {
+            Box::new(cx.new(|cx| SettingsView::new(app.clone(), flow.clone(), window, cx)))
+        }
     }
 }
 
 pub struct DashboardView {
     tabs: Vec<(Tab, Box<dyn AnyTab>)>,
+    /// The update banner, which Settings' Update Now shares.
+    flow: Entity<UpdateFlow>,
     selected: Tab,
     uptime_ms: Option<u64>,
     connection_lost: bool,
@@ -162,19 +168,27 @@ impl DashboardView {
 
     fn with_tabs(
         app: &AppHandle,
-        build: impl Fn(Tab, &AppHandle, &mut Window, &mut Context<Self>) -> Box<dyn AnyTab>,
+        build: impl Fn(
+            Tab,
+            &AppHandle,
+            &Entity<UpdateFlow>,
+            &mut Window,
+            &mut Context<Self>,
+        ) -> Box<dyn AnyTab>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let flow = cx.new(|cx| UpdateFlow::new(app.clone(), cx));
         let tabs: Vec<_> = Tab::ALL
             .into_iter()
-            .map(|tab| (tab, build(tab, app, window, cx)))
+            .map(|tab| (tab, build(tab, app, &flow, window, cx)))
             .collect();
         for (_, tab) in &tabs {
             tab.dashboard_open(window, cx);
         }
         Self {
             tabs,
+            flow,
             selected: Tab::Monitor,
             uptime_ms: None,
             connection_lost: false,
@@ -220,6 +234,11 @@ impl DashboardView {
         cx: &mut Context<Self>,
     ) {
         self.uptime_ms = Some(status.uptime_ms);
+        // admin.js keeps the last banner when the update status did not answer.
+        if let Some(update) = update {
+            self.flow
+                .update(cx, |flow, cx| flow.show_status(update, cx));
+        }
         for (_, tab) in &self.tabs {
             tab.poll(status, events, update, window, cx);
         }
@@ -444,13 +463,13 @@ impl Render for DashboardView {
             .iter()
             .find(|(tab, _)| *tab == self.selected)
             .map(|(_, view)| view.view());
-        // The update banner (admin.js `renderUpdateBanner`) goes between this banner and the column.
         let column = div()
             .id("dashboard")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .when(self.connection_lost, |d| d.child(lost_banner()))
+            .child(self.flow.clone())
             .child(
                 div().w_full().flex().justify_center().child(
                     div()
@@ -528,8 +547,14 @@ mod tests {
 
     fn recording(
         log: Log,
-    ) -> impl Fn(Tab, &AppHandle, &mut Window, &mut Context<DashboardView>) -> Box<dyn AnyTab> {
-        move |tab, _, _, cx| {
+    ) -> impl Fn(
+        Tab,
+        &AppHandle,
+        &Entity<UpdateFlow>,
+        &mut Window,
+        &mut Context<DashboardView>,
+    ) -> Box<dyn AnyTab> {
+        move |tab, _, _, _, cx| {
             Box::new(cx.new(|_| Recorder {
                 tab,
                 log: log.clone(),

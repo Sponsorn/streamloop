@@ -157,3 +157,11 @@ pub fn update_json(status: &str) -> Value {
         "nodeNotice": null
     })
 }
+
+/// `GET /api/update/status` with 3.0.6 waiting, also in `idle`, the state after a check found it.
+pub fn offered_json(status: &str) -> Value {
+    let mut update = update_json(status);
+    update["updateAvailable"] = json!(true);
+    update["latestVersion"] = json!("3.0.6");
+    update
+}

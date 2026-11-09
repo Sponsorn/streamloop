@@ -8,7 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { freemem, totalmem } from 'node:os';
 
 const PORT = Number(process.env.STUB_PORT) || 7654;
-const TOKEN = 'stub-token';
+// STUB_UPDATE=1: v3.0.6 is on offer. Applying it walks downloading, extracting and ready as Node's
+// updater does, then the stub restarts as Node does on exit 75: down for 5 s, back with a new token.
+const UPDATE_MODE = process.env.STUB_UPDATE === '1';
+let token = 'stub-token';
 const SEAM_EVERY_S = 120;
 const EXTRA_EVENT_EVERY_S = 15;
 const MAX_EVENTS = 100;
@@ -45,6 +48,8 @@ function makeList(id, name, count) {
 
 const lists = [makeList('PLstubMainVods0001', 'Main VODs', 300), makeList('PLstubHighlights02', 'Highlights', 120)];
 const started = Date.now();
+// Node's own start, which the dashboard's uptime counts from; an update restart resets it.
+let nodeStarted = started;
 const state = { list: 0, index: 0, position: 0, stopped: false, encoderRestarts: 0 };
 let events = [];
 
@@ -138,7 +143,7 @@ function status() {
       totalGB: +(total / gib).toFixed(1), freeGB: +(free / gib).toFixed(1),
       usedGB: +((total - free) / gib).toFixed(1), usedPercent: Math.round(((total - free) / total) * 100),
     },
-    uptimeMs: Date.now() - started,
+    uptimeMs: Date.now() - nodeStarted,
   };
 }
 
@@ -240,6 +245,52 @@ function shutdown() {
   return [200, { ok: true, message: 'Shutting down...' }];
 }
 
+// `GET /api/update/status`. Without STUB_UPDATE the stub is Node in dev mode: up to date, check only.
+const upToDate = (version, isDevMode) => ({
+  currentVersion: version, latestVersion: version, updateAvailable: false, status: 'idle', error: null, isDevMode, nodeNotice: null,
+});
+let update = UPDATE_MODE
+  ? {
+    currentVersion: '3.0.5', latestVersion: '3.0.6', updateAvailable: true, status: 'idle', error: null, isDevMode: false,
+    nodeNotice: 'This release bundles Node 22.24.0. Install the full ZIP to get it.',
+  }
+  : upToDate('3.0.5', true);
+
+const DOWNLOAD_MS = 4000;
+const EXTRACT_MS = 3000;
+// Node exits 1 s after the update is staged (api.ts `triggerRestart`).
+const EXIT_AFTER_MS = 1000;
+const DOWN_FOR_MS = 5000;
+
+/** `POST /api/update/apply`: Node answers at once and installs in the background. In dev mode it
+ *  refuses in the background too, so the answer is the same and nothing changes. */
+function applyUpdate() {
+  if (UPDATE_MODE && update.updateAvailable && update.status === 'idle') {
+    update = { ...update, status: 'downloading' };
+    setTimeout(() => {
+      update = { ...update, status: 'extracting' };
+      setTimeout(() => {
+        update = { ...update, status: 'ready' };
+        setTimeout(restartAfterUpdate, EXIT_AFTER_MS);
+      }, EXTRACT_MS);
+    }, DOWNLOAD_MS);
+  }
+  return [200, { ok: true, message: 'Update started' }];
+}
+
+/** Exit 75 and START.bat's restart: the port closes, then Node is back on 3.0.6 with a new token. */
+function restartAfterUpdate() {
+  server.close();
+  server.closeAllConnections();
+  process.stdout.write('stub backend restarting for the update\n');
+  setTimeout(() => {
+    token = `stub-token-${Date.now()}`;
+    nodeStarted = Date.now();
+    update = upToDate('3.0.6', false);
+    server.listen(PORT, '127.0.0.1', () => process.stdout.write('stub backend back on v3.0.6 with a new token\n'));
+  }, DOWN_FOR_MS);
+}
+
 // src/server/config.ts DEFAULT_DISCORD_TEMPLATES and DISCORD_TEMPLATE_VARIABLES.
 const DISCORD_DEFAULTS = {
   templates: {
@@ -317,10 +368,10 @@ function videoPage(query) {
 }
 
 const GETS = {
-  '/api/token': () => [200, { token: TOKEN }],
+  '/api/token': () => [200, { token }],
   '/api/status': () => [200, status()],
   '/api/events': () => [200, events],
-  '/api/update/status': () => [200, { currentVersion: '3.0.5', latestVersion: '3.0.5', updateAvailable: false, status: 'idle', isDevMode: true, nodeNotice: null }],
+  '/api/update/status': () => [200, update],
   '/api/config': () => [200, servedConfig()],
   '/api/autostart': () => [200, autostart],
   '/api/setup-check': () => [200, setupReport],
@@ -349,6 +400,8 @@ const POSTS = {
   '/api/autostart': setAutostart,
   '/api/yt-dlp/update': updateYtdlp,
   '/api/shutdown': shutdown,
+  '/api/update/check': () => [200, update],
+  '/api/update/apply': applyUpdate,
 };
 
 function seek(index) {
@@ -388,7 +441,7 @@ async function readBody(req) {
   }
 }
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const path = url.pathname;
   if (path === '/' || path === '/admin') {
@@ -406,7 +459,7 @@ createServer(async (req, res) => {
   }
   if (req.method === 'GET' && GETS[path]) return send(res, ...GETS[path]());
   if (req.method === 'POST' && POSTS[path]) {
-    if (req.headers['x-api-token'] !== TOKEN) return send(res, 403, { error: 'Forbidden: invalid API token' });
+    if (req.headers['x-api-token'] !== token) return send(res, 403, { error: 'Forbidden: invalid API token' });
     // A handler returns [code, body] for an answer of its own, or nothing for { ok: true }.
     const answer = await POSTS[path](await readBody(req));
     if (answer) return send(res, ...answer);

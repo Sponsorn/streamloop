@@ -25,10 +25,11 @@ use crate::{
     app::{AppHandle, ToastKind},
     dashboard::TabView,
     logic::{
-        admin::{stream_key_state, without_blanks},
+        admin::{check_update_result, stream_key_state, without_blanks},
         autostart_label, changed_fields,
     },
     theme::{ACCENT, BG, BORDER, MONO_FONT, MUTED, SURFACE, TEXT},
+    update::{UpdateFlow, update_button},
     widgets::{
         ActionView, Busy, PlaylistRowIds, PlaylistRows, RestartNote, SAVE_RESET, btn, form_group,
         put_text, reload_warning, reveal_on_focus, section, settings_panel, text_input, text_of,
@@ -62,6 +63,7 @@ const COPIED_FOR: Duration = Duration::from_secs(2);
 const AUTOSTART_LABEL: &str = "Run on Windows startup";
 const AUTO_OPEN_LABEL: &str = "Open the web dashboard when StreamLoop starts";
 const AUTO_OPEN_DESC: &str = "Opens the web dashboard in your browser each time the server starts";
+const CHECK_LABEL: &str = "Check for Updates";
 const YTDLP_LABEL: &str = "Update yt-dlp";
 const YTDLP_HINT: &str = "yt-dlp updates itself on startup. Update it by hand if playlists show fewer videos than expected.";
 const SHUTDOWN_LABEL: &str = "Shut down the dashboard";
@@ -72,6 +74,8 @@ const SHUTDOWN_DETAIL: &str =
 /// The Settings tab, with admin.js's settings variables as fields.
 pub struct SettingsView {
     app: AppHandle,
+    /// The dashboard's update banner, which Update Now runs and a check renders.
+    flow: Entity<UpdateFlow>,
     busy: Busy,
     playlists: Entity<PlaylistRows>,
     ingest: Entity<InputState>,
@@ -104,6 +108,10 @@ pub struct SettingsView {
     /// `#autostart-target`.
     autostart_target: SharedString,
     auto_open: bool,
+    checking: bool,
+    check_result: SharedString,
+    /// `#settings-update-btn` shows after a check that found an update, unless in dev mode.
+    update_now_shown: bool,
     ytdlp_updating: bool,
     ytdlp_result: SharedString,
     shutting_down: bool,
@@ -111,7 +119,12 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn new(app: AppHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        app: AppHandle,
+        flow: Entity<UpdateFlow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let playlists = cx.new(|_| PlaylistRows::new(app.clone(), ROW_IDS));
         let (_, _, key_placeholder) = stream_key_state(false);
         let input = |placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
@@ -119,6 +132,7 @@ impl SettingsView {
         };
         Self {
             app,
+            flow,
             busy: Busy::default(),
             playlists,
             ingest: input("rtmp://live.twitch.tv/app", window, cx),
@@ -150,6 +164,9 @@ impl SettingsView {
             autostart: false,
             autostart_target: "-".into(),
             auto_open: true,
+            checking: false,
+            check_result: SharedString::default(),
+            update_now_shown: false,
             ytdlp_updating: false,
             ytdlp_result: SharedString::default(),
             shutting_down: false,
@@ -433,6 +450,39 @@ impl SettingsView {
                     this.auto_open = !on;
                     cx.notify();
                 }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// admin.js `handleCheckUpdate`. An update on offer also goes to the banner.
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if self.checking {
+            return;
+        }
+        self.checking = true;
+        self.check_result = SharedString::default();
+        cx.notify();
+        let client = self.app.client.clone();
+        cx.spawn(async move |this, cx| {
+            let answer = cx
+                .background_spawn(async move { client.update_check() })
+                .await;
+            this.update(cx, |this, cx| {
+                this.checking = false;
+                match answer {
+                    Ok(status) => {
+                        this.check_result = check_update_result(&status).into();
+                        this.update_now_shown = status.update_available && !status.is_dev_mode;
+                        if status.update_available {
+                            this.flow
+                                .update(cx, |flow, cx| flow.show_status(&status, cx));
+                        }
+                    }
+                    Err(err) => this.check_result = format!("Check failed: {err}").into(),
+                }
+                cx.notify();
             })
             .ok();
         })
@@ -802,7 +852,20 @@ impl SettingsView {
     }
 
     fn render_updates(&self, cx: &mut Context<Self>) -> Div {
-        let update = btn(Button::new("update-ytdlp-btn")
+        let check = btn(Button::new("check-update-btn")
+            .label(if self.checking {
+                "Checking..."
+            } else {
+                CHECK_LABEL
+            })
+            .disabled(self.checking))
+        .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx)));
+        let update_now = self.update_now_shown.then(|| {
+            update_button("settings-update-btn", "Update Now", true, cx).on_click(
+                cx.listener(|this, _, _, cx| this.flow.update(cx, |flow, cx| flow.apply(cx))),
+            )
+        });
+        let ytdlp = btn(Button::new("update-ytdlp-btn")
             .label(if self.ytdlp_updating {
                 "Updating..."
             } else {
@@ -810,10 +873,12 @@ impl SettingsView {
             })
             .disabled(self.ytdlp_updating))
         .on_click(cx.listener(|this, _, _, cx| this.update_ytdlp(cx)));
-        // Check for Updates, Update Now and their result line take the first action row, above
-        // yt-dlp's, as in index.html.
         section("Updates")
-            .child(action_row(update, self.ytdlp_result.clone()))
+            .child(action_row(
+                [check].into_iter().chain(update_now),
+                self.check_result.clone(),
+            ))
+            .child(action_row([ytdlp], self.ytdlp_result.clone()))
             .child(hint(YTDLP_HINT))
     }
 
@@ -828,7 +893,7 @@ impl SettingsView {
             .disabled(self.shutting_down))
         .on_click(cx.listener(|this, _, window, cx| this.ask_to_shut_down(window, cx)));
         section("Dashboard Server").child(action_row(
-            shutdown,
+            [shutdown],
             "Stops the dashboard server only. The stream keeps running.".into(),
         ))
     }
@@ -999,15 +1064,15 @@ fn toggle_row(label: &'static str, descs: &[SharedString], toggle: Switch) -> Di
         .child(reveal_on_focus(toggle))
 }
 
-/// admin.css `.action-row` with its `.result-line`.
-fn action_row(button: Button, result: SharedString) -> Div {
+/// admin.css `.action-row`: its buttons, then the `.result-line`.
+fn action_row(buttons: impl IntoIterator<Item = Button>, result: SharedString) -> Div {
     div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(px(12.))
         .mb(px(12.))
-        .child(reveal_on_focus(button))
+        .children(buttons.into_iter().map(reveal_on_focus))
         .when(!result.is_empty(), |row| {
             row.child(Label::new(result).text_size(px(13.)).text_color(rgb(MUTED)))
         })
@@ -2082,6 +2147,7 @@ mod tests {
             "set-btn".into(),
             "autostart-toggle".into(),
             "auto-open-toggle".into(),
+            "check-update-btn".into(),
             "update-ytdlp-btn".into(),
             "shutdown-btn".into(),
         ];
@@ -2104,6 +2170,132 @@ mod tests {
             "set-twitch-client-id".into(),
         ];
         walk(cx, window, &opened, "tab");
+    }
+
+    /// The Updates section's Check for Updates and Update Now.
+    mod updates {
+        use super::*;
+        use crate::test_support::{offered_json, update_json};
+
+        const NOTICE: &str = "This release bundles Node 22.24.0. Install the full ZIP to get it.";
+
+        fn answer_check(fake: &FakeApi, answer: Result<Value, ApiError>) {
+            fake.reply("POST", "/api/update/check", answer);
+        }
+
+        /// The banner button's label and whether it is disabled.
+        fn banner(cx: &mut TestAppContext, window: AnyWindowHandle) -> Option<(String, bool)> {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find("update-btn").map(|button| {
+                    (
+                        button.label().unwrap_or_default().to_string(),
+                        button.disabled() == Some(true),
+                    )
+                })
+            })
+            .unwrap()
+        }
+
+        #[gpui::test]
+        fn check_shows_up_to_date_or_the_new_version(cx: &mut TestAppContext) {
+            let (fake, window, _) = open_settings(cx, config_json());
+            fake.reply(
+                "POST",
+                "/api/update/apply",
+                Ok(json!({ "ok": true, "message": "Update started" })),
+            );
+            reveal(cx, window, "check-update-btn");
+            assert_eq!(
+                button(cx, window, "check-update-btn"),
+                (Some("Check for Updates".into()), false)
+            );
+            assert!(!present(cx, window, "settings-update-btn"));
+
+            // Up to date: no Update Now.
+            answer_check(&fake, Ok(update_json("idle")));
+            click(cx, window, "check-update-btn");
+            assert_eq!(
+                button(cx, window, "check-update-btn"),
+                (Some("Checking...".into()), true)
+            );
+            cx.run_until_parked();
+            assert!(shows(cx, window, "Up to date (v3.0.5)"));
+            assert_eq!(
+                button(cx, window, "check-update-btn"),
+                (Some("Check for Updates".into()), false)
+            );
+            assert!(!present(cx, window, "settings-update-btn"));
+            assert_eq!(banner(cx, window), None);
+
+            // A new version, with the Node notice: Update Now, and the banner shows it too.
+            let mut noted = offered_json("idle");
+            noted["nodeNotice"] = json!(NOTICE);
+            answer_check(&fake, Ok(noted));
+            click(cx, window, "check-update-btn");
+            assert!(!shows(cx, window, "Up to date (v3.0.5)"));
+            cx.run_until_parked();
+            assert!(shows(cx, window, &format!("v3.0.6 is available. {NOTICE}")));
+            assert_eq!(
+                button(cx, window, "settings-update-btn"),
+                (Some("Update Now".into()), false)
+            );
+            assert_eq!(banner(cx, window), Some(("Update Now".into(), false)));
+
+            // Dev mode: the version, but no Update Now; the banner says Dev Mode.
+            let mut dev = offered_json("idle");
+            dev["isDevMode"] = json!(true);
+            answer_check(&fake, Ok(dev));
+            click(cx, window, "check-update-btn");
+            cx.run_until_parked();
+            assert!(shows(cx, window, "v3.0.6 is available."));
+            assert!(!present(cx, window, "settings-update-btn"));
+            assert_eq!(banner(cx, window), Some(("Dev Mode".into(), true)));
+
+            // A failed check says why and leaves Update Now as it was.
+            answer_check(
+                &fake,
+                Err(ApiError::Server("GitHub API returned 403".into())),
+            );
+            click(cx, window, "check-update-btn");
+            cx.run_until_parked();
+            assert!(shows(cx, window, "Check failed: GitHub API returned 403"));
+            assert!(!present(cx, window, "settings-update-btn"));
+            assert_eq!(count(&fake, "POST", "/api/update/check"), 4);
+
+            // Settings' Update Now runs the banner's update, and only one at a time.
+            answer_check(&fake, Ok(offered_json("idle")));
+            click(cx, window, "check-update-btn");
+            cx.run_until_parked();
+            fake.reply("GET", "/api/update/status", Ok(offered_json("downloading")));
+            click(cx, window, "settings-update-btn");
+            assert_eq!(banner(cx, window), Some(("Starting...".into(), true)));
+            cx.run_until_parked();
+            assert_eq!(banner(cx, window), Some(("Downloading...".into(), true)));
+            click(cx, window, "settings-update-btn");
+            cx.run_until_parked();
+            assert_eq!(count(&fake, "POST", "/api/update/apply"), 1);
+        }
+
+        #[gpui::test]
+        fn the_tab_key_reaches_update_now_after_a_check(cx: &mut TestAppContext) {
+            let (fake, window, _) = open_settings(cx, config_json());
+            answer_check(&fake, Ok(offered_json("idle")));
+            click(cx, window, "check-update-btn");
+            cx.run_until_parked();
+            // A click focuses an input, never a button.
+            click(cx, window, "set-twitch-channel");
+
+            let stops: Vec<ElementId> = vec![
+                "set-btn".into(),
+                "autostart-toggle".into(),
+                "auto-open-toggle".into(),
+                "check-update-btn".into(),
+                "settings-update-btn".into(),
+                "update-ytdlp-btn".into(),
+            ];
+            walk(cx, window, &stops, "tab");
+        }
     }
 
     /// Presses `key` once per stop and checks that each gets the focus and is scrolled into view.
