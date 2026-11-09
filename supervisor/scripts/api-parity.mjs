@@ -2,6 +2,7 @@
 // against the Node backend's. The request script below is data: the Rust run replays it unchanged.
 //   node api-parity.mjs record --server node|rust --out FILE
 //   node api-parity.mjs compare A B        exit 0 when equal, else prints each differing request, exit 1
+// The compare skips the known differences in EXPECTED, each by name, and says which ones it skipped.
 // Nothing leaves the machine: a fake supervisor answers on 4417, a local catcher takes the Discord
 // webhook, and the config turns off every outbound check. The server runs against a temp root.
 // Node runs as an install does: the repo's src\ is copied to ROOT\app\src, so its logs and timeline
@@ -48,6 +49,9 @@ const FAKE_STATUS = {
   playlistCount: 5,
   tokenServer: { state: 'running', restarts: 0 },
 };
+/** The Rust control process replaces a supervisor that reports another version than its own, or none, as a
+ *  3.0 one does. Its fake reports the exe's version, which `/api/status` passes through. */
+const statusFor = (version) => (version ? { ...FAKE_STATUS, version } : FAKE_STATUS);
 /** The fake refuses this index, to cover the 502 path of control and switch. */
 const REFUSED_INDEX = 777;
 
@@ -197,26 +201,84 @@ export function canonical(value) {
 const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 const label = (r) => `${r.method} ${r.path}${r.token === false ? ' (no token)' : ''}${r.body === undefined || r.body === null ? '' : ` ${typeof r.body === 'string' ? r.body : JSON.stringify(r.body)}`}`;
 
-/** The differing requests as text lines; empty when the recordings agree. */
+const isValidKey = (r) => r.method === 'POST' && r.path === '/api/stream-key' && r.request?.key === KEY_PLACEHOLDER;
+const isConfig400 = (x, y) => x.method === 'POST' && x.path === '/api/config' && x.status === 400 && y.status === 400;
+/** "a.b: why; c: why" as its field paths, the text before each ': '. */
+const fieldPaths = (error) => (typeof error === 'string' ? error.split('; ').map((part) => part.split(': ')[0]) : error);
+function withoutSupervisorVersion(response) {
+  if (!response?.supervisor || typeof response.supervisor !== 'object') return response;
+  const { version: _version, ...supervisor } = response.supervisor;
+  return { ...response, supervisor };
+}
+
+/** The differences the port is meant to have, each with the ruling behind it. `request` skips a request and
+ *  the supervisor calls it caused; `response` maps both responses before they are compared. */
+export const EXPECTED = [
+  {
+    name: 'stream-key-protected-in-process',
+    why: 'Ruling 8: Node ran streamloop-supervisor.exe protect, which the temp root lacks (503); the Rust control process protects in-process (200) and asks the supervisor to reload',
+    request: isValidKey,
+  },
+  {
+    name: 'config-400-field-paths',
+    why: 'Ruling 28: a config validation 400 is compared by its field paths, not its wording',
+    response: (x, y) => (isConfig400(x, y) ? [{ error: fieldPaths(x.response?.error) }, { error: fieldPaths(y.response?.error) }] : null),
+  },
+  {
+    name: 'supervisor-version-echo',
+    why: "the Rust run's fake supervisor reports the exe's version for the version rule, and /api/status passes it through",
+    response: (x, y, a, b) => (x.method === 'GET' && x.path === '/api/status' && (a.fakeSupervisorVersion || b.fakeSupervisorVersion)
+      ? [withoutSupervisorVersion(x.response), withoutSupervisorVersion(y.response)]
+      : null),
+  },
+];
+
+/** The recording's supervisor calls without those of the skipped requests, where it says which request made them. */
+function supervisorCalls(recording, skipped) {
+  const drop = new Set();
+  recording.requests.forEach((r, i) => {
+    if (skipped.has(i) && Array.isArray(r.supervisor)) for (let k = r.supervisor[0]; k < r.supervisor[1]; k += 1) drop.add(k);
+  });
+  return recording.supervisorRequests.filter((_, k) => !drop.has(k));
+}
+
+/** The differing requests as text lines (empty when the recordings agree) and the named skips that applied. */
 export function diffRecordings(a, b) {
   const lines = [];
+  const applied = new Set();
+  const skipped = new Set();
   const n = Math.max(a.requests.length, b.requests.length);
   for (let i = 0; i < n; i += 1) {
     const x = a.requests[i];
     const y = b.requests[i];
     if (!x || !y) { lines.push(`#${i}: only in ${x ? 'A' : 'B'}: ${label(x ?? y)}`); continue; }
-    const fields = ['method', 'path', 'request', 'status', 'contentType', 'response'].filter((f) => !same(x[f], y[f]));
+    const skip = EXPECTED.find((e) => e.request && e.request(x) && e.request(y));
+    if (skip) {
+      if (!same(x, y)) applied.add(skip.name);
+      skipped.add(i);
+      continue;
+    }
+    let [rx, ry] = [x.response, y.response];
+    for (const e of EXPECTED.filter((e) => e.response)) {
+      const mapped = e.response({ ...x, response: rx }, { ...y, response: ry }, a, b);
+      if (!mapped) continue;
+      if (!same(rx, ry)) applied.add(e.name);
+      [rx, ry] = mapped;
+    }
+    const fields = ['method', 'path', 'request', 'status', 'contentType'].filter((f) => !same(x[f], y[f]));
+    if (!same(rx, ry)) fields.push('response');
     if (fields.length) lines.push(`#${i} ${label(x)}: differs in ${fields.join(', ')}`);
   }
-  const m = Math.max(a.supervisorRequests.length, b.supervisorRequests.length);
+  const [sa, sb] = [supervisorCalls(a, skipped), supervisorCalls(b, skipped)];
+  const m = Math.max(sa.length, sb.length);
   for (let i = 0; i < m; i += 1) {
-    const x = a.supervisorRequests[i];
-    const y = b.supervisorRequests[i];
+    const x = sa[i];
+    const y = sb[i];
     if (!x || !y) lines.push(`supervisor #${i}: only in ${x ? 'A' : 'B'}: ${JSON.stringify(x ?? y)}`);
     else if (!same(x, y)) lines.push(`supervisor #${i} ${x.method} ${x.path}: differs in ${['method', 'path', 'body'].filter((f) => !same(x[f], y[f])).join(', ')}`);
   }
   if (a.catcherRequests !== b.catcherRequests) lines.push(`Discord catcher: ${a.catcherRequests} requests in A, ${b.catcherRequests} in B`);
-  return lines;
+  return { lines, skipped: EXPECTED.filter((e) => applied.has(e.name)) };
 }
 
 
@@ -233,10 +295,11 @@ const readBody = (req) => new Promise((resolve) => {
 });
 const listen = (server, port) => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
 
-function startFakeSupervisor(received) {
+function startFakeSupervisor(received, version) {
+  const status = statusFor(version);
   const server = http.createServer(async (req, res) => {
-    const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
-    if (req.method === 'GET' && req.url === '/status') return send(200, FAKE_STATUS);
+    const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.method === 'GET' && req.url === '/status') return send(200, status);
     const text = await readBody(req);
     let body = null;
     try { body = JSON.parse(text); } catch { body = text; }
@@ -302,9 +365,13 @@ function launchServer(kind, root) {
     const tsx = join(REPO, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     return cp.spawn(process.execPath, [tsx, join(app, 'src', 'server', 'index.ts')], { cwd: app, env, windowsHide: true, stdio: 'ignore' });
   }
-  const exe = join(REPO, 'target', 'release', 'streamloop.exe');
-  if (!existsSync(exe)) throw new Error(`${exe} is missing: build it with cargo build --release`);
-  return cp.spawn(exe, ['--root', root], { cwd: join(root, 'app'), env, windowsHide: true, stdio: 'ignore' });
+  return cp.spawn(RUST_EXE, ['--root', root], { cwd: join(root, 'app'), env, windowsHide: true, stdio: 'ignore' });
+}
+
+const RUST_EXE = join(REPO, 'target', 'release', 'streamloop.exe');
+function rustVersion() {
+  if (!existsSync(RUST_EXE)) throw new Error(`${RUST_EXE} is missing: build it with cargo build --release`);
+  return cp.execFileSync(RUST_EXE, ['--version'], { encoding: 'utf8', windowsHide: true }).trim();
 }
 
 /** What the run has started; the exit hooks end all of it. */
@@ -346,7 +413,8 @@ async function record(kind, out) {
   const root = join(tmpdir(), 'streamloop-api-parity');
   const received = [];
   const catcherCount = { n: 0 };
-  const fake = startFakeSupervisor(received);
+  const fakeVersion = kind === 'rust' ? rustVersion() : null;
+  const fake = startFakeSupervisor(received, fakeVersion);
   const catcher = startCatcher(catcherCount);
   let child = null;
   live.servers = [fake, catcher];
@@ -369,15 +437,18 @@ async function record(kind, out) {
       try { ready = (await (await fetch(`${API}/status`)).json()).launcher === 'running'; } catch { /* retry */ }
       if (!ready) await sleep(500);
     }
-    if (!ready) throw new Error('the launcher never saw the fake supervisor');
+    if (!ready) throw new Error(`the launcher never saw the fake supervisor (sent to it: ${JSON.stringify(received)})`);
     // The log file is created by a worker a moment after start; /api/logs must see it every run.
     for (let i = 0; i < 20 && !readdirSync(join(root, 'app', 'logs')).some((f) => /^streamloop-.*\.log$/.test(f)); i += 1) await sleep(250);
 
     const requests = [];
     for (const step of REQUESTS) {
       if (step.pauseMs) { await sleep(step.pauseMs); continue; }
+      const before = received.length;
       const reply = await send(step);
       const entry = { method: step.method, path: step.path, request: step.body ?? null, status: reply.status, contentType: reply.contentType, response: normaliseResponse(step, reply.status, reply.contentType, reply.buffer) };
+      // The supervisor calls this request made, so a skipped request takes its calls with it.
+      entry.supervisor = [before, received.length];
       if (step.token === false) entry.token = false;
       if (step.contentType) entry.requestContentType = step.contentType;
       requests.push(entry);
@@ -385,6 +456,7 @@ async function record(kind, out) {
     // the shutdown was the last request: the server exits by itself
     await Promise.race([exited, sleep(10_000)]);
     const result = { server: kind, requests, supervisorRequests: received, catcherRequests: catcherCount.n };
+    if (fakeVersion) result.fakeSupervisorVersion = fakeVersion;
     mkdirSync(join(out, '..'), { recursive: true });
     writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
     return result;
@@ -404,7 +476,8 @@ function main() {
       .catch((e) => { console.error(e.message); process.exit(1); });
   } else if (cmd === 'compare' && args.length === 2) {
     const [a, b] = args.map((f) => JSON.parse(readFileSync(f, 'utf8')));
-    const lines = diffRecordings(a, b);
+    const { lines, skipped } = diffRecordings(a, b);
+    for (const e of skipped) console.log(`skipped by name: ${e.name} (${e.why})`);
     if (lines.length === 0) { console.log(`equal: ${a.requests.length} requests`); process.exit(0); }
     console.log(lines.join('\n'));
     process.exit(1);

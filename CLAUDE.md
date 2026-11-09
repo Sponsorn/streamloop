@@ -14,6 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 StreamLoop restreams a YouTube playlist to Twitch around the clock from one Windows box. This branch holds 3.0: a Node.js/TypeScript backend (`src/server/`) drives a Rust supervisor (`supervisor/`), which plays the playlist through ffmpeg and pushes RTMP itself. There is no mpv or OBS. Node owns the config, the dashboard, Discord alerts, the Twitch checks and the updater. 2.x (mpv + OBS) lives on the `2.x` branch.
 
+R1 is porting the Node backend to Rust: `streamloop.exe [--root DIR]` runs the control process (`crates/control/`) behind the same REST API. The release and `START.bat` still run Node until R1 switches them over, so the Node sections below still describe what ships.
+
 ## Setup
 
 ```bash
@@ -31,11 +33,14 @@ cp config.example.json config.json   # Then edit config.json with your settings
 
 Node's own logs and timeline still go to the repo's `logs/` in dev, since `logger.ts` and `index.ts` resolve them from the source folder. `supervisor/scripts/node-session.mjs` does all of this for the end-to-end runs.
 
+**Dev setup without Node (the Rust control process).** Build and make a dev root as in steps 1 and 2, copy `target\release\streamloop.exe` to `ROOT\streamloop.exe` (the exe its launcher runs), then run `target\release\streamloop.exe --root ROOT` from anywhere. It reads `ROOT\app\config.json` and writes its log and timeline to `ROOT\app\logs\`. A `--root` (or `STREAMLOOP_ROOT`) root is dev mode: the updater checks and never stages. At every start it removes the 3.0 leftovers, `ROOT\supervisor\streamloop-supervisor.exe` among them, so a Node run in the same root afterwards needs that copy made again.
+
 Test-only environment variables, never set by `config.json` or a release:
 - `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`). The flag belongs to the supervisor process, not to Node: a Node restarted without the variable attaches to the running supervisor, and `/debug/fault` stays open until that supervisor is restarted.
 - `STREAMLOOP_TEST_HOOKS=1`: adds `POST /api/test/exit-75`, the update restart without an update.
 - `STREAMLOOP_TEST_HLS_URL`: the Twitch read-back reads this HLS instead of the channel's, and the channel counts as live, so no request reaches Twitch and Helix credentials are not needed.
 - `STREAMLOOP_TEST_RELEASES=<file>`: the updater reads its release list from this JSON file (GitHub's shape) instead of GitHub, and takes asset URLs only from `http://127.0.0.1:<port>/`.
+- `STREAMLOOP_TEST_BREAK_AT_S=<seconds>` (control process only): a staged update lands at this encoder uptime instead of 47 h 45 min.
 
 ## Commands
 
@@ -47,8 +52,10 @@ npm run test:watch   # Run tests in watch mode (vitest)
 npm run build:release       # full ZIP in the install layout (node, app, supervisor, ffmpeg, yt-dlp, pot, data, START.bat), plus components.json
 npm run build:release:slim  # update ZIP: app + START.bat only (streamloop-vX.Y.Z-update.zip)
 node build/verify-release.mjs <zip>   # check a ZIP against build/release-layout.js (both builds run it)
-cargo build --release       # at the repo root: target\release\streamloop.exe (supervisor, launch, protect and check modes)
+cargo build --release       # at the repo root: target\release\streamloop.exe (the control process, and the supervisor, launch, protect and check modes)
 cargo test --workspace      # all Rust tests: supervisor, common, control, the exe's CLI
+node supervisor/scripts/api-parity.mjs record --server rust --out FILE   # the dashboard's requests against target\release\streamloop.exe and a fake supervisor (ports 4417, 7654, 8791 free)
+node supervisor/scripts/api-parity.mjs compare supervisor/scripts/api-parity/node.json FILE   # exit 0 when the answers match Node's, apart from the differences it names
 node supervisor/scripts/node-session.mjs A|B|C|treekill   # end-to-end runs of Node + supervisor against local MediaMTX
 node supervisor/scripts/install-session.mjs              # install, update and switch-back proof from the dist/ ZIPs
 node supervisor/scripts/update-session.mjs all|<run>[,<run>...]|build   # full update, rollback and bootstrap proof (runs: full-on, full-off, app-only, locked, broken, bootstrap, two-windows) on N and N+1 (the dist version's patch + 1 and + 2) repacked from the dist/ ZIPs; build only repacks them
@@ -111,6 +118,8 @@ Back to 3.0: close 2.x and OBS, start 3.0's `START.bat`, press Start. Until Star
 
 **Configuration hot-reload:** `POST /api/config` saves `config.json`, rebuilds Discord and the Twitch checks, and asks the supervisor to `POST /reload`. The reply says when a change (ingest, key, encoder, freeze or silence duration) needs a supervisor restart.
 
+**Control process** (`crates/control/`, R1): one Rust module per Node module (`app` for `index.ts`, `api/` for `api.ts`, `launcher`, `events`, `timeline`, `discord`, `twitch`, `readback`, `playlists`, `setup_check`, `supervisor_client`, `updater` and `landing`, `ytdlp_update`, `logging`), with the same behaviour, timings and texts. `app.rs` keeps `index.ts`'s start order and exit codes: 0 for Ctrl+C, a closed console window or `/api/shutdown`, 1 with no install root or a config that does not load, 2 when the port is taken, 64 for an unknown argument, 75 after a landed update, a rollback or the test hook. Its tests live in `crates/control/tests/`, one file per module; `tests/app.rs` drives the wired process on a real socket with fakes behind it. `ARCHITECTURE.md` (Control mode (R1)) has the start order, the 3.0 leftovers it removes and the exe update.
+
 ## Testing
 
 Tests live in `src/server/__tests__/` using Vitest. Tests use a `.test-tmp` directory for file fixtures. All server modules use dependency injection for mock-friendly testing.
@@ -172,5 +181,7 @@ While a full update runs (updater status `downloading`, `extracting` or `ready`,
 **Dev mode:** When the `node/` sibling directory doesn't exist (i.e., running via `npm start`), the updater operates in check-only mode — it can detect available updates but won't download or apply them.
 
 **Config options:** `autoUpdateCheck` (boolean, default true) and `updateCheckIntervalMs` (number, default 21600000 = 6 hours).
+
+**Exe update (the R1 control process).** Everything above is Node's updater, which ships. The control process updates only `streamloop.exe`: a check stages `_update\streamloop.exe` (SHA-256 and `--version` checked), and the update lands at the planned break before Twitch's 48 h cut, once the stream has been off air for 5 min, at once when it was stopped, or on Update Now. A landing stops the supervisor, writes `_update\landed`, renames `streamloop.exe` to `streamloop.exe.old`, moves the staged exe in, starts the supervisor from the new exe unless the stream was held, and exits 75; the next start confirms it within 180 s or puts the old exe back and exits 75 again. There are no part swaps, no exit 76, no `components.json` and no update ZIP. `ARCHITECTURE.md` (Control mode (R1)) has the details.
 
 **Start the stream when StreamLoop starts:** `autoStartStream` (boolean, default true). When it is off, the first Node start after `START.bat` opens, and the first after a rollback, come up without launching the supervisor and the dashboard shows "Ready to stream. Press Start." (`START.bat` sets `STREAMLOOP_START`: `first`, `restart` for a crash restart or an app-only update, `update` for the first start after a part swap and for a crash restart during its check, `rollback` for the first start after a rollback; `data\waiting-for-start` carries a wait across a restart). A supervisor that is already running is attached, never stopped, and a crashed one is still relaunched; a dashboard Stop wins over everything.
