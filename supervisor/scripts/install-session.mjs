@@ -5,10 +5,12 @@
 //   install       the full ZIP's START.bat, first run, setup check, key, config, live; the key in no
 //                 install file; a second START.bat window exits 2 and changes nothing.
 //   update        N live; the first check stages N+1 and it lands at the planned break (encoder uptime
-//                 STREAMLOOP_TEST_BREAK_AT_S=300); then Update Now to N+2 on air; then, stopped from the
-//                 dashboard, N+3 lands without starting the stream and `streamloop.exe check` confirms it.
-//   rollback      N+1 whose supervisor mode exits at start: the new control process rolls back within 180 s,
-//                 and the next planned break leaves that version alone.
+//                 STREAMLOOP_TEST_BREAK_AT_S=300); then, with autoStartStream off, Update Now to N+2 on air;
+//                 then N+3 stopped from the dashboard and N+4 waiting for Start, each landing without starting
+//                 the stream and confirmed by `streamloop.exe check`. Changing routes are probed for 409
+//                 throughout, and must be answered so by the new control process while it confirms.
+//   rollback      N+1 whose supervisor mode exits at start: the new control process answers 409 while it
+//                 confirms, rolls back within 180 s, and the next planned break leaves that version alone.
 //   rollback-bat  N+1 whose control mode exits at start: START.bat puts N back, N replaces N+1's supervisor
 //                 (version rule), and the next planned break leaves that version alone.
 //   move          v3.0.5 from GitHub (checksum checked) live with a dummy key, Stop, window closed, the full
@@ -17,7 +19,7 @@
 //   faults        the stage 5 gate's fault checks through POST /debug/fault (STREAMLOOP_DEBUG_FAULTS=1).
 //   all           every run above in that order. build: only the test builds.
 // N is dist\'s build (package.json's version); `npm run build:release` first, and again after a change to
-// the crates, START.bat or the dashboard. N+1, N+2 and N+3 are 3.1.1, 3.1.2 and 3.1.3, and the two broken
+// the crates, START.bat or the dashboard. N+1 to N+4 are 3.1.1 to 3.1.4, and the two broken
 // N+1 builds are 3.1.1 with the test-supervisor-fails or test-control-fails feature, each built by cargo
 // into its own target\install-session\<id>\. The release list (STREAMLOOP_TEST_RELEASES) carries each
 // release's ZIP, exe, exe checksum and node-version.txt; the exe and its checksum are served on
@@ -34,7 +36,7 @@ import http from 'node:http';
 import { dailyFiles, EVENTS, PLAYLIST, redact, exeMode } from './lib.mjs';
 import {
   spawn, run, KEY, INGEST, READ_URL, SUP, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, nodeStatus, supStatus, waitLive,
-  packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, grepTree, extract, extractOver, quietConfig, portOpen,
+  packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
   allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders, useApiPort,
 } from './install-kit.mjs';
 
@@ -62,6 +64,7 @@ const STAGED = join(UPDATE_DIR, 'streamloop.exe');
 const LANDED = join(UPDATE_DIR, 'landed');
 const ROLLED_BACK = join(DATA, 'update-rolled-back');
 const STATE_FILE = join(DATA, 'update-state.json');
+const WAITING = join(DATA, 'waiting-for-start');
 const ASSET_PORT = 8791;
 const CATCHER_PORT = 8790;
 const WEBHOOK = `http://127.0.0.1:${CATCHER_PORT}/webhook/install`;
@@ -74,13 +77,14 @@ const V305_URL = `https://github.com/Sponsorn/streamloop/releases/download/${V30
 const LEFTOVERS_30 = ['app/src', 'app/node_modules', 'app/package.json', 'app/package-lock.json', 'app/tsconfig.json', 'app/node-version.txt',
   'supervisor/streamloop-supervisor.exe', '_update_tmp', '_update_old', 'START.bat.new', '_apply_launcher.bat'];
 
-/** The test builds: N+1, N+2, N+3 and the two broken N+1s. */
+/** The test builds: N+1 to N+4 and the two broken N+1s. */
 const VARIANTS = {
   n1: { version: '3.1.1' },
   'n1-supervisor-fails': { version: '3.1.1', feature: 'test-supervisor-fails' },
   'n1-control-fails': { version: '3.1.1', feature: 'test-control-fails' },
   n2: { version: '3.1.2' },
   n3: { version: '3.1.3' },
+  n4: { version: '3.1.4' },
 };
 const exeName = (v) => `streamloop-v${v}.exe`;
 const RUNS = { install: runInstall, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, faults: runFaults };
@@ -271,6 +275,11 @@ async function snapshot() {
     files: fileFlags(), config: configFacts(), stream: (await nodeStatus())?.stream?.state ?? null,
   };
 }
+/** SHA-256 of the exe, the config and `_update\` (null when absent): what a second window must not change. */
+function installFiles() {
+  const tree = (p) => (existsSync(p) ? hashTree(p).sha256 : null);
+  return { exe: sha256File(EXE), config: existsSync(CONFIG) ? sha256File(CONFIG) : null, update: tree(UPDATE_DIR) };
+}
 const fileFlags = () => ({ old: existsSync(EXE_OLD), bad: existsSync(EXE_BAD), update: existsSync(UPDATE_DIR), staged: existsSync(STAGED), landed: existsSync(LANDED), rolledBack: existsSync(ROLLED_BACK) });
 
 // watching an update: every loop records a value only when it changes, with the time
@@ -320,45 +329,59 @@ function when(w, kind, from, pred) {
 const uptimeBefore = (w, t) => w.uptimes.filter((u) => u.t <= t).at(-1)?.s ?? null;
 const rel = (t, t0) => (t === null || t0 === null ? null : t - t0);
 
-// the 409 probe: POST /api/player/jump with no index answers 409 while an update runs, else 400
+// the 409 probe: two changing routes, each with a body it refuses, so they answer 409 while an update runs
+// and 400 otherwise, and change nothing either way
 
+const PROBE_ROUTES = [
+  { path: '/player/jump', body: '{}' },
+  { path: '/config', body: '{"ytdlCookiesFromBrowser":0}' },
+];
 function startProbe() {
   const p = { rows: [], stop: false };
   let tok = '';
-  const post = () => fetch(`${apiBase}/player/jump`, { method: 'POST', headers: { 'x-api-token': tok, 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(2000) });
+  let version = null;
+  const post = (route) => fetch(`${apiBase}${route.path}`, { method: 'POST', headers: { 'x-api-token': tok, 'content-type': 'application/json' }, body: route.body, signal: AbortSignal.timeout(2000) });
   p.done = (async () => {
-    while (!p.stop) {
+    for (let i = 0; !p.stop; i += 1) {
+      const route = PROBE_ROUTES[i % PROBE_ROUTES.length];
       const before = readJson(STATE_FILE)?.result ?? null;
       let status = 0;
       try {
-        let res = await post();
+        let res = await post(route);
+        // a new token means a new control process: note which version it is
         if (res.status === 403) {
           await res.text();
           tok = (await getJson('/token', 2000))?.token ?? '';
-          res = await post();
+          version = (await getJson('/update/status', 2000))?.currentVersion ?? null;
+          res = await post(route);
         }
         status = res.status;
         await res.text();
       } catch { status = 0; }
       const after = readJson(STATE_FILE)?.result ?? null;
-      p.rows.push({ t: Date.now(), status, before, after });
-      await sleep(500);
+      p.rows.push({ t: Date.now(), route: route.path, status, version, before, after });
+      await sleep(250);
     }
   })();
   return p;
 }
-async function endProbe(p) {
+/** `by` names the version whose control process must have answered at least one probe while the update ran. */
+async function endProbe(p, { by = null } = {}) {
   if (!p) return null;
   p.stop = true;
   await p.done;
   const answered = p.rows.filter((x) => x.status !== 0);
   const during = answered.filter((x) => x.before === 'running' && x.after === 'running');
   const outside = answered.filter((x) => x.before !== 'running' && x.after !== 'running');
+  const count = (rows) => Object.fromEntries(PROBE_ROUTES.map((r) => [r.path, rows.filter((x) => x.route === r.path).length]));
+  const byVersion = {};
+  for (const x of during) byVersion[x.version] = (byVersion[x.version] ?? 0) + 1;
   return {
-    probes: p.rows.length, during: during.length, during409: during.filter((x) => x.status === 409).length,
+    probes: p.rows.length, during: during.length, during409: during.filter((x) => x.status === 409).length, duringByRoute: count(during), duringByVersion: byVersion,
     outside: outside.length, outside400: outside.filter((x) => x.status === 400).length,
-    statuses: [...new Set(answered.map((x) => `${x.status}`))],
-    ok: during.length > 0 && during.every((x) => x.status === 409) && outside.every((x) => x.status === 400),
+    statuses: [...new Set(answered.map((x) => `${x.route} ${x.status}`))],
+    ok: during.length > 0 && during.every((x) => x.status === 409) && outside.every((x) => x.status === 400)
+      && PROBE_ROUTES.every((r) => during.some((x) => x.route === r.path)) && (by === null || (byVersion[by] ?? 0) > 0),
   };
 }
 
@@ -447,6 +470,7 @@ async function runInstall(r) {
   i.after = { cores: procs.filter(isCore).map(brief), controls: procs.filter(isControl).map(brief), supervisorVersion: s?.version ?? null, currentVersion: u?.currentVersion ?? null, isDevMode: u?.isDevMode ?? null, launched, config: configFacts() };
 
   // A second window finds the port taken, says so and stays down; the stream is untouched.
+  const filesBefore = installFiles();
   const t = Date.now();
   const coresBefore = (await cores()).map((p) => p.ProcessId);
   secondBat = startBat(ROOT, 'second');
@@ -454,6 +478,8 @@ async function runInstall(r) {
   await sleep(5000);
   const second = { endedMs: ended.ms, exitCode: secondBat.exitCode, console: (readText(join(runOut, 'console-second.log')) ?? '').trim().split(/\r?\n/).slice(-4),
     coresAfter: (await cores()).map((p) => p.ProcessId), controlsAfter: (await underS()).filter(isControl).length, gap: gapStats(t - 5000, Date.now()) };
+  second.filesBefore = filesBefore;
+  second.filesAfter = installFiles();
   secondBat = null;
   i.secondWindow = second;
   // Synchronous over thousands of files, so after the reader's windows: a blocked event loop reads as a gap.
@@ -472,13 +498,15 @@ async function runInstall(r) {
     versionIsN: i.after.supervisorVersion === VERSION && i.after.currentVersion === VERSION,
     rootFromTheExeFolder: i.after.isDevMode === false,
     keyStoredOnlyProtected: i.after.config.keySet && !(readText(CONFIG) ?? '').includes(KEY),
-    keyInNoInstallFile: i.keyGrep.hits.length === 0,
-    secondWindowExits2: second.exitCode === 2 && second.console.some((l) => l.includes('Another StreamLoop is already running. Close it and start this one again.')),
-    secondWindowChangesNothing: coresBefore.length === 1 && JSON.stringify(second.coresAfter) === JSON.stringify(coresBefore) && second.controlsAfter === 1 && noDrop(second.gap),
+    keyInNoInstallFile: i.keyGrep.files > 0 && i.keyGrep.hits.length === 0,
+    secondWindowExits2: second.exitCode === 2 && second.console.some((l) => l.includes('Another StreamLoop is already running. Close it and start this one again.'))
+      && second.console.some((l) => l.includes(`Port ${API_PORT} is in use. Is another StreamLoop running? Close it and start this one again.`)),
+    secondWindowChangesNothing: coresBefore.length === 1 && JSON.stringify(second.coresAfter) === JSON.stringify(coresBefore) && second.controlsAfter === 1 && noDrop(second.gap)
+      && JSON.stringify(second.filesAfter) === JSON.stringify(second.filesBefore),
   };
 }
 
-/** N+1 at the planned break, N+2 by Update Now, then N+3 while stopped from the dashboard. */
+/** N+1 at the planned break, N+2 by Update Now, N+3 while stopped from the dashboard, N+4 while waiting for Start. */
 async function runUpdate(r) {
   const releases = (ids) => writeReleases('update', ids);
   const env = { STREAMLOOP_TEST_RELEASES: releases(['n1']), STREAMLOOP_TEST_BREAK_AT_S: String(BREAK_AT_S) };
@@ -512,18 +540,22 @@ async function runUpdate(r) {
     await sleep(10_000);
     return null;
   }, 120_000, 0);
+  // autoStartStream off: an on-air landing still relaunches the supervisor.
+  const autoOff = await api('POST', '/config', { autoStartStream: false });
   const before3 = await snapshot();
   const probe3 = startProbe();
   const tApply = Date.now();
   const apply = await api('POST', '/update/apply');
   const n = await onAirLanding(r, w, probe3, '3.1.2', 'update-now', before3);
-  r.updateNow = { check: checked.value, apply: { status: apply.status, body: apply.json }, applyToLandingMs: null, before: before3, ...n };
+  r.updateNow = { check: checked.value, autoStartStreamOff: { status: autoOff.status, inConfig: readJson(CONFIG)?.autoStartStream ?? null }, apply: { status: apply.status, body: apply.json }, applyToLandingMs: null, before: before3, ...n };
   const landingAt = w.rows.find((x) => x.t >= tApply && x.kind === 'state' && x.v?.to === '3.1.2' && x.v.result === 'running' && x.v.step !== 'download')?.t ?? null;
   r.updateNow.applyToLandingMs = rel(landingAt, tApply);
   r.updateNow.checks = {
     offered: checked.value !== null,
+    autoStartStreamOff: autoOff.status === 200 && r.updateNow.autoStartStreamOff.inConfig === false,
     applyAnswered: apply.status === 200 && apply.json?.ok === true,
     landedAtOnceNotAtTheBreak: landingAt !== null && landingAt - tApply < 30_000 && before3.uptimeS !== null && before3.uptimeS < BREAK_AT_S,
+    relaunchedWithAutoStartOff: n.after.supervisorVersion === '3.1.2' && n.checks.liveAgainSteady,
     ...n.checks,
   };
 
@@ -534,46 +566,55 @@ async function runUpdate(r) {
   const wait2 = tConfirmed2 + 30_000 + 62_000 - Date.now();
   if (wait2 > 0) await sleep(wait2);
   releases(['n1', 'n2', 'n3']);
-  const tCheck = Date.now();
-  const offered = await waitFor('the check to offer 3.1.3', async () => {
-    const c = (await api('POST', '/update/check')).json;
-    if (c?.latestVersion === '3.1.3' && c.updateAvailable) return c;
-    await sleep(10_000);
-    return null;
-  }, 120_000, 0);
-  // While it lands and is checked, no supervisor may run; the check runs as `streamloop.exe check`.
-  const samples = [];
-  let sampling = true;
-  const sampler = (async () => {
-    while (sampling && Date.now() - tCheck < 600_000) {
-      const procs = await underS();
-      samples.push({ t: Date.now(), cores: procs.filter(isCore).length, checks: procs.filter(isCheck).length, controls: procs.filter(isControl).length });
-    }
-  })();
-  const L = await followLanding(w, '3.1.3', { from: tCheck, onAir: false, label: 'held' });
-  await sleep(30_000);
-  sampling = false;
-  await sampler;
-  const heldAfter = await snapshot();
-  const tl = (await timeline()).map((e) => e.message);
-  r.held = { stop: stop.status, supervisorExitMs: down.ms, offered: offered.value?.latestVersion ?? null, landing: { tStartFromCheckMs: rel(L.tStart, tCheck), resultMs: rel(L.tResult, L.tStart), result: L.result },
-    samples: { n: samples.length, maxCores: Math.max(...samples.map((x) => x.cores)), checkSeen: samples.some((x) => x.checks > 0) }, after: heldAfter };
-  const tStart = Date.now();
-  const start = await api('POST', '/stream/start');
-  const liveAgain = await waitLive('live on 3.1.3 after Start', 180_000);
-  const s3 = await supStatus();
-  r.held.start = { status: start.status, liveMs: liveAgain.ms, supervisorVersion: s3?.version ?? null, startToLiveMs: Date.now() - tStart };
+  let offered = null;
+  const h = await heldLanding(w, '3.1.3', 'stopped', async () => {
+    const tCheck = Date.now();
+    offered = await waitFor('the check to offer 3.1.3', async () => {
+      const c = (await api('POST', '/update/check')).json;
+      if (c?.latestVersion === '3.1.3' && c.updateAvailable) return c;
+      await sleep(10_000);
+      return null;
+    }, 120_000, 0);
+    return tCheck;
+  });
+  r.held = { stop: stop.status, supervisorExitMs: down.ms, offered: offered?.value?.latestVersion ?? null, ...h.summary };
   r.held.checks = {
     stopped: stop.status === 200 && down.value === true,
-    offered: offered.value !== null,
-    landedSoonAfterTheCheck: L.tStart !== null && L.tStart - tCheck < 30_000,
-    confirmedByCheck: L.result?.result === 'ok' && L.result?.to === '3.1.3' && r.held.samples.checkSeen,
-    noSupervisorWhileHeld: r.held.samples.maxCores === 0,
-    stillStoppedAfter: heldAfter.stream === 'stopped' && heldAfter.cores.length === 0,
-    exeIsN3: heldAfter.exeVersion === '3.1.3' && heldAfter.currentVersion === '3.1.3',
-    updateFilesGone: !heldAfter.files.old && !heldAfter.files.update && !heldAfter.files.landed,
-    timelineSaysUpdated: tl.includes('Updated to StreamLoop 3.1.3.'),
-    startTakesItLiveOnN3: start.status === 200 && liveAgain.value !== null && s3?.version === '3.1.3',
+    offered: offered?.value != null,
+    landedSoonAfterTheCheck: h.L.tStart !== null && h.L.tStart - h.tFrom < 30_000,
+    ...h.checks,
+    stillStoppedAfter: h.after.stream === 'stopped' && h.after.reason === 'The stream was stopped from the dashboard. It stays stopped, even after a restart, until you press Start.',
+  };
+
+  // Waiting for Start (autoStartStream off and a fresh start with no supervisor): N+4 lands by Update Now.
+  const wt = r.waiting = {};
+  wt.shutdown = (await api('POST', '/shutdown')).status;
+  await waitFor('the control process to exit', async () => (!(await getJson('/token', 1000)) ? true : null), 30_000, 500);
+  await waitFor('START.bat to end', async () => (bat.exitCode !== null ? true : null), 20_000, 500);
+  wt.batExitCode = bat.exitCode;
+  try { await fetch(`${SUP}/shutdown`, { method: 'POST', signal: AbortSignal.timeout(5000) }); } catch { /* it went away */ }
+  wt.supervisorGoneMs = (await waitFor('the supervisor to exit', async () => ((await cores()).length === 0 ? true : null), 60_000, 500)).ms;
+  bat = startBat(ROOT, 'update-waiting', env);
+  await nodeUp('3.1.3 waiting for Start');
+  await sleep(10_000);
+  const st0 = await nodeStatus();
+  wt.before = { stream: st0?.stream ?? null, launcher: st0?.launcher ?? null, marker: existsSync(WAITING), cores: (await cores()).length };
+  releases(['n1', 'n2', 'n3', 'n4']);
+  wt.staged = await waitStaged('n4', 120_000);
+  let applyW = null;
+  const hw = await heldLanding(w, '3.1.4', 'waiting', async () => {
+    const t = Date.now();
+    applyW = await api('POST', '/update/apply');
+    return t;
+  });
+  Object.assign(wt, { apply: applyW && { status: applyW.status, body: applyW.json } }, hw.summary);
+  wt.checks = {
+    waitingBeforeTheLanding: wt.before.stream?.state === 'stopped' && wt.before.stream?.reason === 'Ready to stream. Press Start.' && wt.before.launcher === 'ready' && wt.before.cores === 0,
+    stagedN4: wt.staged.stagedSha256Matches,
+    applyAnswered: applyW?.status === 200 && applyW.json?.ok === true,
+    landedAtOnce: hw.L.tStart !== null && hw.L.tStart - hw.tFrom < 30_000,
+    ...hw.checks,
+    stillWaitingAfter: hw.after.stream === 'stopped' && hw.after.reason === 'Ready to stream. Press Start.' && hw.after.launcher === 'ready',
   };
   await endWatch(w);
 
@@ -581,13 +622,62 @@ async function runUpdate(r) {
     breakGapS: r.break.gap.maxWallGapMs / 1000, breakReconnects: r.break.gap.readerReconnects, breakUptimeAtLandingS: r.break.times.uptimeAtLandingS,
     breakNewVersionLiveS: (r.break.times.newVersionLiveMs ?? NaN) / 1000, breakConfirmedS: (r.break.times.resultMs ?? NaN) / 1000,
     updateNowGapS: r.updateNow.gap.maxWallGapMs / 1000, updateNowReconnects: r.updateNow.gap.readerReconnects, updateNowApplyToLandingS: (r.updateNow.applyToLandingMs ?? NaN) / 1000,
-    heldLandingToConfirmedS: (r.held.landing.resultMs ?? NaN) / 1000,
+    stoppedLandingToConfirmedS: (r.held.landing.resultMs ?? NaN) / 1000, waitingLandingToConfirmedS: (r.waiting.landing.resultMs ?? NaN) / 1000,
+    probes409: { break: r.break.probe.duringByVersion, updateNow: r.updateNow.probe.duringByVersion, stopped: r.held.probe.duringByVersion, waiting: r.waiting.probe.duringByVersion },
   };
   r.checks = {
     ...Object.fromEntries(Object.entries(r.break.checks).map(([k, v]) => [`break.${k}`, v])),
     ...Object.fromEntries(Object.entries(r.updateNow.checks).map(([k, v]) => [`updateNow.${k}`, v])),
-    ...Object.fromEntries(Object.entries(r.held.checks).map(([k, v]) => [`held.${k}`, v])),
+    ...Object.fromEntries(Object.entries(r.held.checks).map(([k, v]) => [`stopped.${k}`, v])),
+    ...Object.fromEntries(Object.entries(r.waiting.checks).map(([k, v]) => [`waiting.${k}`, v])),
   };
+}
+
+/** A landing that starts nothing (stopped from the dashboard, or waiting for Start). `land` starts
+ *  it and returns the time to count from. No supervisor may run, `streamloop.exe check` confirms it, and the new
+ *  control process answers changing routes with 409 while it does; then Start takes it live. */
+async function heldLanding(w, to, label, land) {
+  const samples = [];
+  let sampling = true;
+  const t0 = Date.now();
+  const sampler = (async () => {
+    while (sampling && Date.now() - t0 < 600_000) {
+      const procs = await underS();
+      samples.push({ t: Date.now(), cores: procs.filter(isCore).length, checks: procs.filter(isCheck).length, controls: procs.filter(isControl).length });
+    }
+  })();
+  const probe = startProbe();
+  const tFrom = await land();
+  const L = await followLanding(w, to, { from: tFrom, onAir: false, label });
+  await sleep(30_000);
+  sampling = false;
+  await sampler;
+  const p = await endProbe(probe, { by: to });
+  const after = await snapshot();
+  const st = await nodeStatus();
+  after.reason = st?.stream?.reason ?? null;
+  after.launcher = st?.launcher ?? null;
+  const tl = (await timeline()).map((e) => e.message);
+  const tStart = Date.now();
+  const start = await api('POST', '/stream/start');
+  const liveAgain = await waitLive(`live on ${to} after Start (${label})`, 180_000);
+  const s = await supStatus();
+  const summary = {
+    landing: { fromMs: rel(L.tStart, tFrom), resultMs: rel(L.tResult, L.tStart), result: L.result },
+    samples: { n: samples.length, maxCores: Math.max(...samples.map((x) => x.cores)), checkSeen: samples.some((x) => x.checks > 0) },
+    probe: p, after, start: { status: start.status, liveMs: liveAgain.ms, supervisorVersion: s?.version ?? null, startToLiveMs: Date.now() - tStart },
+  };
+  const checks = {
+    confirmedByCheck: L.result?.result === 'ok' && L.result?.to === to && summary.samples.checkSeen,
+    noSupervisorWhileHeld: summary.samples.maxCores === 0 && after.cores.length === 0,
+    changingRoutes409WhileTheNewControlProcessConfirms: p.ok,
+    exeIsNew: after.exeVersion === to && after.currentVersion === to,
+    updateFilesGone: !after.files.old && !after.files.update && !after.files.landed,
+    timelineSaysUpdated: tl.includes(`Updated to StreamLoop ${to}.`),
+    startTakesItLive: start.status === 200 && liveAgain.value !== null && s?.version === to,
+  };
+  note(`${label}: landing of ${to}`, { ...summary, checks });
+  return { tFrom, L, after, summary, checks };
 }
 
 /** After a rollback: N stages the version again, and the planned break comes and goes without landing it. */
@@ -622,6 +712,8 @@ async function runRollback(r) {
   r.watch = w;
   const staged = await waitStaged('n1-supervisor-fails');
   const before = await snapshot();
+  // through the landing and the 180 s that 3.1.1's control process confirms
+  const probe = startProbe();
   const L = await followLanding(w, '3.1.1', { label: 'rollback' });
   const tOldGone = when(w, 'control', L.tStart, (v) => v === null);
   const tN1 = tOldGone === null ? null : when(w, 'control', tOldGone, (v) => v?.current === '3.1.1');
@@ -630,20 +722,24 @@ async function runRollback(r) {
   const back = await waitFor(`${VERSION} on air again`, async () => when(w, 'sup', L.tResult ?? L.tStart, (v) => v?.version === VERSION && v.alive === true), 180_000, 500);
   const live = await waitLive(`live on ${VERSION} after the rollback`, 180_000);
   await sleep(20_000);
+  const p = await endProbe(probe, { by: '3.1.1' });
   const after = await snapshot();
   const rolled = readJson(ROLLED_BACK);
+  const bad = existsSync(EXE_BAD) ? sha256File(EXE_BAD) : null;
   const tl = (await timeline()).map((e) => e.message);
   const criticals = criticalsSince(L.tStart - 10_000);
   const text = `The update to 3.1.1 did not come up, so StreamLoop went back to ${VERSION}.`;
   r.rollback = {
     staged, before, landing: { uptimeAtLandingS: L.uptimeAtStart, n1ControlMs: rel(tN1, L.tStart), swapBackAfterN1ControlMs: rel(tSwapBack, tN1), rolledBackMs: rel(L.tResult, L.tStart),
       rolledBackAfterN1ControlMs: rel(L.tResult, tN1), liveOnNMs: rel(back.value, L.tStart), result: L.result },
-    after, rolledBack: rolled, criticals, timeline: tl.slice(-12), gap: gapStats(L.tStart - 5000, (back.value ?? Date.now()) + 15_000), steadyAfter: gapStats(Date.now() - 15_000, Date.now()),
+    after, rolledBack: rolled, badSha256: bad, criticals, timeline: tl.slice(-12), probe: p,
+    gap: gapStats(L.tStart - 5000, (back.value ?? Date.now()) + 15_000), steadyAfter: gapStats(Date.now() - 15_000, Date.now()),
   };
   note('rollback by the control process', r.rollback);
   r.nextBreak = await nextBreakLeavesItAlone('n1-supervisor-fails', back.value ?? Date.now());
   await endWatch(w);
-  r.figures = { rollbackS: (r.rollback.landing.liveOnNMs ?? NaN) / 1000, swapBackAfterN1ControlS: (r.rollback.landing.swapBackAfterN1ControlMs ?? NaN) / 1000, offAirS: r.rollback.gap.maxWallGapMs / 1000 };
+  r.figures = { rollbackS: (r.rollback.landing.liveOnNMs ?? NaN) / 1000, swapBackAfterN1ControlS: (r.rollback.landing.swapBackAfterN1ControlMs ?? NaN) / 1000, offAirS: r.rollback.gap.maxWallGapMs / 1000,
+    probes409: p.duringByVersion };
   r.checks = {
     staged: staged.stagedSha256Matches,
     landedAtTheBreak: L.uptimeAtStart !== null && L.uptimeAtStart >= BREAK_AT_S && L.uptimeAtStart < BREAK_AT_S + 30,
@@ -653,6 +749,8 @@ async function runRollback(r) {
     exeIsNAgain: after.exeVersion === VERSION && after.currentVersion === VERSION,
     streamingOnN: live.value !== null && after.supervisorVersion === VERSION && after.cores.length === 1 && noDrop(r.rollback.steadyAfter),
     rolledBackNamesN1: rolled?.to === '3.1.1' && rolled?.from === VERSION,
+    badIsTheFailingBuild: bad === BUILT['n1-supervisor-fails'].sha256,
+    changingRoutes409WhileN1Confirms: p.ok,
     oneCritical: criticals.length === 1 && criticals[0] === `**CRITICAL:** ${text}`,
     timelineSaysWhy: tl.includes(text),
     updateFilesGone: !after.files.old && !after.files.landed,
@@ -854,7 +952,7 @@ async function runMove(r) {
     v305WasLive: b.before.version === '3.0.5' && b.before.cores.length === 1,
     v305SupervisorKeptStreaming: oldPids.length === 1 && b.whileClosed.state === 'playing' && b.whileClosed.alive === true,
     // tar skips what the running supervisor's tools hold; streamloop.exe, START.bat and app\ are new files
-    extractLeftOnlyHeldToolFiles: b.extract.status === 0 || (b.heldFiles.length > 0 && b.heldFiles.every((f) => /^streamloop\/(node|ffmpeg|yt-dlp|pot)\//.test(f.entry))),
+    extractLeftOnlyHeldToolFiles: b.extract.status === 0 || (b.heldFiles.length > 0 && b.heldFiles.every((f) => /^streamloop\/(node|ffmpeg|yt-dlp|pot)\//.test(f.entry) && f.sameAsZip)),
     replacedByVersionRule: b.afterFirstStart.cores.length === 1 && !oldPids.includes(b.afterFirstStart.cores[0].pid) && b.afterFirstStart.supervisorVersion === VERSION
       && b.timeline.includes(`Restarting the supervisor: it runs an unknown version, this is ${VERSION}.`),
     streamBack: live2.value !== null && back.value !== null,
@@ -1128,7 +1226,8 @@ async function endInstall(r, part = null, fast = false) {
   try { rmSync(S, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 }); } catch (err) { c.removeError = String(err); }
   c.removed = !existsSync(S);
   c.stillRunning = (await underS()).map((p) => `${p.Name} ${p.ProcessId}`);
-  c.ok = c.removed && c.stillRunning.length === 0 && c.keyGrep.hits.length === 0;
+  // a grep that read nothing would pass on a folder that was already gone
+  c.ok = c.removed && c.stillRunning.length === 0 && c.keyGrep.installFiles > 0 && c.keyGrep.hits.length === 0;
   (r.cleanups ??= []).push({ part, ...c });
   note('cleanup', { part, ...c });
   return c;
@@ -1183,16 +1282,19 @@ async function runOne(name) {
 
 async function portHolder(port) {
   const r = await run('powershell', ['-NoProfile', '-Command',
-    `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" | Select-Object ProcessId,Name,ExecutablePath | ConvertTo-Json -Compress }`],
+    `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" | Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress }`],
     { encoding: 'utf8' });
   try { return JSON.parse(r.stdout); } catch { return { raw: r.stdout.trim() }; }
 }
-/** The install's own ports; held by something else, a run would drive or stop another session's StreamLoop. */
+/** The install's own ports; held by something else, a run would drive or stop another session's StreamLoop, or its
+ *  supervisor would use another session's token server. */
 async function portsTaken() {
   const taken = [];
-  for (const port of [API_PORT, 4417, 4418]) if (await portOpen(port)) taken.push({ port, holder: await portHolder(port) });
+  for (const port of [API_PORT, 4416, 4417, 4418]) if (await portOpen(port)) taken.push({ port, holder: await portHolder(port) });
   return taken;
 }
+/** A control process, or a 3.0 install's Node: on another port it would still poll 4417 and attach to this run's supervisor. */
+const isBackend = (p) => p?.Name === 'streamloop.exe' || (p?.Name === 'node.exe' && /src[\\/]server[\\/]index\.ts/.test(p.CommandLine ?? ''));
 
 /** The source files newer than dist's ZIP, which was then built without them. */
 function distIsStale() {
@@ -1258,7 +1360,11 @@ if (arg === 'build') process.exit(0);
 const swept = await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
 if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
-// 7654 is shared with other sessions: another API port when it is taken.
+// 7654 is shared with other sessions: another API port when it is taken, unless a StreamLoop backend holds it.
+if (await portOpen(7654)) {
+  const holder = await portHolder(7654);
+  if (isBackend(holder)) { note('BLOCKED: a StreamLoop backend holds 7654 and would attach to this run\'s supervisor', holder); process.exit(3); }
+}
 for (const port of [7654, 7664, 7674, 7684]) { if (!(await portOpen(port))) { API_PORT = port; break; } }
 apiBase = useApiPort(API_PORT);
 const taken = await portsTaken();

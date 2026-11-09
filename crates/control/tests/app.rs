@@ -302,7 +302,7 @@ async fn a_busy_port_returns_2_with_the_message() {
 
     // Assert
     assert_eq!(code, 2);
-    let message = format!("Port {} is in use. Is another StreamLoop running? Stop it and this one starts by itself.", rig.port);
+    let message = format!("Port {} is in use. Is another StreamLoop running? Close it and start this one again.", rig.port);
     assert!(captured_logs().text().contains(&message), "the log says why");
     assert_eq!(rig.status_polls(), 0, "nothing starts without the port");
 }

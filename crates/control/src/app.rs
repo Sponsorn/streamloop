@@ -774,7 +774,7 @@ async fn bind(port: u64) -> Result<(TcpListener, u16), i32> {
     match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
         Ok(listener) => Ok((listener, port)),
         Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
-            tracing::error!("Port {port} is in use. Is another StreamLoop running? Stop it and this one starts by itself.");
+            tracing::error!("Port {port} is in use. Is another StreamLoop running? Close it and start this one again.");
             Err(EXIT_PORT_TAKEN)
         }
         Err(err) => {

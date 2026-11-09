@@ -715,7 +715,7 @@ async function runSmoke() {
   await freezeProxy(1);
   results.frozenGrabDiff = await grabDiff();
   unfreezeProxy('smoke');
-  results.gap = gapStats(0, Date.now());
+  results.gap = gapStats(packets[0]?.ms ?? Date.now(), Date.now());
   clearInterval(keepWarm);
   await stopAll();
 }
