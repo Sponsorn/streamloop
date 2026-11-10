@@ -11,8 +11,9 @@
 //                 throughout, and must be answered so by the new control process while it confirms.
 //   rollback      N+1 whose supervisor mode exits at start: the new control process answers 409 while it
 //                 confirms, rolls back within 180 s, and the next planned break leaves that version alone.
-//   rollback-bat  N+1 whose control mode exits at start: START.bat puts N back, N replaces N+1's supervisor
-//                 (version rule), and the next planned break leaves that version alone.
+//   rollback-bat  N+1 whose control mode exits at start: START.bat puts N back, N reports it in the timeline
+//                 and as one critical, N replaces N+1's supervisor (version rule), and the next planned break
+//                 leaves that version alone.
 //   move          v3.0.5 from GitHub (checksum checked) live with a dummy key, Stop, window closed, the full
 //                 ZIP extracted over it: config, key and timeline kept, the 3.0 leftovers gone. Then again
 //                 with the 3.0.5 supervisor left streaming: the new control process replaces it.
@@ -674,6 +675,7 @@ async function heldLanding(w, to, label, land) {
     exeIsNew: after.exeVersion === to && after.currentVersion === to,
     updateFilesGone: !after.files.old && !after.files.update && !after.files.landed,
     timelineSaysUpdated: tl.includes(`Updated to StreamLoop ${to}.`),
+    timelineSaysItStaysStopped: tl.includes(`Installing StreamLoop ${to}. The stream stays stopped.`) && !tl.includes(`Installing StreamLoop ${to}. The stream restarts.`),
     startTakesItLive: start.status === 200 && liveAgain.value !== null && s?.version === to,
   };
   note(`${label}: landing of ${to}`, { ...summary, checks });
@@ -789,6 +791,8 @@ async function runRollbackBat(r) {
   const consoleText = readText(consoleFile) ?? '';
   const tl = (await timeline()).map((e) => e.message);
   const replaceText = `Restarting the supervisor: it runs 3.1.1, this is ${VERSION}.`;
+  // N settles the progress START.bat's rollback left at the landing's start step, and reports it.
+  const whyText = `The update to 3.1.1 failed at starting the stream: The updated StreamLoop stopped before it was confirmed. Still on ${VERSION}.`;
   const st = readJson(STATE_FILE);
   r.rollbackBat = {
     staged, before, n1SupervisorPids: n1Sup.value, n1SupervisorMs: rel(tN1Sup, tStart), recoverSeenMs: rel(tRecover, tStart), nControlMs: rel(tNControl.value, tStart), liveOnNMs: rel(back.value, tStart),
@@ -813,6 +817,8 @@ async function runRollbackBat(r) {
     n1SupervisorReplacedByVersionRule: n1Sup.value?.length === 1 && after.cores.length === 1 && after.cores[0].pid !== n1Sup.value[0] && after.supervisorVersion === VERSION && tl.includes(replaceText),
     streamBack: live.value !== null && noDrop(r.rollbackBat.steadyAfter),
     progressSaysRolledBack: st?.to === '3.1.1' && st.result === 'rolled-back',
+    timelineSaysWhy: tl.includes(whyText),
+    oneCritical: r.rollbackBat.criticals.length === 1 && r.rollbackBat.criticals[0] === `**CRITICAL:** ${whyText}`,
     ...Object.fromEntries(Object.entries(r.nextBreak.checks).map(([k, v]) => [`nextBreak.${k}`, v])),
   };
 }
