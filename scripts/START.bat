@@ -23,6 +23,7 @@ echo.
 set "STREAMLOOP_START=first"
 
 :loop
+if not exist "%EXE%" if exist "%ROOT%streamloop.exe.old" rename "%ROOT%streamloop.exe.old" streamloop.exe
 cd /d "%ROOT%"
 "%EXE%"
 set "CODE=%ERRORLEVEL%"
@@ -56,11 +57,21 @@ goto loop
 if not exist "%EXE%" goto :cut_off
 if exist "%ROOT%streamloop.exe.bad" del /f /q "%ROOT%streamloop.exe.bad"
 rename "%EXE%" streamloop.exe.bad
+if exist "%EXE%" goto :rollback_failed
 rename "%ROOT%streamloop.exe.old" streamloop.exe
+if not exist "%EXE%" goto :rollback_undo
 if not exist "%ROOT%data" mkdir "%ROOT%data"
 move /y "%ROOT%_update\landed" "%ROOT%data\update-rolled-back" >nul
 set "STREAMLOOP_START=rollback"
 echo [RECOVER] The updated StreamLoop stopped before it was confirmed, so the previous version is back.
+goto :eof
+
+:: The previous exe would not go back, so the new one returns and the record stays for the next exit.
+:rollback_undo
+rename "%ROOT%streamloop.exe.bad" streamloop.exe
+:: The updated exe could not be put aside: it stays, with the record, for the next exit to try again.
+:rollback_failed
+echo [WARN] The updated StreamLoop stopped before it was confirmed, and the previous version could not be put back yet. StreamLoop tries again the next time it stops.
 goto :eof
 
 :: The preflight labels hold the expanded paths here, outside any block, so a ")" in the install path cannot close one.
@@ -87,5 +98,6 @@ exit /b 1
 :cut_off
 rem The update was cut off between its two renames, so the new version never ran.
 rename "%ROOT%streamloop.exe.old" streamloop.exe
+if not exist "%EXE%" goto :eof
 echo [RECOVER] An update was cut off before it finished, so the previous version is back.
 goto :eof

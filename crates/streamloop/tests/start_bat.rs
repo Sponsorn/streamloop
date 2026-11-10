@@ -58,6 +58,20 @@ fn section_from(lines: &[String], label: &str) -> Vec<String> {
 }
 
 const ROLLBACK_CALL: &str = "if exist \"%ROOT%_update\\landed\" if exist \"%ROOT%streamloop.exe.old\" call :rollback";
+const HEAL: &str = "if not exist \"%EXE%\" if exist \"%ROOT%streamloop.exe.old\" rename \"%ROOT%streamloop.exe.old\" streamloop.exe";
+const TO_BAD: &str = "rename \"%EXE%\" streamloop.exe.bad";
+const OLD_BACK: &str = "rename \"%ROOT%streamloop.exe.old\" streamloop.exe";
+
+/// The lines from `label` up to and including the first line that is exactly `goto :eof`.
+fn until_eof(lines: &[String], label: &str) -> Vec<String> {
+    let section = section_from(lines, label);
+    let end = section.iter().position(|x| x.trim() == "goto :eof").unwrap_or_else(|| panic!("{label} never reaches goto :eof"));
+    section[..=end].to_vec()
+}
+
+fn position_in(section: &[String], text: &str) -> usize {
+    section.iter().position(|l| l.trim() == text).unwrap_or_else(|| panic!("no line `{text}` in {section:?}"))
+}
 
 #[test]
 fn no_double_colon_comment_inside_a_block() {
@@ -162,13 +176,91 @@ fn restores_a_half_swapped_exe_before_the_preflight() {
     let l = lines();
 
     // Act
-    let heal = index_of(
-        &l,
-        "if not exist \"%EXE%\" if exist \"%ROOT%streamloop.exe.old\" rename \"%ROOT%streamloop.exe.old\" streamloop.exe",
-    );
+    let heal = index_of(&l, HEAL);
 
     // Assert
     assert!(heal < index_of(&l, "if not exist \"%EXE%\" goto :missing_exe"));
+}
+
+#[test]
+fn restores_a_half_swapped_exe_before_every_run_in_the_loop() {
+    // Arrange
+    let l = lines();
+    let at = index_of(&l, ":loop");
+
+    // Act
+    let first = l[at + 1].trim();
+
+    // Assert
+    assert_eq!(first, HEAL, "a rollback that left no streamloop.exe would exit 9009 on every run");
+    assert!(at + 1 < index_of(&l, "\"%EXE%\""));
+}
+
+#[test]
+fn a_rollback_whose_first_rename_fails_keeps_the_record_for_the_next_exit() {
+    // Arrange
+    let l = lines();
+    let rollback = until_eof(&l, ":rollback");
+
+    // Act
+    let after_rename = rollback[position_in(&rollback, TO_BAD) + 1].trim().to_string();
+    let failed = until_eof(&l, ":rollback_failed").join("\n");
+
+    // Assert
+    assert_eq!(after_rename, "if exist \"%EXE%\" goto :rollback_failed");
+    assert!(!failed.contains("landed") && !failed.contains("update-rolled-back") && !failed.contains("STREAMLOOP_START"), "{failed}");
+    assert!(!failed.contains("[RECOVER]"), "nothing was put back: {failed}");
+    assert!(failed.contains("echo [WARN] "), "{failed}");
+}
+
+#[test]
+fn a_rollback_whose_second_rename_fails_puts_the_new_exe_back_and_keeps_the_record() {
+    // Arrange
+    let l = lines();
+    let rollback = until_eof(&l, ":rollback");
+
+    // Act
+    let after_rename = rollback[position_in(&rollback, OLD_BACK) + 1].trim().to_string();
+    let undo = until_eof(&l, ":rollback_undo");
+
+    // Assert
+    assert_eq!(after_rename, "if not exist \"%EXE%\" goto :rollback_undo");
+    assert_eq!(undo[1].trim(), "rename \"%ROOT%streamloop.exe.bad\" streamloop.exe");
+    assert!(undo.iter().any(|x| x.trim() == ":rollback_failed"), "the undo ends as a failed first rename does: {undo:?}");
+    let joined = undo.join("\n");
+    assert!(!joined.contains("landed") && !joined.contains("update-rolled-back") && !joined.contains("STREAMLOOP_START"), "{joined}");
+}
+
+#[test]
+fn a_rollback_moves_the_record_and_says_so_only_after_both_renames_worked() {
+    // Arrange
+    let l = lines();
+    let rollback = until_eof(&l, ":rollback");
+    let checked = position_in(&rollback, "if not exist \"%EXE%\" goto :rollback_undo");
+
+    // Act
+    let moved = position_in(&rollback, "move /y \"%ROOT%_update\\landed\" \"%ROOT%data\\update-rolled-back\" >nul");
+    let start = position_in(&rollback, "set \"STREAMLOOP_START=rollback\"");
+    let recover = rollback.iter().position(|x| x.trim().starts_with("echo [RECOVER]")).unwrap();
+
+    // Assert
+    assert!(position_in(&rollback, "if exist \"%EXE%\" goto :rollback_failed") < checked);
+    assert!(checked < moved && checked < start && checked < recover);
+}
+
+#[test]
+fn a_cut_off_update_says_the_old_exe_is_back_only_once_it_is() {
+    // Arrange
+    let l = lines();
+    let cut_off = until_eof(&l, ":cut_off");
+
+    // Act
+    let renamed = position_in(&cut_off, OLD_BACK);
+    let recover = cut_off.iter().position(|x| x.trim().starts_with("echo [RECOVER]")).unwrap();
+
+    // Assert
+    assert_eq!(cut_off[renamed + 1].trim(), "if not exist \"%EXE%\" goto :eof");
+    assert!(renamed + 1 < recover);
 }
 
 #[test]

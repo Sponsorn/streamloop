@@ -115,5 +115,9 @@ Troubleshooting
   dashboard.
 - The window shows a [RECOVER] line: an update did not start properly,
   and StreamLoop went back to the version before it.
+- The window shows a [WARN] line about an update: the new version
+  stopped, and Windows did not let StreamLoop put the previous one back
+  yet, for example while antivirus was scanning it. StreamLoop tries
+  again by itself.
 - The logs are under Logs in the dashboard, and in data\logs and
   app\logs.
