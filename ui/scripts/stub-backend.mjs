@@ -123,7 +123,7 @@ setInterval(() => {
   if (state.position % EXTRA_EVENT_EVERY_S === 0) addEvent(extraEvent());
 }, 1000);
 
-/** src/server/config.ts `isFirstRun`. */
+/** crates/common/src/config/mod.rs `is_first_run`. */
 const isFirstRun = () => config.playlists.length === 1 && config.playlists[0].id.includes('xxxxx');
 
 // While a full update has the stream down: 'off-air' from its stop step, 'starting' once the new
@@ -441,7 +441,7 @@ function rollBack() {
   addEvent('The update to v3.0.6 was rolled back: No encoder works.');
 }
 
-// src/server/config.ts DEFAULT_DISCORD_TEMPLATES and DISCORD_TEMPLATE_VARIABLES.
+// crates/common/src/config/schema.rs DEFAULT_TEMPLATES and TEMPLATE_VARIABLES.
 const DISCORD_DEFAULTS = {
   templates: {
     error: 'Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}',
@@ -487,7 +487,7 @@ async function runSetupCheck() {
     encoder: { chosen: 'h264_nvenc', tried: ['h264_nvenc'], software: false, works: true },
     cache: { freeMb: 182340, recommendedMb: 4096, warning: null },
     dependencies: [
-      ['Supervisor', 'supervisor\\streamloop-supervisor.exe'],
+      ['Supervisor', 'streamloop.exe'],
       ['Standby slate', 'supervisor\\slate.mp4'],
       ['ffmpeg', 'ffmpeg\\ffmpeg.exe'],
       ['yt-dlp', 'yt-dlp\\yt-dlp.exe'],

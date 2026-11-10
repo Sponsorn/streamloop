@@ -54,10 +54,10 @@ node supervisor/scripts/api-parity.mjs compare supervisor/scripts/api-parity/nod
 node supervisor/scripts/node-session.mjs A|B|C|treekill [--port N]   # end-to-end runs of streamloop.exe (control process and supervisor) against local MediaMTX; each ends with its verdict; --port when 7654 is taken
 node supervisor/scripts/install-session.mjs all|<run>[,<run>...]|build   # dist/'s full ZIP in a temp folder against local MediaMTX and a local release list; runs: install, update (planned break, Update Now, landings while stopped and while waiting for Start), rollback (by the control process), rollback-bat (by START.bat), move (from v3.0.5), faults (the gate's fault checks); build only makes the test exes
 cargo build --release       # in ui/: the app, ui/target/release/streamloop-ui.exe
-node ui/scripts/ui-session.mjs dev|full|full-fail|update   # a real install, local MediaMTX and a Discord catcher, for driving the app through every dashboard action
+node ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]   # dist/'s full ZIP, local MediaMTX and a Discord catcher, for driving the app through every dashboard action; update lists N+1, update-fail the N+1 whose supervisor fails (install-session.mjs's test builds); from PowerShell
 ```
 
-`api-parity/node.json` is the Node backend's recording, made before 3.1 removed `src/server/`; it is fixed history, and `record --server node` only says so. `ui-session.mjs`'s `dev`, `full` and `full-fail` modes read release ZIPs that `update-session.mjs build` made for 3.0's full update; that script went with the Node backend.
+`api-parity/node.json` is the Node backend's recording, made before 3.1 removed `src/server/`; it is fixed history, and `record --server node` only says so.
 
 No linter is configured.
 

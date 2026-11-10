@@ -3,11 +3,12 @@
 // hashes, the interrupt teardown and the sweep of what a killed harness left. Every child is spawned hidden.
 // useOut() names the results folder that note(), the console logs and requests.jsonl go to.
 import * as cp from 'node:child_process';
-import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync, existsSync, statSync, copyFileSync, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, relative, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
 import { FFPROBE, redact, exeMode } from './lib.mjs';
 
 export const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
@@ -347,3 +348,90 @@ async function interrupt(signal) {
   process.exit(130);
 }
 for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, () => void interrupt(s));
+
+// The test releases, shared by install-session.mjs and ui/scripts/ui-session.mjs
+
+/** The test builds: N+1 to N+4 and the two broken N+1s. */
+export const VARIANTS = {
+  n1: { version: '3.1.1' },
+  'n1-supervisor-fails': { version: '3.1.1', feature: 'test-supervisor-fails' },
+  'n1-control-fails': { version: '3.1.1', feature: 'test-control-fails' },
+  n2: { version: '3.1.2' },
+  n3: { version: '3.1.3' },
+  n4: { version: '3.1.4' },
+};
+export const exeName = (v) => `streamloop-v${v}.exe`;
+/** Where the release list points the control process for each build's exe and checksum. */
+export const ASSET_PORT = 8791;
+
+/** Exit code and output of one run of a build, from the temp folder. */
+async function exeRun(exe, args) {
+  const r = await run(exe, args, { cwd: tmpdir(), encoding: 'utf8', timeout: 20_000 });
+  return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split(/\r?\n/)[0]?.slice(0, 160) ?? '' };
+}
+
+/** cargo builds each of `ids` into its own target folder under `repo`, so one never rebuilds another; an
+ *  unchanged one takes seconds. Each exe is checked for what it does at start, then put in `serve`\<id>\
+ *  with its checksum and `nodeVersionFile`. */
+export async function buildVariants({ repo, serve, nodeVersionFile, ids = Object.keys(VARIANTS) }) {
+  const built = {};
+  mkdirSync(serve, { recursive: true });
+  for (const id of ids) {
+    const v = VARIANTS[id];
+    const t0 = Date.now();
+    const args = ['build', '--release', '-p', 'streamloop', '--target-dir', join('target', 'install-session', id)];
+    if (v.feature) args.push('--features', v.feature);
+    const r = await run('cargo', args, { cwd: repo, encoding: 'utf8', timeout: 1_800_000, env: { ...process.env, STREAMLOOP_BUILD_VERSION: v.version } });
+    if (r.status !== 0) throw new Stop(`cargo build of ${id} failed: ${String(r.stderr).slice(-2000)}`);
+    const dir = join(serve, id);
+    mkdirSync(dir, { recursive: true });
+    const exe = join(dir, exeName(v.version));
+    copyFileSync(join(repo, 'target', 'install-session', id, 'release', 'streamloop.exe'), exe);
+    const hash = sha256File(exe);
+    writeFileSync(join(dir, `${exeName(v.version)}.sha256`), `${hash}  ${exeName(v.version)}\n`);
+    copyFileSync(nodeVersionFile, join(dir, 'node-version.txt'));
+    const runs = {
+      version: await exeRun(exe, ['--version']),
+      supervisor: await exeRun(exe, v.feature === 'test-supervisor-fails' ? ['supervisor', '--root', tmpdir()] : ['supervisor', '--bogus']),
+      control: await exeRun(exe, v.feature === 'test-control-fails' ? ['--root', tmpdir()] : ['--bogus']),
+    };
+    // A plain build refuses a bad flag (3, 64); a broken one exits 1 in its mode before it reads anything.
+    const ok = runs.version.code === 0 && runs.version.out === v.version
+      && runs.supervisor.code === (v.feature === 'test-supervisor-fails' ? 1 : 3)
+      && runs.control.code === (v.feature === 'test-control-fails' ? 1 : 64);
+    if (!ok) throw new Stop(`the ${id} build does not behave as built: ${JSON.stringify(runs)}`);
+    built[id] = { ...v, sha256: hash, bytes: statSync(exe).size, buildMs: Date.now() - t0, runs };
+    note(`built ${id}`, built[id]);
+  }
+  return built;
+}
+
+/** The release list a control process reads (STREAMLOOP_TEST_RELEASES), written to `file`: GitHub's shape,
+ *  each build's assets on 127.0.0.1:ASSET_PORT. */
+export function writeReleaseList(file, ids) {
+  const list = ids.map((id) => {
+    const v = VARIANTS[id].version;
+    const files = [`streamloop-v${v}.zip`, exeName(v), `${exeName(v)}.sha256`, 'node-version.txt'];
+    return { tag_name: `v${v}`, draft: false, prerelease: true, html_url: '', assets: files.map((f) => ({ name: f, browser_download_url: `http://127.0.0.1:${ASSET_PORT}/${id}/${f}` })) };
+  });
+  writeFileSync(file, JSON.stringify(list, null, 2));
+  return file;
+}
+
+/** The release host: serves `serve`\<id>\<file> for the test builds and pushes each request to `log`. */
+export function assetHost(serve, log) {
+  return http.createServer((req, res) => {
+    const parts = decodeURIComponent(new URL(req.url, 'http://127.0.0.1').pathname).split('/').filter(Boolean);
+    const file = parts.length === 2 && parts[0] in VARIANTS && !parts[1].includes('..') ? join(serve, parts[0], parts[1]) : null;
+    const row = { ms: Date.now(), at: iso(), method: req.method, path: req.url };
+    if (!file || !existsSync(file)) {
+      res.writeHead(404).end();
+      log.push({ ...row, status: 404 });
+      return;
+    }
+    const bytes = statSync(file).size;
+    res.writeHead(200, { 'content-length': bytes, 'content-type': 'application/octet-stream' });
+    createReadStream(file).pipe(res);
+    log.push({ ...row, status: 200, bytes });
+  });
+}
