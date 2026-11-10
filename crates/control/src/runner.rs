@@ -122,6 +122,11 @@ impl FakeRunner {
     pub fn calls(&self) -> Vec<RunSpec> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// Drops the outputs still queued.
+    pub fn clear(&self) {
+        self.queue.lock().unwrap().clear();
+    }
 }
 
 #[async_trait]

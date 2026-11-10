@@ -41,6 +41,8 @@ const LAUNCH_WAIT: Duration = Duration::from_secs(60);
 pub const FINISH_BEFORE_EXIT: Duration = Duration::from_secs(SHUTDOWN_WAIT.as_secs() + AFTER_KILL_WAIT.as_secs() + LAUNCH_WAIT.as_secs() + 5);
 /// Master's bound on one run of the check, well above its own worst case.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+/// The wait before a failed check of a held landing runs again, until the confirmation window ends.
+const CHECK_RETRY: Duration = Duration::from_secs(5);
 const PERCENT_POLL: Duration = Duration::from_secs(1);
 const RENAME_RETRIES: u32 = 3;
 const RENAME_PAUSE: Duration = Duration::from_millis(200);
@@ -633,7 +635,8 @@ pub fn settle_unfinished_update(layout: &Layout, clock: &dyn Clock, running_vers
 }
 
 /// Confirms when, within `within`, the new version answers with a live encoder (any encoder after an
-/// off-air landing); a held landing, or a Stop during the window, is confirmed by `streamloop.exe check`.
+/// off-air landing); a held landing, or a Stop during the window, is confirmed by `streamloop.exe check`,
+/// tried again every `CHECK_RETRY` until it passes or the window ends.
 /// Otherwise rolls back, and the caller exits 75. A record this exe did not land, or whose rollback failed, gives `Confirmed`.
 pub async fn confirm_or_roll_back(deps: &LandingDeps, record: LandedRecord, within: Duration) -> Confirmation {
     let running = deps.updater.status().current_version;
@@ -662,13 +665,23 @@ pub async fn confirm_or_roll_back(deps: &LandingDeps, record: LandedRecord, with
     let deadline = Instant::now() + within;
     loop {
         if record.held || deps.launcher.is_stopped_by_user() {
-            return match run_check(deps).await {
-                Ok(()) => {
-                    confirm(deps, &record, progress, false).await;
-                    Confirmation::Confirmed
+            // Off air already, so retrying costs nothing; a cold token server can outlast one check's grace.
+            loop {
+                match run_check(deps).await {
+                    Ok(()) => {
+                        confirm(deps, &record, progress, false).await;
+                        return Confirmation::Confirmed;
+                    }
+                    Err(reason) => {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return roll_back(deps, &record, progress, reason).await;
+                        }
+                        tracing::info!(%reason, "The landed update's check failed; trying it again");
+                        tokio::time::sleep(CHECK_RETRY.min(deadline - now)).await;
+                    }
                 }
-                Err(reason) => roll_back(deps, &record, progress, reason).await,
-            };
+            }
         }
         let status = deps.client.status().await;
         let version = status.as_ref().and_then(|s| s.version.as_deref());

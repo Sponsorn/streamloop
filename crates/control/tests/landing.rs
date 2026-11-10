@@ -806,14 +806,50 @@ async fn confirms_a_held_landing_when_the_new_exe_passes_its_check() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn rolls_back_a_held_landing_whose_new_exe_fails_its_check() {
-    // Arrange: waiting for Start, so nothing was launched and nothing answers
+async fn confirms_a_held_landing_whose_check_passes_on_a_later_try() {
+    // Arrange: a fresh install that never streamed, whose token server starts too slowly for the first checks
     let r = confirming_rig(record(false, true), true);
-    r.runner.push(Ok(check_failing("ffmpeg\\ffmpeg.exe is missing")));
+    r.runner.push(Ok(check_failing("the token server did not answer")));
+    r.runner.push(Ok(check_failing("the token server did not answer")));
+    r.runner.push(Ok(RunOutput::ok("ok\r\n")));
+    let started = Instant::now();
     // Act
     let outcome = confirm_or_roll_back(&r.deps, record(false, true), CONFIRM_WITHIN).await;
     // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert_eq!(r.runner.calls().len(), 3);
+    assert!(started.elapsed() < CONFIRM_WITHIN, "confirmed only at the window's end");
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert!(!r.layout.exe_old.exists());
+    assert!(r.rolled_back().is_none());
+    assert!(r.spawns.all().is_empty(), "a held stream stays held");
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("start"), Some("ok")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn rolls_back_a_held_landing_whose_new_exe_fails_its_check() {
+    // Arrange: waiting for Start, so nothing was launched and nothing answers; every try fails, the last one differently
+    let r = confirming_rig(record(false, true), true);
+    for _ in 0..60 {
+        r.runner.push(Ok(check_failing("the token server did not answer")));
+    }
+    let started = Instant::now();
+    // Act: the failures before the window's end are retried; the one at its end rolls back
+    let pushed_last = tokio::spawn({
+        let runner = r.runner.clone();
+        async move {
+            tokio::time::sleep(CONFIRM_WITHIN - Duration::from_secs(1)).await;
+            runner.clear();
+            runner.push(Ok(check_failing("ffmpeg\\ffmpeg.exe is missing")));
+        }
+    });
+    let outcome = confirm_or_roll_back(&r.deps, record(false, true), CONFIRM_WITHIN).await;
+    pushed_last.await.unwrap();
+    // Assert
     assert_eq!(outcome, Confirmation::RolledBack);
+    assert!(started.elapsed() >= CONFIRM_WITHIN, "rolled back before the window ended");
+    assert!(r.runner.calls().len() > 2, "the check was not tried again");
     assert_eq!(r.read(&r.layout.exe), OLD_EXE);
     assert_eq!(r.read(&r.layout.exe_bad), NEW_EXE);
     assert_eq!(r.rolled_back(), Some(record(false, true)));
