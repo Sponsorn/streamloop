@@ -28,7 +28,7 @@
 // Start it from PowerShell: a job that refuses breakaway (the Bash tool's) puts the supervisor in it.
 // Each run prints PASS or FAIL and writes supervisor\results\install\<run>\results.json.
 // Ctrl+C or Ctrl+Break tears the run down; a start after a killed run first sweeps what it left.
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync, copyFileSync, createReadStream, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync, copyFileSync, appendFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -39,6 +39,7 @@ import {
   spawn, run, KEY, INGEST, READ_URL, SUP, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, nodeStatus, supStatus, waitLive,
   packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
   allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders, useApiPort,
+  VARIANTS, exeName, ASSET_PORT, buildVariants, writeReleaseList, assetHost,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -66,7 +67,6 @@ const LANDED = join(UPDATE_DIR, 'landed');
 const ROLLED_BACK = join(DATA, 'update-rolled-back');
 const STATE_FILE = join(DATA, 'update-state.json');
 const WAITING = join(DATA, 'waiting-for-start');
-const ASSET_PORT = 8791;
 const CATCHER_PORT = 8790;
 const WEBHOOK = `http://127.0.0.1:${CATCHER_PORT}/webhook/install`;
 const BREAK_AT_S = 300;
@@ -78,16 +78,6 @@ const V305_URL = `https://github.com/Sponsorn/streamloop/releases/download/${V30
 const LEFTOVERS_30 = ['app/src', 'app/node_modules', 'app/package.json', 'app/package-lock.json', 'app/tsconfig.json', 'app/node-version.txt',
   'supervisor/streamloop-supervisor.exe', '_update_tmp', '_update_old', 'START.bat.new', '_apply_launcher.bat'];
 
-/** The test builds: N+1 to N+4 and the two broken N+1s. */
-const VARIANTS = {
-  n1: { version: '3.1.1' },
-  'n1-supervisor-fails': { version: '3.1.1', feature: 'test-supervisor-fails' },
-  'n1-control-fails': { version: '3.1.1', feature: 'test-control-fails' },
-  n2: { version: '3.1.2' },
-  n3: { version: '3.1.3' },
-  n4: { version: '3.1.4' },
-};
-const exeName = (v) => `streamloop-v${v}.exe`;
 const RUNS = { install: runInstall, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, faults: runFaults };
 
 const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
@@ -123,78 +113,15 @@ async function exeVersion(exe = EXE) {
   return r.status === 0 ? r.stdout.trim() : `exit ${r.status}`;
 }
 
-// the test builds
-
-/** Exit code and output of one run of a build, from the temp folder. */
-async function exeRun(exe, args) {
-  const r = await run(exe, args, { cwd: tmpdir(), encoding: 'utf8', timeout: 20_000 });
-  return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split(/\r?\n/)[0]?.slice(0, 160) ?? '' };
-}
-
-/** cargo builds each variant into its own target folder, so one never rebuilds another; an unchanged one
- *  takes seconds. Each exe is checked for what it does at start before it is served. */
-async function buildVariants() {
-  const built = {};
-  mkdirSync(SERVE, { recursive: true });
-  for (const [id, v] of Object.entries(VARIANTS)) {
-    const t0 = Date.now();
-    const args = ['build', '--release', '-p', 'streamloop', '--target-dir', join('target', 'install-session', id)];
-    if (v.feature) args.push('--features', v.feature);
-    const r = await run('cargo', args, { cwd: REPO, encoding: 'utf8', timeout: 1_800_000, env: { ...process.env, STREAMLOOP_BUILD_VERSION: v.version } });
-    if (r.status !== 0) throw new Stop(`cargo build of ${id} failed: ${String(r.stderr).slice(-2000)}`);
-    const dir = join(SERVE, id);
-    mkdirSync(dir, { recursive: true });
-    const exe = join(dir, exeName(v.version));
-    copyFileSync(join(REPO, 'target', 'install-session', id, 'release', 'streamloop.exe'), exe);
-    const hash = sha256File(exe);
-    writeFileSync(join(dir, `${exeName(v.version)}.sha256`), `${hash}  ${exeName(v.version)}\n`);
-    copyFileSync(DIST_NODE_VERSION, join(dir, 'node-version.txt'));
-    const runs = {
-      version: await exeRun(exe, ['--version']),
-      supervisor: await exeRun(exe, v.feature === 'test-supervisor-fails' ? ['supervisor', '--root', tmpdir()] : ['supervisor', '--bogus']),
-      control: await exeRun(exe, v.feature === 'test-control-fails' ? ['--root', tmpdir()] : ['--bogus']),
-    };
-    // A plain build refuses a bad flag (3, 64); a broken one exits 1 in its mode before it reads anything.
-    const ok = runs.version.code === 0 && runs.version.out === v.version
-      && runs.supervisor.code === (v.feature === 'test-supervisor-fails' ? 1 : 3)
-      && runs.control.code === (v.feature === 'test-control-fails' ? 1 : 64);
-    if (!ok) throw new Stop(`the ${id} build does not behave as built: ${JSON.stringify(runs)}`);
-    built[id] = { ...v, sha256: hash, bytes: statSync(exe).size, buildMs: Date.now() - t0, runs };
-    note(`built ${id}`, built[id]);
-  }
-  return built;
-}
 let BUILT = {};
 
-/** The list a run's control process reads: GitHub's shape, assets on 127.0.0.1. */
-function writeReleases(name, ids) {
-  const list = ids.map((id) => {
-    const v = VARIANTS[id].version;
-    const files = [`streamloop-v${v}.zip`, exeName(v), `${exeName(v)}.sha256`, 'node-version.txt'];
-    return { tag_name: `v${v}`, draft: false, prerelease: true, html_url: '', assets: files.map((f) => ({ name: f, browser_download_url: `http://127.0.0.1:${ASSET_PORT}/${id}/${f}` })) };
-  });
-  const file = join(WORK, `releases-${name}.json`);
-  writeFileSync(file, JSON.stringify(list, null, 2));
-  return file;
-}
+/** The list a run's control process reads, as releases-<name>.json in the run's work folder. */
+const writeReleases = (name, ids) => writeReleaseList(join(WORK, `releases-${name}.json`), ids);
 
 // the local release host and the Discord catcher
 
 const assetLog = [];
-const assetServer = http.createServer((req, res) => {
-  const parts = decodeURIComponent(new URL(req.url, 'http://127.0.0.1').pathname).split('/').filter(Boolean);
-  const file = parts.length === 2 && parts[0] in VARIANTS && !parts[1].includes('..') ? join(SERVE, parts[0], parts[1]) : null;
-  const row = { ms: Date.now(), at: iso(), method: req.method, path: req.url };
-  if (!file || !existsSync(file)) {
-    res.writeHead(404).end();
-    assetLog.push({ ...row, status: 404 });
-    return;
-  }
-  const bytes = statSync(file).size;
-  res.writeHead(200, { 'content-length': bytes, 'content-type': 'application/octet-stream' });
-  createReadStream(file).pipe(res);
-  assetLog.push({ ...row, status: 200, bytes });
-});
+const assetServer = assetHost(SERVE, assetLog);
 const fetchedSince = (ms) => assetLog.filter((a) => a.ms >= ms).map((a) => `${a.status} ${a.path}`);
 
 const alerts = [];
@@ -1359,7 +1286,7 @@ for (const f of [DIST_ZIP, DIST_EXE, DIST_NODE_VERSION]) if (!existsSync(f)) { n
 const stale = distIsStale();
 if (stale.length) { note('dist is older than the code it is built from: npm run build:release first', { newer: stale.slice(0, 10) }); process.exit(2); }
 if ((await exeVersion(DIST_EXE)) !== VERSION) { note(`dist's exe does not print ${VERSION}`); process.exit(2); }
-BUILT = await buildVariants().catch((err) => { note('the test builds failed', { error: String(err?.message ?? err) }); process.exit(2); });
+BUILT = await buildVariants({ repo: REPO, serve: SERVE, nodeVersionFile: DIST_NODE_VERSION }).catch((err) => { note('the test builds failed', { error: String(err?.message ?? err) }); process.exit(2); });
 summary.builds = BUILT;
 if (arg === 'build') process.exit(0);
 

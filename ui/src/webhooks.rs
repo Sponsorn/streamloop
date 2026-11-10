@@ -784,7 +784,7 @@ mod tests {
     const SENT: &str = "Test message sent. Check your Discord channel.";
     const SAVE_LABEL: &str = "Save Webhook Settings";
 
-    /// `src/server/config.ts` `DEFAULT_DISCORD_TEMPLATES`.
+    /// `crates/common/src/config/schema.rs` `DEFAULT_TEMPLATES`.
     fn templates() -> Value {
         json!({
             "error": "Playback error **{errorCode}** on video #{videoIndex} (`{videoId}`)\nRetry attempt: {attempt}",
@@ -800,7 +800,7 @@ mod tests {
         })
     }
 
-    /// `src/server/config.ts` `DISCORD_TEMPLATE_VARIABLES`.
+    /// `crates/common/src/config/schema.rs` `TEMPLATE_VARIABLES`.
     fn variables() -> Value {
         json!({
             "error": ["videoIndex", "videoId", "errorCode", "attempt"],
