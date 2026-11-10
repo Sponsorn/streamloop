@@ -55,11 +55,14 @@ restarts of the PC.
 Updates
 -------
 The dashboard offers new 3.x versions. An update replaces streamloop.exe
-and keeps your settings and stream key. It downloads in the background,
-then installs by itself: just before Twitch ends the broadcast at its
-48-hour limit, or within a minute when the stream is off air. Update Now
-installs it at once. An update that installs while the stream is on air
-restarts it, and the stream is off air for about 10 seconds.
+and keeps your settings and stream key. Update Now installs it at once.
+With automatic update checks on (autoUpdateCheck in app\config.json, on
+by default), it also downloads in the background and installs by itself:
+just before Twitch ends the broadcast at its 48-hour limit, about 5
+minutes after the stream goes off air, or right after you press Stop in
+the dashboard. With them off, only Update Now installs it. An update
+that installs while the stream is on air restarts it, and the stream is
+off air for about 10 seconds.
 
 If the new version does not start properly, StreamLoop goes back to the
 previous one by itself, and installs that version again only when you
