@@ -1409,6 +1409,42 @@ async fn refuses_stop_start_controls_and_saves_while_an_update_runs() {
 }
 
 #[tokio::test]
+async fn takes_stop_while_a_landed_update_is_confirmed_and_refuses_the_other_changing_routes() {
+    // Arrange: this process confirms the version it runs, with the progress still at the check
+    let rig = Rig::new();
+    write(&rig.layout.update_state, running_state().to_string().as_bytes());
+    rig.updates.set_confirming(true);
+    rig.sup.set_status(status_of(&playing(json!({}))));
+    let app = rig.app();
+    // Act
+    let stop = post(&app, "/stream/stop", json!({})).await;
+    let mut others = Vec::new();
+    for (path, body) in changing_routes().into_iter().filter(|(p, _)| *p != "/stream/stop") {
+        others.push((path, post(&app, path, body).await.status));
+    }
+    // Assert
+    assert_eq!(stop.status, StatusCode::OK);
+    assert_eq!((rig.launcher.marks(), shutdowns(&rig)), (1, 1));
+    assert_eq!(others.len(), changing_routes().len() - 1);
+    assert!(others.iter().all(|(_, s)| *s == StatusCode::CONFLICT), "{others:?}");
+    assert_eq!(rig.launcher.launches(), 0);
+}
+
+#[tokio::test]
+async fn refuses_stop_while_the_landing_itself_runs() {
+    // Arrange: Update Now downloads the exe; the progress says running, and no confirmation runs
+    let rig = Rig::new();
+    let mut downloading = running_state();
+    downloading["step"] = json!("download");
+    write(&rig.layout.update_state, downloading.to_string().as_bytes());
+    // Act
+    let stop = post(&rig.app(), "/stream/stop", json!({})).await;
+    // Assert
+    assert_eq!((stop.status, stop.error()), (StatusCode::CONFLICT, "An update is running. Try again when it is done.".to_string()));
+    assert_eq!(rig.launcher.marks(), 0);
+}
+
+#[tokio::test]
 async fn refuses_them_while_a_landing_runs() {
     // Arrange
     let rig = Rig::new();

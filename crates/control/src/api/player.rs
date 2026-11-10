@@ -93,8 +93,11 @@ pub(super) async fn jump(State(state): State<Arc<AppState>>, Extension(JsonBody(
 }
 
 pub(super) async fn stop(State(state): State<Arc<AppState>>) -> Response {
-    if let Some(refused) = refuse_during_update(&state) {
-        return refused;
+    // A confirmation lets Stop through, as the way out of a new version that airs badly; a landing does not.
+    if !state.updates.confirming() {
+        if let Some(refused) = refuse_during_update(&state) {
+            return refused;
+        }
     }
     // Mark first, so the launcher does not relaunch while the supervisor shuts down.
     state.launcher.mark_stopped_by_user();

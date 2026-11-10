@@ -25,7 +25,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::discord::{CurrentNotifier, DiscordNotifier, Notifier};
 use crate::events::{launcher_event, with_playlist_names, Alert, AlertGate, SupervisorEvent, SupervisorEvents};
 use crate::http::{Http, ReqwestHttp};
-use crate::landing::{self, Confirmation, KillTree, LandedRecord, LandingDeps, LandingGate, PidOnPort, CONFIRM_WITHIN};
+use crate::landing::{self, Confirmation, KillTree, LandedRecord, LandingDeps, LandingGate, PidOnPort, CONFIRM_WITHIN, FINISH_BEFORE_EXIT};
 use crate::launcher::{should_hold, Launcher, LauncherOptions, ProcessSpawner, Spawner, StartKind};
 use crate::leftovers::remove_3_0_leftovers;
 use crate::logging;
@@ -298,6 +298,10 @@ impl Updates for RouteUpdates {
         self.confirming.load(Ordering::SeqCst) || self.exe.landing_in_progress()
     }
 
+    fn confirming(&self) -> bool {
+        self.confirming.load(Ordering::SeqCst)
+    }
+
     async fn land(&self) -> Result<(), String> {
         self.exe.land().await
     }
@@ -403,16 +407,9 @@ impl Control {
         let me = self.clone();
         tokio::spawn(async move {
             if let Some(record) = landed {
-                let held = record.held;
-                match landing::confirm_or_roll_back(&me.landing, record, CONFIRM_WITHIN).await {
-                    Confirmation::RolledBack => {
-                        me.request_exit(EXIT_RESTART);
-                        return;
-                    }
-                    // The landed start held launches until now. A landing never changes whether the stream is
-                    // held: one that was on air carries on, and one that was held stays held.
-                    Confirmation::Confirmed if !held && me.launcher.is_waiting_for_start() => me.launcher.release(),
-                    Confirmation::Confirmed => {}
+                if landing::confirm_or_roll_back(&me.landing, record, CONFIRM_WITHIN).await == Confirmation::RolledBack {
+                    me.request_exit(EXIT_RESTART);
+                    return;
                 }
             }
             me.confirming.store(false, Ordering::SeqCst);
@@ -526,7 +523,6 @@ impl App {
             tracing::error!(%err, "Removing the 3.0 leftovers stopped");
         }
         let landed = landed_record(&layout);
-        landing::settle_unfinished_update(&layout, clock.as_ref(), VERSION);
 
         if vars.debug_faults {
             tracing::warn!("STREAMLOOP_DEBUG_FAULTS=1: the supervisor starts with --debug-faults");
@@ -550,10 +546,16 @@ impl App {
         let (alerts, alerts_rx) = mpsc::unbounded_channel();
         send_alerts(alerts_rx, forwarding.clone());
         let sink = Arc::new(EventSink { gate: Mutex::default(), config: shared.clone(), timeline: timeline.clone(), clock: clock.clone(), alerts });
+        // Before the routes answer, so the 409 gate never waits on a progress that was cut off. A rollback by
+        // START.bat, or a landing cut off, is reported as this process reports its own rollback.
+        if let Some(text) = landing::settle_unfinished_update(&layout, clock.as_ref(), VERSION) {
+            timeline.add(&text);
+            let notifier = forwarding.clone();
+            tokio::spawn(async move { notifier.notify_critical(&text).await });
+        }
 
-        // A landed update's start holds launches until its confirmation ends (a supervisor that answers is
-        // still attached); `confirm_then_watch_updates` lets go of the hold unless the stream was held before.
-        let kind = start_kind(vars.start.as_deref(), landed.is_some());
+        // An update or its rollback holds this start only when the stream was held before the landing.
+        let kind = start_kind(vars.start.as_deref(), landed.as_ref(), &layout);
         let hold = should_hold(kind, config.auto_start_stream, layout.waiting_for_start.exists());
         if hold {
             tracing::info!(start_kind = ?kind, "The stream waits for Start");
@@ -696,7 +698,8 @@ impl App {
     }
 
     /// Runs until Ctrl+C, the console closing, `/api/shutdown` (0), or a landed update, a rollback or the
-    /// test hook (75). Stops the control process's own timers and closes the server; the stream keeps running.
+    /// test hook (75). A landing under way finishes first, so the exit does not leave the stream stopped. Stops the
+    /// control process's own timers and closes the server; the stream keeps running.
     pub async fn wait(self) -> i32 {
         let App { control, server, close, mut stop_signal } = self;
         let code = tokio::select! {
@@ -706,6 +709,7 @@ impl App {
                 control.exit.wait().await
             }
         };
+        control.landing.finish_before_exit(FINISH_BEFORE_EXIT).await;
         control.stop_own();
         let _ = close.send(());
         match tokio::time::timeout(CLOSE_LIMIT, server).await {
@@ -794,13 +798,13 @@ async fn serve_api(listener: TcpListener, router: axum::Router, closed: oneshot:
 }
 
 /// START.bat's word for this start; a landed update makes it `update`. Anything else counts as a first start.
-fn start_kind(word: Option<&str>, landed: bool) -> StartKind {
-    if landed {
-        return StartKind::Update;
+fn start_kind(word: Option<&str>, landed: Option<&LandedRecord>, layout: &Layout) -> StartKind {
+    if let Some(record) = landed {
+        return StartKind::Update { held: record.held };
     }
     match word {
         Some("restart") => StartKind::Restart,
-        Some("rollback") => StartKind::Rollback,
+        Some("rollback") => StartKind::Rollback { held: LandedRecord::read(&layout.rolled_back).map(|r| r.held) },
         _ => StartKind::First,
     }
 }

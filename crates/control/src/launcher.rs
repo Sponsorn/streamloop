@@ -68,16 +68,21 @@ pub enum LaunchOutcome {
 pub enum StartKind {
     First,
     Restart,
-    Update,
-    Rollback,
+    /// The first start after a landing; `held` comes from `_update\landed`.
+    Update { held: bool },
+    /// The first start after START.bat put the previous exe back; `held` comes from `data\update-rolled-back`
+    /// when it can be read.
+    Rollback { held: Option<bool> },
 }
 
 /// Whether this start waits for Start. Recovery is not a start: a restart holds only if the last start still waits.
+/// An update or its rollback never changes whether the stream is held.
 pub fn should_hold(start: StartKind, auto_start_stream: bool, waiting_marker: bool) -> bool {
     match start {
-        StartKind::First | StartKind::Rollback => !auto_start_stream,
+        StartKind::First => !auto_start_stream,
         StartKind::Restart => waiting_marker,
-        StartKind::Update => true,
+        StartKind::Update { held } => held,
+        StartKind::Rollback { held } => held.unwrap_or(!auto_start_stream),
     }
 }
 

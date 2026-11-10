@@ -831,13 +831,16 @@ fn should_hold_follows_the_start_kind() {
         (StartKind::First, true, false, false),
         (StartKind::First, false, false, true),
         (StartKind::First, false, true, true),
-        (StartKind::Rollback, true, false, false),
-        (StartKind::Rollback, false, false, true),
+        (StartKind::Rollback { held: Some(false) }, false, false, false),
+        (StartKind::Rollback { held: Some(true) }, true, false, true),
+        (StartKind::Rollback { held: None }, true, false, false),
+        (StartKind::Rollback { held: None }, false, false, true),
         (StartKind::Restart, false, false, false),
         (StartKind::Restart, true, true, true),
         (StartKind::Restart, false, true, true),
-        (StartKind::Update, true, false, true),
-        (StartKind::Update, false, false, true),
+        (StartKind::Update { held: false }, false, false, false),
+        (StartKind::Update { held: false }, true, true, false),
+        (StartKind::Update { held: true }, true, false, true),
     ];
     for (start, auto, marker, expected) in table {
         // Act

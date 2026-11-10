@@ -21,6 +21,8 @@ pub trait Updates: Send + Sync {
     async fn check(&self) -> UpdateInfo;
     /// From the landing's first step until the process exits, or until the landing fails.
     fn landing_in_progress(&self) -> bool;
+    /// While this process confirms a landed update.
+    fn confirming(&self) -> bool;
     /// Stages first when nothing is staged. On `Ok` the caller exits 75.
     async fn land(&self) -> Result<(), String>;
 }
@@ -42,6 +44,10 @@ impl Updates for ExeUpdates {
 
     fn landing_in_progress(&self) -> bool {
         self.landing.landing_in_progress()
+    }
+
+    fn confirming(&self) -> bool {
+        false
     }
 
     async fn land(&self) -> Result<(), String> {

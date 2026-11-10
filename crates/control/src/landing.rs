@@ -37,6 +37,8 @@ const GONE_POLL: Duration = Duration::from_millis(500);
 const CONFIRM_POLL: Duration = Duration::from_secs(2);
 /// The guard's test encode and the `launch` helper's port wait both fit well inside this.
 const LAUNCH_WAIT: Duration = Duration::from_secs(60);
+/// How long an exit waits for a landing under way: the supervisor's stop, the swap and the launch.
+pub const FINISH_BEFORE_EXIT: Duration = Duration::from_secs(SHUTDOWN_WAIT.as_secs() + AFTER_KILL_WAIT.as_secs() + LAUNCH_WAIT.as_secs() + 5);
 /// Master's bound on one run of the check, well above its own worst case.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const PERCENT_POLL: Duration = Duration::from_secs(1);
@@ -47,6 +49,7 @@ const CHECK_PREFIX: &str = "streamloop-supervisor check:";
 const RESTARTED: &str = "StreamLoop was restarted during the update.";
 /// START.bat's crash-branch rollback, in the words it prints.
 const STOPPED_UNCONFIRMED: &str = "The updated StreamLoop stopped before it was confirmed.";
+const CLOSED: &str = "StreamLoop was closed before the update could start.";
 
 pub type KillTree = Arc<dyn Fn(u32) + Send + Sync>;
 pub type PidOnPort = Arc<dyn Fn(u16) -> Option<u32> + Send + Sync>;
@@ -95,6 +98,8 @@ pub struct LandingGate {
     /// The landing that runs, or the one that went through. A failed one is cleared, so Update Now can try again.
     current: Mutex<Option<watch::Receiver<Outcome>>>,
     in_progress: AtomicBool,
+    /// The process is exiting: a landing that has not stopped the supervisor yet gives up instead.
+    closing: AtomicBool,
 }
 
 pub struct LandingDeps {
@@ -118,6 +123,22 @@ impl LandingDeps {
     /// True from the landing's first step until the process exits, or until the landing fails.
     pub fn landing_in_progress(&self) -> bool {
         self.gate.in_progress.load(Ordering::SeqCst)
+    }
+
+    /// The process is exiting. A landing that has not stopped the supervisor gives up before it does, and one
+    /// that has gets up to `limit` to launch the new supervisor, so the exit does not leave the stream stopped.
+    pub async fn finish_before_exit(&self, limit: Duration) {
+        // Set before `in_progress` is read, as the landing sets `in_progress` before it reads this.
+        self.gate.closing.store(true, Ordering::SeqCst);
+        if !self.gate.in_progress.load(Ordering::SeqCst) {
+            return;
+        }
+        let current = self.gate.current.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(mut outcome) = current.filter(|rx| rx.borrow().is_none()) else { return };
+        tracing::info!("Waiting for the update to finish landing before exiting");
+        if tokio::time::timeout(limit, outcome.wait_for(Option::is_some)).await.is_err() {
+            tracing::warn!(limit_s = limit.as_secs(), "The update was still landing; exiting anyway");
+        }
     }
 }
 
@@ -424,8 +445,15 @@ impl<'a> Landing<'a> {
             return Err(self.fail_before_stop("No update is staged.".into()));
         };
         let from = deps.updater.status().current_version;
+        if deps.gate.closing.load(Ordering::SeqCst) {
+            return Err(self.fail_before_stop(CLOSED.into()));
+        }
 
-        let installing = format!("Installing StreamLoop {to}. The stream restarts.");
+        let installing = if self.held {
+            format!("Installing StreamLoop {to}. The stream stays stopped.")
+        } else {
+            format!("Installing StreamLoop {to}. The stream restarts.")
+        };
         deps.timeline.add(&installing);
         deps.notifier.notify_event(recovery(&installing)).await;
         match self.progress.as_mut() {
@@ -584,13 +612,12 @@ async fn wait_until_gone(deps: &LandingDeps, limit: Duration) -> bool {
 
 /// For a start with no `_update\landed` to confirm: a progress still `running` belongs to a landing
 /// or a check that was cut off, and is ended here so neither the dashboard nor the 409 gate waits on it.
-pub fn settle_unfinished_update(layout: &Layout, clock: &dyn Clock, running_version: &str) {
+/// Returns the failure text when it records `failed` or `rolled-back`, which the caller reports.
+pub fn settle_unfinished_update(layout: &Layout, clock: &dyn Clock, running_version: &str) -> Option<String> {
     if layout.landed.exists() {
-        return;
+        return None;
     }
-    let Some(state) = read_update_state(&layout.update_state).filter(|s| s.result == UpdateResult::Running) else {
-        return;
-    };
+    let state = read_update_state(&layout.update_state).filter(|s| s.result == UpdateResult::Running)?;
     let (result, reason) = if state.to == running_version {
         (UpdateResult::Ok, None)
     } else if matches!(state.step, UpdateStep::Download | UpdateStep::Stop | UpdateStep::Swap) {
@@ -602,6 +629,7 @@ pub fn settle_unfinished_update(layout: &Layout, clock: &dyn Clock, running_vers
     let step = state.step;
     let mut progress = Progress { path: &layout.update_state, clock, state };
     progress.finish(step, result, reason);
+    (result != UpdateResult::Ok).then(|| failure_text(&progress.state))
 }
 
 /// Confirms when, within `within`, the new version answers with a live encoder (any encoder after an
@@ -615,7 +643,11 @@ pub async fn confirm_or_roll_back(deps: &LandingDeps, record: LandedRecord, with
         if let Err(e) = std::fs::remove_file(&deps.layout.landed) {
             tracing::error!(error = %e, "Could not remove _update\\landed");
         }
-        settle_unfinished_update(&deps.layout, deps.clock.as_ref(), &running);
+        // A rollback by START.bat, or a landing cut off, is reported here as this process reports its own rollback.
+        if let Some(text) = settle_unfinished_update(&deps.layout, deps.clock.as_ref(), &running) {
+            deps.timeline.add(&text);
+            deps.notifier.notify_critical(&text).await;
+        }
         return Confirmation::Confirmed;
     }
     if record.rollback_failed {

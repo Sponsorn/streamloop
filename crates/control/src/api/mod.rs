@@ -528,6 +528,7 @@ pub mod fake {
     pub struct FakeUpdates {
         status: Mutex<UpdateInfo>,
         landing: AtomicBool,
+        confirming: AtomicBool,
         land_result: Mutex<Result<(), String>>,
         checks: AtomicUsize,
         lands: AtomicUsize,
@@ -541,6 +542,7 @@ pub mod fake {
             Self {
                 status: Mutex::new(status),
                 landing: AtomicBool::new(false),
+                confirming: AtomicBool::new(false),
                 land_result: Mutex::new(Ok(())),
                 checks: AtomicUsize::new(0),
                 lands: AtomicUsize::new(0),
@@ -556,6 +558,11 @@ pub mod fake {
 
         pub fn set_landing(&self, on: bool) {
             self.landing.store(on, Ordering::SeqCst);
+        }
+
+        /// A confirmation counts as a landing in progress too, as the control process reports it.
+        pub fn set_confirming(&self, on: bool) {
+            self.confirming.store(on, Ordering::SeqCst);
         }
 
         pub fn set_land_result(&self, r: Result<(), String>) {
@@ -598,7 +605,11 @@ pub mod fake {
         }
 
         fn landing_in_progress(&self) -> bool {
-            self.landing.load(Ordering::SeqCst)
+            self.landing.load(Ordering::SeqCst) || self.confirming.load(Ordering::SeqCst)
+        }
+
+        fn confirming(&self) -> bool {
+            self.confirming.load(Ordering::SeqCst)
         }
 
         async fn land(&self) -> Result<(), String> {

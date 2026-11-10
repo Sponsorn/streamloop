@@ -23,7 +23,7 @@ use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::fake::{Call, FakeSupervisor};
 use support::captured_logs;
 use tempfile::TempDir;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 
 const OLD_HOOK: &str = "https://discord.example/old";
 const NEW_HOOK: &str = "https://discord.example/new";
@@ -35,15 +35,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Records each spawn and never starts a process.
+/// Records each spawn and never starts a process. With a gate, each `launch` helper hands off only once the
+/// gate gets a permit.
 #[derive(Default)]
-struct NoSpawner(Mutex<Vec<Vec<String>>>);
+struct NoSpawner(Mutex<Vec<Vec<String>>>, Mutex<Option<Arc<Semaphore>>>);
 
-struct Exited;
+struct Exited(Option<Arc<Semaphore>>);
 
 #[async_trait]
 impl SpawnHandle for Exited {
     async fn exit_code(self: Box<Self>) -> Option<i32> {
+        if let Some(gate) = &self.0 {
+            gate.acquire().await.expect("the gate stays open").forget();
+        }
         Some(0)
     }
 }
@@ -51,7 +55,7 @@ impl SpawnHandle for Exited {
 impl Spawner for NoSpawner {
     fn spawn(&self, _exe: &Path, args: &[String]) -> std::io::Result<Box<dyn SpawnHandle>> {
         self.0.lock().unwrap().push(args.to_vec());
-        Ok(Box::new(Exited))
+        Ok(Box::new(Exited(self.1.lock().unwrap().clone())))
     }
 }
 
@@ -164,6 +168,42 @@ impl Rig {
         self.write("_update/landed", record.to_string().as_bytes());
     }
 
+    /// `data\update-rolled-back` as a rollback by START.bat leaves it.
+    fn rolled_back(&self, held: bool) {
+        let record = json!({ "from": VERSION, "to": NEW_VERSION, "onAir": !held, "held": held });
+        self.write("data/update-rolled-back", record.to_string().as_bytes());
+    }
+
+    /// Merges `patch` into the config before the start.
+    fn patch_config(&self, patch: Value) {
+        let path = self.layout().config;
+        let mut c: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for (k, v) in patch.as_object().unwrap() {
+            c[k] = v.clone();
+        }
+        std::fs::write(path, c.to_string()).unwrap();
+    }
+
+    /// From now on each `launch` helper hands off only when the returned gate gets a permit.
+    fn hold_launches(&self) -> Arc<Semaphore> {
+        let gate = Arc::new(Semaphore::new(0));
+        *self.spawner.1.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+
+    fn spawns(&self) -> usize {
+        self.spawner.0.lock().unwrap().len()
+    }
+
+    async fn timeline(&self) -> Vec<String> {
+        self.get("/api/events").await.as_array().unwrap().iter().map(|e| e["message"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// The bodies of the Discord posts to the configured webhook.
+    fn discord_posts(&self) -> Vec<String> {
+        self.http.requests().iter().filter(|r| r.url == OLD_HOOK).map(|r| String::from_utf8_lossy(r.body.as_deref().unwrap_or_default()).into_owned()).collect()
+    }
+
     /// An exe and an ffmpeg, and a test encode that works: a launch would spawn.
     fn launchable(&self) {
         self.write("streamloop.exe", b"old exe");
@@ -229,7 +269,12 @@ impl Rig {
     }
 
     async fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
-        for _ in 0..60 {
+        self.wait_for(Duration::from_secs(3), what, done).await;
+    }
+
+    async fn wait_for(&self, limit: Duration, what: &str, done: impl Fn() -> bool) {
+        let deadline = tokio::time::Instant::now() + limit;
+        while tokio::time::Instant::now() < deadline {
             if done() {
                 return;
             }
@@ -238,6 +283,9 @@ impl Rig {
         panic!("timed out waiting until {what}");
     }
 }
+
+/// Long enough for the launcher's three missed polls, 2 s apart, and its launch.
+const RELAUNCH_WITHIN: Duration = Duration::from_secs(12);
 
 async fn json_of(reply: reqwest::Response) -> Value {
     let text = reply.text().await.expect("the whole reply arrives");
@@ -532,7 +580,7 @@ async fn an_on_air_landing_is_not_held_once_confirmed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_landing_that_never_swapped_lets_go_of_the_start_hold() {
+async fn a_landing_that_never_swapped_relaunches_the_supervisor() {
     // Arrange: a landing of another version cut off before its renames, after the supervisor had stopped
     let rig = Rig::new("PLrealplaylist001");
     rig.sup.set_status(None);
@@ -541,7 +589,7 @@ async fn a_landing_that_never_swapped_lets_go_of_the_start_hold() {
 
     // Act
     let app = rig.start().await;
-    rig.wait_until("the supervisor is launched", || !rig.spawner.0.lock().unwrap().is_empty()).await;
+    rig.wait_for(RELAUNCH_WITHIN, "the supervisor is launched", || rig.spawns() > 0).await;
 
     // Assert
     assert!(!rig.layout().landed.exists());
@@ -630,4 +678,152 @@ async fn a_ctrl_c_after_a_restart_was_asked_keeps_75() {
     // Assert
     assert_eq!(reply.status(), 200);
     assert_eq!(code, 75);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rollback_by_start_bat_goes_to_the_timeline_and_out_once_as_a_critical() {
+    // Arrange: START.bat put this exe back and moved the record, leaving the progress at the check
+    let rig = Rig::new("PLrealplaylist001");
+    let progress = json!({
+        "from": VERSION, "to": NEW_VERSION, "parts": [], "folders": [], "step": "check", "result": "running", "reason": null,
+        "startedAt": "2026-11-10T10:00:00.000Z", "stepStartedAt": "2026-11-10T10:00:20.000Z", "baseline": null
+    });
+    rig.write("data/update-state.json", progress.to_string().as_bytes());
+    rig.rolled_back(false);
+    let text = format!("The update to {NEW_VERSION} failed at checking the new version: The updated StreamLoop stopped before it was confirmed. Still on {VERSION}.");
+
+    // Act
+    let app = rig.start().await;
+    rig.wait_until("the critical is sent", || !rig.discord_posts().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Assert
+    assert!(rig.timeline().await.contains(&text), "{:?}", rig.timeline().await);
+    let posts = rig.discord_posts();
+    assert_eq!(posts.len(), 1, "{posts:?}");
+    assert!(posts[0].contains(&text) && posts[0].contains("CRITICAL"), "{}", posts[0]);
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(rig.layout().update_state).unwrap()).unwrap();
+    assert_eq!(state["result"], "rolled-back");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_landed_start_that_was_not_held_relaunches_a_supervisor_that_is_down() {
+    // Arrange: an on-air landing whose one launch did not bring a supervisor up
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.set_status(None);
+    rig.landed(VERSION, true, false);
+    rig.launchable();
+
+    // Act
+    let app = rig.start().await;
+    let held_at_start = rig.layout().waiting_for_start.exists();
+    rig.wait_for(RELAUNCH_WITHIN, "the launcher relaunches the supervisor", || rig.spawns() > 0).await;
+
+    // Assert
+    assert!(!held_at_start, "a landing that was on air does not wait for Start");
+    assert!(rig.layout().landed.exists(), "the confirmation still runs");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rollback_by_start_bat_brings_an_on_air_stream_back_with_auto_start_stream_off() {
+    // Arrange
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.patch_config(json!({ "autoStartStream": false }));
+    rig.vars.start = Some("rollback".into());
+    rig.rolled_back(false);
+    rig.sup.set_status(None);
+    rig.launchable();
+
+    // Act
+    let app = rig.start().await;
+    let held_at_start = rig.layout().waiting_for_start.exists();
+    rig.wait_for(RELAUNCH_WITHIN, "the launcher relaunches the supervisor", || rig.spawns() > 0).await;
+
+    // Assert
+    assert!(!held_at_start, "the stream was on air before the update");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rollback_by_start_bat_keeps_a_held_stream_held_with_auto_start_stream_on() {
+    // Arrange
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.vars.start = Some("rollback".into());
+    rig.rolled_back(true);
+    rig.sup.set_status(None);
+    rig.launchable();
+
+    // Act
+    let app = rig.start().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Assert
+    assert!(rig.layout().waiting_for_start.exists(), "the stream waited for Start before the update");
+    assert_eq!(rig.get("/api/status").await["launcher"], "ready");
+    assert_eq!(rig.spawns(), 0);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn during_a_confirmation_stop_is_let_through_and_the_check_confirms_the_update() {
+    // Arrange: an on-air landing whose new supervisor has not answered yet
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.set_status(None);
+    rig.landed(VERSION, true, false);
+    rig.runner.push(Ok(RunOutput::ok("ok")));
+    let app = rig.start().await;
+
+    // Act
+    let stop = rig.post("/api/stream/stop", json!({})).await;
+    let stop_status = stop.status();
+    let start = rig.post("/api/stream/start", json!({})).await;
+    let start_status = start.status();
+    let start = json_of(start).await;
+    rig.wait_for(Duration::from_secs(6), "the update is confirmed", || !rig.layout().landed.exists()).await;
+
+    // Assert
+    assert_eq!(stop_status, 200);
+    assert_eq!((start_status, start), (reqwest::StatusCode::CONFLICT, json!({ "error": "An update is running. Try again when it is done." })));
+    assert!(rig.sup.calls().contains(&Call::Shutdown));
+    assert!(rig.layout().stopped_marker.exists());
+    assert_eq!(rig.runner.calls()[0].args, ["check", "--root", &rig.root.to_string_lossy()], "the check confirmed it");
+    assert_eq!(rig.spawns(), 0);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ctrl_c_during_a_landing_exits_once_the_new_supervisor_is_launched() {
+    // Arrange: the new exe staged, then Update Now with the supervisor gone and a launch helper that has not handed off
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.offer_new_version();
+    rig.runner.push(Ok(RunOutput::ok(&format!("{NEW_VERSION}\r\n"))));
+    rig.launchable();
+    let gate = rig.hold_launches();
+    let app = rig.start().await;
+    rig.post("/api/update/check", json!({})).await;
+    rig.wait_until("the exe is staged", || rig.layout().staged_exe.exists()).await;
+    rig.sup.set_status(None);
+    let applied = rig.post("/api/update/apply", json!({})).await;
+    rig.wait_until("the new exe is launched", || rig.spawns() > 0).await;
+
+    // Act
+    rig.stop.send(()).unwrap();
+    let wait = app.wait();
+    tokio::pin!(wait);
+    let before_hand_off = tokio::time::timeout(Duration::from_millis(700), &mut wait).await;
+    let exited_early = before_hand_off.is_ok();
+    gate.add_permits(1);
+    let code = match before_hand_off {
+        Ok(code) => code,
+        Err(_) => tokio::time::timeout(Duration::from_secs(10), &mut wait).await.expect("the control process exited"),
+    };
+
+    // Assert
+    assert_eq!(applied.status(), 200);
+    assert!(!exited_early, "the exit did not wait for the landing's launch");
+    assert_eq!(code, 0);
+    assert_eq!(std::fs::read(rig.layout().exe).unwrap(), NEW_EXE.as_bytes());
+    assert!(rig.layout().landed.exists(), "the next start confirms the update");
 }

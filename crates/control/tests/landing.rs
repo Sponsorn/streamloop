@@ -13,7 +13,7 @@ use streamloop_control::discord::{EmbedField, Level, Notifier};
 use streamloop_control::events::Alert;
 use streamloop_control::http::{FakeHttp, Http, HttpError, HttpRequest, HttpResponse, Progress};
 use streamloop_control::landing::{
-    confirm_or_roll_back, land, settle_unfinished_update, Confirmation, LandedRecord, LandingDeps, LandingGate, CONFIRM_WITHIN,
+    confirm_or_roll_back, land, settle_unfinished_update, Confirmation, LandedRecord, LandingDeps, LandingGate, CONFIRM_WITHIN, FINISH_BEFORE_EXIT,
 };
 use streamloop_control::launcher::{Launcher, LauncherOptions, SpawnHandle, Spawner};
 use streamloop_control::runner::{FakeRunner, RunOutput};
@@ -30,6 +30,7 @@ const NEW_EXE: &[u8] = b"the new streamloop.exe";
 const NEWER_EXE: &[u8] = b"the newer streamloop.exe";
 const PID: u32 = 4242;
 const INSTALLING: &str = "Installing StreamLoop 3.1.1. The stream restarts.";
+const INSTALLING_HELD: &str = "Installing StreamLoop 3.1.1. The stream stays stopped.";
 const UPDATED: &str = "Updated to StreamLoop 3.1.1.";
 const WENT_BACK: &str = "The update to 3.1.1 did not come up, so StreamLoop went back to 3.1.0.";
 const RESTARTED: &str = "StreamLoop was restarted during the update.";
@@ -442,6 +443,8 @@ async fn does_not_launch_when_stopped_from_the_dashboard() {
     assert!(r.layout.stopped_marker.exists());
     let landed = LandedRecord::read(&r.layout.landed).unwrap();
     assert_eq!((landed.on_air, landed.held), (false, true));
+    assert!(r.timeline().contains(&INSTALLING_HELD.to_string()), "{:?}", r.timeline());
+    assert!(r.posts.all().contains(&format!("recovery/info: step={INSTALLING_HELD}")), "{:?}", r.posts.all());
 }
 
 #[tokio::test(start_paused = true)]
@@ -458,6 +461,8 @@ async fn a_landing_while_waiting_for_start_does_not_relaunch_and_stays_held() {
     assert!(r.layout.waiting_for_start.exists());
     assert!(r.deps.launcher.is_waiting_for_start());
     assert_eq!(LandedRecord::read(&r.layout.landed).map(|l| l.held), Some(true));
+    assert!(r.timeline().contains(&INSTALLING_HELD.to_string()), "{:?}", r.timeline());
+    assert!(!r.timeline().contains(&INSTALLING.to_string()));
 }
 
 #[tokio::test(start_paused = true)]
@@ -907,6 +912,9 @@ async fn drops_a_record_this_exe_did_not_land() {
     assert!(!r.timeline().contains(&UPDATED.to_string()));
     let s = r.update_state();
     assert_eq!((s["result"].as_str(), s["reason"].as_str()), (Some("failed"), Some(RESTARTED)));
+    let failure = format!("The update to 3.1.1 failed at replacing files: {}. Still on 3.1.0.", RESTARTED.trim_end_matches('.'));
+    assert!(r.timeline().contains(&failure), "{:?}", r.timeline());
+    assert_eq!(r.posts.criticals(), [format!("critical: {failure}")]);
 }
 
 // settle_unfinished_update
@@ -918,11 +926,15 @@ async fn settle_marks_a_check_that_start_bat_cut_off_as_rolled_back() {
     std::fs::remove_file(&r.layout.landed).unwrap();
     std::fs::write(&r.layout.update_state, STATE_AT_START.replace("\"start\"", "\"check\"")).unwrap();
     // Act
-    settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), OLD);
+    let text = settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), OLD);
     // Assert
     let s = r.update_state();
     assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("check"), Some("rolled-back")));
     assert_eq!(s["reason"].as_str(), Some("The updated StreamLoop stopped before it was confirmed."));
+    assert_eq!(
+        text.as_deref(),
+        Some("The update to 3.1.1 failed at checking the new version: The updated StreamLoop stopped before it was confirmed. Still on 3.1.0.")
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -932,11 +944,12 @@ async fn settle_marks_a_landing_cut_off_before_the_swap_as_failed() {
     std::fs::remove_file(&r.layout.landed).unwrap();
     std::fs::write(&r.layout.update_state, STATE_AT_START.replace("\"start\"", "\"stop\"")).unwrap();
     // Act
-    settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), OLD);
+    let text = settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), OLD);
     // Assert
     let s = r.update_state();
     assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("stop"), Some("failed")));
     assert_eq!(s["reason"].as_str(), Some(RESTARTED));
+    assert_eq!(text.as_deref(), Some("The update to 3.1.1 failed at stopping the stream: StreamLoop was restarted during the update. Still on 3.1.0."));
 }
 
 #[tokio::test(start_paused = true)]
@@ -948,9 +961,77 @@ async fn settle_leaves_an_update_that_has_its_record_or_has_ended_alone() {
     let done = STATE_AT_START.replace("\"running\"", "\"ok\"");
     std::fs::write(&ended.layout.update_state, &done).unwrap();
     // Act
-    settle_unfinished_update(&with_record.layout, with_record.deps.clock.as_ref(), OLD);
-    settle_unfinished_update(&ended.layout, ended.deps.clock.as_ref(), OLD);
+    let texts = (
+        settle_unfinished_update(&with_record.layout, with_record.deps.clock.as_ref(), OLD),
+        settle_unfinished_update(&ended.layout, ended.deps.clock.as_ref(), OLD),
+    );
     // Assert
     assert_eq!(std::fs::read_to_string(&with_record.layout.update_state).unwrap(), STATE_AT_START);
     assert_eq!(std::fs::read_to_string(&ended.layout.update_state).unwrap(), done);
+    assert_eq!(texts, (None, None));
+}
+
+#[tokio::test(start_paused = true)]
+async fn settle_reports_nothing_for_an_update_whose_version_runs() {
+    // Arrange: the record went, but the new version is what runs
+    let r = confirming_rig(record(true, false), false);
+    std::fs::remove_file(&r.layout.landed).unwrap();
+    // Act
+    let text = settle_unfinished_update(&r.layout, r.deps.clock.as_ref(), NEW);
+    // Assert
+    assert_eq!(text, None);
+    assert_eq!(r.update_state()["result"].as_str(), Some("ok"));
+}
+
+// finish_before_exit
+
+#[tokio::test(start_paused = true)]
+async fn an_exit_during_a_landing_waits_until_the_new_supervisor_is_launched() {
+    // Arrange: the supervisor takes its 20 s to stop, and the exit comes 5 s into them
+    let r = landing_rig().await;
+    r.sup.ignores_shutdown.store(true, Ordering::SeqCst);
+    // Act
+    let (result, at_exit) = tokio::join!(land(&r.deps), async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        r.deps.finish_before_exit(FINISH_BEFORE_EXIT).await;
+        (r.spawns.all(), r.read(&r.layout.exe))
+    });
+    // Assert
+    assert_eq!(result, Ok(()));
+    assert_eq!(at_exit.0.len(), 1, "the exit came before the launch");
+    assert_eq!(at_exit.0[0].2.as_slice(), NEW_EXE);
+    assert_eq!(at_exit.1, NEW_EXE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_exit_before_the_landing_stops_the_supervisor_makes_it_give_up() {
+    // Arrange: Update Now downloads for 3 s, and the exit comes 1 s in
+    let r = unstaged_rig(NEW).await;
+    *r.http.download_delay.lock().unwrap() = Duration::from_secs(3);
+    let started = Instant::now();
+    // Act
+    let (result, exit_took) = tokio::join!(land(&r.deps), async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        r.deps.finish_before_exit(FINISH_BEFORE_EXIT).await;
+        started.elapsed()
+    });
+    // Assert
+    assert_eq!(result, Err("StreamLoop was closed before the update could start.".to_string()));
+    assert!(exit_took < Duration::from_secs(2), "the exit waited for a landing that had not begun: {exit_took:?}");
+    assert_eq!(r.sup.shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert!(!r.layout.landed.exists());
+    assert!(!r.deps.landing_in_progress());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_exit_after_a_landing_went_through_does_not_wait() {
+    // Arrange
+    let r = landing_rig().await;
+    land(&r.deps).await.unwrap();
+    let started = Instant::now();
+    // Act
+    r.deps.finish_before_exit(FINISH_BEFORE_EXIT).await;
+    // Assert
+    assert_eq!(started.elapsed(), Duration::ZERO);
 }
