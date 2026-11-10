@@ -238,6 +238,8 @@ struct State {
     last_check: Option<SystemTime>,
     view: Option<View>,
     off_air_since: Option<SystemTime>,
+    /// The last `observe` saw the stream stopped from the dashboard.
+    stopped_before: bool,
 }
 
 struct Inner {
@@ -288,6 +290,7 @@ impl Updater {
             last_check: None,
             view: None,
             off_air_since: None,
+            stopped_before: false,
         };
         Self {
             inner: Arc::new(Inner {
@@ -423,9 +426,13 @@ impl Updater {
         let off_air_for = st.off_air_since.and_then(|t| now.duration_since(t).ok()).unwrap_or_default();
         let uptime_s = if live { encoder_uptime(sup) } else { st.view.as_ref().and_then(|v| v.uptime_s) };
         st.view = Some(View { live, uptime_s, off_air_for, stopped, auto_check, rolled_back: rolled_back.clone() });
+        // Restart stream sends Stop and then Start, so a Stop counts once a second poll still sees it, or once
+        // the supervisor has gone.
+        let stopped_to_land = stopped && (st.stopped_before || sup.is_none());
+        st.stopped_before = stopped;
         let staged = self.inner.staged_locked(&st);
         drop(st);
-        should_land(&self.inner.policy, auto_check, staged.as_deref(), rolled_back.as_deref(), sup, stopped, off_air_for)
+        should_land(&self.inner.policy, auto_check, staged.as_deref(), rolled_back.as_deref(), sup, stopped_to_land, off_air_for)
     }
 
     /// Step 1 of a landing: the status reads `ready` until the process exits or the landing fails.
@@ -849,13 +856,13 @@ pub fn parse_node_version(text: &str) -> Option<String> {
     tag_parts(text.trim()).map(|p| p.join("."))
 }
 
-/// `streamloop-vX.Y.Z.exe` and its checksum: `streamloop-vX.Y.Z.exe.sha256`, else
-/// `streamloop-vX.Y.Z.sha256`. The base name is also the full ZIP's checksum, so it comes second.
+/// `streamloop-vX.Y.Z.exe` and its checksum, `streamloop-vX.Y.Z.exe.sha256`. `streamloop-vX.Y.Z.sha256` is the
+/// full ZIP's, so a release that has only that one is still uploading.
 pub fn select_exe_assets(r: &GithubRelease) -> Option<ExeAssets> {
     let v = release_version(r)?;
     let exe = format!("streamloop-v{v}.exe");
     let exe_url = asset_url(r, &exe)?;
-    let checksum_url = asset_url(r, &format!("{exe}.sha256")).or_else(|| asset_url(r, &format!("streamloop-v{v}.sha256")))?;
+    let checksum_url = asset_url(r, &format!("{exe}.sha256"))?;
     Some(ExeAssets { exe_url: exe_url.into(), checksum_url: checksum_url.into() })
 }
 
@@ -882,8 +889,8 @@ pub fn pick_release<'a>(releases: &'a [GithubRelease], current: &str) -> Option<
     best
 }
 
-/// With `autoUpdateCheck` on: stopped from the dashboard, the encoder at the break, or no live
-/// encoder for `off_air_after`. A version that rolled back once waits for Update Now.
+/// With `autoUpdateCheck` on: stopped from the dashboard (`stopped`, as `Updater::observe` counts it), the encoder
+/// at the break, or no live encoder for `off_air_after`. A version that rolled back once waits for Update Now.
 pub fn should_land(
     policy: &BreakPolicy,
     auto: bool,

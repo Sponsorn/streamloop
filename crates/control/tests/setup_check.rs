@@ -285,7 +285,8 @@ async fn writes_the_report_to_data_setup_check_json_with_the_keys_node_wrote() {
     assert_eq!(json["encoder"], serde_json::json!({"chosen": "h264_nvenc", "tried": ["h264_nvenc"], "software": false, "works": true}));
     assert_eq!(json["cache"], serde_json::json!({"freeMb": 10_240, "recommendedMb": 1024, "warning": null}));
     assert_eq!(json["dependencies"][0], serde_json::json!({"name": "Supervisor", "ok": false, "path": l.exe.to_string_lossy()}));
-    assert_eq!(json.as_object().unwrap().keys().collect::<Vec<_>>(), ["at", "cache", "dependencies", "encoder"].iter().collect::<Vec<_>>());
+    let keys: std::collections::BTreeSet<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["at", "cache", "dependencies", "encoder"].into_iter().collect());
     assert!(json["at"].as_str().unwrap().ends_with('Z'));
     assert_eq!(read_setup_report(&l), Some(report));
     std::fs::remove_dir_all(dir).unwrap();

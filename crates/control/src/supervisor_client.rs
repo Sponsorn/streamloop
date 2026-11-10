@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use streamloop_common::api::{ControlCmd, ControlRequest, ReloadRequest, SupervisorStatus};
+use serde::Deserialize;
+use serde_json::Value;
+use streamloop_common::api::{ControlCmd, ControlRequest, EncoderStatus, ReloadRequest, SupervisorStatus};
 
 use crate::http::{Http, HttpError, HttpErrorKind, HttpRequest};
 
@@ -102,7 +104,10 @@ impl SupervisorApi for SupervisorClient {
         if answer.status != 200 {
             return None;
         }
-        serde_json::from_value(serde_json::Value::Object(answer.json?)).ok()
+        let json = Value::Object(answer.json?);
+        // A supervisor whose status changed shape still answers: its version and encoder are what the version
+        // rule needs to replace it, instead of finding the port taken on every relaunch.
+        Some(SupervisorStatus::deserialize(&json).unwrap_or_else(|_| version_and_encoder(&json)))
     }
 
     async fn control(&self, cmd: ControlCmd, index: Option<u32>, reason: Option<String>, id: Option<String>) -> ControlResult {
@@ -138,6 +143,16 @@ impl SupervisorApi for SupervisorClient {
 
     async fn shutdown(&self) -> bool {
         matches!(self.call("/shutdown", Some(b"{}".to_vec())).await, Ok(a) if a.status == 200)
+    }
+}
+
+/// `version` and `encoder.alive`, each only when it has the type this side expects.
+fn version_and_encoder(json: &Value) -> SupervisorStatus {
+    let alive = json.get("encoder").and_then(|e| e.get("alive")).and_then(Value::as_bool);
+    SupervisorStatus {
+        version: json.get("version").and_then(Value::as_str).map(str::to_string),
+        encoder: alive.map(|alive| EncoderStatus { alive: Some(alive), ..EncoderStatus::default() }),
+        ..SupervisorStatus::default()
     }
 }
 

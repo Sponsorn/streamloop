@@ -2,7 +2,7 @@
 //! `streamloop-DATE.log` get the same lines, and files older than the retention period are removed.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -180,7 +180,8 @@ impl<S: Subscriber> Layer<S> for LineLayer {
         event.record(&mut fields);
         let now = SystemTime::now();
         let line = format_line_ordered(level, &fields.msg, &fields.extras, LocalTime::from_system(now));
-        println!("{line}");
+        // `println!` panics when stdout is gone, such as a closed pipe.
+        let _ = writeln!(io::stdout(), "{line}");
         if let Ok(mut f) = self.file.lock() {
             f.write_line(now, &line);
         }

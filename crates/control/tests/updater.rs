@@ -250,8 +250,8 @@ fn skips_a_release_whose_exe_has_no_checksum() {
 }
 
 #[test]
-fn select_exe_assets_takes_the_exe_checksum_before_the_base_name() {
-    // Arrange: the base name is also the full ZIP's checksum, so it only stands in for a missing .exe.sha256
+fn select_exe_assets_takes_only_the_exe_checksum() {
+    // Arrange: the base name is the full ZIP's checksum, never the exe's
     let both = release_with(
         "v3.1.1",
         true,
@@ -260,11 +260,24 @@ fn select_exe_assets_takes_the_exe_checksum_before_the_base_name() {
     let base_only = release_with("v3.1.1", true, vec![asset("streamloop-v3.1.1.sha256"), asset("streamloop-v3.1.1.exe")]);
     // Act
     let from_both = select_exe_assets(&both).unwrap();
-    let from_base = select_exe_assets(&base_only).unwrap();
+    let from_base = select_exe_assets(&base_only);
     // Assert
     assert!(from_both.exe_url.ends_with("/streamloop-v3.1.1.exe"));
     assert!(from_both.checksum_url.ends_with("/streamloop-v3.1.1.exe.sha256"));
-    assert!(from_base.checksum_url.ends_with("/streamloop-v3.1.1.sha256"));
+    assert_eq!(from_base, None);
+}
+
+#[test]
+fn skips_a_release_whose_exe_checksum_is_still_uploading() {
+    // Arrange: v3.1.2 has its ZIP with the ZIP's checksum and its exe, but not the exe's checksum yet
+    let releases = [
+        release_with("v3.1.2", true, vec![asset("streamloop-v3.1.2.zip"), asset("streamloop-v3.1.2.sha256"), asset("streamloop-v3.1.2.exe")]),
+        pre("v3.1.1"),
+    ];
+    // Act
+    let got = picked(&releases, "3.1.0");
+    // Assert
+    assert_eq!(got, Some("v3.1.1"));
 }
 
 /// The fixture's releases carry `-update.zip`; under the exe rule a release carries the exe and its checksum in its place.
@@ -874,6 +887,42 @@ async fn status_says_within_a_minute_when_stopped() {
     // Assert
     assert!(due);
     assert_eq!(updater.status().node_notice.as_deref(), Some(OFF_AIR));
+}
+
+#[tokio::test]
+async fn a_stop_lands_once_a_second_poll_still_sees_it_while_the_supervisor_answers() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    // Act: the supervisor is still shutting down at both polls
+    let first = updater.observe(Some(&live(100)), true, true);
+    let second = updater.observe(Some(&live(100)), true, true);
+    // Assert
+    assert_eq!((first, second), (false, true));
+}
+
+#[tokio::test]
+async fn restart_stream_between_two_polls_lands_nothing() {
+    // Arrange: Restart stream sends Stop and then Start
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    // Act
+    let at_stop = updater.observe(Some(&live(100)), true, true);
+    let after_start = updater.observe(Some(&live(100)), false, true);
+    // Assert
+    assert_eq!((at_stop, after_start), (false, false));
+}
+
+#[tokio::test]
+async fn a_stop_lands_at_once_once_the_supervisor_no_longer_answers() {
+    // Arrange
+    let h = Harness::new();
+    let updater = h.staged(NEXT).await;
+    updater.observe(Some(&live(100)), false, true);
+    // Act
+    let due = updater.observe(None, true, true);
+    // Assert
+    assert!(due);
 }
 
 #[tokio::test]

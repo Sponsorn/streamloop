@@ -85,6 +85,28 @@ async fn status_tolerates_missing_and_unknown_fields() {
 }
 
 #[tokio::test]
+async fn status_keeps_the_version_and_encoder_alive_when_another_field_changed_type() {
+    // Arrange: a later supervisor that sends playlistCount as text and the encoder's restarts as an object
+    let (_http, client) = answering(200, r#"{"state":"playing","version":"3.2.0","playlistCount":"fifty","encoder":{"alive":true,"restarts":{"n":1}}}"#);
+    // Act
+    let s = client.status().await;
+    // Assert: it still answers, so the version rule can replace it
+    let s = s.expect("a supervisor that answers counts as answering");
+    assert_eq!(s.version.as_deref(), Some("3.2.0"));
+    assert_eq!(s.encoder.and_then(|e| e.alive), Some(true));
+}
+
+#[tokio::test]
+async fn status_of_a_changed_shape_without_a_version_or_encoder_reads_as_answering_with_neither() {
+    // Arrange
+    let (_http, client) = answering(200, r#"{"state":7,"version":3,"encoder":{"alive":"yes"}}"#);
+    // Act
+    let s = client.status().await.expect("a supervisor that answers counts as answering");
+    // Assert
+    assert_eq!((s.version, s.encoder.and_then(|e| e.alive)), (None, None));
+}
+
+#[tokio::test]
 async fn status_is_none_when_the_connection_is_refused() {
     // Arrange
     let client = failing(HttpError::connect("ECONNREFUSED", "refused"));
