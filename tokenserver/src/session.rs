@@ -42,6 +42,32 @@ struct State {
     /// Counts finished start attempts; `start_error` is the last one's failure, if it failed.
     start_epoch: u64,
     start_error: Option<String>,
+    ip: IpWatch,
+}
+
+/// 2.0.0 keeps a minter per IP; this server keeps one, so it notes when the IP YouTube reports moves away from it.
+#[derive(Default)]
+struct IpWatch {
+    /// The `remoteHost` of the request that started the live minter.
+    built_for: Option<String>,
+    told: bool,
+}
+
+impl IpWatch {
+    fn built(&mut self, ip: Option<&str>) {
+        self.built_for = ip.map(str::to_owned);
+        self.told = false;
+    }
+
+    /// True the first time a request reports another IP than the minter's.
+    fn changed(&mut self, ip: Option<&str>) -> bool {
+        let moved = matches!((self.built_for.as_deref(), ip), (Some(was), Some(now)) if was != now);
+        if moved && !self.told {
+            self.told = true;
+            return true;
+        }
+        false
+    }
 }
 
 /// One minter. Every request mints a fresh token from it: 2.0.0 as shipped caches none.
@@ -133,6 +159,10 @@ impl Sessions {
                     st.start_error = None;
                     if st.generation == generation {
                         st.minter_expiry = Some((self.clock)() + Duration::from_secs(valid_for_s));
+                        st.ip.built(remote_host_of(r));
+                        if remote_host_of(r).is_none() {
+                            println!("minter: the request names no IP, so an IP change will not be noted");
+                        }
                     }
                 }
                 Err(e) => {
@@ -141,6 +171,10 @@ impl Sessions {
                     return Err(e);
                 }
             }
+        }
+        if lock(&self.state).ip.changed(remote_host_of(r)) {
+            // No address in the log: whether the change lines up with 403s is all the box run needs.
+            println!("minter: the IP YouTube reports has changed since this minter was built");
         }
         let token = match engine.mint(binding) {
             Ok(t) if !t.is_empty() => t,
@@ -229,6 +263,16 @@ fn binding_of(r: &PotRequest) -> Option<&str> {
         .as_ref()?
         .get("client")?
         .get("visitorData")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+}
+
+/// The IP YouTube reported to the plugin, from the request's innertube context.
+fn remote_host_of(r: &PotRequest) -> Option<&str> {
+    r.innertube_context
+        .as_ref()?
+        .get("client")?
+        .get("remoteHost")?
         .as_str()
         .filter(|s| !s.is_empty())
 }
@@ -362,6 +406,40 @@ mod tests {
 
     fn req(binding: &str) -> PotRequest {
         PotRequest { content_binding: binding.to_owned(), challenge: None, bypass_cache: false, innertube_context: None }
+    }
+
+    /// A request whose innertube context carries the IP YouTube reported to the plugin.
+    fn req_from(binding: &str, ip: &str) -> PotRequest {
+        PotRequest { innertube_context: Some(json!({"client": {"remoteHost": ip}})), ..req(binding) }
+    }
+
+    #[test]
+    fn notes_a_new_ip_once_per_minter_and_rebuilds_nothing_for_it() {
+        let r = rig(Ok(PAGE));
+
+        r.sessions.get_pot(&req_from("vid1", "192.0.2.1")).unwrap();
+        r.sessions.get_pot(&req_from("vid2", "192.0.2.1")).unwrap();
+        let same_ip = lock(&r.sessions.state).ip.told;
+        r.sessions.get_pot(&req_from("vid3", "198.51.100.7")).unwrap();
+        let new_ip = lock(&r.sessions.state).ip.told;
+        r.sessions.invalidate_caches();
+        r.sessions.get_pot(&req_from("vid4", "198.51.100.7")).unwrap();
+        let rebuilt = lock(&r.sessions.state).ip.told;
+
+        assert!(!same_ip, "the IP the minter was built for");
+        assert!(new_ip, "a request from another IP");
+        assert!(!rebuilt, "a new minter starts over from its own request's IP");
+        assert_eq!(r.engine.lock().unwrap().starts, 2, "only the invalidation rebuilt the minter");
+    }
+
+    #[test]
+    fn a_request_without_an_ip_is_no_change() {
+        let r = rig(Ok(PAGE));
+
+        r.sessions.get_pot(&req_from("vid1", "192.0.2.1")).unwrap();
+        r.sessions.get_pot(&req("vid2")).unwrap();
+
+        assert!(!lock(&r.sessions.state).ip.told);
     }
 
     fn plugin_challenge() -> Value {
