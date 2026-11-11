@@ -1,0 +1,6 @@
+{
+  "name": "throws on a file that is not JSON",
+  "before": "{ not json",
+  "after": null,
+  "error": "Expected property name or '}' in JSON at position 2 (line 1 column 3)"
+}

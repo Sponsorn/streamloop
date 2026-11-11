@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 /// Days a daily file is kept, counted from the date in its name.
 pub const KEEP_DAYS: u32 = 7;
@@ -22,45 +23,13 @@ pub fn daily_name(base: &str, ext: &str, date: &str) -> String {
     format!("{base}-{date}.{ext}")
 }
 
-/// Local (year, month, day, hour, minute, second).
-#[cfg(windows)]
-fn local_parts() -> (i64, u32, u32, u32, u32, u32) {
-    let mut t = unsafe { std::mem::zeroed::<windows_sys::Win32::Foundation::SYSTEMTIME>() };
-    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
-    (t.wYear.into(), t.wMonth.into(), t.wDay.into(), t.wHour.into(), t.wMinute.into(), t.wSecond.into())
-}
-
-#[cfg(not(windows))]
-fn local_parts() -> (i64, u32, u32, u32, u32, u32) {
-    // ponytail: UTC off Windows; the supervisor only ships on Windows.
-    let s = (crate::unix_ms() / 1000) as i64;
-    let (y, m, d) = civil(s.div_euclid(86_400));
-    let r = s.rem_euclid(86_400) as u32;
-    (y, m, d, r / 3600, r / 60 % 60, r % 60)
-}
-
 pub fn local_date() -> String {
-    let (y, m, d, ..) = local_parts();
-    format!("{y:04}-{m:02}-{d:02}")
+    streamloop_common::time::local_date(SystemTime::now())
 }
 
 fn local_stamp() -> String {
-    let (y, m, d, h, mi, s) = local_parts();
+    let (y, m, d, h, mi, s) = streamloop_common::time::local_parts(SystemTime::now());
     format!("{y:04}{m:02}{d:02}-{h:02}{mi:02}{s:02}")
-}
-
-/// Howard Hinnant's civil_from_days.
-#[cfg(not(windows))]
-fn civil(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
 /// Days since 1970-01-01 for "YYYY-MM-DD"; None for anything that is not a real-looking date.
@@ -182,7 +151,7 @@ impl Logs {
         self.daily(base, "csv", &format!("{}\n", clean.join(",")));
     }
     pub fn event(&self, level: &str, kind: &str, extra: Value) {
-        let mut v = json!({"ts": crate::iso_now(), "level": level, "kind": kind});
+        let mut v = json!({"ts": streamloop_common::time::iso_now(), "level": level, "kind": kind});
         if let (Some(m), Value::Object(e)) = (v.as_object_mut(), extra) {
             m.extend(e);
         }

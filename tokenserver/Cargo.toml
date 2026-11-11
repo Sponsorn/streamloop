@@ -11,3 +11,8 @@ rustypipe-botguard = { path = "vendor/rustypipe-botguard" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 tokio = { version = "1", features = ["rt", "time"] }
 tiny_http = "0.12"
+
+# Its own workspace root, as ui/ is: cargo stops here instead of reaching a workspace above.
+# vendor/ stays a plain dependency, so its dev-dependencies stay out of Cargo.lock.
+[workspace]
+exclude = ["vendor"]

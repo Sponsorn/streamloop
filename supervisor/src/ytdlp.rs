@@ -4,7 +4,8 @@ use crate::procs::{command, kill_tree};
 use crate::Logs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use crate::paths::Paths;
+use streamloop_common::paths::Layout as Paths;
+use streamloop_common::playlist::{parse_playlist, PRINT_TEMPLATE};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
@@ -29,12 +30,7 @@ pub struct Ytdlp {
     token_port: u16,
 }
 
-#[derive(Clone, Debug)]
-pub struct Entry {
-    pub id: String,
-    pub title: String,
-    pub duration: Option<f64>,
-}
+pub use streamloop_common::playlist::PlaylistEntry as Entry;
 
 #[derive(Clone, Debug)]
 pub struct Resolved {
@@ -64,20 +60,6 @@ pub fn describe_error(stderr: &str, code: Option<i32>) -> String {
         .or(stderr.lines().rev().find(|l| !l.trim().is_empty()))
         .map(|l| l.trim().chars().take(300).collect())
         .unwrap_or_else(|| format!("yt-dlp exit {code:?}"))
-}
-
-/// `--flat-playlist --print id\ttitle\tduration` lines. YouTube keeps private and deleted videos
-/// in a list under these titles; they can never play, so they never enter it.
-pub fn parse_playlist(stdout: &str) -> Vec<Entry> {
-    stdout
-        .lines()
-        .filter_map(|l| {
-            let mut f = l.split('\t');
-            let id = f.next()?.trim().to_string();
-            (!id.is_empty()).then(|| Entry { id, title: f.next().unwrap_or("").to_string(), duration: f.next().and_then(|d| d.trim().parse().ok()) })
-        })
-        .filter(|e| e.title != "[Private video]" && e.title != "[Deleted video]")
-        .collect()
 }
 
 /// The cookie error of a call that went on without its cookies; None when the cookies were read,
@@ -220,7 +202,7 @@ impl Ytdlp {
     }
 
     pub fn playlist(&self, url: &str, logs: &Logs) -> Result<Vec<Entry>, String> {
-        let args: Vec<String> = ["--flat-playlist", "--print", "%(id)s\t%(title)s\t%(duration)s", url].map(String::from).to_vec();
+        let args: Vec<String> = ["--flat-playlist", "--print", PRINT_TEMPLATE, url].map(String::from).to_vec();
         let out = self.run(None, &args, logs, &AtomicBool::new(false), Duration::from_secs(120), |_| {}, |_| {});
         let entries = parse_playlist(&out.stdout);
         if entries.is_empty() {
@@ -320,7 +302,7 @@ pub fn token_server_args(port: u16, data: &Path) -> Vec<String> {
 
 /// The program and arguments of the token server to run: `streamloop-pot.exe` when it is installed, else the TypeScript
 /// server when `node\` and `pot\` are still there (an install that took the exe through the updater, not the full ZIP).
-/// The fallback paths are not in `layout()`: the full ZIP no longer ships them.
+/// The fallback's paths come from the root, not `Layout`, so the release layout never requires them.
 pub fn token_server_command(paths: &Paths, port: u16) -> Option<(PathBuf, Vec<String>)> {
     if paths.token_server.is_file() {
         return Some((paths.token_server.clone(), token_server_args(port, &paths.data)));
@@ -469,7 +451,7 @@ mod tests {
     #[test]
     fn prefers_the_rust_token_server() {
         let root = root_with("rust", &["supervisor/streamloop-pot.exe", "node/node.exe", "pot/build/main.js"]);
-        let paths = crate::paths::layout(&root);
+        let paths = Paths::new(&root);
 
         let (exe, args) = token_server_command(&paths, 4416).unwrap();
 
@@ -481,7 +463,7 @@ mod tests {
     #[test]
     fn falls_back_to_the_typescript_server_when_only_it_is_installed() {
         let root = root_with("ts", &["node/node.exe", "pot/build/main.js"]);
-        let paths = crate::paths::layout(&root);
+        let paths = Paths::new(&root);
 
         let (exe, args) = token_server_command(&paths, 4416).unwrap();
 
@@ -494,7 +476,7 @@ mod tests {
     #[test]
     fn names_no_token_server_when_neither_is_installed() {
         let root = root_with("none", &["node/node.exe"]);
-        let paths = crate::paths::layout(&root);
+        let paths = Paths::new(&root);
 
         assert!(token_server_command(&paths, 4416).is_none());
         let _ = std::fs::remove_dir_all(&root);
@@ -503,7 +485,7 @@ mod tests {
     #[test]
     fn every_call_gets_the_plugin_dir_and_an_absolute_deno() {
         let root = std::env::temp_dir().join("sl-root");
-        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None, 4416);
+        let yt = Ytdlp::new(&Paths::new(&root), "mweb", None, 4416);
         let a = yt.base(None);
         let after = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone()).unwrap_or_default();
         assert_eq!(after("--plugin-dirs"), root.join("yt-dlp").join("plugins").to_string_lossy());
@@ -521,13 +503,13 @@ mod tests {
 
     #[test]
     fn the_plugin_talks_to_the_token_port_it_is_given() {
-        let yt = Ytdlp::new(&crate::paths::layout(&std::env::temp_dir().join("sl-root")), "mweb", None, 4426);
+        let yt = Ytdlp::new(&Paths::new(&std::env::temp_dir().join("sl-root")), "mweb", None, 4426);
         assert!(yt.base(None).iter().any(|a| a == "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4426"));
     }
 
     #[test]
     fn cookies_go_in_as_one_separate_argument_only_when_set() {
-        let yt = Ytdlp::new(&crate::paths::layout(&std::env::temp_dir().join("sl-root")), "mweb", None, 4416);
+        let yt = Ytdlp::new(&Paths::new(&std::env::temp_dir().join("sl-root")), "mweb", None, 4416);
         assert!(!yt.base(None).iter().any(|a| a.contains("cookies")), "{:?}", yt.base(None));
 
         *yt.cookies.lock().unwrap() = r"firefox:C:\Profiles\x y".into();
@@ -559,7 +541,7 @@ mod tests {
     #[test]
     fn every_call_names_the_bundled_ffmpeg_for_the_merge() {
         let root = std::env::temp_dir().join("sl-root");
-        let yt = Ytdlp::new(&crate::paths::layout(&root), "mweb", None, 4416);
+        let yt = Ytdlp::new(&Paths::new(&root), "mweb", None, 4416);
         let a = yt.base(None);
         let at = a.iter().position(|x| x == "--ffmpeg-location").expect("--ffmpeg-location");
         assert_eq!(a[at + 1], root.join("ffmpeg").join("ffmpeg.exe").to_string_lossy());

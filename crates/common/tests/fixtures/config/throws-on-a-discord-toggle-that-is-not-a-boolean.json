@@ -1,0 +1,6 @@
+{
+  "name": "throws on a discord toggle that is not a boolean",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"discord\":{\"events\":{\"error\":\"yes\"}}}",
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"boolean\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"discord\",\n      \"events\",\n      \"error\"\n    ],\n    \"message\": \"Invalid input: expected boolean, received string\"\n  }\n]"
+}

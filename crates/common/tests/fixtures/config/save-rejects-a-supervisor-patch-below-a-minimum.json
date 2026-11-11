@@ -1,0 +1,11 @@
+{
+  "name": "save rejects a supervisor patch below a minimum",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}]}",
+  "patch": {
+    "supervisor": {
+      "freezeSeconds": 1
+    }
+  },
+  "after": null,
+  "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 5,\n    \"inclusive\": true,\n    \"path\": [\n      \"supervisor\",\n      \"freezeSeconds\"\n    ],\n    \"message\": \"Too small: expected number to be >=5\"\n  }\n]"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "throws when config.json is missing and there is no example",
+  "before": null,
+  "after": null,
+  "error": "ENOENT: no such file or directory, open '<dir>\\config.json'"
+}

@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::process::ChildStdin;
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
+use streamloop_common::encoder::{video_set, Encoder, PROBE_TAIL};
 
 
 pub enum Input<'a> {
@@ -106,30 +107,18 @@ impl Default for WatchdogCfg {
     }
 }
 
-/// Spike 2's per-vendor video sets: CBR 4500k, fixed 60-frame GOP, no B-frames, High profile.
-fn video_set(codec: &str) -> Option<&'static [&'static str]> {
-    Some(match codec {
-        "h264_nvenc" => &["-preset", "p4", "-rc", "cbr", "-bf", "0", "-profile:v", "high"],
-        "h264_amf" => &["-usage", "transcoding", "-quality", "balanced", "-rc", "cbr", "-bf", "0", "-profile:v", "high"],
-        // QSV has no -rc: -b:v equal to -maxrate selects CBR.
-        "h264_qsv" => &["-preset", "medium", "-look_ahead", "0", "-bf", "0", "-profile:v", "high"],
-        "libx264" => &["-preset", "veryfast", "-sc_threshold", "0", "-keyint_min", "60"],
-        _ => return None,
-    })
-}
-
 /// The watchdog's detectors sit in the encoder's own chains (no second output: a critical output
 /// is never teed); `-v info` lets their lines reach stderr. Every stderr line is logged redacted.
 pub fn encoder_args(target: &str, codec: &str, watchdog: &WatchdogCfg) -> Result<Vec<String>, String> {
-    let set = video_set(codec).ok_or_else(|| format!("unknown encoder \"{codec}\" (h264_nvenc, h264_amf, h264_qsv, libx264)"))?;
+    let enc = Encoder::parse(codec).ok_or_else(|| format!("unknown encoder \"{codec}\" (h264_nvenc, h264_amf, h264_qsv, libx264)"))?;
     // -50dB, not -60dB: the feeder's mpeg2 (q 2, GOP 15) puts a still picture of real content
     // 52-58 dB apart at every I-frame, so -60dB never sees it frozen.
     let vf = format!("freezedetect=n=-50dB:d={}", watchdog.freeze_s);
     let af = format!("aresample=async=1:min_hard_comp=0.01,silencedetect=n=-50dB:d={}", watchdog.silence_s);
     let mut a: Vec<&str> = vec!["-v", "info", "-nostats", "-stats_period", "0.1", "-progress", "pipe:2", "-re", "-f", "mpegts", "-i", "pipe:0", "-c:v", codec];
-    a.extend(set);
+    a.extend(video_set(enc));
+    a.extend(PROBE_TAIL);
     a.extend([
-        "-b:v", "4500k", "-maxrate", "4500k", "-bufsize", "9000k", "-g", "60", "-pix_fmt", "yuv420p",
         "-vf", &vf, "-af", &af, "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
         "-f", "flv", target,
     ]);
@@ -461,7 +450,7 @@ mod tests {
         let mut args = feeder_args(&Input::File(&clip), 600.0, crate::rules::BASE, None, Some(&script));
         args.retain(|a| a != "-progress" && a != "pipe:2");
         args.splice(0..0, ["-t".to_string(), "20".to_string()]);
-        let o = std::process::Command::new(r"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe").args(&args).output().unwrap();
+        let o = crate::procs::command(r"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe").args(&args).output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         std::fs::write(out, o.stdout).unwrap();
     }
@@ -646,7 +635,7 @@ mod tests {
         let offset = BASE + 3 * HZ + 1234; // an offset that is not a whole frame
         let mut args = feeder_args(&Input::File(slate.to_str().unwrap()), 0.0, offset, None, None);
         args.retain(|a| a != "-progress" && a != "pipe:2");
-        let Ok(out) = std::process::Command::new("ffmpeg").args(&args).output() else {
+        let Ok(out) = crate::procs::command("ffmpeg").args(&args).output() else {
             eprintln!("skipped: no ffmpeg");
             return;
         };

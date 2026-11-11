@@ -1,0 +1,6 @@
+{
+  "name": "throws on updateCheckIntervalMs zero",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"updateCheckIntervalMs\":0}",
+  "after": null,
+  "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": false,\n    \"path\": [\n      \"updateCheckIntervalMs\"\n    ],\n    \"message\": \"Too small: expected number to be >0\"\n  }\n]"
+}

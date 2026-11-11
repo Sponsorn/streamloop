@@ -1,170 +1,103 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 title StreamLoop 3
 echo ======================================
 echo   StreamLoop 3 - 24/7 YouTube Streamer
 echo ======================================
 echo.
 
-:: Resolve paths relative to this batch file
 set "ROOT=%~dp0"
-set "NODE=%ROOT%node\node.exe"
-set "APP=%ROOT%app"
+set "EXE=%ROOT%streamloop.exe"
 
-call :heal
+:: An update stopped between its two renames leaves only streamloop.exe.old.
+if not exist "%EXE%" if exist "%ROOT%streamloop.exe.old" rename "%ROOT%streamloop.exe.old" streamloop.exe
 
-:: Pre-flight checks
-if not exist "%NODE%" (
-    echo [ERROR] Node.js is missing: %NODE%. Reinstall StreamLoop from the full ZIP.
-    pause
-    exit /b 1
-)
+if not exist "%EXE%" goto :missing_exe
+if not exist "%ROOT%ffmpeg\ffmpeg.exe" goto :missing_ffmpeg
+if not exist "%ROOT%node\node.exe" goto :missing_node
+if not exist "%ROOT%pot\build\main.js" goto :missing_pot
 
-if not exist "%APP%\src\server\index.ts" (
-    echo [ERROR] The app is missing: %APP%. Reinstall StreamLoop from the full ZIP.
-    pause
-    exit /b 1
-)
-
-if not exist "%APP%\node_modules" (
-    echo [ERROR] The app's dependencies are missing: %APP%\node_modules. Reinstall StreamLoop from the full ZIP.
-    pause
-    exit /b 1
-)
-
-if not exist "%ROOT%supervisor\streamloop-supervisor.exe" (
-    echo [ERROR] The supervisor is missing: %ROOT%supervisor\streamloop-supervisor.exe. Reinstall StreamLoop from the full ZIP.
-    pause
-    exit /b 1
-)
-
-if not exist "%ROOT%ffmpeg\ffmpeg.exe" (
-    echo [ERROR] ffmpeg is missing: %ROOT%ffmpeg\ffmpeg.exe. Reinstall StreamLoop from the full ZIP.
-    pause
-    exit /b 1
-)
-
-if not exist "%ROOT%pot\build\main.js" (
-    echo [ERROR] The token server is missing: %ROOT%pot\build\main.js. Reinstall StreamLoop from the full ZIP.
-    pause
-    exit /b 1
-)
-
-echo Starting server...
+echo Starting StreamLoop...
 echo.
 
+set "STREAMLOOP_START=first"
+
 :loop
-:: Heal again on every start: a rollback in the update block below can fail too.
-call :heal
+if not exist "%EXE%" if exist "%ROOT%streamloop.exe.old" rename "%ROOT%streamloop.exe.old" streamloop.exe
+cd /d "%ROOT%"
+"%EXE%"
+set "CODE=%ERRORLEVEL%"
 
-:: Start the server (this blocks until the server exits)
-cd /d "%APP%"
-"%NODE%" node_modules\tsx\dist\cli.mjs src\server\index.ts
-
-:: Check if server exited with code 75 (update restart). Inside the block use rem, never ::,
-:: and no parentheses in comments: cmd parses it on every exit and a :: line there kills the launcher.
-if %ERRORLEVEL% equ 75 (
+if "%CODE%"=="0" (
     echo.
-    cd /d "%ROOT%"
-
-    rem Swap app directory if a staged update exists. Only app\ is swapped:
-    rem the supervisor holds yt-dlp\ and its token server holds node\.
-    if exist "%ROOT%_update_tmp\app" (
-        echo Applying update...
-        if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
-        rem Retry rename up to 5 times: Windows may still hold file locks
-        rem from the Node process that just exited
-        set "RENAME_OK=0"
-        for /L %%i in (1,1,5) do (
-            if "!RENAME_OK!"=="0" (
-                rename "%ROOT%app" _update_old 2>nul
-                if not exist "%ROOT%app" (
-                    set "RENAME_OK=1"
-                ) else (
-                    echo   Waiting for file locks to release (attempt %%i/5^)...
-                    ping -n 4 127.0.0.1 >nul
-                )
-            )
-        )
-        if not exist "%ROOT%app" (
-            move "%ROOT%_update_tmp\app" "%ROOT%app"
-            if exist "%ROOT%app\src\server\index.ts" (
-                rem Carry over config and logs from old app. Playback state lives in data, outside app.
-                if exist "%ROOT%_update_old\config.json" copy /y "%ROOT%_update_old\config.json" "%ROOT%app\config.json" >nul
-                if exist "%ROOT%_update_old\logs" xcopy "%ROOT%_update_old\logs" "%ROOT%app\logs\" /E /I /Y >nul 2>nul
-                rem Stage the new launcher only if it actually differs - never
-                rem overwrite the running script in place. A .bat that replaces
-                rem itself desyncs cmd's on-disk read position and usually closes
-                rem the window before the relaunch. The swap is handed off below.
-                if exist "%ROOT%_update_tmp\START.bat" (
-                    fc /b "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat" >nul 2>&1
-                    if errorlevel 1 copy /y "%ROOT%_update_tmp\START.bat" "%ROOT%START.bat.new" >nul
-                )
-                echo Update applied successfully.
-
-                rem Clean up temp directories only after successful swap
-                if exist "%ROOT%_update_old" rmdir /s /q "%ROOT%_update_old" 2>nul
-                if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
-            ) else (
-                echo [ERROR] New app directory is incomplete, rolling back...
-                if exist "%ROOT%app" rmdir /s /q "%ROOT%app" 2>nul
-                rename "%ROOT%_update_old" app
-            )
-        ) else (
-            echo [ERROR] Failed to rename old app directory, aborting update.
-            if exist "%ROOT%_update_tmp" rmdir /s /q "%ROOT%_update_tmp" 2>nul
-        )
-    )
-
-    rem If a new launcher was staged, hand off to a detached one-shot script that
-    rem swaps START.bat and relaunches in a fresh window. The swapping script and
-    rem the swapped script must never be the same file: a self-replacing .bat
-    rem desyncs cmd and closes the window before it can relaunch. The trampoline
-    rem finds the root from its own path, since an echoed path follows the console codepage.
-    if exist "%ROOT%START.bat.new" (
-        echo Applying new launcher and restarting...
-        set "TRAMP=%ROOT%_apply_launcher.bat"
-        > "!TRAMP!" echo @echo off
-        >> "!TRAMP!" echo ping -n 3 127.0.0.1 ^>nul
-        >> "!TRAMP!" echo move /y "%%~dp0START.bat.new" "%%~dp0START.bat" ^>nul
-        >> "!TRAMP!" echo cd /d "%%~dp0"
-        >> "!TRAMP!" echo start "StreamLoop 3" "%%~dp0START.bat"
-        >> "!TRAMP!" echo del "%%~f0"
-        start "" cmd /c "!TRAMP!"
-        exit /b 0
-    )
-
-    echo Restarting server...
-    ping -n 3 127.0.0.1 >nul
-    goto loop
-)
-
-:: Exit code 0 = clean shutdown, don't restart
-if %ERRORLEVEL% equ 0 (
-    echo.
-    echo Server stopped cleanly.
+    echo StreamLoop stopped.
     pause
     exit /b 0
 )
 
-:: Any other exit code = crash, auto-restart after delay
+if "%CODE%"=="2" (
+    echo.
+    echo Another StreamLoop is already running. Close it and start this one again.
+    pause
+    exit /b 2
+)
+
+set "STREAMLOOP_START=restart"
+if "%CODE%"=="75" goto restart
+if exist "%ROOT%_update\landed" if exist "%ROOT%streamloop.exe.old" call :rollback
+
+:restart
 echo.
-echo Server crashed (exit code %ERRORLEVEL%). Restarting in 10 seconds...
+echo StreamLoop exited (code %CODE%). Starting it again in 10 seconds...
 ping -n 11 127.0.0.1 >nul
 goto loop
 
-:: Self-heal: an interrupted swap or a failed rollback can leave app\ missing,
-:: which would fail every start. Restore the old copy, or promote the staged one.
-:heal
-if not exist "%APP%\src\server\index.ts" (
-    if exist "%ROOT%_update_old\src\server\index.ts" (
-        echo [RECOVER] app missing - restoring from _update_old ...
-        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
-        rename "%ROOT%_update_old" app
-    ) else if exist "%ROOT%_update_tmp\app\src\server\index.ts" (
-        echo [RECOVER] app missing - promoting staged _update_tmp\app ...
-        if exist "%APP%" rmdir /s /q "%APP%" 2>nul
-        move "%ROOT%_update_tmp\app" "%APP%"
-    )
-)
+:: An update landed and the new version stopped before confirming it: put the previous exe back.
+:rollback
+if not exist "%EXE%" goto :cut_off
+if exist "%ROOT%streamloop.exe.bad" del /f /q "%ROOT%streamloop.exe.bad"
+rename "%EXE%" streamloop.exe.bad
+if exist "%EXE%" goto :rollback_failed
+rename "%ROOT%streamloop.exe.old" streamloop.exe
+if not exist "%EXE%" goto :rollback_undo
+if not exist "%ROOT%data" mkdir "%ROOT%data"
+move /y "%ROOT%_update\landed" "%ROOT%data\update-rolled-back" >nul
+set "STREAMLOOP_START=rollback"
+echo [RECOVER] The updated StreamLoop stopped before it was confirmed, so the previous version is back.
+goto :eof
+
+:: The previous exe would not go back, so the new one returns and the record stays for the next exit.
+:rollback_undo
+rename "%ROOT%streamloop.exe.bad" streamloop.exe
+:: The updated exe could not be put aside: it stays, with the record, for the next exit to try again.
+:rollback_failed
+echo [WARN] The updated StreamLoop stopped before it was confirmed, and the previous version could not be put back yet. StreamLoop tries again the next time it stops.
+goto :eof
+
+:: The preflight labels hold the expanded paths here, outside any block, so a ")" in the install path cannot close one.
+:missing_exe
+echo [ERROR] StreamLoop is missing: %EXE%. Reinstall StreamLoop from the full ZIP.
+pause
+exit /b 1
+
+:missing_ffmpeg
+echo [ERROR] ffmpeg is missing: %ROOT%ffmpeg\ffmpeg.exe. Reinstall StreamLoop from the full ZIP.
+pause
+exit /b 1
+
+:missing_node
+echo [ERROR] Node.js is missing: %ROOT%node\node.exe. Reinstall StreamLoop from the full ZIP.
+pause
+exit /b 1
+
+:missing_pot
+echo [ERROR] The token server is missing: %ROOT%pot\build\main.js. Reinstall StreamLoop from the full ZIP.
+pause
+exit /b 1
+
+:cut_off
+rem The update was cut off between its two renames, so the new version never ran.
+rename "%ROOT%streamloop.exe.old" streamloop.exe
+if not exist "%EXE%" goto :eof
+echo [RECOVER] An update was cut off before it finished, so the previous version is back.
 goto :eof

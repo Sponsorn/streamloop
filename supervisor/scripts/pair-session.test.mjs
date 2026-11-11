@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   parseArgs, parseSha256File, pairConfig, supervisorArgs, tsServerArgs, judgeIdentity, bgutilPlugins,
   lastSpawnPid, parsePrivateMb, memoryCsvRow, assembleReport, ownProcesses, removeTree, PORTS,
-  pingIdentity, judgeA, notePlaying, playingVerdict,
+  pingIdentity, judgeA, notePlaying, playingVerdict, modeArgs, DEFAULT_B_BIN,
 } from './pair-session.mjs';
 
 const R403 = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
@@ -77,6 +77,21 @@ describe('supervisorArgs', () => {
 
     expect(args).toEqual(['--root', 'R', '--debug-faults', '--api-port', '4427', '--token-port', '4426', '--target', 'rtmp://127.0.0.1:1935/live/b']);
     expect([PORTS.bApi, PORTS.bToken]).toEqual([4427, 4426]);
+  });
+
+  it('runs B from the workspace\'s streamloop.exe by default', () => {
+    // Arrange / Act
+    const o = parseArgs(['q', '--playlist', 'P', '--hours', '1', '--b-ts']);
+
+    // Assert
+    expect(o.bBin).toBe(DEFAULT_B_BIN);
+    expect(DEFAULT_B_BIN.replaceAll('\\', '/')).toMatch(/\/target\/release\/streamloop\.exe$/);
+  });
+
+  it('puts the supervisor mode word before B\'s arguments, except for a 3.0 streamloop-supervisor.exe', () => {
+    expect(modeArgs('C:/repo/target/release/streamloop.exe')).toEqual(['supervisor']);
+    expect(modeArgs('C:\\builds\\r2-streamloop.exe')).toEqual(['supervisor']);
+    expect(modeArgs('C:/old/supervisor/target/release/Streamloop-Supervisor.exe')).toEqual([]);
   });
 
   it('starts the second TypeScript server on B\'s token port from A\'s install', () => {

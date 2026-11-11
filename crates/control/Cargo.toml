@@ -1,0 +1,28 @@
+[package]
+name = "streamloop-control"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+axum = "0.8"
+getrandom = "0.4.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+rust-embed = { version = "8.13.0", features = ["include-exclude"] }
+serde = "1.0.229"
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+streamloop-common = { version = "3.1.0-dev", path = "../common" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "fs", "sync", "net", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["test-util", "rt", "macros", "time"] }
+tower = "0.5.3"

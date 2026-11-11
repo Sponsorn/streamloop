@@ -1,0 +1,172 @@
+[
+  {
+    "name": "launcherEvent supervisor-down",
+    "input": {
+      "kind": "supervisor-down",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "critical",
+      "kind": "supervisor-down",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent supervisor-missing",
+    "input": {
+      "kind": "supervisor-missing",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "critical",
+      "kind": "supervisor-missing",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent supervisor-blocked-by-obs",
+    "input": {
+      "kind": "supervisor-blocked-by-obs",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "critical",
+      "kind": "supervisor-blocked-by-obs",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent encoder-fallback",
+    "input": {
+      "kind": "encoder-fallback",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "critical",
+      "kind": "encoder-fallback",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent no-encoder",
+    "input": {
+      "kind": "no-encoder",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "critical",
+      "kind": "no-encoder",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent ffmpeg-missing",
+    "input": {
+      "kind": "ffmpeg-missing",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "critical",
+      "kind": "ffmpeg-missing",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent supervisor-back",
+    "input": {
+      "kind": "supervisor-back",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "info",
+      "kind": "supervisor-back",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent supervisor-launched",
+    "input": {
+      "kind": "supervisor-launched",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "info",
+      "kind": "supervisor-launched",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent encoder-restored",
+    "input": {
+      "kind": "encoder-restored",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "info",
+      "kind": "encoder-restored",
+      "from": "a",
+      "to": "b"
+    }
+  },
+  {
+    "name": "launcherEvent something-else",
+    "input": {
+      "kind": "something-else",
+      "detail": {
+        "from": "a",
+        "to": "b"
+      }
+    },
+    "output": {
+      "ts": "<ts>",
+      "level": "info",
+      "kind": "something-else",
+      "from": "a",
+      "to": "b"
+    }
+  }
+]

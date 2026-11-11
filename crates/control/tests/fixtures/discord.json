@@ -1,0 +1,1566 @@
+[
+  {
+    "name": "a single info message",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "Hello",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "Hello",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a single warn message",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "Careful",
+          "level": "warn"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Careful",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a batch of two messages is one embed with the highest colour",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "First",
+          "level": "info"
+        },
+        {
+          "call": "send",
+          "content": "Second",
+          "level": "warn"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "ℹ️ First\n\n⚠️ Second",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "2 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a batch flushed by an error carries every queued message and the role ping",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "rolePing": "123456789"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "queued info",
+          "level": "info"
+        },
+        {
+          "call": "send",
+          "content": "queued warn",
+          "level": "warn"
+        },
+        {
+          "call": "notifyCritical",
+          "message": "urgent"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "ℹ️ queued info\n\n⚠️ queued warn\n\n🚨 **CRITICAL:** urgent",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "3 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ],
+          "content": "<@&123456789>"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a critical with role ping, fields and bot identity",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "rolePing": "123456789",
+        "botName": "MyBot",
+        "avatarUrl": "https://example.com/avatar.png"
+      },
+      "steps": [
+        {
+          "call": "notifyCritical",
+          "message": "All steps exhausted"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "**CRITICAL:** All steps exhausted",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              },
+              "fields": [
+                {
+                  "name": "Status",
+                  "value": "All steps exhausted",
+                  "inline": false
+                },
+                {
+                  "name": "RAM",
+                  "value": "<memory>",
+                  "inline": true
+                }
+              ]
+            }
+          ],
+          "username": "MyBot",
+          "avatar_url": "https://example.com/avatar.png",
+          "content": "<@&123456789>"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a critical without a role ping",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyCritical",
+          "message": "All steps exhausted"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "**CRITICAL:** All steps exhausted",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              },
+              "fields": [
+                {
+                  "name": "Status",
+                  "value": "All steps exhausted",
+                  "inline": false
+                },
+                {
+                  "name": "RAM",
+                  "value": "<memory>",
+                  "inline": true
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an info message never pings the role",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "rolePing": "123456789"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "info message",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "info message",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "bot identity on a single message",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "botName": "MyBot",
+        "avatarUrl": "https://example.com/avatar.png"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "test",
+          "level": "warn"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "test",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ],
+          "username": "MyBot",
+          "avatar_url": "https://example.com/avatar.png"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a bot name without an avatar",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "botName": "MyBot"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "test",
+          "level": "warn"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "test",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ],
+          "username": "MyBot"
+        }
+      }
+    ]
+  },
+  {
+    "name": "footer for an uptime under a minute",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 42000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "x",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "x",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 42s | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "footer for an uptime of minutes",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 125000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "x",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "x",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 2m 5s | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "footer for an uptime of hours",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 90061000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "x",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "x",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 25h 1m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "footer without a dashboard URL",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "x",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "x",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "structured fields on a single message",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "with fields",
+          "level": "warn",
+          "fields": [
+            {
+              "name": "Status",
+              "value": "ok",
+              "inline": false
+            },
+            {
+              "name": "Extra",
+              "value": "v",
+              "inline": true
+            }
+          ]
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "with fields",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              },
+              "fields": [
+                {
+                  "name": "Status",
+                  "value": "ok",
+                  "inline": false
+                },
+                {
+                  "name": "Extra",
+                  "value": "v",
+                  "inline": true
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "structured fields are dropped from a batch",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "one",
+          "level": "info",
+          "fields": [
+            {
+              "name": "Status",
+              "value": "ok"
+            }
+          ]
+        },
+        {
+          "call": "send",
+          "content": "two",
+          "level": "info"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "ℹ️ one\n\nℹ️ two",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "2 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "three queued messages in a batch",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "a",
+          "level": "info"
+        },
+        {
+          "call": "send",
+          "content": "b",
+          "level": "error"
+        },
+        {
+          "call": "send",
+          "content": "c",
+          "level": "warn"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "ℹ️ a\n\n🚨 b",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "2 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "c",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an explicit flush sends two posts",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "one",
+          "level": "info"
+        },
+        {
+          "call": "flush"
+        },
+        {
+          "call": "send",
+          "content": "two",
+          "level": "warn"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "one",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "two",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "no webhook URL sends nothing",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": ""
+      },
+      "steps": [
+        {
+          "call": "send",
+          "content": "x",
+          "level": "error"
+        }
+      ]
+    },
+    "output": []
+  },
+  {
+    "name": "a described event renders its template and level",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "critical",
+            "vars": {
+              "message": "All videos failed"
+            },
+            "level": "error"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "**CRITICAL:** All videos failed",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described skip renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "skip",
+            "vars": {
+              "videoIndex": 4,
+              "videoId": "abc",
+              "reason": "unavailable"
+            },
+            "level": "warn"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Skipping video #4 (`abc`)\nReason: unavailable",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described error renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "error",
+            "vars": {
+              "videoIndex": 1,
+              "videoId": "x",
+              "errorCode": "stall",
+              "attempt": 2
+            },
+            "level": "warn"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Playback error **stall** on video #1 (`x`)\nRetry attempt: 2",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described resume renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "resume",
+            "vars": {
+              "videoIndex": 2,
+              "videoId": "r"
+            },
+            "level": "info"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "Playback resumed at video #2 (`r`)",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described streamDrop renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "streamDrop",
+            "vars": {
+              "attempt": 1,
+              "maxAttempts": 3
+            },
+            "level": "warn"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Stream stopped unexpectedly — attempting restart (attempt 1/3)",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described streamRestart renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "streamRestart",
+            "vars": {
+              "attempts": 1
+            },
+            "level": "info"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "Stream restarted successfully after 1 attempt(s)",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described outputFrozen renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "outputFrozen",
+            "vars": {
+              "kind": "freeze",
+              "videoIndex": 2
+            },
+            "level": "warn"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Output frozen (freeze) on video #2",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described recovery renders the default template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "recovery",
+            "vars": {
+              "step": "Supervisor answering again"
+            },
+            "level": "info"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "Recovery action: **Supervisor answering again**",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described event with a custom template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "templates": {
+          "skip": "Skip #{videoIndex} {unknown} {reason} {videoIndex}"
+        }
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "skip",
+            "vars": {
+              "videoIndex": 4,
+              "videoId": "abc",
+              "reason": "r",
+              "extra": "x"
+            },
+            "level": "warn"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Skip #4 {unknown} r 4",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a described event whose toggle is off sends nothing",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "events": {
+          "skip": false
+        }
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "skip",
+            "vars": {
+              "videoIndex": 1,
+              "videoId": "x",
+              "reason": "r"
+            },
+            "level": "warn"
+          }
+        }
+      ]
+    },
+    "output": []
+  },
+  {
+    "name": "a critical whose toggle is off sends nothing",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "events": {
+          "critical": false
+        }
+      },
+      "steps": [
+        {
+          "call": "notifyCritical",
+          "message": "x"
+        }
+      ]
+    },
+    "output": []
+  },
+  {
+    "name": "a critical with a custom template",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "templates": {
+          "critical": "ALERT {message} {message}"
+        }
+      },
+      "steps": [
+        {
+          "call": "notifyCritical",
+          "message": "boom"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "ALERT boom boom",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              },
+              "fields": [
+                {
+                  "name": "Status",
+                  "value": "boom",
+                  "inline": false
+                },
+                {
+                  "name": "RAM",
+                  "value": "<memory>",
+                  "inline": true
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a critical message with markdown and non-ASCII",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyCritical",
+          "message": "Strøm **av** ✓ 😀 \"q\" \\ \n line two"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "🚨 StreamLoop",
+              "description": "**CRITICAL:** Strøm **av** ✓ 😀 \"q\" \\ \n line two",
+              "color": 15158332,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              },
+              "fields": [
+                {
+                  "name": "Status",
+                  "value": "Strøm **av** ✓ 😀 \"q\" \\ \n line two",
+                  "inline": false
+                },
+                {
+                  "name": "RAM",
+                  "value": "<memory>",
+                  "inline": true
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "twitch mismatch",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyTwitchMismatch",
+          "channel": "testchannel"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "⚠️ StreamLoop",
+              "description": "Twitch liveness mismatch — the encoder reports streaming but **testchannel** is offline on Twitch. Restarting stream.",
+              "color": 16776960,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "twitch restart",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test"
+      },
+      "steps": [
+        {
+          "call": "notifyTwitchRestart",
+          "channel": "testchannel"
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "Stream restarted after Twitch liveness mismatch on **testchannel**",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "twitch mismatch with its toggle off sends nothing",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "events": {
+          "twitchMismatch": false
+        }
+      },
+      "steps": [
+        {
+          "call": "notifyTwitchMismatch",
+          "channel": "testchannel"
+        }
+      ]
+    },
+    "output": []
+  },
+  {
+    "name": "a placeholder with digits and underscores is replaced",
+    "input": {
+      "appVersion": "3.0.5",
+      "uptimeMs": 3725000,
+      "adminUrl": "http://localhost:7654/admin",
+      "discord": {
+        "webhookUrl": "https://discord.example/api/webhooks/test",
+        "templates": {
+          "recovery": "{step_2} {step-2} {}"
+        }
+      },
+      "steps": [
+        {
+          "call": "notifyEvent",
+          "alert": {
+            "kind": "recovery",
+            "vars": {
+              "step_2": "ok"
+            },
+            "level": "info"
+          }
+        }
+      ]
+    },
+    "output": [
+      {
+        "url": "https://discord.example/api/webhooks/test",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "embeds": [
+            {
+              "title": "ℹ️ StreamLoop",
+              "description": "ok {step-2} {}",
+              "color": 3447003,
+              "timestamp": "<timestamp>",
+              "footer": {
+                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

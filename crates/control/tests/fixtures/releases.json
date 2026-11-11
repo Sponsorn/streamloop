@@ -1,0 +1,1413 @@
+[
+  {
+    "name": "compareVersions: equal versions",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0.0",
+      "b": "1.0.0"
+    },
+    "output": 0
+  },
+  {
+    "name": "compareVersions: a higher major",
+    "input": {
+      "fn": "compareVersions",
+      "a": "2.0.0",
+      "b": "1.0.0"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a lower major",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0.0",
+      "b": "2.0.0"
+    },
+    "output": -1
+  },
+  {
+    "name": "compareVersions: a higher minor",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.2.0",
+      "b": "1.1.0"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a lower minor",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.1.0",
+      "b": "1.2.0"
+    },
+    "output": -1
+  },
+  {
+    "name": "compareVersions: a higher patch",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0.2",
+      "b": "1.0.1"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a lower patch",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0.1",
+      "b": "1.0.2"
+    },
+    "output": -1
+  },
+  {
+    "name": "compareVersions: a leading v is ignored",
+    "input": {
+      "fn": "compareVersions",
+      "a": "v1.2.0",
+      "b": "1.2.0"
+    },
+    "output": 0
+  },
+  {
+    "name": "compareVersions: a leading v on both",
+    "input": {
+      "fn": "compareVersions",
+      "a": "v2.0.0",
+      "b": "v1.0.0"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a missing patch counts as zero",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0",
+      "b": "1.0.0"
+    },
+    "output": 0
+  },
+  {
+    "name": "compareVersions: a missing patch against a higher patch",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0.1",
+      "b": "1.0"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a missing patch below a higher patch",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.0",
+      "b": "1.0.1"
+    },
+    "output": -1
+  },
+  {
+    "name": "compareVersions: numeric not lexical on the minor",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.10.0",
+      "b": "1.9.0"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: numeric not lexical on the patch",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.2.10",
+      "b": "1.2.9"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a release is above its -dev build",
+    "input": {
+      "fn": "compareVersions",
+      "a": "v3.0.0",
+      "b": "3.0.0-dev"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a -dev build is below its release",
+    "input": {
+      "fn": "compareVersions",
+      "a": "3.0.0-dev",
+      "b": "3.0.0"
+    },
+    "output": -1
+  },
+  {
+    "name": "compareVersions: two equal -dev builds",
+    "input": {
+      "fn": "compareVersions",
+      "a": "3.0.0-dev",
+      "b": "3.0.0-dev"
+    },
+    "output": 0
+  },
+  {
+    "name": "compareVersions: a newer patch -dev above an older release",
+    "input": {
+      "fn": "compareVersions",
+      "a": "3.0.1-dev",
+      "b": "3.0.0"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: different suffixes on the same numbers compare equal",
+    "input": {
+      "fn": "compareVersions",
+      "a": "3.0.0-a",
+      "b": "3.0.0-b"
+    },
+    "output": 0
+  },
+  {
+    "name": "compareVersions: only the first dash splits the suffix",
+    "input": {
+      "fn": "compareVersions",
+      "a": "3.0.0-rc-1",
+      "b": "3.0.0-rc-2"
+    },
+    "output": 0
+  },
+  {
+    "name": "compareVersions: a four part version",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.2.3.4",
+      "b": "1.2.3"
+    },
+    "output": 1
+  },
+  {
+    "name": "compareVersions: a four part version below",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.2.3",
+      "b": "1.2.3.1"
+    },
+    "output": -1
+  },
+  {
+    "name": "compareVersions: a non-numeric part counts as NaN and compares equal",
+    "input": {
+      "fn": "compareVersions",
+      "a": "1.x.0",
+      "b": "1.0.0"
+    },
+    "output": 0
+  },
+  {
+    "name": "selectReleaseAssets: prefers the slim -update.zip over the full bundle",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip"
+        },
+        {
+          "name": "streamloop-v2.3.0-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip",
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: falls back to the full zip when no -update.zip is present",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip",
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: returns nulls when there is no zip asset",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "notes.txt",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/notes.txt"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": null,
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: returns nulls for no assets",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": []
+    },
+    "output": {
+      "zipUrl": null,
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: matches the checksum named <file>.zip.sha256",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip"
+        },
+        {
+          "name": "streamloop-v2.3.0.zip.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip.sha256"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip",
+      "checksumUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip.sha256"
+    }
+  },
+  {
+    "name": "selectReleaseAssets: matches the checksum named <file>.sha256",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip"
+        },
+        {
+          "name": "streamloop-v2.3.0.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.sha256"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip",
+      "checksumUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.sha256"
+    }
+  },
+  {
+    "name": "selectReleaseAssets: picks the slim checksum when both bundles ship together",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip"
+        },
+        {
+          "name": "streamloop-v2.3.0.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.sha256"
+        },
+        {
+          "name": "streamloop-v2.3.0-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip"
+        },
+        {
+          "name": "streamloop-v2.3.0-update.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.sha256"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip",
+      "checksumUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.sha256"
+    }
+  },
+  {
+    "name": "selectReleaseAssets: returns a null checksum when none matches the chosen zip",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip",
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: does not take the full checksum for the slim zip",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v2.3.0.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip"
+        },
+        {
+          "name": "streamloop-v2.3.0.zip.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0.zip.sha256"
+        },
+        {
+          "name": "streamloop-v2.3.0-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.0-update.zip",
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: downloads the slim -update.zip of a 3.x release",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "streamloop-v3.0.1.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+        },
+        {
+          "name": "streamloop-v3.0.1.zip.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip.sha256"
+        },
+        {
+          "name": "streamloop-v3.0.1-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+        },
+        {
+          "name": "streamloop-v3.0.1-update.zip.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip.sha256"
+        },
+        {
+          "name": "node-version.txt",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/node-version.txt"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip",
+      "checksumUrl": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip.sha256"
+    }
+  },
+  {
+    "name": "selectReleaseAssets: prefers the zip.sha256 form when both forms exist",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "a.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/a.zip"
+        },
+        {
+          "name": "a.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/a.sha256"
+        },
+        {
+          "name": "a.zip.sha256",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/a.zip.sha256"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/a.zip",
+      "checksumUrl": "https://github.com/x/y/releases/download/v1/a.sha256"
+    }
+  },
+  {
+    "name": "selectReleaseAssets: takes the first -update.zip when there are two",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "one-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/one-update.zip"
+        },
+        {
+          "name": "two-update.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/two-update.zip"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/one-update.zip",
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "selectReleaseAssets: takes the first zip when there are two and no -update.zip",
+    "input": {
+      "fn": "selectReleaseAssets",
+      "assets": [
+        {
+          "name": "one.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/one.zip"
+        },
+        {
+          "name": "two.zip",
+          "browser_download_url": "https://github.com/x/y/releases/download/v1/two.zip"
+        }
+      ]
+    },
+    "output": {
+      "zipUrl": "https://github.com/x/y/releases/download/v1/one.zip",
+      "checksumUrl": null
+    }
+  },
+  {
+    "name": "pickRelease: the newest stable release with the current major",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0.zip"
+            },
+            {
+              "name": "streamloop-v3.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.8",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.8.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.8.zip"
+            },
+            {
+              "name": "streamloop-v2.3.8-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.8-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.7",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.7.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7.zip"
+            },
+            {
+              "name": "streamloop-v2.3.7-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.6"
+    },
+    "output": "v2.3.8"
+  },
+  {
+    "name": "pickRelease: finds a 2.x hotfix listed after a newer 3.x release",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.1.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.1.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.1.0.zip"
+            },
+            {
+              "name": "streamloop-v3.1.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.1.0-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0.zip"
+            },
+            {
+              "name": "streamloop-v3.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.9",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.9.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.9.zip"
+            },
+            {
+              "name": "streamloop-v2.3.9-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.9-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.6"
+    },
+    "output": "v2.3.9"
+  },
+  {
+    "name": "pickRelease: ignores drafts and prereleases on 2.x",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v2.4.0",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v2.4.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.4.0.zip"
+            },
+            {
+              "name": "streamloop-v2.4.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.4.0-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.9",
+          "draft": true,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.9.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.9.zip"
+            },
+            {
+              "name": "streamloop-v2.3.9-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.9-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.7",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.7.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7.zip"
+            },
+            {
+              "name": "streamloop-v2.3.7-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.6"
+    },
+    "output": "v2.3.7"
+  },
+  {
+    "name": "pickRelease: ignores tags that are not X.Y.Z",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "spike-overlay",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-vspike-overlay.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-vspike-overlay.zip"
+            },
+            {
+              "name": "streamloop-vspike-overlay-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-vspike-overlay-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.zip"
+            },
+            {
+              "name": "streamloop-v3-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "2.4.0-beta",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.4.0-beta.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.4.0-beta.zip"
+            },
+            {
+              "name": "streamloop-v2.4.0-beta-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.4.0-beta-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.7",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.7.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7.zip"
+            },
+            {
+              "name": "streamloop-v2.3.7-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.6"
+    },
+    "output": "v2.3.7"
+  },
+  {
+    "name": "pickRelease: nothing matches the major",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0.zip"
+            },
+            {
+              "name": "streamloop-v3.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.6"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: an empty list",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [],
+      "currentVersion": "2.3.6"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: accepts tags with and without a leading v",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "2.3.8",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.8.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.8.zip"
+            },
+            {
+              "name": "streamloop-v2.3.8-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.8-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.7",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.7.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7.zip"
+            },
+            {
+              "name": "streamloop-v2.3.7-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.7-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.6"
+    },
+    "output": "2.3.8"
+  },
+  {
+    "name": "pickRelease: offers a 3.0.0 install the v3.0.1 prerelease",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.0",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0.zip"
+            },
+            {
+              "name": "streamloop-v3.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: offers the dev build the v3.0.0 prerelease",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.0",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0.zip"
+            },
+            {
+              "name": "streamloop-v3.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.0-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0-dev"
+    },
+    "output": "v3.0.0"
+  },
+  {
+    "name": "pickRelease: never offers a 3.0.0 install a 2.x or 4.x release",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v4.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v4.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v4.0.0.zip"
+            },
+            {
+              "name": "streamloop-v4.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v4.0.0-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v4.0.0",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v4.0.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v4.0.0.zip"
+            },
+            {
+              "name": "streamloop-v4.0.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v4.0.0-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.3.8",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v2.3.8.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.8.zip"
+            },
+            {
+              "name": "streamloop-v2.3.8-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v2.3.8-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: never offers a 2.3.8 install a 3.x prerelease",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.8"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: never offers a 2.3.8 install a 3.x stable release",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "2.3.8"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: skips a newer release whose update or full ZIP is not uploaded yet",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.3",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.3.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.3.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.2",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: a release with no assets is skipped",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.2",
+          "draft": false,
+          "prerelease": true,
+          "assets": []
+        },
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: the newest wins regardless of list order",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.5",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.5.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.5.zip"
+            },
+            {
+              "name": "streamloop-v3.0.5-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.5-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.2",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2.zip"
+            },
+            {
+              "name": "streamloop-v3.0.2-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.5"
+  },
+  {
+    "name": "pickRelease: an equal version is still picked (the caller compares)",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.5",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.5.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.5.zip"
+            },
+            {
+              "name": "streamloop-v3.0.5-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.5-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.5"
+    },
+    "output": "v3.0.5"
+  },
+  {
+    "name": "pickRelease: a draft 3.x release is skipped",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.2",
+          "draft": true,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2.zip"
+            },
+            {
+              "name": "streamloop-v3.0.2-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: a leading v on the current version is ignored",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "v3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: a tag with a suffix is not a release",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.2-beta",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2-beta.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2-beta.zip"
+            },
+            {
+              "name": "streamloop-v3.0.2-beta-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2-beta-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: a tag with four parts is not a release",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.2.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.2.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2.1-update.zip"
+            }
+          ]
+        },
+        {
+          "tag_name": "v3.0.1",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.1.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1.zip"
+            },
+            {
+              "name": "streamloop-v3.0.1-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.1-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": "v3.0.1"
+  },
+  {
+    "name": "pickRelease: only an -update.zip is not enough",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.2",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: only a full zip is not enough",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.0.2",
+          "draft": false,
+          "prerelease": true,
+          "assets": [
+            {
+              "name": "streamloop-v3.0.2.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.0.2.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.0"
+    },
+    "output": null
+  },
+  {
+    "name": "pickRelease: a stable 3.x release is taken too",
+    "input": {
+      "fn": "pickRelease",
+      "releases": [
+        {
+          "tag_name": "v3.1.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "streamloop-v3.1.0.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.1.0.zip"
+            },
+            {
+              "name": "streamloop-v3.1.0-update.zip",
+              "browser_download_url": "https://github.com/x/y/releases/download/v1/streamloop-v3.1.0-update.zip"
+            }
+          ]
+        }
+      ],
+      "currentVersion": "3.0.5"
+    },
+    "output": "v3.1.0"
+  },
+  {
+    "name": "parseNodeVersion: accepts a v prefix and surrounding whitespace",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "  v22.23.4\r\n"
+    },
+    "output": "22.23.4"
+  },
+  {
+    "name": "parseNodeVersion: accepts a bare version",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "22.23.4"
+    },
+    "output": "22.23.4"
+  },
+  {
+    "name": "parseNodeVersion: empty",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": ""
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: words",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "node 22"
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: two parts",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "22.23"
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: four parts",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "22.23.4.1"
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: a suffix",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "v22.23.4-rc1"
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: two lines",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "22.23.4\n22.23.5"
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: a trailing newline only",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "22.23.4\n"
+    },
+    "output": "22.23.4"
+  },
+  {
+    "name": "parseNodeVersion: a double v",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "vv22.23.4"
+    },
+    "output": null
+  },
+  {
+    "name": "parseNodeVersion: a capital V",
+    "input": {
+      "fn": "parseNodeVersion",
+      "text": "V22.23.4"
+    },
+    "output": null
+  }
+]

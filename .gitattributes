@@ -1,2 +1,3 @@
 *.bat text eol=crlf
+scripts/START.bat -text
 tokenserver/vendor/rustypipe-botguard/**/*.br binary

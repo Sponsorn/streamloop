@@ -1,0 +1,6 @@
+{
+  "name": "throws on a playlist name that is not text",
+  "before": "{\"playlists\":[{\"id\":\"PL1\",\"name\":5}]}",
+  "after": null,
+  "error": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"playlists\",\n      0,\n      \"name\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]"
+}

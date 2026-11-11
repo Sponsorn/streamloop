@@ -1,0 +1,2196 @@
+[
+  {
+    "name": "encoder-exit: first failure is a streamDrop warning",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "crash",
+      "failures": 1,
+      "restartInS": 2
+    },
+    "output": {
+      "message": "Encoder stopped (crash); restarting in 2s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 1,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: second failure is a streamDrop warning",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "crash",
+      "failures": 2,
+      "restartInS": 5
+    },
+    "output": {
+      "message": "Encoder stopped (crash); restarting in 5s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 2,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: third failure is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "encoder-exit",
+      "why": "crash",
+      "failures": 3,
+      "restartInS": 5
+    },
+    "output": {
+      "message": "Encoder stopped (crash); restarting in 5s",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The encoder has stopped 3 times in a row (crash)."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: a critical level wins even on failure 1",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "encoder-exit",
+      "why": "x",
+      "failures": 1,
+      "restartInS": 1
+    },
+    "output": {
+      "message": "Encoder stopped (x); restarting in 1s",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The encoder has stopped 1 times in a row (x)."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: no failures or restart given",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "x"
+    },
+    "output": {
+      "message": "Encoder stopped (x); restarting in 0s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 0,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: no why",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "failures": 1,
+      "restartInS": 2
+    },
+    "output": {
+      "message": "Encoder stopped (); restarting in 2s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 1,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: first exit after 48 hours is Twitch ending the stream",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "exited (exit code: 0xffffd8bb)",
+      "code": -10053,
+      "failures": 1,
+      "restartInS": 2,
+      "uptimeS": 172802
+    },
+    "output": {
+      "message": "Twitch ended the stream at its 48 hour limit; restarting in 2s"
+    }
+  },
+  {
+    "name": "encoder-exit: uptime exactly 47.5 hours counts as the Twitch limit",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "x",
+      "failures": 1,
+      "restartInS": 2,
+      "uptimeS": 171000
+    },
+    "output": {
+      "message": "Twitch ended the stream at its 48 hour limit; restarting in 2s"
+    }
+  },
+  {
+    "name": "encoder-exit: uptime just under 47.5 hours is an ordinary drop",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "x",
+      "failures": 1,
+      "restartInS": 2,
+      "uptimeS": 170999.9
+    },
+    "output": {
+      "message": "Encoder stopped (x); restarting in 2s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 1,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: a second failure after a long uptime is an ordinary drop",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "x",
+      "failures": 2,
+      "restartInS": 2,
+      "uptimeS": 172802
+    },
+    "output": {
+      "message": "Encoder stopped (x); restarting in 2s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 2,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-exit: why with a newline keeps the first line",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "encoder-exit",
+      "why": "first line\nsecond line",
+      "failures": 1,
+      "restartInS": 2
+    },
+    "output": {
+      "message": "Encoder stopped (first line); restarting in 2s",
+      "discord": {
+        "kind": "streamDrop",
+        "vars": {
+          "attempt": 1,
+          "maxAttempts": 3
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "encoder-start: first start is timeline only",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "encoder-start",
+      "generation": 1,
+      "restarts": 0
+    },
+    "output": {
+      "message": "Encoder started"
+    }
+  },
+  {
+    "name": "encoder-start: a restart is a streamRestart",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "encoder-start",
+      "generation": 2,
+      "restarts": 1
+    },
+    "output": {
+      "message": "Encoder restarted (restart 1)",
+      "discord": {
+        "kind": "streamRestart",
+        "vars": {
+          "attempts": 1
+        },
+        "level": "info"
+      }
+    }
+  },
+  {
+    "name": "encoder-start: restart count 20",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "encoder-start",
+      "generation": 21,
+      "restarts": 20
+    },
+    "output": {
+      "message": "Encoder restarted (restart 20)",
+      "discord": {
+        "kind": "streamRestart",
+        "vars": {
+          "attempts": 20
+        },
+        "level": "info"
+      }
+    }
+  },
+  {
+    "name": "encoder-start: no restarts field",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "encoder-start"
+    },
+    "output": {
+      "message": "Encoder started"
+    }
+  },
+  {
+    "name": "encoder-spawn-failed is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "encoder-spawn-failed",
+      "error": "e"
+    },
+    "output": {
+      "message": "The encoder could not start: e",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The encoder could not start: e"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "encoder-spawn-failed: no error",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "encoder-spawn-failed"
+    },
+    "output": {
+      "message": "The encoder could not start: ",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The encoder could not start: "
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "encoder-restart-requested names the reason",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "encoder-restart-requested",
+      "reason": "twitch read-back frozen"
+    },
+    "output": {
+      "message": "Encoder restart requested: twitch read-back frozen"
+    }
+  },
+  {
+    "name": "skip: video numbers count from 1",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 3,
+      "id": "abc",
+      "why": "unavailable",
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 4 (unavailable)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 4,
+          "videoId": "abc",
+          "reason": "unavailable"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: a third skip in a row is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "skip",
+      "index": 2,
+      "id": "z",
+      "why": "x",
+      "consecutive": 3
+    },
+    "output": {
+      "message": "Skipped video 3 (x)",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "3 videos in a row were skipped. The last was video 3 (x)."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "skip: a freeze skip stays on the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 1,
+      "id": "x",
+      "why": "freeze",
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 2 (freeze)"
+    }
+  },
+  {
+    "name": "skip: a freeze skip in a critical streak still alerts",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "skip",
+      "index": 1,
+      "id": "x",
+      "why": "freeze",
+      "consecutive": 3
+    },
+    "output": {
+      "message": "Skipped video 2 (freeze)",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "3 videos in a row were skipped. The last was video 2 (freeze)."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "skip: detail text is appended to the reason",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "unavailable",
+      "detail": "private video",
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (unavailable: private video)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "unavailable: private video"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: detail.reason string is appended",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "unavailable",
+      "detail": {
+        "reason": "private video"
+      },
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (unavailable: private video)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "unavailable: private video"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: a detail object without a reason adds nothing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "other",
+      "detail": {
+        "since": 12.3,
+        "pos": 40
+      },
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (other)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "other"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: a blank detail adds nothing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "other",
+      "detail": "   ",
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (other)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "other"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: a detail.reason that is not text adds nothing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "other",
+      "detail": {
+        "reason": 5
+      },
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (other)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "other"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: detail is trimmed to one line of at most 200 characters",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "x",
+      "detail": "first\nyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (x: first)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "x: first"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: a 200 character reason is kept whole",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": "x",
+      "detail": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "consecutive": 1
+    },
+    "output": {
+      "message": "Skipped video 1 (x: ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "x: ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: no index or id",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "why": "x"
+    },
+    "output": {
+      "message": "Skipped video 1 (x)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "",
+          "reason": "x"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "skip: a numeric why is written as JSON",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "skip",
+      "index": 0,
+      "id": "a",
+      "why": 42
+    },
+    "output": {
+      "message": "Skipped video 1 (42)",
+      "discord": {
+        "kind": "skip",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "a",
+          "reason": "42"
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "retry: attempt and position",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "retry",
+      "index": 0,
+      "id": "x",
+      "why": "stall",
+      "retry": 2,
+      "pos": 12.5
+    },
+    "output": {
+      "message": "Retrying video 1 at 12s (stall, attempt 2)",
+      "discord": {
+        "kind": "error",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "x",
+          "errorCode": "stall",
+          "attempt": 2
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "retry: a freeze retry stays on the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "retry",
+      "index": 1,
+      "id": "x",
+      "why": "freeze",
+      "retry": 1,
+      "pos": 3
+    },
+    "output": {
+      "message": "Retrying video 2 at 3s (freeze, attempt 1)"
+    }
+  },
+  {
+    "name": "retry: position is floored",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "retry",
+      "index": 4,
+      "id": "y",
+      "why": "eof",
+      "retry": 1,
+      "pos": 59.99
+    },
+    "output": {
+      "message": "Retrying video 5 at 59s (eof, attempt 1)",
+      "discord": {
+        "kind": "error",
+        "vars": {
+          "videoIndex": 5,
+          "videoId": "y",
+          "errorCode": "eof",
+          "attempt": 1
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "resume: video and position",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "resume",
+      "index": 1,
+      "id": "r",
+      "pos": 30
+    },
+    "output": {
+      "message": "Resumed video 2 at 30s",
+      "discord": {
+        "kind": "resume",
+        "vars": {
+          "videoIndex": 2,
+          "videoId": "r"
+        },
+        "level": "info"
+      }
+    }
+  },
+  {
+    "name": "resume: fractional position is floored",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "resume",
+      "index": 0,
+      "id": "r",
+      "pos": 30.9
+    },
+    "output": {
+      "message": "Resumed video 1 at 30s",
+      "discord": {
+        "kind": "resume",
+        "vars": {
+          "videoIndex": 1,
+          "videoId": "r"
+        },
+        "level": "info"
+      }
+    }
+  },
+  {
+    "name": "watchdog-freeze: retry goes to outputFrozen",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-freeze",
+      "index": 1,
+      "outcome": "retry"
+    },
+    "output": {
+      "message": "Output freeze on video 2 (retry)",
+      "discord": {
+        "kind": "outputFrozen",
+        "vars": {
+          "kind": "freeze",
+          "videoIndex": 2
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "watchdog-freeze: skip goes to outputFrozen",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-freeze",
+      "index": 1,
+      "outcome": "skip"
+    },
+    "output": {
+      "message": "Output freeze on video 2 (skip)",
+      "discord": {
+        "kind": "outputFrozen",
+        "vars": {
+          "kind": "freeze",
+          "videoIndex": 2
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "watchdog-freeze: ignored stays on the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-freeze",
+      "index": 1,
+      "outcome": "ignored"
+    },
+    "output": {
+      "message": "Output freeze on video 2 (ignored)"
+    }
+  },
+  {
+    "name": "watchdog-freeze: content stays on the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-freeze",
+      "index": 1,
+      "outcome": "content"
+    },
+    "output": {
+      "message": "Output freeze on video 2 (content)"
+    }
+  },
+  {
+    "name": "watchdog-silence: skip goes to outputFrozen",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-silence",
+      "index": 1,
+      "outcome": "skip"
+    },
+    "output": {
+      "message": "Output silence on video 2 (skip)",
+      "discord": {
+        "kind": "outputFrozen",
+        "vars": {
+          "kind": "silence",
+          "videoIndex": 2
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "watchdog-silence: retry goes to outputFrozen",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-silence",
+      "index": 1,
+      "outcome": "retry"
+    },
+    "output": {
+      "message": "Output silence on video 2 (retry)",
+      "discord": {
+        "kind": "outputFrozen",
+        "vars": {
+          "kind": "silence",
+          "videoIndex": 2
+        },
+        "level": "warn"
+      }
+    }
+  },
+  {
+    "name": "watchdog-silence: content is the video playing on",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "watchdog-silence",
+      "index": 1,
+      "outcome": "content"
+    },
+    "output": {
+      "message": "Silence on video 2. Silence alone never restarts a video."
+    }
+  },
+  {
+    "name": "watchdog-silence: ignored stays on the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-silence",
+      "index": 1,
+      "outcome": "ignored"
+    },
+    "output": {
+      "message": "Output silence on video 2 (ignored)"
+    }
+  },
+  {
+    "name": "watchdog-silence: no outcome",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "watchdog-silence",
+      "index": 1
+    },
+    "output": {
+      "message": "Output silence on video 2 ()"
+    }
+  },
+  {
+    "name": "all-skipped is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "all-skipped",
+      "holdS": 60
+    },
+    "output": {
+      "message": "Every video was skipped. Holding for 60s before trying again.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Every video was skipped. Holding for 60s before trying again."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "playlist-advance: finished list by name",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "from": "PLa",
+      "to": "PLb",
+      "name": "2021/2022",
+      "count": 5,
+      "finished": true
+    },
+    "output": {
+      "message": "Playlist finished. Now playing 2021/2022"
+    }
+  },
+  {
+    "name": "playlist-advance: finished list by id",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "from": "PLa",
+      "to": "PLb",
+      "count": 5,
+      "finished": true
+    },
+    "output": {
+      "message": "Playlist finished. Now playing PLb"
+    }
+  },
+  {
+    "name": "playlist-advance: a jump without finishing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "from": "PLa",
+      "to": "PLb",
+      "name": "2021/2022",
+      "count": 5,
+      "finished": false
+    },
+    "output": {
+      "message": "Now playing 2021/2022"
+    }
+  },
+  {
+    "name": "playlist-advance: finished missing counts as not finished",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "from": "PLa",
+      "to": "PLb",
+      "count": 5
+    },
+    "output": {
+      "message": "Now playing PLb"
+    }
+  },
+  {
+    "name": "playlist-advance: finished as the text true counts as not finished",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLb",
+      "finished": "true"
+    },
+    "output": {
+      "message": "Now playing PLb"
+    }
+  },
+  {
+    "name": "playlist-advance: missing lists are critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "playlist-advance",
+      "from": "PLa",
+      "to": "PLb",
+      "name": "B",
+      "count": 5,
+      "finished": true,
+      "missing": [
+        "C",
+        "D"
+      ]
+    },
+    "output": {
+      "message": "Playlist finished. Now playing B. C, D could not be loaded",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Playlist finished. Now playing B. C, D could not be loaded"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "playlist-advance: an empty missing list is not critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLb",
+      "name": "B",
+      "finished": true,
+      "missing": []
+    },
+    "output": {
+      "message": "Playlist finished. Now playing B"
+    }
+  },
+  {
+    "name": "playlist-advance: a name that is blank falls back to the id",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-advance",
+      "to": "PLb",
+      "name": "  ",
+      "finished": false
+    },
+    "output": {
+      "message": "Now playing PLb"
+    }
+  },
+  {
+    "name": "playlist-restart: went round",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-restart",
+      "playlistId": "PLa",
+      "count": 192
+    },
+    "output": {
+      "message": "Playlist finished. Starting it again (192 videos)"
+    }
+  },
+  {
+    "name": "playlist-restart: next list could not load is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "playlist-restart",
+      "playlistId": "PLa",
+      "count": 192,
+      "missing": [
+        "2021/2022"
+      ]
+    },
+    "output": {
+      "message": "Playlist finished. Starting it again, because 2021/2022 could not be loaded",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Playlist finished. Starting it again, because 2021/2022 could not be loaded"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "playlist-restart: several missing lists",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "playlist-restart",
+      "playlistId": "PLa",
+      "count": 3,
+      "missing": [
+        "A",
+        "B",
+        "C"
+      ]
+    },
+    "output": {
+      "message": "Playlist finished. Starting it again, because A, B, C could not be loaded",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Playlist finished. Starting it again, because A, B, C could not be loaded"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "playlist-failed: names the list",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "playlist-failed",
+      "reason": "r",
+      "playlistId": "PLb",
+      "name": "2021/2022",
+      "refetch": true
+    },
+    "output": {
+      "message": "Playlist 2021/2022 could not be loaded: r"
+    }
+  },
+  {
+    "name": "playlist-failed: falls back to the id",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "playlist-failed",
+      "reason": "r",
+      "playlistId": "PLb"
+    },
+    "output": {
+      "message": "Playlist PLb could not be loaded: r"
+    }
+  },
+  {
+    "name": "playlist-failed: no list named",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "playlist-failed",
+      "reason": "r"
+    },
+    "output": {
+      "message": "Playlist could not be loaded: r"
+    }
+  },
+  {
+    "name": "playlist-failed: first load is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "playlist-failed",
+      "reason": "r"
+    },
+    "output": {
+      "message": "Playlist could not be loaded: r",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Playlist could not be loaded: r"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "playlist-failed: critical with a named list",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "playlist-failed",
+      "reason": "r",
+      "playlistId": "PLb",
+      "name": "B"
+    },
+    "output": {
+      "message": "Playlist B could not be loaded: r",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Playlist B could not be loaded: r"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "playlist: loaded",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist",
+      "count": 12
+    },
+    "output": {
+      "message": "Playlist loaded (12 videos)"
+    }
+  },
+  {
+    "name": "playlist-recovered",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist-recovered"
+    },
+    "output": {
+      "message": "Playlist loaded after an earlier failure"
+    }
+  },
+  {
+    "name": "playlist-from-saved",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "playlist-from-saved",
+      "playlistId": "PLx",
+      "count": 12
+    },
+    "output": {
+      "message": "YouTube is not answering, so the saved playlist (12 videos) is used."
+    }
+  },
+  {
+    "name": "playlist-switch-failed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "playlist-switch-failed",
+      "reason": "no such list"
+    },
+    "output": {
+      "message": "Playlist switch failed: no such list"
+    }
+  },
+  {
+    "name": "stream-key-unreadable",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "stream-key-unreadable",
+      "reason": "r"
+    },
+    "output": {
+      "message": "The stream key cannot be read: r",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The stream key cannot be read: r"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "stream-key-missing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "stream-key-missing"
+    },
+    "output": {
+      "message": "No stream key is set. The stream cannot start.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "No stream key is set. The stream cannot start."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "youtube-breaker-open",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "youtube-breaker-open",
+      "reason": "bot"
+    },
+    "output": {
+      "message": "YouTube is blocking requests (bot). Downloads and lookups are paused.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "YouTube is blocking requests (bot). Downloads and lookups are paused."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "youtube-breaker-closed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "youtube-breaker-closed"
+    },
+    "output": {
+      "message": "YouTube requests resumed"
+    }
+  },
+  {
+    "name": "youtube-probe-failed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "youtube-probe-failed",
+      "reason": "timeout"
+    },
+    "output": {
+      "message": "YouTube probe failed: timeout"
+    }
+  },
+  {
+    "name": "cookies-unreadable: critical names the browser and reason",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "cookies-unreadable",
+      "browser": "firefox",
+      "reason": "could not find firefox cookies database"
+    },
+    "output": {
+      "message": "yt-dlp could not read the firefox cookies: could not find firefox cookies database",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "yt-dlp could not read the firefox cookies: could not find firefox cookies database"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "cookies-unreadable: warn went on without the cookies",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "cookies-unreadable",
+      "browser": "chrome",
+      "reason": "Failed to decrypt with DPAPI"
+    },
+    "output": {
+      "message": "yt-dlp could not read the chrome cookies and went on without them: Failed to decrypt with DPAPI"
+    }
+  },
+  {
+    "name": "config-refused",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "config-refused",
+      "reason": "config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+    },
+    "output": {
+      "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "downloads-failing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "downloads-failing",
+      "inARow": 3,
+      "reason": "HTTP Error 403"
+    },
+    "output": {
+      "message": "3 downloads failed in a row (HTTP Error 403).",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "3 downloads failed in a row (HTTP Error 403)."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "download-failed: with a retry in an hour",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "download-failed",
+      "index": 165,
+      "reason": "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+      "retryInS": 3600
+    },
+    "output": {
+      "message": "Download of video 166 failed: ERROR: unable to download video data: HTTP Error 403: Forbidden; trying again in 60 min"
+    }
+  },
+  {
+    "name": "download-failed: from before retryInS existed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "download-failed",
+      "index": 165,
+      "reason": "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    },
+    "output": {
+      "message": "Download of video 166 failed: ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    }
+  },
+  {
+    "name": "download-failed: a retry under a minute rounds up to 1 min",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "download-failed",
+      "index": 0,
+      "reason": "r",
+      "retryInS": 20
+    },
+    "output": {
+      "message": "Download of video 1 failed: r; trying again in 1 min"
+    }
+  },
+  {
+    "name": "download-failed: 90 seconds rounds to 2 min",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "download-failed",
+      "index": 0,
+      "reason": "r",
+      "retryInS": 90
+    },
+    "output": {
+      "message": "Download of video 1 failed: r; trying again in 2 min"
+    }
+  },
+  {
+    "name": "download-failed: 150 seconds rounds to 3 min",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "download-failed",
+      "index": 0,
+      "reason": "r",
+      "retryInS": 150
+    },
+    "output": {
+      "message": "Download of video 1 failed: r; trying again in 3 min"
+    }
+  },
+  {
+    "name": "download-failed: a zero retry says nothing about trying again",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "download-failed",
+      "index": 0,
+      "reason": "r",
+      "retryInS": 0
+    },
+    "output": {
+      "message": "Download of video 1 failed: r"
+    }
+  },
+  {
+    "name": "resolve-failed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "resolve-failed",
+      "index": 7,
+      "reason": "private"
+    },
+    "output": {
+      "message": "Lookup of video 8 failed: private"
+    }
+  },
+  {
+    "name": "url-refresh",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "url-refresh",
+      "index": 2
+    },
+    "output": {
+      "message": "Refreshed the address of video 3"
+    }
+  },
+  {
+    "name": "breaker-retarget",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "breaker-retarget"
+    },
+    "output": {
+      "message": "Moved to a playable video while YouTube is blocked"
+    }
+  },
+  {
+    "name": "feeder-spawn-failed is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "feeder-spawn-failed",
+      "index": 0,
+      "error": "e"
+    },
+    "output": {
+      "message": "Video 1 could not start: e",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "Video 1 could not start: e"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "feeder-spawn-recovered",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "feeder-spawn-recovered",
+      "index": 4
+    },
+    "output": {
+      "message": "Video 5 started after an earlier failure"
+    }
+  },
+  {
+    "name": "slate-stall",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "slate-stall"
+    },
+    "output": {
+      "message": "Standby slate stalled"
+    }
+  },
+  {
+    "name": "overlay-failed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "overlay-failed",
+      "error": "drawtext failed"
+    },
+    "output": {
+      "message": "Overlay failed: drawtext failed"
+    }
+  },
+  {
+    "name": "log-prune-failed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "log-prune-failed",
+      "first": "access denied"
+    },
+    "output": {
+      "message": "Old logs could not be removed: access denied"
+    }
+  },
+  {
+    "name": "supervisor-down is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "supervisor-down"
+    },
+    "output": {
+      "message": "The supervisor has stopped answering.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The supervisor has stopped answering."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "supervisor-back is an info recovery alert",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "supervisor-back"
+    },
+    "output": {
+      "message": "Supervisor is answering again",
+      "discord": {
+        "kind": "recovery",
+        "vars": {
+          "step": "Supervisor answering again"
+        },
+        "level": "info"
+      }
+    }
+  },
+  {
+    "name": "supervisor-missing is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "supervisor-missing"
+    },
+    "output": {
+      "message": "The supervisor program is missing from the install.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The supervisor program is missing from the install."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "supervisor-launched",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "supervisor-launched"
+    },
+    "output": {
+      "message": "Supervisor launched"
+    }
+  },
+  {
+    "name": "supervisor-blocked-by-obs",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "supervisor-blocked-by-obs"
+    },
+    "output": {
+      "message": "OBS is running, and 2.x may be streaming on the same key. Close OBS to start 3.0.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "OBS is running, and 2.x may be streaming on the same key. Close OBS to start 3.0."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "launched: a launch that broke away stays off the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "launched",
+      "breakaway": true,
+      "pid": 1
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "launched: a launch that stayed inside the caller job is noted",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "launched",
+      "breakaway": false,
+      "pid": 1
+    },
+    "output": {
+      "message": "Supervisor launched inside the caller's job and may stop with it"
+    }
+  },
+  {
+    "name": "launched: no breakaway field stays off the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "launched",
+      "pid": 1
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "encoder-fallback names both encoders",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "encoder-fallback",
+      "from": "h264_nvenc",
+      "to": "h264_amf"
+    },
+    "output": {
+      "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "encoder-restored is an info all-clear",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "encoder-restored",
+      "from": "h264_amf",
+      "to": "h264_nvenc"
+    },
+    "output": {
+      "message": "The h264_nvenc encoder works again, so the stream uses it.",
+      "discord": {
+        "kind": "recovery",
+        "vars": {
+          "step": "Back on the h264_nvenc encoder"
+        },
+        "level": "info"
+      }
+    }
+  },
+  {
+    "name": "no-encoder",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "no-encoder"
+    },
+    "output": {
+      "message": "No encoder works on this PC. Check the graphics driver.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "No encoder works on this PC. Check the graphics driver."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "ffmpeg-missing",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "ffmpeg-missing"
+    },
+    "output": {
+      "message": "ffmpeg is missing from the install. Reinstall StreamLoop from the full ZIP.",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "ffmpeg is missing from the install. Reinstall StreamLoop from the full ZIP."
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "start",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "start"
+    },
+    "output": {
+      "message": "Supervisor started"
+    }
+  },
+  {
+    "name": "shutdown",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "shutdown"
+    },
+    "output": {
+      "message": "Supervisor shut down"
+    }
+  },
+  {
+    "name": "reload",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "reload"
+    },
+    "output": {
+      "message": "Configuration reloaded"
+    }
+  },
+  {
+    "name": "control",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "next"
+    },
+    "output": {
+      "message": "Control: next"
+    }
+  },
+  {
+    "name": "deadline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "deadline",
+      "hours": 2
+    },
+    "output": {
+      "message": "Test run reached its 2 hour limit"
+    }
+  },
+  {
+    "name": "fault",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "fault",
+      "fault": "freeze-video"
+    },
+    "output": {
+      "message": "Test fault: freeze-video"
+    }
+  },
+  {
+    "name": "fault-applied",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "fault-applied",
+      "fault": "kill-encoder"
+    },
+    "output": {
+      "message": "Test fault: kill-encoder"
+    }
+  },
+  {
+    "name": "token-server-spawn",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "token-server-spawn"
+    },
+    "output": {
+      "message": "Token server started"
+    }
+  },
+  {
+    "name": "token-server-adopt",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "token-server-adopt"
+    },
+    "output": {
+      "message": "Token server already running"
+    }
+  },
+  {
+    "name": "token-server-down",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "token-server-down"
+    },
+    "output": {
+      "message": "Token server stopped answering"
+    }
+  },
+  {
+    "name": "token-server-restart",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "token-server-restart"
+    },
+    "output": {
+      "message": "Token server restarted"
+    }
+  },
+  {
+    "name": "token-server-spawn-failed is critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "token-server-spawn-failed",
+      "error": "e"
+    },
+    "output": {
+      "message": "Token server could not start: e",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "The token server could not start: e"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "token-caches-cleared: cleared",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "token-caches-cleared",
+      "refusals": 2,
+      "ok": true
+    },
+    "output": {
+      "message": "YouTube refused 2 downloads with a token, so the token server starts over with new tokens"
+    }
+  },
+  {
+    "name": "token-caches-cleared: could not be cleared",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "token-caches-cleared",
+      "refusals": 2,
+      "ok": false
+    },
+    "output": {
+      "message": "YouTube refused 2 downloads with a token, and the token server's cache could not be cleared"
+    }
+  },
+  {
+    "name": "token-caches-cleared: ok missing counts as cleared",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "token-caches-cleared",
+      "refusals": 2
+    },
+    "output": {
+      "message": "YouTube refused 2 downloads with a token, so the token server starts over with new tokens"
+    }
+  },
+  {
+    "name": "feeder-start is quiet",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "feeder-start"
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "handover is quiet",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "handover"
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "spare-resolve is quiet",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "spare-resolve"
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "spare-used is quiet",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "spare-used"
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "youtube-probe is quiet",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "youtube-probe"
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "download-cancel is quiet",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "download-cancel"
+    },
+    "output": {
+      "message": ""
+    }
+  },
+  {
+    "name": "an unknown kind goes on the timeline by name",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "something-new"
+    },
+    "output": {
+      "message": "something-new"
+    }
+  },
+  {
+    "name": "an unknown critical kind is sent to Discord as critical",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "critical",
+      "kind": "brand-new"
+    },
+    "output": {
+      "message": "brand-new",
+      "discord": {
+        "kind": "critical",
+        "vars": {
+          "message": "brand-new"
+        },
+        "level": "error"
+      }
+    }
+  },
+  {
+    "name": "an unknown warn kind stays on the timeline",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "warn",
+      "kind": "brand-new"
+    },
+    "output": {
+      "message": "brand-new"
+    }
+  },
+  {
+    "name": "a detail that is an object is written as JSON on its first line",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": {
+        "a": 1,
+        "b": [
+          2,
+          3
+        ]
+      }
+    },
+    "output": {
+      "message": "Control: {\"a\":1,\"b\":[2,3]}"
+    }
+  },
+  {
+    "name": "a detail that is null is empty",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": null
+    },
+    "output": {
+      "message": "Control: "
+    }
+  },
+  {
+    "name": "a detail that is a boolean is written as JSON",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": true
+    },
+    "output": {
+      "message": "Control: true"
+    }
+  },
+  {
+    "name": "a detail with CRLF keeps the first line",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "one\r\ntwo"
+    },
+    "output": {
+      "message": "Control: one"
+    }
+  },
+  {
+    "name": "a detail of exactly 200 characters is kept",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "output": {
+      "message": "Control: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    }
+  },
+  {
+    "name": "a detail of 201 characters is cut to 197 and an ellipsis",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+    },
+    "output": {
+      "message": "Control: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz..."
+    }
+  },
+  {
+    "name": "a detail with leading and trailing space is trimmed",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "   padded   "
+    },
+    "output": {
+      "message": "Control: padded"
+    }
+  },
+  {
+    "name": "a non-ASCII detail is cut by UTF-16 units",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+    },
+    "output": {
+      "message": "Control: ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé..."
+    }
+  },
+  {
+    "name": "a detail with an emoji at the cut",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "control",
+      "cmd": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀bbbbbbbbbb"
+    },
+    "output": {
+      "message": "Control: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d..."
+    }
+  },
+  {
+    "name": "a counter that is not a number counts as zero",
+    "input": {
+      "ts": "2026-10-25T10:00:00Z",
+      "level": "info",
+      "kind": "playlist",
+      "count": "12"
+    },
+    "output": {
+      "message": "Playlist loaded (0 videos)"
+    }
+  }
+]

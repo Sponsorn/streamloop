@@ -1,0 +1,6 @@
+{
+  "name": "rejects readAheadSeconds below its minimum, naming the field",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"supervisor\":{\"readAheadSeconds\":1.9}}",
+  "after": null,
+  "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 2,\n    \"inclusive\": true,\n    \"path\": [\n      \"supervisor\",\n      \"readAheadSeconds\"\n    ],\n    \"message\": \"Too small: expected number to be >=2\"\n  }\n]"
+}

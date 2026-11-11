@@ -1,0 +1,1117 @@
+[
+  {
+    "name": "a refused config alerts once per streak and again after a supervisor start",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "config-refused",
+        "reason": "config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "config-refused",
+        "reason": "config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "config-refused",
+        "reason": "config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "start"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "config-refused",
+        "reason": "config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      }
+    ],
+    "output": [
+      {
+        "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      },
+      {
+        "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      },
+      {
+        "message": "Supervisor started"
+      },
+      {
+        "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+          },
+          "level": "error"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a refused config with a different reason is still the same streak",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "config-refused",
+        "reason": "config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "config-refused",
+        "reason": "other"
+      }
+    ],
+    "output": [
+      {
+        "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The supervisor refused config.json: config.json: ytdlCookiesFromBrowser is longer than 200 characters"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "The supervisor refused config.json: other"
+      }
+    ]
+  },
+  {
+    "name": "one outage of 20 encoder exits sends one drop, one critical and one restart",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 2,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 3,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 4,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 5,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 6,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 7,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 8,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 9,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 10,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 11,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 12,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 13,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 14,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 15,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 16,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 17,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 18,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 19,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 20,
+        "restartInS": 5
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "generation": 21,
+        "restarts": 20
+      }
+    ],
+    "output": [
+      {
+        "message": "Encoder stopped (x); restarting in 5s",
+        "discord": {
+          "kind": "streamDrop",
+          "vars": {
+            "attempt": 1,
+            "maxAttempts": 3
+          },
+          "level": "warn"
+        }
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder has stopped 3 times in a row (x)."
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder restarted (restart 20)",
+        "discord": {
+          "kind": "streamRestart",
+          "vars": {
+            "attempts": 20
+          },
+          "level": "info"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a new streak starts after the restart",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 2,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 3,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 4,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 4
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 1
+      }
+    ],
+    "output": [
+      {
+        "message": "Encoder stopped (x); restarting in 1s",
+        "discord": {
+          "kind": "streamDrop",
+          "vars": {
+            "attempt": 1,
+            "maxAttempts": 3
+          },
+          "level": "warn"
+        }
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 1s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 1s",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder has stopped 3 times in a row (x)."
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 1s"
+      },
+      {
+        "message": "Encoder restarted (restart 4)",
+        "discord": {
+          "kind": "streamRestart",
+          "vars": {
+            "attempts": 4
+          },
+          "level": "info"
+        }
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 1s",
+        "discord": {
+          "kind": "streamDrop",
+          "vars": {
+            "attempt": 1,
+            "maxAttempts": 3
+          },
+          "level": "warn"
+        }
+      }
+    ]
+  },
+  {
+    "name": "spawn failures alert once since the last start, then one restart",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 0
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      }
+    ],
+    "output": [
+      {
+        "message": "The encoder could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder could not start: e"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "The encoder could not start: e"
+      },
+      {
+        "message": "The encoder could not start: e"
+      },
+      {
+        "message": "Encoder started",
+        "discord": {
+          "kind": "streamRestart",
+          "vars": {
+            "attempts": 1
+          },
+          "level": "info"
+        }
+      },
+      {
+        "message": "The encoder could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder could not start: e"
+          },
+          "level": "error"
+        }
+      }
+    ]
+  },
+  {
+    "name": "the 48 hour cut sends nothing, and neither does its restart",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 2,
+        "uptimeS": 172802
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "generation": 1,
+        "restarts": 1
+      }
+    ],
+    "output": [
+      {
+        "message": "Twitch ended the stream at its 48 hour limit; restarting in 2s"
+      },
+      {
+        "message": "Encoder restarted (restart 1)"
+      }
+    ]
+  },
+  {
+    "name": "a restart after the 48 hour cut that keeps failing still alerts",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 2,
+        "uptimeS": 172802
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 2,
+        "restartInS": 5,
+        "uptimeS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 3,
+        "restartInS": 10,
+        "uptimeS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 4
+      }
+    ],
+    "output": [
+      {
+        "message": "Twitch ended the stream at its 48 hour limit; restarting in 2s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 5s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 10s",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder has stopped 3 times in a row (x)."
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "Encoder restarted (restart 4)",
+        "discord": {
+          "kind": "streamRestart",
+          "vars": {
+            "attempts": 4
+          },
+          "level": "info"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a start that follows no alert sends nothing",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 2
+      }
+    ],
+    "output": [
+      {
+        "message": "Encoder restarted (restart 2)"
+      }
+    ]
+  },
+  {
+    "name": "a first start after no exits sends nothing",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 0
+      }
+    ],
+    "output": [
+      {
+        "message": "Encoder started"
+      }
+    ]
+  },
+  {
+    "name": "token spawn failures alert once until the next token-server-spawn",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "token-server-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "token-server-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "token-server-spawn"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "token-server-spawn-failed",
+        "error": "e"
+      }
+    ],
+    "output": [
+      {
+        "message": "Token server could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The token server could not start: e"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "Token server could not start: e"
+      },
+      {
+        "message": "Token server started"
+      },
+      {
+        "message": "Token server could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The token server could not start: e"
+          },
+          "level": "error"
+        }
+      }
+    ]
+  },
+  {
+    "name": "an adopted token server re-arms the token alert",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "token-server-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "token-server-adopt"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "token-server-spawn-failed",
+        "error": "e"
+      }
+    ],
+    "output": [
+      {
+        "message": "Token server could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The token server could not start: e"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "Token server already running"
+      },
+      {
+        "message": "Token server could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The token server could not start: e"
+          },
+          "level": "error"
+        }
+      }
+    ]
+  },
+  {
+    "name": "encoder-fallback alerts once per change",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-fallback",
+        "from": "h264_nvenc",
+        "to": "h264_amf"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-fallback",
+        "from": "h264_nvenc",
+        "to": "h264_amf"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-fallback",
+        "from": "h264_amf",
+        "to": "libx264"
+      }
+    ],
+    "output": [
+      {
+        "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf.",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf."
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf."
+      },
+      {
+        "message": "The h264_amf encoder failed its test, so the stream uses libx264.",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The h264_amf encoder failed its test, so the stream uses libx264."
+          },
+          "level": "error"
+        }
+      }
+    ]
+  },
+  {
+    "name": "the same fallback alerts again after the encoder was restored",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-fallback",
+        "from": "h264_nvenc",
+        "to": "h264_amf"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-restored",
+        "from": "h264_amf",
+        "to": "h264_nvenc"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-fallback",
+        "from": "h264_nvenc",
+        "to": "h264_amf"
+      }
+    ],
+    "output": [
+      {
+        "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf.",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf."
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "The h264_nvenc encoder works again, so the stream uses it.",
+        "discord": {
+          "kind": "recovery",
+          "vars": {
+            "step": "Back on the h264_nvenc encoder"
+          },
+          "level": "info"
+        }
+      },
+      {
+        "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf.",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The h264_nvenc encoder failed its test, so the stream uses h264_amf."
+          },
+          "level": "error"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a restored encoder without a fallback still sends its all-clear",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-restored",
+        "from": "h264_amf",
+        "to": "h264_nvenc"
+      }
+    ],
+    "output": [
+      {
+        "message": "The h264_nvenc encoder works again, so the stream uses it.",
+        "discord": {
+          "kind": "recovery",
+          "vars": {
+            "step": "Back on the h264_nvenc encoder"
+          },
+          "level": "info"
+        }
+      }
+    ]
+  },
+  {
+    "name": "events the gate does not track pass through unchanged",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "skip",
+        "index": 1,
+        "id": "a",
+        "why": "x",
+        "consecutive": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "skip",
+        "index": 1,
+        "id": "a",
+        "why": "x",
+        "consecutive": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "resume",
+        "index": 1,
+        "id": "a",
+        "pos": 1
+      }
+    ],
+    "output": [
+      {
+        "message": "Skipped video 2 (x)",
+        "discord": {
+          "kind": "skip",
+          "vars": {
+            "videoIndex": 2,
+            "videoId": "a",
+            "reason": "x"
+          },
+          "level": "warn"
+        }
+      },
+      {
+        "message": "Skipped video 2 (x)",
+        "discord": {
+          "kind": "skip",
+          "vars": {
+            "videoIndex": 2,
+            "videoId": "a",
+            "reason": "x"
+          },
+          "level": "warn"
+        }
+      },
+      {
+        "message": "Resumed video 2 at 1s",
+        "discord": {
+          "kind": "resume",
+          "vars": {
+            "videoIndex": 2,
+            "videoId": "a"
+          },
+          "level": "info"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a spawn failure then an exit share one encoder alert until the start",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 1
+      }
+    ],
+    "output": [
+      {
+        "message": "The encoder could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder could not start: e"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 1s",
+        "discord": {
+          "kind": "streamDrop",
+          "vars": {
+            "attempt": 1,
+            "maxAttempts": 3
+          },
+          "level": "warn"
+        }
+      },
+      {
+        "message": "Encoder restarted (restart 1)",
+        "discord": {
+          "kind": "streamRestart",
+          "vars": {
+            "attempts": 1
+          },
+          "level": "info"
+        }
+      }
+    ]
+  },
+  {
+    "name": "an exit then spawn failures: the spawn failure alerts once, the start sends a restart",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 1,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-spawn-failed",
+        "error": "e"
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "info",
+        "kind": "encoder-start",
+        "restarts": 2
+      }
+    ],
+    "output": [
+      {
+        "message": "Encoder stopped (x); restarting in 1s",
+        "discord": {
+          "kind": "streamDrop",
+          "vars": {
+            "attempt": 1,
+            "maxAttempts": 3
+          },
+          "level": "warn"
+        }
+      },
+      {
+        "message": "The encoder could not start: e",
+        "discord": {
+          "kind": "critical",
+          "vars": {
+            "message": "The encoder could not start: e"
+          },
+          "level": "error"
+        }
+      },
+      {
+        "message": "The encoder could not start: e"
+      },
+      {
+        "message": "Encoder restarted (restart 2)",
+        "discord": {
+          "kind": "streamRestart",
+          "vars": {
+            "attempts": 2
+          },
+          "level": "info"
+        }
+      }
+    ]
+  },
+  {
+    "name": "exit 2 and exits past 3 are timeline only",
+    "input": [
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "warn",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 2,
+        "restartInS": 1
+      },
+      {
+        "ts": "2026-10-25T10:00:00Z",
+        "level": "critical",
+        "kind": "encoder-exit",
+        "why": "x",
+        "failures": 5,
+        "restartInS": 1
+      }
+    ],
+    "output": [
+      {
+        "message": "Encoder stopped (x); restarting in 1s"
+      },
+      {
+        "message": "Encoder stopped (x); restarting in 1s"
+      }
+    ]
+  }
+]

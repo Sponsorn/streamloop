@@ -1,6 +1,6 @@
 // One whole supervisor run: MediaMTX + token-server check, a dev root (dev-root.mjs) with a temp
-// config, the product binary, spike 1's watcher, a raw packet reader, a recorder, an optional
-// drive.mjs, then the dummy-key grep, analyze + verdict.
+// config, the root's streamloop.exe in supervisor mode, spike 1's watcher, a raw packet reader, a
+// recorder, an optional drive.mjs, then the dummy-key grep, analyze + verdict.
 //   node session.mjs <name> [--drive controls|faults|switch|resume|advance] [--gap-s 60] [--key protected|target] [--cookies SPEC] [supervisor flags...]
 // advance: two playlists, starting 90 s before the first one's end. Needs --debug-faults --max-videos 2, so the
 // list ends on the video named in FIRST_LIST_LAST.
@@ -21,7 +21,6 @@ import { makeDevRoot } from './dev-root.mjs';
 const SUP_DIR = fileURLToPath(new URL('..', import.meta.url));
 const TOOLS_DIR = fileURLToPath(new URL('../../spikes/tools', import.meta.url));
 const CONTINUITY_CHECK = fileURLToPath(new URL('../../spikes/continuity/check.mjs', import.meta.url));
-const BIN = fileURLToPath(new URL('../target/release/streamloop-supervisor.exe', import.meta.url));
 const node = process.execPath;
 
 const [name, ...rest] = process.argv.slice(2);
@@ -43,18 +42,20 @@ for (let i = 0; i < rest.length; i += 1) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const rtmpUp = () => new Promise((resolve) => {
-  const socket = net.connect(1935, '127.0.0.1');
+const portOpen = (port) => new Promise((resolve) => {
+  const socket = net.connect(port, '127.0.0.1');
   socket.on('connect', () => { socket.destroy(); resolve(true); });
   socket.on('error', () => resolve(false));
 });
-const tokenPortTaken = () => new Promise((resolve) => {
-  const socket = net.connect(TOKEN_PORT, '127.0.0.1');
-  socket.on('connect', () => { socket.destroy(); resolve(true); });
-  socket.on('error', () => resolve(false));
-});
+const rtmpUp = () => portOpen(1935);
 
-if (await tokenPortTaken()) {
+// Another session's supervisor would be driven and shut down as this one's.
+if (await portOpen(4417)) {
+  console.error('4417 already answers, so another session\'s supervisor runs. Stop it first.');
+  process.exit(2);
+}
+
+if (await portOpen(TOKEN_PORT)) {
   console.error(TOKEN_PORT_TAKEN);
   process.exit(2);
 }
@@ -66,9 +67,15 @@ if (!(await rtmpUp())) {
   await sleep(3000);
   if (!(await rtmpUp())) { console.error('MediaMTX did not open :1935.'); process.exit(2); }
 }
+// The faults plan takes MediaMTX down, so it runs only on the session's own.
+if (drivePlan === 'faults' && !mediamtx) {
+  console.error('The faults plan takes MediaMTX down, and the one on :1935 is not this session\'s. Run it when nothing listens on :1935.');
+  process.exit(2);
+}
 
 // dev root, fresh data, temp config
 const root = makeDevRoot();
+const BIN = join(root, 'streamloop.exe');
 const dataDir = join(root, 'data');
 const configFile = join(root, 'app', 'config.json');
 rmSync(dataDir, { recursive: true, force: true });
@@ -111,7 +118,7 @@ async function recordTokenServer() {
   }
 }
 function launchSupervisor(args) {
-  const child = spawn(BIN, ['--root', root, ...args], { cwd: SUP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: noFfmpegPath } });
+  const child = spawn(BIN, ['supervisor', '--root', root, ...args], { cwd: SUP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: noFfmpegPath } });
   child.stdout.pipe(console$, { end: false });
   child.stderr.pipe(console$, { end: false });
   child.on('error', (err) => console.error(`supervisor failed to start: ${err.message}`));
@@ -178,7 +185,7 @@ async function stopSupervisor(child) {
 
 function snapshotProcesses(file) {
   const ps = spawnSync('powershell', ['-NoProfile', '-Command',
-    "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'ffmpeg.exe|yt-dlp.exe|node.exe|streamloop-pot.exe' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"],
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('ffmpeg.exe','yt-dlp.exe','node.exe','streamloop.exe','streamloop-pot.exe') } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8' });
   writeFileSync(`${SUP_DIR}/logs/${file}`, redact(ps.stdout || '[]', dummyKey));
 }
@@ -285,7 +292,7 @@ function watchMediaMtxSignal() {
     const { durationMs } = JSON.parse(readFileSync(signalFile, 'utf8'));
     unlinkSync(signalFile);
     log('mediamtx-events.csv', [Date.now(), 'down']);
-    if (mediamtx) mediamtx.kill(); else spawnSync('taskkill', ['/F', '/IM', 'mediamtx.exe']);
+    mediamtx?.kill();
     mediamtx = null;
     await sleep(durationMs);
     mediamtx = spawn(`${TOOLS_DIR}/mediamtx.exe`, [], { cwd: TOOLS_DIR, stdio: 'ignore' });

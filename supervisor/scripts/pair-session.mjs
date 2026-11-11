@@ -2,8 +2,9 @@
 //   node pair-session.mjs NAME --playlist ID[,ID...] --hours H [--a-zip ZIP] [--b-pot EXE | --b-ts]
 //        [--b-plugin ZIP] [--b-expect TEXT] [--cookies SPEC] [--b-bin EXE]
 // A is the released 3.0.5 full ZIP (its TypeScript token server under its own Node, ports 4417/4416).
-// B is this branch's supervisor on 4427/4426, either adopting a second TypeScript server the harness
-// starts (--b-ts) or owning the Rust one (--b-pot EXE). Both push to one local MediaMTX, on paths a and b.
+// B is this branch's `streamloop.exe supervisor` on 4427/4426, either adopting a second TypeScript server
+// the harness starts (--b-ts) or owning the Rust one (--b-pot EXE). Both push to one local MediaMTX, on paths a and b.
+// --b-bin defaults to target\release\streamloop.exe; a 3.0 streamloop-supervisor.exe gets no mode word.
 // Output: supervisor/logs/pair-NAME/ (pair.json, status.jsonl, memory.csv, report.json, child logs).
 // Touching the file `stop` in that folder ends the run early through the normal shutdown.
 // Nothing here uses a file watcher or a streaming tail: every read is a bounded read.
@@ -27,7 +28,7 @@ const TOOLS_DIR = join(REPO, 'spikes', 'tools');
 export const MAIN_CHECKOUT = 'C:/Users/anton/Documents/App Development/Streamloop';
 export const DEFAULT_A_ZIP = `${MAIN_CHECKOUT}/dist/streamloop-v3.0.5.zip`;
 export const DEFAULT_B_PLUGIN = join(REPO, 'dist', 'pot-ts', 'bgutil-ytdlp-pot-provider.zip');
-export const DEFAULT_B_BIN = join(SUP_DIR, 'target', 'release', 'streamloop-supervisor.exe');
+export const DEFAULT_B_BIN = join(REPO, 'target', 'release', 'streamloop.exe');
 export const PLUGIN_SHA256 = 'bce874dfa25896c2798e0f4f8147b7b22e785479eb1e459ab232bf2506c95016';
 export const PORTS = { aApi: 4417, aToken: TOKEN_PORT, bApi: 4427, bToken: 4426 };
 const SAMPLE_EVERY_MS = 10 * 60_000;
@@ -35,7 +36,7 @@ const TICK_MS = 60_000;
 const IDENTITY_LIMIT_MS = 60_000;
 const EXIT_WAIT_MS = 30_000;
 const NOT_PLAYING_LIMIT_MS = 10 * 60_000;
-const WATCHED = ['streamloop-supervisor', 'streamloop-pot', 'bgutil-pot', 'node', 'ffmpeg', 'yt-dlp', 'mediamtx', 'tail', 'grep'];
+const WATCHED = ['streamloop', 'streamloop-supervisor', 'streamloop-pot', 'bgutil-pot', 'node', 'ffmpeg', 'yt-dlp', 'mediamtx', 'tail', 'grep'];
 const USAGE = 'usage: node pair-session.mjs NAME --playlist ID[,ID...] --hours H [--a-zip ZIP] [--b-pot EXE | --b-ts] [--b-plugin ZIP] [--b-expect TEXT] [--cookies SPEC] [--b-bin EXE]';
 
 
@@ -91,6 +92,9 @@ export function supervisorArgs(side, root) {
   if (side === 'a') return ['--root', root, '--target', target];
   return ['--root', root, '--debug-faults', '--api-port', String(PORTS.bApi), '--token-port', String(PORTS.bToken), '--target', target];
 }
+
+/** The mode word B's exe needs before the supervisor's own arguments: none for 3.0's streamloop-supervisor.exe. */
+export const modeArgs = (bin) => (basename(bin).toLowerCase() === 'streamloop-supervisor.exe' ? [] : ['supervisor']);
 
 export const tsServerArgs = (root) => [join(root, 'pot', 'build', 'main.js'), '-H', '127.0.0.1', '-p', String(PORTS.bToken)];
 
@@ -235,7 +239,7 @@ async function preflight(o) {
   }
   if (!existsSync(o.bPlugin)) problems.push(`${o.bPlugin} is missing.`);
   else if ((await sha256File(o.bPlugin)) !== PLUGIN_SHA256) problems.push(`${o.bPlugin} is not the pinned 2.0.0 plugin (SHA-256 ${PLUGIN_SHA256}).`);
-  if (!existsSync(o.bBin)) problems.push(`B's supervisor is missing: ${o.bBin}. Run cargo build --release in supervisor/.`);
+  if (!existsSync(o.bBin)) problems.push(`B's supervisor is missing: ${o.bBin}. Run cargo build --release -p streamloop at the repo root.`);
   if (o.bPot && !existsSync(o.bPot)) problems.push(`${o.bPot} is missing.`);
   for (const source of Object.values(SOURCES)) if (!existsSync(source)) problems.push(`${source} is missing.`);
   if (!(await portOpen(1935)) && !existsSync(join(TOOLS_DIR, 'mediamtx.exe'))) problems.push(`Nothing listens on :1935 and ${TOOLS_DIR}/mediamtx.exe is missing.`);
@@ -378,7 +382,7 @@ async function main() {
     halt();
     launch('supervisor-a', join(aRoot, 'supervisor', 'streamloop-supervisor.exe'), supervisorArgs('a', aRoot), env);
     halt();
-    launch('supervisor-b', o.bBin, supervisorArgs('b', bRoot), env);
+    launch('supervisor-b', o.bBin, [...modeArgs(o.bBin), ...supervisorArgs('b', bRoot)], env);
     startMs = Date.now();
     pair.startedAt = new Date(startMs).toISOString();
     pair.pids = { a: children.get('supervisor-a').child.pid, b: children.get('supervisor-b').child.pid, tsServer: tsServer?.pid ?? null };

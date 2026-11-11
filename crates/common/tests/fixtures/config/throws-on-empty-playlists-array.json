@@ -1,0 +1,6 @@
+{
+  "name": "throws on empty playlists array",
+  "before": "{\"playlists\":[]}",
+  "after": null,
+  "error": "[\n  {\n    \"origin\": \"array\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"playlists\"\n    ],\n    \"message\": \"Too small: expected array to have >=1 items\"\n  }\n]"
+}

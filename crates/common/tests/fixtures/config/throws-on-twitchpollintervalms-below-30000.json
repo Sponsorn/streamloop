@@ -1,0 +1,6 @@
+{
+  "name": "throws on twitchPollIntervalMs below 30000",
+  "before": "{\"playlists\":[{\"id\":\"PLtest123\"}],\"twitchPollIntervalMs\":29999}",
+  "after": null,
+  "error": "[\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 30000,\n    \"inclusive\": true,\n    \"path\": [\n      \"twitchPollIntervalMs\"\n    ],\n    \"message\": \"Too small: expected number to be >=30000\"\n  }\n]"
+}

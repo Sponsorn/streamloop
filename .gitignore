@@ -34,4 +34,5 @@ spikes/encoder/media/
 spikes/encoder/results/
 supervisor/results/
 supervisor/logs/
+/target/
 tokenserver/target/
