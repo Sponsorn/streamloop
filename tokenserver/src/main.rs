@@ -43,7 +43,9 @@ fn parse_args(args: &[String]) -> Result<Args, (i32, String)> {
     let port = port
         .ok_or((2, "--port is required".to_owned()))?
         .parse::<u16>()
-        .map_err(|_| (2, "--port must be a number from 1 to 65535".to_owned()))?;
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or((2, "--port must be a number from 1 to 65535".to_owned()))?;
     Ok(Args { host, port, data })
 }
 
@@ -81,6 +83,12 @@ mod tests {
     fn a_host_other_than_loopback_exits_2_with_the_message() {
         let e = parse_args(&args("server --host 0.0.0.0 --port 1")).err().unwrap();
         assert_eq!(e, (2, "--host must be 127.0.0.1 or ::1".to_owned()));
+    }
+
+    #[test]
+    fn port_0_is_refused() {
+        let e = parse_args(&args("server --host 127.0.0.1 --port 0")).err().unwrap();
+        assert_eq!(e, (2, "--port must be a number from 1 to 65535".to_owned()));
     }
 
     #[test]

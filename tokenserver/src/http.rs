@@ -2,6 +2,8 @@
 // Copyright (c) Brainicism and contributors, GPL-3.0.
 
 use std::io::Read;
+use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::net::SocketAddr;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -16,7 +18,8 @@ use crate::session::{PotAnswer, PotRequest, Sessions};
 /// The protocol version the 2.0.0 plugin checks, not this server's own.
 pub const PROTOCOL_VERSION: &str = "2.0.0";
 
-const MAX_BODY: usize = 64 * 1024;
+/// What `express.json()` accepts in 2.0.0 (100kb).
+const JSON_LIMIT: usize = 100 * 1024;
 /// Threads that read requests and answer everything but a mint.
 const FRONT_THREADS: usize = 8;
 /// Threads that run `get_pot`. A mint can block for over a minute; it never holds a front thread.
@@ -47,7 +50,7 @@ impl Service for Sessions {
 }
 
 /// What a request needs next: an answer now, or a mint on a worker.
-pub enum Routed {
+enum Routed {
     Reply(u16, String),
     Mint(PotRequest),
 }
@@ -70,7 +73,7 @@ fn present(v: Option<&Value>) -> bool {
     !matches!(v, None | Some(Value::Null))
 }
 
-pub fn route(
+fn route(
     method: &str,
     path: &str,
     content_type: Option<&str>,
@@ -110,7 +113,7 @@ fn route_get_pot(content_type: Option<&str>, body: &[u8]) -> Routed {
     if essence.as_deref() != Some("application/json") {
         return error(415, "Content-Type must be application/json");
     }
-    if body.len() > MAX_BODY {
+    if body.len() > JSON_LIMIT {
         return error(413, "Request body too large");
     }
     let Ok(Value::Object(b)) = serde_json::from_slice::<Value>(body) else {
@@ -129,6 +132,7 @@ fn route_get_pot(content_type: Option<&str>, body: &[u8]) -> Routed {
         );
     }
     if present(b.get("proxy")) || present(b.get("source_address")) || truthy(b.get("disable_tls_verification")) {
+        println!("get_pot: refused (proxy, source_address or disable_tls_verification)");
         return error(400, "proxy, source_address and disable_tls_verification are not supported");
     }
     let content_binding = match b.get("content_binding") {
@@ -152,7 +156,7 @@ fn route_get_pot(content_type: Option<&str>, body: &[u8]) -> Routed {
     })
 }
 
-pub fn mint_reply(result: Result<PotAnswer, String>) -> (u16, String) {
+fn mint_reply(result: Result<PotAnswer, String>) -> (u16, String) {
     match result {
         Ok(a) => (
             200,
@@ -165,6 +169,13 @@ pub fn mint_reply(result: Result<PotAnswer, String>) -> (u16, String) {
         ),
         Err(e) => (500, json!({ "error": e }).to_string()),
     }
+}
+
+/// 2.0.0's guard: a request with an `Origin` header or `Sec-Fetch-Site: cross-site` came from a
+/// browser page, and the plugin is never one.
+fn browser_originated(origin: Option<&str>, sec_fetch_site: Option<&str>) -> bool {
+    origin.is_some_and(|o| !o.is_empty())
+        || sec_fetch_site.is_some_and(|v| v.eq_ignore_ascii_case("cross-site"))
 }
 
 /// Route and, for a mint, run it on this thread.
@@ -211,6 +222,7 @@ pub struct Running {
     server: Arc<Server>,
     threads: Vec<JoinHandle<()>>,
     addr: SocketAddr,
+    stopping: Arc<AtomicBool>,
 }
 
 impl Running {
@@ -221,6 +233,7 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
         for _ in 0..FRONT_THREADS {
             self.server.unblock();
         }
@@ -237,53 +250,75 @@ pub fn serve(addr: SocketAddr, svc: Arc<dyn Service>) -> std::io::Result<Running
     let bound = server.server_addr().to_ip().unwrap_or(addr);
     let server = Arc::new(server);
     let started = Instant::now();
+    let stopping = Arc::new(AtomicBool::new(false));
     let (tx, rx) = sync_channel::<Mint>(MINT_QUEUE);
     let rx = Arc::new(Mutex::new(rx));
     let mut threads = Vec::new();
     for _ in 0..FRONT_THREADS {
-        let (server, svc, tx) = (server.clone(), svc.clone(), tx.clone());
-        threads.push(thread::spawn(move || front(&server, svc.as_ref(), &tx, started)));
+        let (server, svc, tx, stopping) = (server.clone(), svc.clone(), tx.clone(), stopping.clone());
+        threads.push(thread::spawn(move || front(&server, svc.as_ref(), &tx, started, &stopping)));
     }
     drop(tx);
     for _ in 0..MINT_WORKERS {
         let (svc, rx) = (svc.clone(), rx.clone());
         threads.push(thread::spawn(move || worker(svc.as_ref(), &rx)));
     }
-    Ok(Running { server, threads, addr: bound })
+    Ok(Running { server, threads, addr: bound, stopping })
 }
+
+/// The first `/get_pot` body size is logged once, to learn what the plugin really sends.
+static BODY_SIZE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 fn json_header() -> Header {
     Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).expect("static header")
 }
 
+fn header(req: &Request, name: &str) -> Option<String> {
+    req.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_owned())
+}
+
 fn respond(req: Request, status: u16, body: String) {
-    let r = Response::from_string(body).with_status_code(status);
-    let r = if status == 204 { r } else { r.with_header(json_header()) };
+    if status == 204 {
+        let _ = req.respond(Response::empty(204));
+        return;
+    }
+    let r = Response::from_string(body).with_status_code(status).with_header(json_header());
     let _ = req.respond(r);
 }
 
-fn front(server: &Server, svc: &dyn Service, mints: &SyncSender<Mint>, started: Instant) {
-    // `recv` errors once the server is unblocked for shutdown or its socket fails.
-    while let Ok(mut req) = server.recv() {
+fn front(server: &Server, svc: &dyn Service, mints: &SyncSender<Mint>, started: Instant, stopping: &AtomicBool) {
+    loop {
+        let mut req = match server.recv() {
+            Ok(r) => r,
+            Err(_) if stopping.load(Ordering::SeqCst) => return,
+            Err(e) => {
+                // tiny_http stops accepting after one accept error; exit so the supervisor sees it.
+                eprintln!("streamloop-pot: the listener failed: {e}");
+                exit(1);
+            }
+        };
+        if browser_originated(header(&req, "Origin").as_deref(), header(&req, "Sec-Fetch-Site").as_deref()) {
+            respond(req, 403, json!({ "error": "Browser-originated requests are not allowed" }).to_string());
+            continue;
+        }
         let method = match req.method() {
             Method::Get => "GET",
             Method::Post => "POST",
             _ => "OTHER",
         };
         let path = req.url().to_owned();
-        let content_type = req
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("Content-Type"))
-            .map(|h| h.value.as_str().to_owned());
+        let content_type = header(&req, "Content-Type");
         let wants_body = method == "POST" && path.split('?').next() == Some("/get_pot");
         let mut body = Vec::new();
         if wants_body {
-            if req.body_length().is_some_and(|n| n > MAX_BODY) {
+            if req.body_length().is_some_and(|n| n > JSON_LIMIT) {
                 respond(req, 413, json!({ "error": "Request body too large" }).to_string());
                 continue;
             }
-            let _ = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);
+            let _ = req.as_reader().take(JSON_LIMIT as u64 + 1).read_to_end(&mut body);
+            if !BODY_SIZE_LOGGED.swap(true, Ordering::SeqCst) {
+                println!("get_pot: body {} bytes", body.len());
+            }
         }
         let uptime = started.elapsed().as_secs_f64();
         match route(method, &path, content_type.as_deref(), &body, svc, uptime) {
@@ -291,6 +326,7 @@ fn front(server: &Server, svc: &dyn Service, mints: &SyncSender<Mint>, started: 
             Routed::Mint(r) => match mints.try_send((req, r)) {
                 Ok(()) => {}
                 Err(TrySendError::Full((req, _))) | Err(TrySendError::Disconnected((req, _))) => {
+                    println!("get_pot: refused (queue full)");
                     respond(req, 503, json!({ "error": "Too many token requests in flight" }).to_string());
                 }
             },
@@ -405,7 +441,7 @@ mod tests {
 
     #[test]
     fn an_oversized_body_is_413() {
-        let big = format!(r#"{{"content_binding":"{}"}}"#, "a".repeat(MAX_BODY));
+        let big = format!(r#"{{"content_binding":"{}"}}"#, "a".repeat(JSON_LIMIT));
         assert_eq!(post(&big, &Fake { fail: false }).0, 413);
     }
 
@@ -426,6 +462,22 @@ mod tests {
         assert_eq!(post(r#"{}"#, f).0, 400);
         assert_eq!(post(r#"{"innertube_context":{"client":{}}}"#, f).0, 400);
         assert_eq!(post(r#"{"innertube_context":{"client":{"visitorData":"vd"}}}"#, f).0, 200);
+    }
+
+    #[test]
+    fn iso8601_writes_january_and_february_dates() {
+        // 2027-01-31T23:59:59.999Z and 2028-02-29T00:00:00.000Z (a leap day).
+        assert_eq!(iso8601(UNIX_EPOCH + Duration::from_millis(1_801_439_999_999)), "2027-01-31T23:59:59.999Z");
+        assert_eq!(iso8601(UNIX_EPOCH + Duration::from_millis(1_835_395_200_000)), "2028-02-29T00:00:00.000Z");
+    }
+
+    #[test]
+    fn a_browser_origin_is_refused() {
+        assert!(browser_originated(Some("http://evil.example"), None));
+        assert!(browser_originated(None, Some("Cross-Site")));
+        assert!(!browser_originated(None, Some("same-origin")));
+        assert!(!browser_originated(Some(""), None));
+        assert!(!browser_originated(None, None));
     }
 
     #[test]
