@@ -896,9 +896,10 @@ async fn a_live_encoder_resets_the_off_air_time() {
 
 // GitHub timeouts
 
-/// Records each request, answers the release list from `inner`, and never answers anything else.
+/// Records each request and answers from `inner`, except that it never answers the release list
+/// (`stall_list`) or, when `stall_list` is off, a `.sha256` file.
 struct StallingHttp {
-    inner: FakeHttp,
+    inner: Arc<FakeHttp>,
     stall_list: bool,
     timeouts: Mutex<Vec<(String, Option<Duration>)>>,
 }
@@ -907,14 +908,15 @@ struct StallingHttp {
 impl Http for StallingHttp {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
         self.timeouts.lock().unwrap().push((req.url.clone(), req.timeout));
-        if req.url.starts_with(GITHUB_RELEASES_URL) && !self.stall_list {
-            return self.inner.send(req).await;
+        let stalls = if req.url.starts_with(GITHUB_RELEASES_URL) { self.stall_list } else { !self.stall_list && req.url.ends_with(".sha256") };
+        if stalls {
+            std::future::pending().await
         }
-        std::future::pending().await
+        self.inner.send(req).await
     }
 
-    async fn download(&self, _url: &str, _dest: &Path) -> Result<u64, HttpError> {
-        std::future::pending().await
+    async fn download(&self, url: &str, dest: &Path) -> Result<u64, HttpError> {
+        self.inner.download(url, dest).await
     }
 }
 
@@ -922,7 +924,7 @@ impl Http for StallingHttp {
 async fn shows_a_plain_error_when_the_github_api_stalls() {
     // Arrange
     let h = Harness::new();
-    let http = Arc::new(StallingHttp { inner: FakeHttp::new(), stall_list: true, timeouts: Mutex::new(Vec::new()) });
+    let http = Arc::new(StallingHttp { inner: h.http.clone(), stall_list: true, timeouts: Mutex::new(Vec::new()) });
     let updater = Updater::new(h.options(http.clone()));
     // Act
     let info = updater.check().await;
@@ -930,6 +932,30 @@ async fn shows_a_plain_error_when_the_github_api_stalls() {
     assert_eq!(info.status, UpdateStatus::Error);
     assert_eq!(info.error.as_deref(), Some("GitHub did not answer within 10 seconds."));
     assert_eq!(http.timeouts.lock().unwrap()[0].1, Some(Duration::from_secs(10)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn gives_up_on_a_stalled_checksum_and_says_why() {
+    // Arrange
+    let h = Harness::new();
+    h.offer(NEXT);
+    let http = Arc::new(StallingHttp { inner: h.http.clone(), stall_list: false, timeouts: Mutex::new(Vec::new()) });
+    let updater = Updater::new(h.options(http.clone()));
+    // Act
+    updater.check().await;
+    updater.wait_for_stage().await;
+    // Assert
+    let checksum_url = format!("{}.sha256", exe_url(NEXT));
+    let timeouts = http.timeouts.lock().unwrap();
+    let checksum_request = timeouts.iter().find(|(url, _)| *url == checksum_url).expect("the checksum was asked for");
+    assert_eq!(checksum_request.1, Some(Duration::from_secs(10)));
+    let info = updater.status();
+    assert_eq!(info.status, UpdateStatus::Idle);
+    assert_eq!(
+        info.node_notice.as_deref(),
+        Some(&format!("The download failed: the checksum file could not be read ({checksum_url} did not answer within 10 seconds). It is tried again at the next check.")[..])
+    );
+    assert_eq!(updater.staged_version(), None);
 }
 
 // Checks beside a check or a download

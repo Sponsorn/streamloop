@@ -67,8 +67,10 @@ async function main() {
   cpSync(builtExe, join(DIST, exeFilename));
 
   // tokenserver/ is no workspace member: its .cargo/config.toml (static CRT) applies only from its own folder.
+  // RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS in the environment override that file and drop +crt-static, so the build runs without them.
   console.log('streamloop-pot.exe...');
-  execSync('cargo build --release', { cwd: join(ROOT, 'tokenserver'), stdio: 'inherit', windowsHide: true });
+  const { RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS, ...potEnv } = process.env;
+  execSync('cargo build --release', { cwd: join(ROOT, 'tokenserver'), env: potEnv, stdio: 'inherit', windowsHide: true });
   const builtPot = join(ROOT, 'tokenserver', 'target', 'release', 'streamloop-pot.exe');
 
   // no config.json: the control process creates it from the example on first start

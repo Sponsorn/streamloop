@@ -1249,8 +1249,9 @@ function distIsStale() {
       if (e.isDirectory()) { if (e.name !== 'target' && e.name !== 'tests' && e.name !== 'fixtures') walk(p); } else if (statSync(p).mtimeMs > built) newer.push(p.slice(REPO.length));
     }
   };
-  for (const d of ['crates', join('supervisor', 'src'), join('src', 'admin')]) walk(join(REPO, d));
-  for (const f of ['Cargo.toml', 'Cargo.lock', join('supervisor', 'Cargo.toml'), join('scripts', 'START.bat'), 'config.example.json']) if (statSync(join(REPO, f)).mtimeMs > built) newer.push(f);
+  for (const d of ['crates', join('supervisor', 'src'), join('src', 'admin'), join('tokenserver', 'src'), join('tokenserver', 'vendor')]) walk(join(REPO, d));
+  for (const f of ['Cargo.toml', 'Cargo.lock', join('supervisor', 'Cargo.toml'), join('scripts', 'START.bat'), 'config.example.json',
+    join('tokenserver', 'Cargo.toml'), join('tokenserver', 'Cargo.lock'), join('tokenserver', '.cargo', 'config.toml')]) if (statSync(join(REPO, f)).mtimeMs > built) newer.push(f);
   return newer;
 }
 

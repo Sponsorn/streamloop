@@ -37,7 +37,7 @@ YouTube ──yt-dlp──> download cache ──> feeder ffmpeg ──> encoder
 2. Make a new, empty folder, for example `C:\StreamLoop3`, and extract the ZIP into it. The ZIP holds one folder, `streamloop`.
 3. Double-click `START.bat` in `C:\StreamLoop3\streamloop`.
 
-Everything StreamLoop needs is in the folder: ffmpeg, yt-dlp, and Node.js for the YouTube token server. The dashboard opens at `http://localhost:7654/admin` and walks you through the playlist, your Twitch stream key (stored encrypted for your Windows user), Discord, and a system check that picks the encoder and the cache size.
+Everything StreamLoop needs is in the folder: ffmpeg, yt-dlp and the YouTube token server. The dashboard opens at `http://localhost:7654/admin` and walks you through the playlist, your Twitch stream key (stored encrypted for your Windows user), Discord, and a system check that picks the encoder and the cache size.
 
 Keep the `START.bat` window open: it runs the dashboard. Closing it does not stop the stream; start `START.bat` again to get the dashboard back.
 
@@ -49,6 +49,7 @@ Requires Rust stable (MSVC toolchain) and Node.js 22 or later, for the tests and
 
 ```bash
 cargo build --release   # target\release\streamloop.exe
+(cd tokenserver && cargo build --release)   # tokenserver\target\release\streamloop-pot.exe
 cargo test --workspace  # the Rust tests
 npm install
 npm test                # the dashboard's tests and the test harness's (vitest)
@@ -84,7 +85,7 @@ npm test                # the dashboard's tests and the test harness's (vitest)
 npm run build:release
 ```
 
-It builds `streamloop.exe` with cargo and writes, in `dist\`, the full ZIP `streamloop-vX.Y.Z.zip` (the install), `streamloop-vX.Y.Z.exe` (what the updater downloads), a `.sha256` for each and `node-version.txt`, then checks the ZIP with `build/verify-release.mjs`. There is no separate update ZIP: an update replaces the exe, and a release that changes ffmpeg, Node.js or the token server says in its notes that it needs the full ZIP.
+It builds `streamloop.exe` and, in `tokenserver\`, `streamloop-pot.exe` with cargo, and writes, in `dist\`, the full ZIP `streamloop-vX.Y.Z.zip` (the install), `streamloop-vX.Y.Z.exe` (what the updater downloads), and a `.sha256` for each, then checks the ZIP with `build/verify-release.mjs`. There is no separate update ZIP: an update replaces the exe, and a release that changes ffmpeg or the token server says in its notes that it needs the full ZIP.
 
 ## License
 
