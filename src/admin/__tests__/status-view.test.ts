@@ -167,12 +167,12 @@ describe('dependencyRows', () => {
 
   it('gives each row a line that reads as a sentence', () => {
     const rows = dependencyRows(report({}, [
-      { name: 'Token server modules', ok: false, path: 'C:\\SL\\pot\\node_modules' },
+      { name: 'Token server', ok: false, path: 'C:\\SL\\supervisor\\streamloop-pot.exe' },
       { name: 'ffmpeg', ok: false, path: 'C:\\SL\\ffmpeg\\ffmpeg.exe' },
       { name: 'Deno', ok: true, path: 'C:\\SL\\yt-dlp\\deno.exe' },
     ]));
     expect(rows.map((r: { text: string }) => r.text)).toEqual([
-      'Token server packages are missing: C:\\SL\\pot\\node_modules',
+      'Token server is missing: C:\\SL\\supervisor\\streamloop-pot.exe',
       'ffmpeg is missing: C:\\SL\\ffmpeg\\ffmpeg.exe',
       'Deno',
     ]);

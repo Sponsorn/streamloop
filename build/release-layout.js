@@ -15,10 +15,6 @@ export const FULL_LAYOUT = [
   'yt-dlp/yt-dlp.exe',
   'yt-dlp/deno.exe',
   'yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip',
-  'pot/package.json',
-  'pot/build/main.js',
-  'pot/node_modules',
-  'node/node.exe',
   'data',
 ];
 

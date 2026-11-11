@@ -199,8 +199,6 @@ pub struct UpdaterOptions {
     pub releases_url: String,
     /// `STREAMLOOP_TEST_RELEASES`: the release list comes from this file, and assets only from 127.0.0.1.
     pub test_releases: Option<PathBuf>,
-    /// `node\node.exe --version`, compared with the release's `node-version.txt`; `set_bundled_node` can give it later.
-    pub bundled_node: Option<String>,
     pub policy: BreakPolicy,
 }
 
@@ -229,7 +227,6 @@ struct State {
     update_available: bool,
     status: UpdateStatus,
     error: Option<String>,
-    node_notice: Option<String>,
     download_percent: Option<u8>,
     offer: Option<Offer>,
     /// The version whose exe passed both checks; it counts only while the offer names it.
@@ -251,7 +248,6 @@ struct Inner {
     layout: Layout,
     releases_url: String,
     test_releases: Option<PathBuf>,
-    bundled_node: Mutex<Option<String>>,
     policy: BreakPolicy,
     state: Mutex<State>,
     /// Held for the whole of a stage, so two never run at once.
@@ -269,7 +265,6 @@ pub struct Updater {
 struct Found {
     latest: String,
     offer: Option<Offer>,
-    node_notice: Option<String>,
 }
 
 impl Updater {
@@ -282,7 +277,6 @@ impl Updater {
             update_available: false,
             status: UpdateStatus::Idle,
             error: None,
-            node_notice: None,
             download_percent: None,
             offer: None,
             staged: None,
@@ -302,7 +296,6 @@ impl Updater {
                 layout: opts.layout,
                 releases_url: opts.releases_url,
                 test_releases: opts.test_releases,
-                bundled_node: Mutex::new(opts.bundled_node.as_deref().and_then(parse_node_version)),
                 policy: opts.policy,
                 state: Mutex::new(state),
                 stage_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -314,11 +307,6 @@ impl Updater {
     pub fn status(&self) -> UpdateInfo {
         let st = self.inner.lock();
         self.inner.info(&st)
-    }
-
-    /// `node\node.exe --version` as it printed it, for the checks from now on.
-    pub fn set_bundled_node(&self, printed: Option<&str>) {
-        *self.inner.bundled_node.lock().unwrap_or_else(|e| e.into_inner()) = printed.and_then(parse_node_version);
     }
 
     /// Looks for a newer release, and starts staging it in the background when one is found.
@@ -342,7 +330,6 @@ impl Updater {
             if self.inner.staged_locked(&st).is_none() {
                 st.update_available = false;
                 st.offer = None;
-                st.node_notice = None;
             }
             // Taken while `Checking` is set, so no `wait_for_check` slips in before it; only one check runs.
             self.inner.check_lock.clone().try_lock_owned().ok()
@@ -360,7 +347,6 @@ impl Updater {
                     st.latest_version = Some(found.latest);
                     st.update_available = found.offer.is_some();
                     st.offer = found.offer;
-                    st.node_notice = found.node_notice;
                     st.last_check = Some(now);
                     if checking {
                         st.status = UpdateStatus::Idle;
@@ -484,7 +470,7 @@ impl Inner {
             status: st.status,
             error: st.error.clone(),
             is_dev_mode: self.dev_mode,
-            node_notice: notice_text(state, hours, st.node_notice.clone()),
+            node_notice: notice_text(state, hours),
             kind: st.update_available.then(|| "app".to_string()),
             parts: Vec::new(),
             same_version: false,
@@ -538,13 +524,13 @@ impl Inner {
     async fn find_update(&self) -> Result<Found, String> {
         let Some(releases) = self.fetch_releases().await? else {
             // GitHub answers 404 for a repository with no releases yet.
-            return Ok(Found { latest: self.current.clone(), offer: None, node_notice: None });
+            return Ok(Found { latest: self.current.clone(), offer: None });
         };
         let picked = pick_release(&releases, &self.current);
         let latest = picked.map_or_else(|| self.current.clone(), |r| strip_v(&r.tag_name).to_string());
         let release = match picked {
             Some(r) if compare_versions(&latest, &self.current) == Ordering::Greater => r,
-            _ => return Ok(Found { latest, offer: None, node_notice: None }),
+            _ => return Ok(Found { latest, offer: None }),
         };
         let assets = select_exe_assets(release).expect("pick_release takes only releases with an exe and its checksum");
         for url in [&assets.exe_url, &assets.checksum_url] {
@@ -552,10 +538,8 @@ impl Inner {
                 return Err(format!("Untrusted download URL domain: {url}"));
             }
         }
-        // Dev mode runs no bundled Node.
-        let node_notice = if self.dev_mode { None } else { self.release_node_notice(release).await };
         let offer = Offer { version: latest.clone(), exe_url: assets.exe_url, checksum_url: assets.checksum_url };
-        Ok(Found { latest, offer: Some(offer), node_notice })
+        Ok(Found { latest, offer: Some(offer) })
     }
 
     /// The release list, or `None` for GitHub's 404.
@@ -597,23 +581,6 @@ impl Inner {
             return Err(format!("HTTP {}", res.status));
         }
         Ok(res.text())
-    }
-
-    async fn release_node_notice(&self, release: &GithubRelease) -> Option<String> {
-        let bundled = self.bundled_node.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-        let url = &release.assets.iter().find(|a| a.name == "node-version.txt")?.browser_download_url;
-        if !self.allowed(url) {
-            return None;
-        }
-        let text = match self.fetch_text(url).await {
-            Ok(text) => text,
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not read the release Node version");
-                return None;
-            }
-        };
-        let release_node = parse_node_version(&text)?;
-        (release_node != bundled).then(|| format!("This release bundles Node {release_node}. Install the full ZIP to get it."))
     }
 
     async fn stage_holding(self: Arc<Self>, _guard: OwnedMutexGuard<()>) -> Result<(), String> {
@@ -851,11 +818,6 @@ fn asset_url<'a>(r: &'a GithubRelease, name: &str) -> Option<&'a str> {
     r.assets.iter().find(|a| a.name == name).map(|a| a.browser_download_url.as_str())
 }
 
-/// The Node version a release names in its `node-version.txt`.
-pub fn parse_node_version(text: &str) -> Option<String> {
-    tag_parts(text.trim()).map(|p| p.join("."))
-}
-
 /// `streamloop-vX.Y.Z.exe` and its checksum, `streamloop-vX.Y.Z.exe.sha256`. `streamloop-vX.Y.Z.sha256` is the
 /// full ZIP's, so a release that has only that one is still uploading.
 pub fn select_exe_assets(r: &GithubRelease) -> Option<ExeAssets> {
@@ -913,9 +875,9 @@ pub fn should_land(
     off_air_for >= policy.off_air_after
 }
 
-/// The line under the update banner, with the Node notice after it.
-pub fn notice_text(state: NoticeState, hours: Option<u32>, node_notice: Option<String>) -> Option<String> {
-    let own = match state {
+/// The line under the update banner.
+pub fn notice_text(state: NoticeState, hours: Option<u32>) -> Option<String> {
+    match state {
         NoticeState::Quiet => None,
         NoticeState::OnAir => Some(match hours {
             Some(n) => {
@@ -927,9 +889,5 @@ pub fn notice_text(state: NoticeState, hours: Option<u32>, node_notice: Option<S
         NoticeState::OffAir => Some("It installs within a minute, since the stream is off air.".to_string()),
         NoticeState::UpdateNowOnly => Some(UPDATE_NOW.to_string()),
         NoticeState::Failed(reason) => Some(format!("The download failed: {}. It is tried again at the next check.", reason.trim_end_matches('.'))),
-    };
-    match (own, node_notice) {
-        (Some(own), Some(node)) => Some(format!("{own} {node}")),
-        (own, node) => own.or(node),
     }
 }

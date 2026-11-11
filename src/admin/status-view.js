@@ -129,15 +129,12 @@ export function autostartLabel(status) {
   return 'set by another program (StreamLoop.vbs in the Startup folder)';
 }
 
-/** Names that read better in the missing line than the server's label. */
-const MISSING_TEXT = { 'Token server modules': 'Token server packages are missing' };
-
 /** The dependency list with failures first, each with its display line. */
 export function dependencyRows(report) {
   const deps = report.dependencies || [];
   return [...deps.filter((d) => !d.ok), ...deps.filter((d) => d.ok)].map((d) => ({
     ...d,
-    text: d.ok ? d.name : `${MISSING_TEXT[d.name] || d.name + ' is missing'}: ${d.path}`,
+    text: d.ok ? d.name : `${d.name} is missing: ${d.path}`,
   }));
 }
 

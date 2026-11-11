@@ -14,8 +14,11 @@ if not exist "%EXE%" if exist "%ROOT%streamloop.exe.old" rename "%ROOT%streamloo
 
 if not exist "%EXE%" goto :missing_exe
 if not exist "%ROOT%ffmpeg\ffmpeg.exe" goto :missing_ffmpeg
-if not exist "%ROOT%node\node.exe" goto :missing_node
-if not exist "%ROOT%pot\build\main.js" goto :missing_pot
+rem The Rust token server, or the TypeScript one an exe-only update keeps until the full ZIP.
+if exist "%ROOT%supervisor\streamloop-pot.exe" goto :token_server_ok
+if exist "%ROOT%node\node.exe" if exist "%ROOT%pot\build\main.js" goto :token_server_ok
+goto :missing_pot
+:token_server_ok
 
 echo Starting StreamLoop...
 echo.
@@ -85,13 +88,8 @@ echo [ERROR] ffmpeg is missing: %ROOT%ffmpeg\ffmpeg.exe. Reinstall StreamLoop fr
 pause
 exit /b 1
 
-:missing_node
-echo [ERROR] Node.js is missing: %ROOT%node\node.exe. Reinstall StreamLoop from the full ZIP.
-pause
-exit /b 1
-
 :missing_pot
-echo [ERROR] The token server is missing: %ROOT%pot\build\main.js. Reinstall StreamLoop from the full ZIP.
+echo [ERROR] The token server is missing: %ROOT%supervisor\streamloop-pot.exe. Reinstall StreamLoop from the full ZIP.
 pause
 exit /b 1
 

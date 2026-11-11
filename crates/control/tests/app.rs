@@ -419,6 +419,64 @@ async fn removes_the_3_0_leftovers_and_nothing_else() {
     drop(app);
 }
 
+fn install_with(files: &[&str]) -> (tempfile::TempDir, Layout) {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = Layout::new(&dir.path().join("root"));
+    for rel in files {
+        let p = rel.split('/').fold(layout.root.clone(), |p, part| p.join(part));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+    }
+    (dir, layout)
+}
+
+#[test]
+fn removes_pot_and_node_once_the_rust_token_server_is_installed() {
+    // Arrange
+    let (_dir, layout) = install_with(&["supervisor/streamloop-pot.exe", "pot/build/main.js", "pot/node_modules/canvas/package.json", "node/node.exe", "node/node_modules/npm/package.json"]);
+
+    // Act
+    remove_3_0_leftovers(&layout);
+
+    // Assert
+    assert!(!layout.root.join("pot").exists(), "pot\\ goes");
+    assert!(!layout.root.join("node").exists(), "node\\ goes");
+    assert!(layout.token_server.exists(), "the token server stays");
+}
+
+#[test]
+fn keeps_pot_and_node_while_the_install_still_needs_them() {
+    // Arrange: an exe-only update from before the Rust token server: the fallback pair is all the install has
+    let (_dir, layout) = install_with(&["pot/build/main.js", "pot/node_modules/canvas/package.json", "node/node.exe"]);
+
+    // Act
+    remove_3_0_leftovers(&layout);
+
+    // Assert
+    assert!(layout.root.join("pot").join("build").join("main.js").exists());
+    assert!(layout.root.join("node").join("node.exe").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn retries_a_partly_removed_pot_and_node_at_the_next_start() {
+    // Arrange: a first pass that left files behind, as a held file would
+    let (_dir, layout) = install_with(&["supervisor/streamloop-pot.exe", "pot/build/main.js", "node/node.exe"]);
+    let held = layout.root.join("node").join("node.exe");
+    use std::os::windows::fs::OpenOptionsExt;
+    let file = std::fs::File::options().read(true).share_mode(1).open(&held).unwrap();
+    remove_3_0_leftovers(&layout);
+    let first_pass_kept_it = held.exists();
+    drop(file);
+
+    // Act
+    remove_3_0_leftovers(&layout);
+
+    // Assert
+    assert!(first_pass_kept_it, "a held file survives the pass that met it");
+    assert!(!layout.root.join("node").exists() && !layout.root.join("pot").exists());
+}
+
 #[cfg(windows)]
 #[test]
 fn a_node_modules_junction_goes_and_its_target_stays() {

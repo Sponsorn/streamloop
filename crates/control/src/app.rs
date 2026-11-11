@@ -30,7 +30,7 @@ use crate::launcher::{should_hold, Launcher, LauncherOptions, ProcessSpawner, Sp
 use crate::leftovers::remove_3_0_leftovers;
 use crate::logging;
 use crate::playlists::PlaylistCache;
-use crate::runner::{ProcessRunner, RunSpec, Runner};
+use crate::runner::{ProcessRunner, Runner};
 use crate::setup_check::{self, LaunchGuard, LaunchGuardOptions};
 use crate::supervisor_client::{SupervisorApi, SupervisorClient};
 use crate::timeline::{EventLog, EventStore};
@@ -51,7 +51,6 @@ const USAGE: &str = "Usage: streamloop.exe [--root DIR]";
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(30);
 const EVENTS_EVERY: Duration = Duration::from_secs(2);
 const OBSERVE_EVERY: Duration = Duration::from_secs(2);
-const NODE_VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Node forced its exit this long after a shutdown that had not closed the server.
 const CLOSE_LIMIT: Duration = Duration::from_secs(5);
 
@@ -585,7 +584,6 @@ impl App {
             layout: layout.clone(),
             releases_url: GITHUB_RELEASES_URL.to_string(),
             test_releases: vars.test_releases.clone(),
-            bundled_node: None,
             policy: vars.policy,
         });
         let landing = Arc::new(LandingDeps {
@@ -679,7 +677,6 @@ impl App {
         });
         let (close, closed) = oneshot::channel();
         let server = tokio::spawn(serve_api(listener, api::router(Arc::new(state)), closed));
-        tell_bundled_node(runner.clone(), layout.node.clone(), updater);
 
         control.confirm_then_watch_updates(landed);
         control.start_services();
@@ -857,29 +854,6 @@ fn save_encoders(config: &RwLock<Config>, path: &Path, encoder: Encoder, preferr
     let patch = json!({ "supervisor": { "encoder": encoder.as_str(), "preferredEncoder": preferred.as_str() } });
     *current = streamloop_common::config::save(&patch, path).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// Runs `node\node.exe --version` in the background and gives the result to the updater, which compares it
-/// with a release's `node-version.txt`.
-fn tell_bundled_node(runner: Arc<dyn Runner>, node: PathBuf, updater: Updater) {
-    tokio::spawn(async move {
-        if !node.is_file() {
-            return;
-        }
-        let program = node.to_string_lossy().into_owned();
-        let printed = match runner.run(RunSpec::new(&program, &["--version"], NODE_VERSION_TIMEOUT)).await {
-            Ok(out) if out.code == Some(0) => Some(out.stdout_text().trim().to_string()),
-            Ok(out) => {
-                tracing::warn!(code = ?out.code, "node --version failed");
-                None
-            }
-            Err(err) => {
-                tracing::warn!(%err, "node --version failed");
-                None
-            }
-        };
-        updater.set_bundled_node(printed.as_deref());
-    });
 }
 
 /// An outdated yt-dlp can stop after the first page of a playlist, so it updates itself at every start.

@@ -23,7 +23,7 @@
 // the crates, START.bat or the dashboard. N+1 to N+4 are 3.1.1 to 3.1.4, and the two broken
 // N+1 builds are 3.1.1 with the test-supervisor-fails or test-control-fails feature, each built by cargo
 // into its own target\install-session\<id>\. The release list (STREAMLOOP_TEST_RELEASES) carries each
-// release's ZIP, exe, exe checksum and node-version.txt; the exe and its checksum are served on
+// release's ZIP, exe and exe checksum; the exe and its checksum are served on
 // 127.0.0.1:8791, and the ZIP is never fetched. Discord posts go to a catcher on 127.0.0.1:8790.
 // Start it from PowerShell: a job that refuses breakaway (the Bash tool's) puts the supervisor in it.
 // Each run prints PASS or FAIL and writes supervisor\results\install\<run>\results.json.
@@ -47,7 +47,6 @@ const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).ver
 const DIST = join(REPO, 'dist');
 const DIST_ZIP = join(DIST, `streamloop-v${VERSION}.zip`);
 const DIST_EXE = join(DIST, `streamloop-v${VERSION}.exe`);
-const DIST_NODE_VERSION = join(DIST, 'node-version.txt');
 const RESULTS = join(REPO, 'supervisor', 'results');
 const OUT_ROOT = join(RESULTS, 'install');
 const WORK = join(RESULTS, 'install-releases');
@@ -77,6 +76,9 @@ const V305_URL = `https://github.com/Sponsorn/streamloop/releases/download/${V30
 /** What the control process removes at every start (spec: Moving from 3.0). */
 const LEFTOVERS_30 = ['app/src', 'app/node_modules', 'app/package.json', 'app/package-lock.json', 'app/tsconfig.json', 'app/node-version.txt',
   'supervisor/streamloop-supervisor.exe', '_update_tmp', '_update_old', 'START.bat.new', '_apply_launcher.bat'];
+
+/** The 3.0 token server's folders; the control process removes them once supervisor\streamloop-pot.exe is installed. */
+const TOKEN_FALLBACK = ['pot', 'node'];
 
 const RUNS = { install: runInstall, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, faults: runFaults };
 
@@ -798,6 +800,7 @@ async function closeWindow(label) {
 }
 
 const leftoversPresent = () => LEFTOVERS_30.filter((p) => existsSync(join(ROOT, ...p.split('/'))));
+const tokenFallbackPresent = () => TOKEN_FALLBACK.filter((p) => existsSync(join(ROOT, p)));
 const sameEntries = (old, now) => old.filter((e) => now.some((n) => n.timestamp === e.timestamp && n.message === e.message));
 
 /** Stop, close, extract over, start, press Start; then again with 3.0.5's supervisor left streaming. */
@@ -815,12 +818,14 @@ async function runMove(r) {
   a.windowClosedMs = await closeWindow('305-stop');
   a.config305 = configFacts();
   a.leftoversBefore = leftoversPresent();
+  a.tokenFallbackBefore = tokenFallbackPresent();
   a.extract = await extractOver(DIST_ZIP, S);
   bat = startBat(ROOT, 'moved', { STREAMLOOP_TEST_HOOKS: '1' });
   a.controlUpMs = await nodeUp('the new control process after the move');
   await sleep(10_000);
   a.whileStopped = { cores: (await cores()).length, stream: (await nodeStatus())?.stream?.state ?? null, firstRun: (await nodeStatus())?.firstRun ?? null };
   a.leftoversAfter = leftoversPresent();
+  a.tokenFallbackAfter = tokenFallbackPresent();
   a.app = readdirSync(join(ROOT, 'app')).sort();
   a.timelineAfter = await timeline();
   a.config = configFacts();
@@ -840,6 +845,8 @@ async function runMove(r) {
     extractedOver: a.extract.status === 0,
     staysStoppedUntilStart: a.whileStopped.cores === 0 && a.whileStopped.stream === 'stopped' && a.whileStopped.firstRun === false,
     leftoversGone: a.leftoversBefore.length > 0 && a.leftoversAfter.length === 0,
+    // 3.0.5's pot\ and node\ go at the first start, since the ZIP brought streamloop-pot.exe
+    potAndNodeGone: a.tokenFallbackBefore.length === TOKEN_FALLBACK.length && a.tokenFallbackAfter.length === 0 && existsSync(join(ROOT, 'supervisor', 'streamloop-pot.exe')),
     configAndKeyKept: a.config.keyBlobSha256 === a.config305.keyBlobSha256 && a.config.keySet && a.config.playlist === a.config305.playlist && a.config.ingest === a.config305.ingest && a.config.port === a.config305.port,
     liveWithoutTheKeyAgain: a.start === 200 && live.value !== null && a.after.supervisorVersion === VERSION && a.after.cores.length === 1 && noDrop(a.steady),
     timelineKept: a.timeline305.length > 0 && kept.length === a.timeline305.length,
@@ -869,7 +876,7 @@ async function runMove(r) {
   const back = await waitFor(`${VERSION}'s supervisor on air`, async () => when(w, 'sup', tUp, (v) => v?.version === VERSION && v.alive === true), 180_000, 500);
   const live2 = await waitLive('live after the version rule', 180_000);
   await sleep(15_000);
-  b.afterFirstStart = { ...(await snapshot()), leftovers: leftoversPresent() };
+  b.afterFirstStart = { ...(await snapshot()), leftovers: leftoversPresent(), tokenFallback: tokenFallbackPresent() };
   b.timeline = (await timeline()).map((e) => e.message).slice(-12);
   b.gap = gapStats(tUp - 5000, (back.value ?? Date.now()) + 15_000);
   // the next start removes the old exe, which was running at the first one
@@ -878,7 +885,7 @@ async function runMove(r) {
   await waitFor('the control process gone after exit 75', async () => (!(await getJson('/token', 1000)) ? true : null), 30_000, 250);
   b.nextStartMs = await nodeUp('the next start after the move', 60_000);
   await sleep(10_000);
-  b.afterNextStart = { leftovers: leftoversPresent(), cores: (await cores()).map((p) => p.ProcessId), stream: (await nodeStatus())?.stream?.state ?? null };
+  b.afterNextStart = { leftovers: leftoversPresent(), tokenFallback: tokenFallbackPresent(), cores: (await cores()).map((p) => p.ProcessId), stream: (await nodeStatus())?.stream?.state ?? null };
   b.steady = gapStats(Date.now() - 15_000, Date.now());
   await endWatch(w);
   b.checks = {
@@ -891,6 +898,8 @@ async function runMove(r) {
     streamBack: live2.value !== null && back.value !== null,
     configAndKeyKept: b.afterFirstStart.config.keyBlobSha256 === b.config305.keyBlobSha256 && b.afterFirstStart.config.keySet,
     oldSupervisorExeGoneAfterNextStart: b.afterNextStart.leftovers.length === 0,
+    // files the running 3.0.5 supervisor held may keep pot\ and node\ at the first start; the next removes the rest
+    potAndNodeGoneAfterNextStart: b.afterNextStart.tokenFallback.length === 0,
     sameSupervisorThroughTheNextStart: pidsBefore.length === 1 && JSON.stringify(b.afterNextStart.cores) === JSON.stringify(pidsBefore) && noDrop(b.steady),
   };
   note('move with 3.0.5 still streaming', b);
@@ -1282,11 +1291,11 @@ mkdirSync(OUT_ROOT, { recursive: true });
 mkdirSync(WORK, { recursive: true });
 useOut(join(OUT_ROOT, 'session'));
 if (unknown.length) { note(`unknown run: ${unknown.join(', ')}; runs: ${Object.keys(RUNS).join(', ')}, all, build`); process.exit(2); }
-for (const f of [DIST_ZIP, DIST_EXE, DIST_NODE_VERSION]) if (!existsSync(f)) { note(`missing ${f}: npm run build:release first`); process.exit(2); }
+for (const f of [DIST_ZIP, DIST_EXE]) if (!existsSync(f)) { note(`missing ${f}: npm run build:release first`); process.exit(2); }
 const stale = distIsStale();
 if (stale.length) { note('dist is older than the code it is built from: npm run build:release first', { newer: stale.slice(0, 10) }); process.exit(2); }
 if ((await exeVersion(DIST_EXE)) !== VERSION) { note(`dist's exe does not print ${VERSION}`); process.exit(2); }
-BUILT = await buildVariants({ repo: REPO, serve: SERVE, nodeVersionFile: DIST_NODE_VERSION }).catch((err) => { note('the test builds failed', { error: String(err?.message ?? err) }); process.exit(2); });
+BUILT = await buildVariants({ repo: REPO, serve: SERVE }).catch((err) => { note('the test builds failed', { error: String(err?.message ?? err) }); process.exit(2); });
 summary.builds = BUILT;
 if (arg === 'build') process.exit(0);
 

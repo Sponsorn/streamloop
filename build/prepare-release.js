@@ -3,17 +3,17 @@
  *
  * node build/prepare-release.js writes, in dist\:
  *
- *   streamloop-vX.Y.Z.zip           the install: streamloop.exe, node\, app\ (config.example.json
- *                                   only), supervisor\slate.mp4, ffmpeg\, yt-dlp\ (with deno and
- *                                   the PO-token plugin), pot\ (the token server), data\, START.bat
+ *   streamloop-vX.Y.Z.zip           the install: streamloop.exe, app\ (config.example.json
+ *                                   only), supervisor\slate.mp4 and supervisor\streamloop-pot.exe (the
+ *                                   token server), ffmpeg\, yt-dlp\ (with deno and the PO-token plugin),
+ *                                   data\, START.bat. No node\ and no pot\.
  *   streamloop-vX.Y.Z.exe           the same streamloop.exe, which the updater downloads
  *   streamloop-vX.Y.Z.sha256        <hash>  <file name> for the ZIP
  *   streamloop-vX.Y.Z.exe.sha256    the same for the exe
- *   node-version.txt                the bundled Node, which tells an install its Node is out of date
  *
- * It then runs verify-release.mjs on the ZIP. The build needs cargo and
- * spikes/buffer/media/slate.mp4. Node, ffmpeg, the token server source and the yt-dlp plugin are
- * pinned by SHA-256; a mismatch fails the build.
+ * It then runs verify-release.mjs on the ZIP. The build needs cargo for both Cargo projects (the root
+ * workspace and tokenserver/, which links V8 and has its own static-CRT config) and
+ * spikes/buffer/media/slate.mp4. ffmpeg and the yt-dlp plugin are pinned by SHA-256; a mismatch fails the build.
  */
 
 import { execSync, execFileSync } from 'child_process';
@@ -22,13 +22,6 @@ import { mkdirSync, cpSync, existsSync, rmSync, writeFileSync, readFileSync, cre
 import { join, resolve } from 'path';
 import { pipeline } from 'stream/promises';
 
-const NODE_VERSION = '22.23.4';
-const NODE_ARCH = 'win-x64';
-const NODE = {
-  url: `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${NODE_ARCH}.zip`,
-  // from nodejs.org/dist/v22.23.4/SHASUMS256.txt
-  sha256: 'cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20',
-};
 const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe';
 const DENO_URL = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip';
 
@@ -38,12 +31,6 @@ const FFMPEG = {
   exe: 'ffmpeg-8.0-essentials_build/bin/ffmpeg.exe',
 };
 const POT_TAG = '2.0.0';
-const POT_SERVER = {
-  // tag 2.0.0 is commit 37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8
-  url: `https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/${POT_TAG}.tar.gz`,
-  sha256: '47038f7e0556a3d689044460f1b6d78381212e1bd04723a27358e1a42279f866',
-  dir: `bgutil-ytdlp-pot-provider-${POT_TAG}/server`,
-};
 const POT_PLUGIN = {
   url: `https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/${POT_TAG}/bgutil-ytdlp-pot-provider.zip`,
   sha256: 'bce874dfa25896c2798e0f4f8147b7b22e785479eb1e459ab232bf2506c95016',
@@ -67,27 +54,22 @@ async function main() {
   const base = `streamloop-v${pkg.version}`;
   const zipFilename = `${base}.zip`;
   const exeFilename = `${base}.exe`;
-  const outputs = [zipFilename, `${base}.sha256`, exeFilename, `${exeFilename}.sha256`, 'node-version.txt'].map((f) => join(DIST, f));
+  const outputs = [zipFilename, `${base}.sha256`, exeFilename, `${exeFilename}.sha256`].map((f) => join(DIST, f));
 
   mkdirSync(DIST, { recursive: true });
   for (const p of [RELEASE, WORK, ...outputs]) rmSync(p, { recursive: true, force: true });
   mkdirSync(WORK, { recursive: true });
-
-  // npm runs under the bundled Node, first on PATH, so the token server's canvas installs for its ABI.
-  console.log(`Node.js v${NODE_VERSION}...`);
-  const nodeZip = join(WORK, 'node.zip');
-  await downloadPinned(NODE, nodeZip);
-  execFileSync(TAR, ['-xf', nodeZip, '-C', WORK], { stdio: 'inherit', windowsHide: true });
-  cpSync(join(WORK, `node-v${NODE_VERSION}-${NODE_ARCH}`), join(RELEASE, 'node'), { recursive: true });
-  const nodeDir = join(RELEASE, 'node');
-  const npm = { cmd: `"${join(nodeDir, 'npm.cmd')}"`, env: { ...process.env, PATH: `${nodeDir};${process.env.PATH}` } };
-  writeFileSync(join(DIST, 'node-version.txt'), `${NODE_VERSION}\n`);
 
   console.log('streamloop.exe...');
   execSync('cargo build --release -p streamloop', { cwd: ROOT, stdio: 'inherit', windowsHide: true });
   const builtExe = join(ROOT, 'target', 'release', 'streamloop.exe');
   cpSync(builtExe, join(RELEASE, 'streamloop.exe'));
   cpSync(builtExe, join(DIST, exeFilename));
+
+  // tokenserver/ is no workspace member: its .cargo/config.toml (static CRT) applies only from its own folder.
+  console.log('streamloop-pot.exe...');
+  execSync('cargo build --release', { cwd: join(ROOT, 'tokenserver'), stdio: 'inherit', windowsHide: true });
+  const builtPot = join(ROOT, 'tokenserver', 'target', 'release', 'streamloop-pot.exe');
 
   // no config.json: the control process creates it from the example on first start
   console.log('app\\...');
@@ -97,6 +79,7 @@ async function main() {
   console.log('supervisor\\...');
   mkdirSync(join(RELEASE, 'supervisor'));
   cpSync(join(ROOT, 'spikes', 'buffer', 'media', 'slate.mp4'), join(RELEASE, 'supervisor', 'slate.mp4'));
+  cpSync(builtPot, join(RELEASE, 'supervisor', 'streamloop-pot.exe'));
 
   console.log('ffmpeg\\...');
   const ffmpegZip = join(WORK, 'ffmpeg.zip');
@@ -106,7 +89,7 @@ async function main() {
   cpSync(join(WORK, FFMPEG.exe), join(RELEASE, 'ffmpeg', 'ffmpeg.exe'));
 
   // yt-dlp nightly tracks YouTube's challenge changes faster than stable; deno solves
-  // the n-param challenge; the plugin fetches PO tokens from pot\.
+  // the n-param challenge; the plugin fetches PO tokens from the token server.
   console.log('yt-dlp\\...');
   const ytdlpDir = join(RELEASE, 'yt-dlp');
   mkdirSync(join(ytdlpDir, 'plugins'), { recursive: true });
@@ -117,19 +100,6 @@ async function main() {
   // unpinned "latest" downloads; the log records what shipped
   for (const exe of ['yt-dlp.exe', 'deno.exe']) console.log(`  ${exe} sha256 ${await sha256File(join(ytdlpDir, exe))}`);
   await downloadPinned(POT_PLUGIN, join(ytdlpDir, 'plugins', 'bgutil-ytdlp-pot-provider.zip'));
-
-  // upstream has no build script; its Dockerfile and README build with tsc
-  console.log('pot\\...');
-  const potTar = join(WORK, 'pot.tar.gz');
-  await downloadPinned(POT_SERVER, potTar);
-  execFileSync(TAR, ['-xzf', potTar, '-C', WORK, POT_SERVER.dir], { stdio: 'inherit', windowsHide: true });
-  const potSrc = join(WORK, POT_SERVER.dir);
-  execSync(`${npm.cmd} ci --no-audit --no-fund`, { cwd: potSrc, env: npm.env, stdio: 'inherit', windowsHide: true });
-  execFileSync(join(nodeDir, 'node.exe'), [join('node_modules', 'typescript', 'bin', 'tsc')], { cwd: potSrc, stdio: 'inherit', windowsHide: true });
-  execSync(`${npm.cmd} prune --omit=dev --no-audit --no-fund`, { cwd: potSrc, env: npm.env, stdio: 'inherit', windowsHide: true });
-  for (const part of ['build', 'node_modules', 'package.json']) {
-    cpSync(join(potSrc, part), join(RELEASE, 'pot', part), { recursive: true });
-  }
 
   mkdirSync(join(RELEASE, 'data'));
   cpSync(join(ROOT, 'scripts', 'README.txt'), join(RELEASE, 'README.txt'));

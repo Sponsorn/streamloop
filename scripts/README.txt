@@ -20,12 +20,13 @@ Install
    of them can run at a time.
 4. Double-click START.bat in C:\StreamLoop3\streamloop.
 
-Node.js, ffmpeg and yt-dlp are all in the folder. Nothing else needs
-installing.
+ffmpeg, yt-dlp and the token server are all in the folder. Nothing
+else needs installing.
 
 Coming from StreamLoop 3.0? Install the same way you install an update
 that needs the full ZIP (see Updates): your settings, stream key and
-timeline are kept.
+timeline are kept. The old pot\ and node\ folders are removed at the
+next start, since the token server is now a single exe in supervisor\.
 
 First run
 ---------
@@ -69,9 +70,8 @@ previous one by itself, and installs that version again only when you
 press Update Now.
 
 yt-dlp updates itself each time StreamLoop starts. Some releases also
-change ffmpeg, the token server or Node.js, which an update does not
-replace. Their release notes say they need the full ZIP, and the
-dashboard tells you when a release brings a new Node.js. For those:
+change ffmpeg or the token server, which an update does not replace.
+Their release notes say they need the full ZIP. For those:
 
 1. Press Stop and close the START.bat window.
 2. Extract the new full ZIP into the same folder as the first time
@@ -101,11 +101,10 @@ Folders
   START.bat       Starts StreamLoop. Double-click to run.
   streamloop.exe  StreamLoop itself: the dashboard and the stream
   app\            Your settings (config.json), StreamLoop's log and timeline
-  supervisor\     The standby picture shown while no video is ready
+  supervisor\     The standby picture shown while no video is ready, and
+                  the token server that yt-dlp needs for YouTube
   ffmpeg\         The encoder
   yt-dlp\         Fetches the videos from YouTube
-  pot\            Token server that yt-dlp needs for YouTube
-  node\           Node.js, which runs the token server
   data\           Logs, the download cache and the resume point
 
 Troubleshooting

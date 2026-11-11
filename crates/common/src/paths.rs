@@ -9,10 +9,9 @@ pub struct Layout {
     pub ytdlp: PathBuf,
     pub deno: PathBuf,
     pub plugins: PathBuf,
-    /// `streamloop-pot.exe`; without it the supervisor falls back to `node\` and `pot\` (`ytdlp::token_server_command`).
+    /// `streamloop-pot.exe`. An install that took only the exe through the updater has no such file and falls back to
+    /// the TypeScript server; `token_server_choice` is the one rule for that.
     pub token_server: PathBuf,
-    /// Only the control process's Node notice reads this; the supervisor's fallback builds its own path.
-    pub node: PathBuf,
     pub slate: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
@@ -34,7 +33,37 @@ pub struct Layout {
     pub update_state: PathBuf,
 }
 
+/// The token server an install runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TokenServer {
+    /// `supervisor\streamloop-pot.exe`.
+    Exe(PathBuf),
+    /// The TypeScript server an exe-only update keeps until the full ZIP: `node\node.exe` running `pot\build\main.js`.
+    Node { node: PathBuf, script: PathBuf },
+}
+
+impl TokenServer {
+    /// The file that identifies the server: the exe, or the script the fallback runs.
+    pub fn path(&self) -> &Path {
+        match self {
+            TokenServer::Exe(exe) => exe,
+            TokenServer::Node { script, .. } => script,
+        }
+    }
+}
+
 impl Layout {
+    /// The exe when it exists, else the TypeScript fallback when `node\node.exe` and `pot\build\main.js` both do.
+    /// The fallback's paths stay out of `Layout`, so the release layout never requires them.
+    pub fn token_server_choice(&self, exists: impl Fn(&Path) -> bool) -> Option<TokenServer> {
+        if exists(&self.token_server) {
+            return Some(TokenServer::Exe(self.token_server.clone()));
+        }
+        let node = self.root.join("node").join("node.exe");
+        let script = self.root.join("pot").join("build").join("main.js");
+        (exists(&node) && exists(&script)).then_some(TokenServer::Node { node, script })
+    }
+
     pub fn new(root: &Path) -> Layout {
         let at = |rel: &str| rel.split('/').fold(root.to_path_buf(), |p, part| p.join(part));
         Layout {
@@ -44,7 +73,6 @@ impl Layout {
             deno: at("yt-dlp/deno.exe"),
             plugins: at("yt-dlp/plugins"),
             token_server: at("supervisor/streamloop-pot.exe"),
-            node: at("node/node.exe"),
             slate: at("supervisor/slate.mp4"),
             config: at("app/config.json"),
             data: at("data"),
@@ -122,6 +150,60 @@ mod tests {
         let l = Layout::new(root);
         // Assert
         assert_eq!(l.token_server, root.join("supervisor").join("streamloop-pot.exe"));
+    }
+
+    fn has<'a>(files: &'a [&'a str], root: &'a Path) -> impl Fn(&Path) -> bool + 'a {
+        move |p| files.iter().any(|f| root.join(f) == p)
+    }
+
+    #[test]
+    fn the_rust_token_server_wins_when_it_is_installed() {
+        // Arrange
+        let root = Path::new("R:/sl");
+        let l = Layout::new(root);
+        let files = ["supervisor/streamloop-pot.exe", "node/node.exe", "pot/build/main.js"];
+        // Act
+        let pick = l.token_server_choice(has(&files, root));
+        // Assert
+        assert_eq!(pick, Some(TokenServer::Exe(root.join("supervisor").join("streamloop-pot.exe"))));
+    }
+
+    #[test]
+    fn the_typescript_server_runs_when_only_node_and_its_script_are_installed() {
+        // Arrange
+        let root = Path::new("R:/sl");
+        let l = Layout::new(root);
+        let files = ["node/node.exe", "pot/build/main.js"];
+        // Act
+        let pick = l.token_server_choice(has(&files, root)).unwrap();
+        // Assert
+        let script = root.join("pot").join("build").join("main.js");
+        assert_eq!(pick, TokenServer::Node { node: root.join("node").join("node.exe"), script: script.clone() });
+        assert_eq!(pick.path(), script);
+    }
+
+    #[test]
+    fn no_token_server_is_found_with_node_but_no_script() {
+        // Arrange
+        let root = Path::new("R:/sl");
+        let l = Layout::new(root);
+        let files = ["node/node.exe"];
+        // Act
+        let pick = l.token_server_choice(has(&files, root));
+        // Assert
+        assert_eq!(pick, None);
+    }
+
+    #[test]
+    fn no_token_server_is_found_with_a_script_but_no_node() {
+        // Arrange
+        let root = Path::new("R:/sl");
+        let l = Layout::new(root);
+        let files = ["pot/build/main.js"];
+        // Act
+        let pick = l.token_server_choice(has(&files, root));
+        // Assert
+        assert_eq!(pick, None);
     }
 
     #[test]

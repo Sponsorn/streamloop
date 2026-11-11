@@ -236,14 +236,14 @@ fn matches_every_cache_fixture() {
 fn lists_exactly_the_one_missing_file_as_not_ok() {
     // Arrange
     let l = Layout::new(Path::new("R:\\"));
-    let missing = l.token_server.clone();
+    let missing = l.slate.clone();
     // Act
     let deps = check_dependencies(&l, |p| p != missing);
     // Assert
     let bad: Vec<&Dependency> = deps.iter().filter(|d| !d.ok).collect();
-    assert_eq!(bad, vec![&Dependency { name: "Token server".into(), ok: false, path: missing.to_string_lossy().into_owned() }]);
+    assert_eq!(bad, vec![&Dependency { name: "Standby slate".into(), ok: false, path: missing.to_string_lossy().into_owned() }]);
     assert!(deps.iter().any(|d| d.path == "C:\\Windows\\Fonts\\malgun.ttf"));
-    assert_eq!(deps.len(), 9);
+    assert_eq!(deps.len(), 8);
 }
 
 #[test]
@@ -256,10 +256,44 @@ fn the_supervisor_dependency_is_the_control_exe() {
     assert_eq!(deps[0].name, "Supervisor");
     assert_eq!(deps[0].path, l.exe.to_string_lossy());
     let names: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
-    assert_eq!(
-        names,
-        ["Supervisor", "Standby slate", "ffmpeg", "yt-dlp", "Deno", "PO-token plugin", "Token server", "Token server modules", "Overlay font"]
-    );
+    assert_eq!(names, ["Supervisor", "Standby slate", "ffmpeg", "yt-dlp", "Deno", "PO-token plugin", "Token server", "Overlay font"]);
+}
+
+fn token_row(l: &Layout, present: &[PathBuf]) -> Dependency {
+    let deps = check_dependencies(l, |p| present.iter().any(|f| f == p));
+    deps.into_iter().find(|d| d.name == "Token server").expect("a Token server row")
+}
+
+#[test]
+fn the_token_server_row_names_the_exe_when_it_is_installed() {
+    // Arrange
+    let l = Layout::new(Path::new("R:\\sl"));
+    // Act
+    let row = token_row(&l, &[l.token_server.clone()]);
+    // Assert
+    assert_eq!(row, Dependency { name: "Token server".into(), ok: true, path: l.token_server.to_string_lossy().into_owned() });
+}
+
+#[test]
+fn the_token_server_row_names_the_script_when_only_the_typescript_fallback_is_installed() {
+    // Arrange
+    let l = Layout::new(Path::new("R:\\sl"));
+    let node = l.root.join("node").join("node.exe");
+    let script = l.root.join("pot").join("build").join("main.js");
+    // Act
+    let row = token_row(&l, &[node, script.clone()]);
+    // Assert
+    assert_eq!(row, Dependency { name: "Token server".into(), ok: true, path: script.to_string_lossy().into_owned() });
+}
+
+#[test]
+fn the_token_server_row_is_missing_and_names_the_exe_when_neither_is_installed() {
+    // Arrange
+    let l = Layout::new(Path::new("R:\\sl"));
+    // Act: node alone is not a token server
+    let row = token_row(&l, &[l.root.join("node").join("node.exe")]);
+    // Assert
+    assert_eq!(row, Dependency { name: "Token server".into(), ok: false, path: l.token_server.to_string_lossy().into_owned() });
 }
 
 // ---------------------------------------------------------------- run_setup_check

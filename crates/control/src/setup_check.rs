@@ -137,18 +137,20 @@ pub fn recommend_cache_mb(free_mb: u64, durations_s: &[f64]) -> (u64, Option<Str
 
 /// What the supervisor needs at run time. The Supervisor row is the control process's own exe.
 pub fn check_dependencies(layout: &Layout, exists: impl Fn(&Path) -> bool) -> Vec<Dependency> {
-    let files: [(&str, PathBuf); 9] = [
-        ("Supervisor", layout.exe.clone()),
-        ("Standby slate", layout.slate.clone()),
-        ("ffmpeg", layout.ffmpeg.clone()),
-        ("yt-dlp", layout.ytdlp.clone()),
-        ("Deno", layout.deno.clone()),
-        ("PO-token plugin", layout.plugins.join("bgutil-ytdlp-pot-provider.zip")),
-        ("Token server", layout.token_server.clone()),
-        ("Token server modules", layout.root.join("pot").join("node_modules")),
-        ("Overlay font", PathBuf::from(FONT)),
+    // The one rule the supervisor runs by; with no server installed the row names the exe the full ZIP brings.
+    let token_server = layout.token_server_choice(&exists);
+    let token_path = token_server.as_ref().map_or(layout.token_server.as_path(), |t| t.path()).to_path_buf();
+    let files: [(&str, PathBuf, bool); 8] = [
+        ("Supervisor", layout.exe.clone(), exists(&layout.exe)),
+        ("Standby slate", layout.slate.clone(), exists(&layout.slate)),
+        ("ffmpeg", layout.ffmpeg.clone(), exists(&layout.ffmpeg)),
+        ("yt-dlp", layout.ytdlp.clone(), exists(&layout.ytdlp)),
+        ("Deno", layout.deno.clone(), exists(&layout.deno)),
+        ("PO-token plugin", layout.plugins.join("bgutil-ytdlp-pot-provider.zip"), exists(&layout.plugins.join("bgutil-ytdlp-pot-provider.zip"))),
+        ("Token server", token_path, token_server.is_some()),
+        ("Overlay font", PathBuf::from(FONT), exists(Path::new(FONT))),
     ];
-    files.into_iter().map(|(name, path)| Dependency { name: name.into(), ok: exists(&path), path: path.to_string_lossy().into_owned() }).collect()
+    files.into_iter().map(|(name, path, ok)| Dependency { name: name.into(), ok, path: path.to_string_lossy().into_owned() }).collect()
 }
 
 /// Probes every encoder in order, sizes the cache from `free_mb` and writes `data\setup-check.json`.

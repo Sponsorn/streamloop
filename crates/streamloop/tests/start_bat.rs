@@ -140,8 +140,7 @@ fn preflight_checks_each_tool_with_the_reinstall_message() {
     let tools = [
         ("if not exist \"%EXE%\" goto :missing_exe", ":missing_exe"),
         (r#"if not exist "%ROOT%ffmpeg\ffmpeg.exe" goto :missing_ffmpeg"#, ":missing_ffmpeg"),
-        (r#"if not exist "%ROOT%node\node.exe" goto :missing_node"#, ":missing_node"),
-        (r#"if not exist "%ROOT%pot\build\main.js" goto :missing_pot"#, ":missing_pot"),
+        ("goto :missing_pot", ":missing_pot"),
     ];
 
     for (check, label) in tools {
@@ -394,4 +393,32 @@ fn rollback_of_a_half_swap_only_puts_the_old_exe_back() {
     assert!(half.iter().any(|x| x.trim() == "rename \"%ROOT%streamloop.exe.old\" streamloop.exe"));
     assert!(!half.iter().any(|x| x.contains("landed") || x.contains("update-rolled-back") || x.contains("STREAMLOOP_START")));
     assert!(rest.contains("update-rolled-back") && rest.contains("STREAMLOOP_START=rollback"));
+}
+
+#[test]
+fn the_token_server_check_accepts_the_exe_or_the_fallback_pair_before_the_loop() {
+    // Arrange
+    let l = lines();
+    let exe = index_of(&l, r#"if exist "%ROOT%supervisor\streamloop-pot.exe" goto :token_server_ok"#);
+    let pair = index_of(&l, r#"if exist "%ROOT%node\node.exe" if exist "%ROOT%pot\build\main.js" goto :token_server_ok"#);
+    let fail = index_of(&l, "goto :missing_pot");
+    let ok = index_of(&l, ":token_server_ok");
+
+    // Assert
+    assert!(exe < pair && pair < fail && fail < ok, "the exe, then the pair, then the failure, then the label");
+    assert!(ok < index_of(&l, ":loop"));
+    assert!(!lines_inside_blocks(&l).iter().any(|x| x.contains("token_server_ok")), "the check sits outside any block");
+}
+
+#[test]
+fn the_token_server_message_names_the_exe_and_no_node_label_is_left() {
+    // Arrange
+    let l = lines();
+
+    // Act
+    let message = l[index_of(&l, ":missing_pot") + 1].trim().to_string();
+
+    // Assert
+    assert_eq!(message, "echo [ERROR] The token server is missing: %ROOT%supervisor\\streamloop-pot.exe. Reinstall StreamLoop from the full ZIP.");
+    assert!(!l.iter().any(|x| x.contains("missing_node")), "Node is no longer required by itself");
 }

@@ -4,7 +4,7 @@ use crate::procs::{command, kill_tree};
 use crate::Logs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use streamloop_common::paths::Layout as Paths;
+use streamloop_common::paths::{Layout as Paths, TokenServer};
 use streamloop_common::playlist::{parse_playlist, PRINT_TEMPLATE};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -300,20 +300,17 @@ pub fn token_server_args(port: u16, data: &Path) -> Vec<String> {
     ["server", "--host", "127.0.0.1", "--port", &port.to_string(), "--data", &data.join("pot").to_string_lossy()].map(String::from).to_vec()
 }
 
-/// The program and arguments of the token server to run: `streamloop-pot.exe` when it is installed, else the TypeScript
-/// server when `node\` and `pot\` are still there (an install that took the exe through the updater, not the full ZIP).
-/// The fallback's paths come from the root, not `Layout`, so the release layout never requires them.
+/// The program and arguments of the token server to run, from `Layout::token_server_choice`: `streamloop-pot.exe`
+/// when it is installed, else the TypeScript server when `node\` and `pot\` are still there (an install that took the
+/// exe through the updater, not the full ZIP).
 pub fn token_server_command(paths: &Paths, port: u16) -> Option<(PathBuf, Vec<String>)> {
-    if paths.token_server.is_file() {
-        return Some((paths.token_server.clone(), token_server_args(port, &paths.data)));
+    match paths.token_server_choice(|p| p.is_file())? {
+        TokenServer::Exe(exe) => Some((exe, token_server_args(port, &paths.data))),
+        TokenServer::Node { node, script } => {
+            let args = [script.to_string_lossy().into_owned(), "-H".into(), "127.0.0.1".into(), "-p".into(), port.to_string()];
+            Some((node, args.to_vec()))
+        }
     }
-    let node = paths.root.join("node").join("node.exe");
-    let script = paths.root.join("pot").join("build").join("main.js");
-    if node.is_file() && script.is_file() {
-        let args = [script.to_string_lossy().into_owned(), "-H".into(), "127.0.0.1".into(), "-p".into(), port.to_string()];
-        return Some((node, args.to_vec()));
-    }
-    None
 }
 
 /// Which server answers `/ping`: its `implementation`, else `bgutil VERSION`, else `unknown`. `None` when nothing answers 200.

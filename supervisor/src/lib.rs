@@ -2627,7 +2627,8 @@ fn self_check(args: &Args) -> Result<(), String> {
 }
 
 /// A fresh token server gets as long as token_watchdog gives it before its first ping, so a slow
-/// first start (antivirus scanning a just-swapped node\ or pot\) does not fail the check.
+/// first start (antivirus scanning a just-installed streamloop-pot.exe, or the TypeScript fallback's node\ and
+/// pot\) does not fail the check.
 const CHECK_TOKEN_GRACE: Duration = Duration::from_secs(15);
 
 /// Pings every second until the token server answers or exits, or the grace from its spawn is over.

@@ -43,7 +43,6 @@ const UI_EXE = join(REPO, 'ui', 'target', 'release', 'streamloop-ui.exe');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const DIST = join(REPO, 'dist');
 const ZIP = join(DIST, `streamloop-v${VERSION}.zip`);
-const NODE_VERSION = join(DIST, 'node-version.txt');
 const SERVE = join(REPO, 'supervisor', 'results', 'ui-releases', 'serve');
 const LISTED = { dev: [], update: ['n1'], 'update-fail': ['n1-supervisor-fails'] }[MODE];
 const BREAK_AT_S = 300;
@@ -68,9 +67,7 @@ let app = null;
 
 // preflight
 
-for (const f of [ZIP, NODE_VERSION]) {
-  if (!existsSync(f)) { note(`missing ${f}: run npm run build:release first`); process.exit(2); }
-}
+if (!existsSync(ZIP)) { note(`missing ${ZIP}: run npm run build:release first`); process.exit(2); }
 if (START_APP && !existsSync(UI_EXE)) { note(`missing ${UI_EXE}: cargo build --release in ui\\`); process.exit(2); }
 const swept = await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a session that is still running', swept); process.exit(3); }
@@ -79,7 +76,7 @@ const taken = [];
 for (const port of ports) if (await portOpen(port)) taken.push(port);
 if (taken.length) { note('BLOCKED: ports taken by processes this session did not start', { taken }); process.exit(3); }
 if (LISTED.length) {
-  const built = await buildVariants({ repo: REPO, serve: SERVE, nodeVersionFile: NODE_VERSION, ids: LISTED })
+  const built = await buildVariants({ repo: REPO, serve: SERVE, ids: LISTED })
     .catch((err) => { note('the test builds failed', { error: String(err?.message ?? err) }); process.exit(2); });
   note('releases listed', Object.fromEntries(Object.entries(built).map(([id, b]) => [id, { version: b.version, sha256: b.sha256 }])));
 }
@@ -195,7 +192,7 @@ async function teardown() {
     rmSync(STARTUP_VBS, { force: true });
     note('removed StreamLoop.vbs from the Startup folder: it started this temp install');
   }
-  // node.exe runs the token server, and streamloop-pot.exe will once R2 replaces it.
+  // streamloop-pot.exe is the token server; node.exe only runs the TypeScript fallback.
   const names = ['streamloop.exe', 'node.exe', 'streamloop-pot.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'streamloop-ui.exe', 'cmd.exe'];
   const left = (await allProcesses())
     .filter((p) => names.includes(String(p.Name).toLowerCase()) && p.ProcessId !== process.pid)

@@ -12,7 +12,7 @@ use streamloop_control::clock::TestClock;
 use streamloop_control::http::{FakeHttp, Http, HttpError, HttpRequest, HttpResponse, Progress};
 use streamloop_control::runner::{FakeRunner, ProcessRunner, RunError, RunErrorKind, RunOutput, RunSpec, Runner};
 use streamloop_control::updater::{
-    compare_versions, notice_text, parse_node_version, pick_release, redirect_allowed, select_exe_assets, should_land, updater_http,
+    compare_versions, notice_text, pick_release, redirect_allowed, select_exe_assets, should_land, updater_http,
     BreakPolicy, DownloadCounter, GithubAsset, GithubRelease, NoticeState, UpdateStatus, Updater, UpdaterOptions, GITHUB_RELEASES_URL,
 };
 
@@ -115,21 +115,6 @@ fn a_dev_build_sorts_below_its_release() {
     assert_eq!(compare_versions("3.0.0-dev", "3.0.0"), Ordering::Less);
     assert_eq!(compare_versions("3.0.0-dev", "3.0.0-dev"), Ordering::Equal);
     assert_eq!(compare_versions("3.0.1-dev", "3.0.0"), Ordering::Greater);
-}
-
-// parse_node_version
-
-#[test]
-fn parse_node_version_accepts_a_v_prefix_and_surrounding_whitespace() {
-    assert_eq!(parse_node_version("  v22.23.4\r\n").as_deref(), Some("22.23.4"));
-    assert_eq!(parse_node_version("22.23.4").as_deref(), Some("22.23.4"));
-}
-
-#[test]
-fn parse_node_version_returns_none_for_anything_else() {
-    assert_eq!(parse_node_version(""), None);
-    assert_eq!(parse_node_version("node 22"), None);
-    assert_eq!(parse_node_version("22.23"), None);
 }
 
 // pick_release
@@ -315,7 +300,6 @@ fn matches_every_release_fixture() {
         let want = &case["output"];
         let got = match input["fn"].as_str().unwrap() {
             "compareVersions" => json!(compare_versions(input["a"].as_str().unwrap(), input["b"].as_str().unwrap()) as i8),
-            "parseNodeVersion" => json!(parse_node_version(input["text"].as_str().unwrap())),
             "pickRelease" => {
                 let releases = with_exe_rule(&input["releases"]);
                 json!(pick_release(&releases, input["currentVersion"].as_str().unwrap()).map(|r| r.tag_name.clone()))
@@ -330,7 +314,7 @@ fn matches_every_release_fixture() {
         assert_eq!(&got, want, "{name}");
         checked += 1;
     }
-    assert_eq!((checked, dropped.len()), (57, 13));
+    assert_eq!((checked, dropped.len()), (46, 13));
 }
 
 // DownloadCounter
@@ -457,55 +441,43 @@ fn the_break_stays_at_171900_s_without_the_test_variable() {
 
 #[test]
 fn notice_names_the_hours_left_before_twitchs_cut_when_staged_on_air() {
-    assert_eq!(notice_text(NoticeState::OnAir, Some(48), None).as_deref(), Some(ON_AIR_48));
+    assert_eq!(notice_text(NoticeState::OnAir, Some(48)).as_deref(), Some(ON_AIR_48));
 }
 
 #[test]
 fn notice_says_it_installs_within_a_minute_when_off_air() {
-    assert_eq!(notice_text(NoticeState::OffAir, None, None).as_deref(), Some(OFF_AIR));
+    assert_eq!(notice_text(NoticeState::OffAir, None).as_deref(), Some(OFF_AIR));
 }
 
 #[test]
 fn notice_says_only_update_now_installs_it_with_auto_check_off() {
-    assert_eq!(notice_text(NoticeState::UpdateNowOnly, None, None).as_deref(), Some(UPDATE_NOW));
+    assert_eq!(notice_text(NoticeState::UpdateNowOnly, None).as_deref(), Some(UPDATE_NOW));
 }
 
 #[test]
 fn notice_says_why_the_download_failed() {
     // Act
-    let text = notice_text(NoticeState::Failed("the checksum does not match.".into()), None, None);
+    let text = notice_text(NoticeState::Failed("the checksum does not match.".into()), None);
     // Assert
     assert_eq!(text.as_deref(), Some("The download failed: the checksum does not match. It is tried again at the next check."));
 }
 
 #[test]
-fn notice_adds_the_node_notice_after_a_space() {
-    // Arrange
-    let node = "This release bundles Node 24.1.0. Install the full ZIP to get it.".to_string();
-    // Act
-    let joined = notice_text(NoticeState::OffAir, None, Some(node.clone()));
-    let alone = notice_text(NoticeState::Quiet, None, Some(node.clone()));
-    // Assert
-    assert_eq!(joined, Some(format!("{OFF_AIR} {node}")));
-    assert_eq!(alone, Some(node));
-}
-
-#[test]
 fn notice_says_about_1_hour_in_the_last_stretch() {
     assert_eq!(
-        notice_text(NoticeState::OnAir, Some(1), None).as_deref(),
+        notice_text(NoticeState::OnAir, Some(1)).as_deref(),
         Some("It installs by itself in about 1 hour, just before Twitch's 48-hour cut. Update Now installs it at once and restarts the stream.")
     );
 }
 
 #[test]
 fn notice_without_known_hours_on_air_falls_back_to_update_now() {
-    assert_eq!(notice_text(NoticeState::OnAir, None, None).as_deref(), Some(UPDATE_NOW));
+    assert_eq!(notice_text(NoticeState::OnAir, None).as_deref(), Some(UPDATE_NOW));
 }
 
 #[test]
 fn notice_is_empty_with_nothing_to_say() {
-    assert_eq!(notice_text(NoticeState::Quiet, None, None), None);
+    assert_eq!(notice_text(NoticeState::Quiet, None), None);
 }
 
 // The Updater
@@ -531,7 +503,7 @@ fn release_json(v: &str, names: &[String], base: &str) -> Value {
 }
 
 fn complete_names(v: &str) -> Vec<String> {
-    vec![format!("streamloop-v{v}.zip"), format!("streamloop-v{v}.exe"), format!("streamloop-v{v}.exe.sha256"), "node-version.txt".to_string()]
+    vec![format!("streamloop-v{v}.zip"), format!("streamloop-v{v}.exe"), format!("streamloop-v{v}.exe.sha256")]
 }
 
 const GH_DOWNLOADS: &str = "https://github.com/Sponsorn/streamloop/releases/download";
@@ -557,10 +529,6 @@ impl Harness {
         self.http.respond(&format!("{}.sha256", exe_url(v)), 200, &format!("{}  streamloop-v{v}.exe\n", sha256_hex(EXE_BYTES)));
     }
 
-    fn node_version(&self, v: &str, text: &str) {
-        self.http.respond(&format!("{GH_DOWNLOADS}/v{v}/node-version.txt"), 200, text);
-    }
-
     fn options(&self, http: Arc<dyn Http>) -> UpdaterOptions {
         UpdaterOptions {
             current: CURRENT.into(),
@@ -571,7 +539,6 @@ impl Harness {
             layout: self.layout.clone(),
             releases_url: GITHUB_RELEASES_URL.into(),
             test_releases: None,
-            bundled_node: Some("22.23.4".into()),
             policy: BreakPolicy::default(),
         }
     }
@@ -792,63 +759,6 @@ async fn a_release_whose_exe_has_no_checksum_is_never_downloaded() {
     assert_eq!(h.http.requests().len(), 1);
 }
 
-// Node notice
-
-#[tokio::test]
-async fn node_notice_compares_with_the_bundled_node() {
-    // Arrange
-    let h = Harness::new();
-    h.offer(NEXT);
-    h.node_version(NEXT, "v24.1.0\n");
-    let updater = h.updater();
-    // Act
-    let info = updater.check().await;
-    // Assert
-    assert!(info.update_available);
-    assert_eq!(info.node_notice.as_deref(), Some("This release bundles Node 24.1.0. Install the full ZIP to get it."));
-}
-
-#[tokio::test]
-async fn leaves_the_node_notice_empty_when_the_node_versions_match() {
-    // Arrange
-    let h = Harness::new();
-    h.offer(NEXT);
-    h.node_version(NEXT, "v22.23.4\r\n");
-    // Act
-    let info = h.updater().check().await;
-    // Assert
-    assert_eq!(info.node_notice, None);
-}
-
-#[tokio::test]
-async fn leaves_the_node_notice_empty_when_node_version_txt_is_missing_or_malformed() {
-    // Arrange
-    let missing = Harness::new();
-    missing.offer(NEXT);
-    let malformed = Harness::new();
-    malformed.offer(NEXT);
-    malformed.node_version(NEXT, "latest");
-    // Act
-    let a = missing.updater().check().await;
-    let b = malformed.updater().check().await;
-    // Assert
-    assert_eq!((a.node_notice, b.node_notice), (None, None));
-}
-
-#[tokio::test]
-async fn leaves_the_node_notice_empty_in_dev_mode() {
-    // Arrange
-    let h = Harness::new();
-    h.offer(NEXT);
-    h.node_version(NEXT, "v24.1.0");
-    let mut opts = h.options(h.http.clone());
-    opts.dev_mode = true;
-    // Act
-    let info = Updater::new(opts).check().await;
-    // Assert
-    assert_eq!(info.node_notice, None);
-}
-
 // The notice through status()
 
 #[tokio::test]
@@ -984,21 +894,6 @@ async fn a_live_encoder_resets_the_off_air_time() {
     assert!(!due);
 }
 
-#[tokio::test]
-async fn the_node_notice_follows_the_landing_notice() {
-    // Arrange
-    let h = Harness::new();
-    h.node_version(NEXT, "v24.1.0");
-    let updater = h.staged(NEXT).await;
-    // Act
-    updater.observe(None, true, true);
-    // Assert
-    assert_eq!(
-        updater.status().node_notice,
-        Some(format!("{OFF_AIR} This release bundles Node 24.1.0. Install the full ZIP to get it."))
-    );
-}
-
 // GitHub timeouts
 
 /// Records each request, answers the release list from `inner`, and never answers anything else.
@@ -1021,22 +916,6 @@ impl Http for StallingHttp {
     async fn download(&self, _url: &str, _dest: &Path) -> Result<u64, HttpError> {
         std::future::pending().await
     }
-}
-
-#[tokio::test(start_paused = true)]
-async fn gives_up_on_a_stalled_node_version_txt_and_shows_no_notice() {
-    // Arrange
-    let h = Harness::new();
-    let inner = FakeHttp::new();
-    inner.respond(GITHUB_RELEASES_URL, 200, &json!([release_json(NEXT, &complete_names(NEXT), GH_DOWNLOADS)]).to_string());
-    let http = Arc::new(StallingHttp { inner, stall_list: false, timeouts: Mutex::new(Vec::new()) });
-    let updater = Updater::new(h.options(http.clone()));
-    // Act
-    let info = updater.check().await;
-    // Assert
-    assert_eq!((info.status, info.update_available, info.node_notice), (UpdateStatus::Idle, true, None));
-    let timeouts = http.timeouts.lock().unwrap().clone();
-    assert!(timeouts.iter().any(|(url, t)| url.ends_with("node-version.txt") && *t == Some(Duration::from_secs(10))));
 }
 
 #[tokio::test(start_paused = true)]

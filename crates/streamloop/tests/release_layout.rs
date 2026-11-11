@@ -32,7 +32,7 @@ fn layout_covers_every_path_the_layout_struct_names() {
     let root = Path::new("ROOT");
     let l = Layout::new(root);
     let named = [
-        &l.ffmpeg, &l.ytdlp, &l.deno, &l.plugins, &l.token_server, &l.node, &l.slate, &l.data, &l.exe,
+        &l.ffmpeg, &l.ytdlp, &l.deno, &l.plugins, &l.token_server, &l.slate, &l.data, &l.exe,
         &l.app_dir, &l.config_example, &l.stopped_marker, &l.rolled_back, &l.setup_report,
         &l.waiting_for_start, &l.update_state,
     ];
@@ -98,4 +98,37 @@ fn cargo_and_package_json_versions_match() {
 
     // Assert
     assert_eq!(package["version"].as_str().unwrap(), env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn layout_ships_the_rust_token_server_and_neither_pot_nor_node() {
+    // Arrange
+    let layout = full_layout();
+
+    // Assert
+    assert!(layout.iter().any(|p| p == "supervisor/streamloop-pot.exe"), "{layout:?}");
+    assert!(!layout.iter().any(|p| p.starts_with("pot/") || p.starts_with("node/")), "{layout:?}");
+}
+
+#[test]
+fn the_release_build_ships_no_node_and_writes_no_node_version() {
+    // Arrange
+    let prepare = read("build/prepare-release.js");
+
+    // Assert
+    assert!(!prepare.contains("node-version.txt") && !prepare.contains("nodejs.org"), "the build still handles Node");
+    assert!(prepare.contains("streamloop-pot.exe"), "the build never copies the token server");
+}
+
+#[test]
+fn token_server_and_workspace_versions_match() {
+    // Arrange
+    let manifest = read("tokenserver/Cargo.toml");
+    let version = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')))
+        .expect("a version line in tokenserver/Cargo.toml");
+
+    // Assert
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
 }

@@ -46,7 +46,7 @@ export const note = (msg, data) => {
 
 export async function ps() {
   const r = await run('powershell', ['-NoProfile', '-Command',
-    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop.exe','streamloop-supervisor.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','mediamtx.exe') } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json"],
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop.exe','streamloop-supervisor.exe','streamloop-pot.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','mediamtx.exe') } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8' });
   const v = JSON.parse(r.stdout || '[]');
   return Array.isArray(v) ? v : [v];
@@ -254,7 +254,7 @@ export const runningFrom = async (dirs, ascii = null) => under(await allProcesse
 
 // START.bat first, so it cannot restart the control process (Node in a 3.0 install); that before the
 // supervisor, so its launcher cannot relaunch it. streamloop.exe ranks by its mode word.
-const KILL_ORDER = ['cmd.exe', 'node.exe', 'streamloop.exe control', 'streamloop.exe launch', 'streamloop.exe supervisor', 'streamloop-supervisor.exe'];
+const KILL_ORDER = ['cmd.exe', 'node.exe', 'streamloop.exe control', 'streamloop.exe launch', 'streamloop.exe supervisor', 'streamloop-supervisor.exe', 'streamloop-pot.exe'];
 export async function killAll(procs) {
   const key = (p) => { const name = String(p.Name).toLowerCase(); return name === 'streamloop.exe' ? `${name} ${exeMode(p.CommandLine)}` : name; };
   const rank = (p) => { const i = KILL_ORDER.indexOf(key(p)); return i < 0 ? KILL_ORDER.length : i; };
@@ -372,8 +372,8 @@ async function exeRun(exe, args) {
 
 /** cargo builds each of `ids` into its own target folder under `repo`, so one never rebuilds another; an
  *  unchanged one takes seconds. Each exe is checked for what it does at start, then put in `serve`\<id>\
- *  with its checksum and `nodeVersionFile`. */
-export async function buildVariants({ repo, serve, nodeVersionFile, ids = Object.keys(VARIANTS) }) {
+ *  with its checksum. */
+export async function buildVariants({ repo, serve, ids = Object.keys(VARIANTS) }) {
   const built = {};
   mkdirSync(serve, { recursive: true });
   for (const id of ids) {
@@ -389,7 +389,6 @@ export async function buildVariants({ repo, serve, nodeVersionFile, ids = Object
     copyFileSync(join(repo, 'target', 'install-session', id, 'release', 'streamloop.exe'), exe);
     const hash = sha256File(exe);
     writeFileSync(join(dir, `${exeName(v.version)}.sha256`), `${hash}  ${exeName(v.version)}\n`);
-    copyFileSync(nodeVersionFile, join(dir, 'node-version.txt'));
     const runs = {
       version: await exeRun(exe, ['--version']),
       supervisor: await exeRun(exe, v.feature === 'test-supervisor-fails' ? ['supervisor', '--root', tmpdir()] : ['supervisor', '--bogus']),
@@ -411,7 +410,7 @@ export async function buildVariants({ repo, serve, nodeVersionFile, ids = Object
 export function writeReleaseList(file, ids) {
   const list = ids.map((id) => {
     const v = VARIANTS[id].version;
-    const files = [`streamloop-v${v}.zip`, exeName(v), `${exeName(v)}.sha256`, 'node-version.txt'];
+    const files = [`streamloop-v${v}.zip`, exeName(v), `${exeName(v)}.sha256`];
     return { tag_name: `v${v}`, draft: false, prerelease: true, html_url: '', assets: files.map((f) => ({ name: f, browser_download_url: `http://127.0.0.1:${ASSET_PORT}/${id}/${f}` })) };
   });
   writeFileSync(file, JSON.stringify(list, null, 2));

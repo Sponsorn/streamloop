@@ -245,7 +245,6 @@ fn rig(version: &str, exe_bytes: &[u8], runner: Arc<FakeRunner>, hold_for_start:
         layout: layout.clone(),
         releases_url: GITHUB_RELEASES_URL.into(),
         test_releases: None,
-        bundled_node: None,
         policy: BreakPolicy::default(),
     });
     let launcher = Launcher::new(LauncherOptions {
