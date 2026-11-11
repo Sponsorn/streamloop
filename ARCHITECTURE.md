@@ -86,11 +86,11 @@ flowchart LR
     classDef proven fill:#d4edda,stroke:#2e7d32,color:#000
     classDef partial fill:#fff3cd,stroke:#b8860b,color:#000
     classDef design fill:#f8d7da,stroke:#b03a2e,color:#000
-    class SUP,FEED,PIPE,DL,CACHE,SLATE,YTURL,JOB,CFG,CTL,BAT,DASH proven
-    class ENC,OVL,POT partial
+    class SUP,FEED,PIPE,DL,CACHE,SLATE,YTURL,JOB,CFG,CTL,BAT,DASH,POT proven
+    class ENC,OVL partial
 ```
 
-Green is proven by a spike or by runs against local MediaMTX on the dev machine (stage 2 to 4 for 3.0, R1's for `streamloop.exe`), amber is proven only in part, red is design.
+Green is proven by a spike or by runs against local MediaMTX on the dev machine (stage 2 to 4 for 3.0, R1's for `streamloop.exe`, R2's for the token server), amber is proven only in part, red is design.
 
 | Part | Status | Evidence |
 |------|--------|----------|
@@ -98,7 +98,7 @@ Green is proven by a spike or by runs against local MediaMTX on the dev machine 
 | drawtext now-playing overlay in the feeder | Proven; wired into the supervisor's video feeders (`supervisor/src/overlay.rs`, off with `overlay: false`, none on the slate) | Spike 3 (`spikes/overlay/`), render check at `-ss 600`; on in every stage 2 run |
 | Byte-budgeted download cache, standby slate | Proven | Spike 4 (`spikes/buffer/`) |
 | Supervisor: process model, Job Object, controls, URL cold start, recovery ladder, YouTube breaker | Proven as product code in `supervisor/` | Spike 5 (`spikes/supervisor/`); stage 2 runs A (1 h, 12 controls), B (every fault) and C (crash and resume) against local MediaMTX with `supervisor/scripts/`, tools only from the install layout |
-| PO-token server in Rust (`tokenserver/`, shipped as `supervisor\streamloop-pot.exe`) | Partial | Live runs on the dev machine only (R2 task 13): downloads with tokens and no 403 on the mweb client, with and without browser cookies; a killed token server was replaced by the supervisor. The side-by-side qualification against the TypeScript server and the 24 h soak are still to run, and it has not run on the box |
+| PO-token server in Rust (`tokenserver/`, shipped as `supervisor\streamloop-pot.exe`) | Proven on the dev machine; not yet on the box | R2 task 13's live runs: downloads with tokens and no 403 on the mweb client, with and without browser cookies; a killed token server was replaced by the supervisor. The 2 h qualification beside 3.0.5's TypeScript server (`pair-session.mjs`, the same machine, playlist and hour, no cookies): the Rust side finished 52 of 52 tries with no 403 on one minter, and the TypeScript side 59 of 267, whose first three minters were refused and the fourth worked; the Rust side refused no video the TypeScript side finished. A 1 h `session.mjs` run with `/invalidate_it` and `/invalidate_caches` called 4 times, 6 min apart: each call was followed by a new minter in the same process (3 for the 4 calls, as the last two had no request between them) and the next download finished on it; all 13 downloads finished with a token, and after its first minute the server stayed at 26 to 31 MB private bytes. The box's 24 h run is still to come |
 | Freeze and silence watchdog in the encoder (`freezedetect` -50 dB, `silencedetect`) | Proven against injected faults | Stage 2 run B: freeze acted on 25.1 s after the frozen picture went out and healed, silence at 35.2 s and retried once; no verdict on normal content over runs A and B |
 | Hardware encoder on the real box | Open, deferred to the product trial | Spike 2 (`spikes/encoder/`): kit built and dry-run on NVENC and AMF; the box run was skipped (the box has an RTX 2070, NVENC). The product's first-run setup check detects the encoder by test encode and picked NVENC on the dev machine (stage 4 install run); the box itself is still to run. The supervisor still accepts `libx264` |
 | The control process as HTTP client of the supervisor (`crates/control`: client, launcher, event bridge, API) | Proven against local MediaMTX; not yet on the box | `node-session.mjs` run A against `streamloop.exe` (30 min, NVENC): the first-run wizard's calls took it live in 16.1 s, 5 dashboard controls each showed in 1.3 to 1.6 s, Discord alerts for a freeze (1), a killed feeder (1) and a killed encoder (drop and restart in one batched post), no duplicates, and the dummy key in no config, log or data file. Stage 3 proved 3.0's Node backend the same way |
