@@ -4,7 +4,8 @@
 
 use serde_json::Value;
 
-pub const INTERPRETER_HOSTS: &[&str] = &["www.google.com"];
+/// www.youtube.com already serves the challenge program itself, so trusting it for the interpreter adds nothing.
+pub const INTERPRETER_HOSTS: &[&str] = &["www.google.com", "www.youtube.com"];
 
 pub struct Challenge {
     pub program: String,
@@ -340,9 +341,11 @@ mod tests {
     }
 
     #[test]
-    fn takes_interpreter_scripts_only_from_google() {
+    fn takes_interpreter_scripts_only_from_google_and_youtube() {
         assert!(interpreter_allowed("//www.google.com/js/th/abc.js"));
         assert!(interpreter_allowed("https://www.google.com/js/th/abc.js"));
+        assert!(interpreter_allowed("//www.youtube.com/s/th/abc.js"));
+        assert!(!interpreter_allowed("//www.youtube.com.evil.example/x.js"));
         assert!(!interpreter_allowed("http://www.google.com/js/th/abc.js"));
         assert!(!interpreter_allowed("//www.google.com.evil.example/x.js"));
         assert!(!interpreter_allowed("//evil.example/x.js"));

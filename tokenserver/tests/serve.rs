@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use streamloop_pot::http::{serve, Service, MINT_QUEUE, MINT_WORKERS};
+use streamloop_pot::http::{serve, serve_with, Service, MINT_QUEUE, MINT_WORKERS};
 use streamloop_pot::session::{PotAnswer, PotRequest};
 
 struct Slow {
@@ -28,6 +28,19 @@ impl Service for Slow {
             po_token: "tok".into(),
             expires_at: UNIX_EPOCH + Duration::from_secs(1_794_139_200),
         })
+    }
+    fn invalidate_caches(&self) {}
+    fn invalidate_it(&self) {}
+    fn minter_keys(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+struct Panics;
+
+impl Service for Panics {
+    fn get_pot(&self, _: &PotRequest) -> Result<PotAnswer, String> {
+        panic!("a bug in the mint path")
     }
     fn invalidate_caches(&self) {}
     fn invalidate_it(&self) {}
@@ -181,6 +194,28 @@ fn a_full_mint_queue_answers_503_and_ping_still_answers() {
     let ok = replies.iter().filter(|r| r.starts_with("HTTP/1.1 200")).count();
     let refused = replies.iter().filter(|r| r.starts_with("HTTP/1.1 503")).count();
     assert_eq!((ok, refused), (MINT_WORKERS + MINT_QUEUE, 4), "{replies:?}");
+}
+
+#[test]
+fn a_mint_that_panics_answers_500_and_calls_the_panic_hook() {
+    // Arrange
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let hook = Arc::new(move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+    let running = serve_with("127.0.0.1:0".parse().unwrap(), Arc::new(Panics), hook).expect("bind a free loopback port");
+
+    // Act
+    let reply = request(running.addr(), &get_pot_request());
+
+    // Assert
+    assert!(reply.starts_with("HTTP/1.1 500"), "{reply}");
+    let t = Instant::now();
+    while calls.load(Ordering::SeqCst) == 0 && t.elapsed() < Duration::from_secs(5) {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]

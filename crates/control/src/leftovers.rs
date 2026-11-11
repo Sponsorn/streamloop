@@ -29,28 +29,39 @@ pub fn remove_3_0_leftovers(layout: &Layout) {
         layout.data.join("update-checking"),
         layout.data.join("update-swap.log"),
     ];
-    if layout.token_server.is_file() {
-        paths.push(root.join("pot"));
-        paths.push(root.join("node"));
-    }
     for part in UPDATE_PARTS {
         paths.push(root.join(format!("_update_old_{part}")));
         paths.push(root.join(format!("_update_bad_{part}")));
     }
     for path in paths {
-        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-        let kind = meta.file_type();
-        let removed = if kind.is_symlink() {
-            // A link (a dev junction for node_modules) goes as a link; its target is left alone.
-            std::fs::remove_dir(&path).or_else(|_| std::fs::remove_file(&path))
-        } else if kind.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match removed {
-            Ok(()) => tracing::info!(path = %path.display(), "Removed a 3.0 leftover"),
-            Err(err) => tracing::warn!(path = %path.display(), %err, "Could not remove a 3.0 leftover"),
+        remove(&path);
+    }
+    // node\ first: while a fallback server runs, its node.exe is held, and pot\ (its scripts) must stay whole.
+    if layout.token_server.is_file() && remove(&root.join("node")) {
+        remove(&root.join("pot"));
+    }
+}
+
+/// Removes a leftover and logs it; true when the path is gone afterwards.
+fn remove(path: &std::path::Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return true };
+    let kind = meta.file_type();
+    let removed = if kind.is_symlink() {
+        // A link (a dev junction for node_modules) goes as a link; its target is left alone.
+        std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path))
+    } else if kind.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match removed {
+        Ok(()) => {
+            tracing::info!(path = %path.display(), "Removed a 3.0 leftover");
+            true
+        }
+        Err(err) => {
+            tracing::warn!(path = %path.display(), %err, "Could not remove a 3.0 leftover");
+            false
         }
     }
 }

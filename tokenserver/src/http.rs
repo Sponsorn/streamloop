@@ -1,7 +1,8 @@
 // The HTTP face of bgutil-ytdlp-pot-provider 2.0.0's token server.
 // Copyright (c) Brainicism and contributors, GPL-3.0.
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::net::SocketAddr;
@@ -73,6 +74,18 @@ fn present(v: Option<&Value>) -> bool {
     !matches!(v, None | Some(Value::Null))
 }
 
+/// The fields this server refuses that a request sets; the nulls and false the plugin sends do not count.
+fn unsupported_fields(b: &serde_json::Map<String, Value>) -> Vec<&'static str> {
+    [
+        ("proxy", present(b.get("proxy"))),
+        ("source_address", present(b.get("source_address"))),
+        ("disable_tls_verification", truthy(b.get("disable_tls_verification"))),
+    ]
+    .into_iter()
+    .filter_map(|(name, set)| set.then_some(name))
+    .collect()
+}
+
 fn route(
     method: &str,
     path: &str,
@@ -131,8 +144,10 @@ fn route_get_pot(content_type: Option<&str>, body: &[u8]) -> Routed {
             "disable_innertube is deprecated because the /Create endpoint doesn't work anymore",
         );
     }
-    if present(b.get("proxy")) || present(b.get("source_address")) || truthy(b.get("disable_tls_verification")) {
-        println!("get_pot: refused (proxy, source_address or disable_tls_verification)");
+    let refused = unsupported_fields(&b);
+    if !refused.is_empty() {
+        // Names only: a proxy URL can carry a password.
+        println!("get_pot: refused, the request sets {}", refused.join(", "));
         return error(400, "proxy, source_address and disable_tls_verification are not supported");
     }
     let content_binding = match b.get("content_binding") {
@@ -245,7 +260,15 @@ impl Drop for Running {
     }
 }
 
+/// Called after a mint that panicked has had its 500.
+pub type PanicHook = Arc<dyn Fn() + Send + Sync>;
+
 pub fn serve(addr: SocketAddr, svc: Arc<dyn Service>) -> std::io::Result<Running> {
+    // A panic can recur on every mint (stdout gone) while /ping still answers, so exit and let the supervisor restart us.
+    serve_with(addr, svc, Arc::new(|| exit(1)))
+}
+
+pub fn serve_with(addr: SocketAddr, svc: Arc<dyn Service>, on_mint_panic: PanicHook) -> std::io::Result<Running> {
     let server = Server::http(addr).map_err(|e| std::io::Error::other(e.to_string()))?;
     let bound = server.server_addr().to_ip().unwrap_or(addr);
     let server = Arc::new(server);
@@ -260,8 +283,8 @@ pub fn serve(addr: SocketAddr, svc: Arc<dyn Service>) -> std::io::Result<Running
     }
     drop(tx);
     for _ in 0..MINT_WORKERS {
-        let (svc, rx) = (svc.clone(), rx.clone());
-        threads.push(thread::spawn(move || worker(svc.as_ref(), &rx)));
+        let (svc, rx, on_panic) = (svc.clone(), rx.clone(), on_mint_panic.clone());
+        threads.push(thread::spawn(move || worker(svc.as_ref(), &rx, on_panic.as_ref())));
     }
     Ok(Running { server, threads, addr: bound, stopping })
 }
@@ -334,12 +357,22 @@ fn front(server: &Server, svc: &dyn Service, mints: &SyncSender<Mint>, started: 
     }
 }
 
-fn worker(svc: &dyn Service, queue: &Mutex<Receiver<Mint>>) {
+fn worker(svc: &dyn Service, queue: &Mutex<Receiver<Mint>>, on_panic: &(dyn Fn() + Send + Sync)) {
     loop {
         let job = queue.lock().unwrap_or_else(PoisonError::into_inner).recv();
         let Ok((req, r)) = job else { return };
-        let (status, body) = mint_reply(svc.get_pot(&r));
-        respond(req, status, body);
+        match catch_unwind(AssertUnwindSafe(|| svc.get_pot(&r))) {
+            Ok(result) => {
+                let (status, body) = mint_reply(result);
+                respond(req, status, body);
+            }
+            Err(_) => {
+                // writeln, not eprintln: a closed stderr must not panic a second time.
+                let _ = writeln!(std::io::stderr(), "streamloop-pot: a token request panicked, so the server exits");
+                respond(req, 500, json!({ "error": "The token server failed" }).to_string());
+                on_panic();
+            }
+        }
     }
 }
 
@@ -402,6 +435,21 @@ mod tests {
             assert_eq!(s, 400, "{extra}");
             assert_eq!(v["error"], "proxy, source_address and disable_tls_verification are not supported");
         }
+    }
+
+    #[test]
+    fn names_each_field_it_refuses_and_none_of_the_plugins_nulls() {
+        // Arrange
+        let set: Value = serde_json::from_str(r#"{"proxy":"http://u:p@x:1","source_address":"1.2.3.4","disable_tls_verification":true}"#).unwrap();
+        let nulls: Value = serde_json::from_str(r#"{"proxy":null,"source_address":null,"disable_tls_verification":false}"#).unwrap();
+
+        // Act
+        let named = unsupported_fields(set.as_object().unwrap());
+        let none = unsupported_fields(nulls.as_object().unwrap());
+
+        // Assert
+        assert_eq!(named, ["proxy", "source_address", "disable_tls_verification"]);
+        assert!(none.is_empty());
     }
 
     #[test]

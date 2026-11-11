@@ -479,6 +479,24 @@ fn retries_a_partly_removed_pot_and_node_at_the_next_start() {
 
 #[cfg(windows)]
 #[test]
+fn keeps_pot_whole_while_a_running_fallback_holds_node_exe() {
+    // Arrange: the TypeScript server still runs, so node.exe is held and its scripts in pot\ are still needed
+    let (_dir, layout) = install_with(&["supervisor/streamloop-pot.exe", "pot/build/main.js", "pot/node_modules/canvas/package.json", "node/node.exe"]);
+    let held = layout.root.join("node").join("node.exe");
+    use std::os::windows::fs::OpenOptionsExt;
+    let file = std::fs::File::options().read(true).share_mode(1).open(&held).unwrap();
+
+    // Act
+    remove_3_0_leftovers(&layout);
+    drop(file);
+
+    // Assert
+    assert!(layout.root.join("pot").join("build").join("main.js").exists(), "pot\\build\\main.js stays");
+    assert!(layout.root.join("pot").join("node_modules").join("canvas").join("package.json").exists(), "pot\\node_modules stays");
+}
+
+#[cfg(windows)]
+#[test]
 fn a_node_modules_junction_goes_and_its_target_stays() {
     // Arrange: app\node_modules as a junction to a folder outside the install, as a dev root has it
     let dir = tempfile::tempdir().unwrap();
