@@ -3,7 +3,7 @@
 //        [--b-plugin ZIP] [--b-expect TEXT] [--cookies SPEC] [--b-bin EXE]
 // A is the released 3.0.5 full ZIP (its TypeScript token server under its own Node, ports 4417/4416).
 // B is this branch's `streamloop.exe supervisor` on 4427/4426, either adopting a second TypeScript server
-// the harness starts (--b-ts) or owning the Rust one (--b-pot EXE). Both push to one local MediaMTX, on paths a and b.
+// the harness starts (--b-ts) or owning the Rust one (--b-pot EXE). Both push to one local MediaMTX, on the paths in STREAM_PATHS.
 // --b-bin defaults to target\release\streamloop.exe; a 3.0 streamloop-supervisor.exe gets no mode word.
 // Output: supervisor/logs/pair-NAME/ (pair.json, status.jsonl, memory.csv, report.json, child logs).
 // Touching the file `stop` in that folder ends the run early through the normal shutdown.
@@ -86,9 +86,13 @@ export function pairConfig({ playlists, cookies = '' }) {
   };
 }
 
+/** Each side's MediaMTX path. --target makes it the stream key, which the supervisor masks in everything
+ *  it writes, so it must never occur in log text. */
+export const STREAM_PATHS = { a: 'streamloop-pair-side-a', b: 'streamloop-pair-side-b' };
+
 /** 3.0.5 takes --root and --target without --debug-faults (checked at d4aaf01), so A runs without it. */
 export function supervisorArgs(side, root) {
-  const target = `rtmp://127.0.0.1:1935/live/${side}`;
+  const target = `rtmp://127.0.0.1:1935/live/${STREAM_PATHS[side]}`;
   if (side === 'a') return ['--root', root, '--target', target];
   return ['--root', root, '--debug-faults', '--api-port', String(PORTS.bApi), '--token-port', String(PORTS.bToken), '--target', target];
 }

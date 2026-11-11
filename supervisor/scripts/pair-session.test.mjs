@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   parseArgs, parseSha256File, pairConfig, supervisorArgs, tsServerArgs, judgeIdentity, bgutilPlugins,
   lastSpawnPid, parsePrivateMb, memoryCsvRow, assembleReport, ownProcesses, removeTree, PORTS,
-  pingIdentity, judgeA, notePlaying, playingVerdict, modeArgs, DEFAULT_B_BIN,
+  pingIdentity, judgeA, notePlaying, playingVerdict, modeArgs, DEFAULT_B_BIN, STREAM_PATHS,
 } from './pair-session.mjs';
 
 const R403 = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
@@ -69,14 +69,29 @@ describe('pairConfig', () => {
 
 describe('supervisorArgs', () => {
   it('starts A on default ports with no debug flag', () => {
-    expect(supervisorArgs('a', 'R')).toEqual(['--root', 'R', '--target', 'rtmp://127.0.0.1:1935/live/a']);
+    expect(supervisorArgs('a', 'R')).toEqual(['--root', 'R', '--target', `rtmp://127.0.0.1:1935/live/${STREAM_PATHS.a}`]);
   });
 
   it('starts B on its own ports behind --debug-faults', () => {
     const args = supervisorArgs('b', 'R');
 
-    expect(args).toEqual(['--root', 'R', '--debug-faults', '--api-port', '4427', '--token-port', '4426', '--target', 'rtmp://127.0.0.1:1935/live/b']);
+    expect(args).toEqual(['--root', 'R', '--debug-faults', '--api-port', '4427', '--token-port', '4426', '--target', `rtmp://127.0.0.1:1935/live/${STREAM_PATHS.b}`]);
     expect([PORTS.bApi, PORTS.bToken]).toEqual([4427, 4426]);
+  });
+
+  it('names each side\'s stream path so the key redaction cannot match log text', () => {
+    // Arrange: the path is the stream key, which each supervisor masks as ***; "a" masked every a in ids and event names.
+    const logText = 'token-caches-cleared ERROR: unable to download video data: HTTP Error 403: Forbidden _cMxraX_5RE mweb bgutil';
+
+    for (const side of ['a', 'b']) {
+      // Act
+      const key = supervisorArgs(side, 'R').at(-1).split('/').at(-1);
+
+      // Assert
+      expect(key.length).toBeGreaterThanOrEqual(16);
+      expect(logText.includes(key)).toBe(false);
+    }
+    expect(STREAM_PATHS.a).not.toBe(STREAM_PATHS.b);
   });
 
   it('runs B from the workspace\'s streamloop.exe by default', () => {
