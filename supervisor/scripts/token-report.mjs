@@ -83,8 +83,9 @@ export function tokenReport(files, fromMs = -Infinity, toMs = Infinity) {
   return out;
 }
 
-/** Each video's first try on side A against side B; only videos both sides tried can split. */
-export function splitPairs(rowsA, rowsB) {
+/** Each video's first try on side A against side B; only videos both sides tried can split, and only
+ *  when both first tries started at or after `sinceMs`. */
+export function splitPairs(rowsA, rowsB, sinceMs = -Infinity) {
   const firsts = (rows) => {
     const m = new Map();
     for (const r of rows) if (!NOT_TRIES.has(r.result) && !m.has(r.id)) m.set(r.id, r);
@@ -93,10 +94,11 @@ export function splitPairs(rowsA, rowsB) {
   const a = firsts(rowsA);
   const b = firsts(rowsB);
   const outcome = (r) => (r.result === 'done' ? 'done' : isRefused(r) ? 'refused' : 'failed');
+  const startedBefore = (r) => Date.parse(r.ts) - r.ms < sinceMs;
   const out = { aDoneBRefused: 0, bDoneARefused: 0, list: [] };
   for (const [id, ra] of a) {
     const rb = b.get(id);
-    if (!rb) continue;
+    if (!rb || startedBefore(ra) || startedBefore(rb)) continue;
     const [oa, ob] = [outcome(ra), outcome(rb)];
     if (oa === 'done' && ob === 'refused') out.aDoneBRefused++;
     else if (oa === 'refused' && ob === 'done') out.bDoneARefused++;

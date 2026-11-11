@@ -216,6 +216,20 @@ describe('splitPairs', () => {
     expect(r).toMatchObject({ aDoneBRefused: 0, bDoneARefused: 1 });
     expect(r.list[0]).toEqual({ id: 'v1', a: 'refused', b: 'done' });
   });
+
+  it('leaves out a video whose first try on either side started before the given time', () => {
+    // Arrange: v1's first try on A started at 10:09:58, v2's on both sides at 10:10:00 or later
+    const at = (ts, ms, id, result, refused) => ({ ...row(id, result, refused), ts, ms });
+    const a = [at('2026-11-11T10:10:03.000Z', 5000, 'v1', 'retry', true), at('2026-11-11T10:20:05.000Z', 5000, 'v2', 'retry', true)];
+    const b = [at('2026-11-11T10:12:00.000Z', 5000, 'v1', 'done'), at('2026-11-11T10:20:00.000Z', 5000, 'v2', 'done')];
+
+    // Act
+    const r = splitPairs(a, b, Date.parse('2026-11-11T10:10:00.000Z'));
+
+    // Assert
+    expect(r).toMatchObject({ aDoneBRefused: 0, bDoneARefused: 1 });
+    expect(r.list).toEqual([{ id: 'v2', a: 'refused', b: 'done' }]);
+  });
 });
 
 describe('readLogsDir', () => {

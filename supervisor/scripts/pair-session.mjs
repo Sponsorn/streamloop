@@ -162,12 +162,18 @@ export function memoryCsvRow(ts, side, pid, mb) {
   return `${ts},${side},${pid ?? ''},${mb ?? ''}`;
 }
 
-/** report.json: both sides over [fromMs, toMs) with every try, the videos only one side got, and how the run ended. */
+/** Both sides' first tokens can be refused at a cold start, so the qualification counts split pairs only after this. */
+export const WARMUP_MS = 10 * 60_000;
+
+/** report.json: both sides over [fromMs, toMs) with every try, the videos only one side got (over the whole run,
+ *  and again without the warm-up), and how the run ended. */
 export function assembleReport(filesA, filesB, fromMs, toMs, { endedBy = null, identity = null } = {}) {
   const a = tokenReport(filesA, fromMs, toMs);
   const b = tokenReport(filesB, fromMs, toMs);
   const pairs = splitPairs(a.rows, b.rows);
-  return { window: { from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString() }, endedBy, identity, a, b, pairs };
+  const pairsAfterWarmup = splitPairs(a.rows, b.rows, fromMs + WARMUP_MS);
+  const iso = (ms) => new Date(ms).toISOString();
+  return { window: { from: iso(fromMs), to: iso(toMs), warmupEnds: iso(fromMs + WARMUP_MS) }, endedBy, identity, a, b, pairs, pairsAfterWarmup };
 }
 
 /**

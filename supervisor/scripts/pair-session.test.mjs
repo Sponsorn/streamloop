@@ -195,7 +195,7 @@ describe('assembleReport', () => {
     const r = assembleReport(a, b, from, to);
 
     // Assert
-    expect(r.window).toEqual({ from: '2026-11-08T10:00:00.000Z', to: '2026-11-08T12:00:00.000Z' });
+    expect(r.window).toEqual({ from: '2026-11-08T10:00:00.000Z', to: '2026-11-08T12:00:00.000Z', warmupEnds: '2026-11-08T10:10:00.000Z' });
     expect([r.a.tries, r.b.tries]).toEqual([1, 1]);
     expect(r.pairs.aDoneBRefused).toBe(1);
     expect(r.pairs.list).toEqual([{ id: 'v1', a: 'done', b: 'refused' }]);
@@ -214,6 +214,21 @@ describe('assembleReport', () => {
     expect(r.b.rows).toHaveLength(1);
     expect(r.pairs.list).toHaveLength(1);
     expect(r).toMatchObject({ endedBy: 'not-playing', identity: { a: 'bgutil 2.0.0', b: 'unknown' } });
+  });
+
+  it('counts split pairs over the whole run and again without the first 10 minutes', () => {
+    // Arrange: v1 splits in the warm-up, v2 after it
+    const a = files(`${row('2026-11-08T10:02:00.000Z', 'v1', 'retry', 1000, R403)}\n${row('2026-11-08T10:30:00.000Z', 'v2', 'done')}\n`);
+    const b = files(`${row('2026-11-08T10:02:00.000Z', 'v1', 'done')}\n${row('2026-11-08T10:30:00.000Z', 'v2', 'retry', 1000, R403)}\n`);
+
+    // Act
+    const r = assembleReport(a, b, from, to);
+
+    // Assert
+    expect(r.window.warmupEnds).toBe('2026-11-08T10:10:00.000Z');
+    expect(r.pairs).toMatchObject({ aDoneBRefused: 1, bDoneARefused: 1 });
+    expect(r.pairsAfterWarmup).toMatchObject({ aDoneBRefused: 1, bDoneARefused: 0 });
+    expect(r.pairsAfterWarmup.list).toEqual([{ id: 'v2', a: 'done', b: 'refused' }]);
   });
 });
 
