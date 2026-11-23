@@ -69,7 +69,8 @@ If the new version does not start properly, StreamLoop goes back to the
 previous one by itself, and installs that version again only when you
 press Update Now.
 
-yt-dlp updates itself each time StreamLoop starts. Some releases also
+yt-dlp updates itself each time StreamLoop starts, and once an hour
+while YouTube lookups keep failing. Some releases also
 change ffmpeg or the token server, which an update does not replace.
 Their release notes say they need the full ZIP. For those:
 

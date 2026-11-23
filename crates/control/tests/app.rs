@@ -5,13 +5,14 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use streamloop_common::api::{ControlCmd, SupervisorStatus};
 use streamloop_common::paths::{Layout, Root};
+use streamloop_common::time::local_date;
 use streamloop_common::version::VERSION;
 use streamloop_control::app::{self, App, EnvVars, ExitSwitch, Wiring};
 use streamloop_control::clock::SystemClock;
@@ -585,6 +586,34 @@ async fn a_launch_guard_fallback_is_saved_in_the_config_the_dashboard_reads() {
     assert_eq!(shown["supervisor"]["preferredEncoder"], "h264_nvenc");
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(rig.layout().config).unwrap()).unwrap();
     assert_eq!(saved["supervisor"]["encoder"], "h264_amf");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_youtube_pause_updates_yt_dlp() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+    rig.patch_config(json!({ "autoUpdateYtdlp": true }));
+    rig.write("yt-dlp/yt-dlp.exe", b"");
+    for out in ["", "2026.11.22.232654\n", "", "2026.11.23.223556\n"] {
+        rig.runner.push(Ok(RunOutput::ok(out)));
+    }
+    let updates = || rig.runner.calls().iter().filter(|c| c.args == ["-U"]).count();
+    let app = rig.start().await;
+    rig.wait_until("the update at start", || updates() == 1).await;
+    let pause = json!({
+        "ts": "2026-11-23T20:08:27.478Z",
+        "level": "critical",
+        "kind": "youtube-breaker-open",
+        "reason": "ERROR: [youtube] ki6bxoUh44w: Requested format is not available",
+        "bot": false
+    });
+
+    // Act
+    rig.write(&format!("data/logs/supervisor-events-{}.jsonl", local_date(SystemTime::now())), format!("{pause}\n").as_bytes());
+
+    // Assert
+    rig.wait_for(Duration::from_secs(6), "an update while YouTube lookups are paused", || updates() == 2).await;
     drop(app);
 }
 

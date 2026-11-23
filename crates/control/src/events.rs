@@ -357,7 +357,11 @@ pub fn describe(e: &SupervisorEvent) -> Described {
         }
         "stream-key-unreadable" => critical(format!("The stream key cannot be read: {}", one(get(e, "reason")))),
         "stream-key-missing" => critical("No stream key is set. The stream cannot start.".into()),
-        "youtube-breaker-open" => critical(format!("YouTube is blocking requests ({}). Downloads and lookups are paused.", one(get(e, "reason")))),
+        "youtube-breaker-open" => {
+            // Three failed lookups also open it; only a bot check is YouTube refusing the box.
+            let what = if get(e, "bot") == Some(&Value::Bool(false)) { "YouTube lookups keep failing" } else { "YouTube is blocking requests" };
+            critical(format!("{what} ({}). Downloads and lookups are paused.", one(get(e, "reason"))))
+        }
         "cookies-unreadable" => {
             // warn: the call went on without the cookies; critical: the calls fail on them.
             if !is_critical {

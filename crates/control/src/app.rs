@@ -36,7 +36,7 @@ use crate::supervisor_client::{SupervisorApi, SupervisorClient};
 use crate::timeline::{EventLog, EventStore};
 use crate::twitch::{AddEvent, RestartClock, TwitchChecker, TwitchOptions};
 use crate::updater::{self, BreakPolicy, UpdateInfo, Updater, UpdaterOptions, GITHUB_RELEASES_URL};
-use crate::ytdlp_update::update_ytdlp;
+use crate::ytdlp_update::{update_ytdlp, PausedUpdates};
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FAILED: i32 = 1;
@@ -195,6 +195,8 @@ struct EventSink {
     timeline: Arc<EventLog>,
     clock: Arc<dyn Clock>,
     alerts: mpsc::UnboundedSender<Alert>,
+    paused_updates: Mutex<PausedUpdates>,
+    update_ytdlp: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl EventSink {
@@ -211,6 +213,9 @@ impl EventSink {
     }
 
     fn route(&self, e: SupervisorEvent) {
+        if read(&self.config).auto_update_ytdlp && lock(&self.paused_updates).due(&e.kind, self.clock.now()) {
+            (self.update_ytdlp)();
+        }
         let named = with_playlist_names(e, &read(&self.config).playlists);
         let d = lock(&self.gate).describe(&named);
         if !d.message.is_empty() {
@@ -544,7 +549,18 @@ impl App {
         let forwarding: Arc<dyn Notifier> = Arc::new(notifier.clone());
         let (alerts, alerts_rx) = mpsc::unbounded_channel();
         send_alerts(alerts_rx, forwarding.clone());
-        let sink = Arc::new(EventSink { gate: Mutex::default(), config: shared.clone(), timeline: timeline.clone(), clock: clock.clone(), alerts });
+        let sink = Arc::new(EventSink {
+            gate: Mutex::default(),
+            config: shared.clone(),
+            timeline: timeline.clone(),
+            clock: clock.clone(),
+            alerts,
+            paused_updates: Mutex::default(),
+            update_ytdlp: {
+                let (runner, ytdlp, playlists) = (runner.clone(), layout.ytdlp.clone(), playlists.clone());
+                Arc::new(move || update_ytdlp_in_background(runner.clone(), ytdlp.clone(), playlists.clone(), "YouTube lookups are paused"))
+            },
+        });
         // Before the routes answer, so the 409 gate never waits on a progress that was cut off. A rollback by
         // START.bat, or a landing cut off, is reported as this process reports its own rollback.
         if let Some(text) = landing::settle_unfinished_update(&layout, clock.as_ref(), VERSION) {
@@ -680,8 +696,9 @@ impl App {
 
         control.confirm_then_watch_updates(landed);
         control.start_services();
+        // An outdated yt-dlp can stop after the first page of a playlist, so it updates itself at every start.
         if config.auto_update_ytdlp {
-            update_ytdlp_in_background(runner, layout.ytdlp.clone(), playlists);
+            update_ytdlp_in_background(runner, layout.ytdlp.clone(), playlists, "start");
         }
         if config.auto_open_admin {
             open_admin(&admin_url);
@@ -856,16 +873,15 @@ fn save_encoders(config: &RwLock<Config>, path: &Path, encoder: Encoder, preferr
     Ok(())
 }
 
-/// An outdated yt-dlp can stop after the first page of a playlist, so it updates itself at every start.
-/// It runs on its own and never holds up the start or the stream.
-fn update_ytdlp_in_background(runner: Arc<dyn Runner>, ytdlp: PathBuf, playlists: Arc<PlaylistCache>) {
+/// yt-dlp's self-update on its own task, so it never holds up the start or the stream; `why` goes to the log.
+fn update_ytdlp_in_background(runner: Arc<dyn Runner>, ytdlp: PathBuf, playlists: Arc<PlaylistCache>, why: &'static str) {
     tokio::spawn(async move {
         let result = update_ytdlp(runner.as_ref(), &ytdlp, |p| p.exists()).await;
         if result.ok {
-            tracing::info!(version = ?result.version, "yt-dlp auto-update complete");
+            tracing::info!(version = ?result.version, why, "yt-dlp auto-update complete");
             playlists.clear();
         } else {
-            tracing::warn!(error = ?result.error, "yt-dlp auto-update skipped");
+            tracing::warn!(error = ?result.error, why, "yt-dlp auto-update skipped");
         }
     });
 }

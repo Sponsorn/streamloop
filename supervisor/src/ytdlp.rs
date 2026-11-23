@@ -95,7 +95,6 @@ impl Ytdlp {
     /// `client` replaces the configured player client list for this call.
     fn base(&self, client: Option<&str>) -> Vec<String> {
         let mut a = vec![
-            "--no-warnings".into(),
             "--no-update".into(),
             // only the install's plugin, never one from the user's yt-dlp folders
             "--no-plugin-dirs".into(),
@@ -496,6 +495,25 @@ mod tests {
         assert!(b.windows(2).any(|w| w[0] == "--extractor-args" && w[1] == "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416"));
         let b = yt.base(Some("web_embedded"));
         assert_eq!(b[b.iter().position(|x| x == "--extractor-args").unwrap() + 1], "youtube:player_client=web_embedded");
+    }
+
+    #[test]
+    fn every_call_keeps_yt_dlp_warnings_for_the_log() {
+        // a warning such as "n challenge solving failed" names the cause the final ERROR line leaves out
+        let yt = Ytdlp::new(&Paths::new(&std::env::temp_dir().join("sl-root")), "mweb", None, 4416);
+
+        let a = yt.base(None);
+
+        assert!(!a.iter().any(|x| x == "--no-warnings"), "{a:?}");
+    }
+
+    #[test]
+    fn the_reason_stays_the_error_line_when_warnings_come_first() {
+        let stderr = "WARNING: [youtube] x: n challenge solving failed: Some formats may be missing.\nWARNING: Only images are available for download.\nERROR: [youtube] x: Requested format is not available.\n";
+
+        let reason = describe_error(stderr, Some(1));
+
+        assert_eq!(reason, "ERROR: [youtube] x: Requested format is not available.");
     }
 
     #[test]

@@ -417,6 +417,27 @@ fn sends_each_listed_kind_as_critical() {
 }
 
 #[test]
+fn says_lookups_keep_failing_when_the_pause_is_no_bot_check() {
+    // Arrange
+    let reason = "ERROR: [youtube] ki6bxoUh44w: Requested format is not available";
+    // Act
+    let d = dsc(&ev("youtube-breaker-open", json!({"reason": reason, "bot": false}), "critical"));
+    // Assert
+    assert_eq!(d.message, format!("YouTube lookups keep failing ({reason}). Downloads and lookups are paused."));
+    assert_eq!(kind_of(&d), Some("critical"));
+}
+
+#[test]
+fn says_youtube_is_blocking_requests_on_a_bot_check() {
+    // Arrange
+    let reason = "YouTube bot check: sign in to confirm you're not a bot";
+    // Act
+    let d = dsc(&ev("youtube-breaker-open", json!({"reason": reason, "bot": true}), "critical"));
+    // Assert
+    assert_eq!(d.message, format!("YouTube is blocking requests ({reason}). Downloads and lookups are paused."));
+}
+
+#[test]
 fn names_the_browser_and_the_reason_when_yt_dlp_cannot_read_the_cookies() {
     // Arrange / Act
     let d = dsc(&ev("cookies-unreadable", json!({"browser": "firefox", "reason": "could not find firefox cookies database"}), "critical"));

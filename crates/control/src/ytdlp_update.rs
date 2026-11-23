@@ -1,7 +1,7 @@
 //! The bundled yt-dlp's self-update: `-U`, then `--version` for the result.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::runner::{RunOutput, RunSpec, Runner};
 
@@ -51,9 +51,34 @@ pub async fn update_ytdlp(runner: &dyn Runner, ytdlp: &Path, exists: impl Fn(&Pa
     }
 }
 
+/// While YouTube lookups are paused, at most one update this often.
+pub const PAUSED_UPDATE_EVERY: Duration = Duration::from_secs(3600);
+
+/// A new YouTube player can break every lookup until yt-dlp catches up, often within hours; the update at
+/// start alone would leave the stream on the slate until the next restart.
+#[derive(Debug, Default)]
+pub struct PausedUpdates {
+    last: Option<SystemTime>,
+}
+
+impl PausedUpdates {
+    /// True for the pause opening or a failed probe, once an hour; a due update counts as run.
+    pub fn due(&mut self, kind: &str, now: SystemTime) -> bool {
+        if kind != "youtube-breaker-open" && kind != "youtube-probe-failed" {
+            return false;
+        }
+        if self.last.is_some_and(|last| now.duration_since(last).is_ok_and(|d| d < PAUSED_UPDATE_EVERY)) {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::UNIX_EPOCH;
     use crate::runner::{FakeRunner, RunError, RunErrorKind};
 
     #[tokio::test]
@@ -82,6 +107,52 @@ mod tests {
         assert_eq!(calls[0].args, ["-U"]);
         assert_eq!(calls[1].args, ["--version"]);
         assert_eq!((calls[0].timeout, calls[1].timeout), (Duration::from_secs(120), Duration::from_secs(10)));
+    }
+
+    fn at(s: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(s)
+    }
+
+    #[test]
+    fn an_update_is_due_when_youtube_lookups_pause() {
+        // Arrange
+        let mut updates = PausedUpdates::default();
+        // Act
+        let due = updates.due("youtube-breaker-open", at(1_000));
+        // Assert
+        assert!(due);
+    }
+
+    #[test]
+    fn no_second_update_is_due_within_the_hour() {
+        // Arrange
+        let mut updates = PausedUpdates::default();
+        updates.due("youtube-breaker-open", at(1_000));
+        // Act
+        let due = updates.due("youtube-probe-failed", at(1_000 + 3_599));
+        // Assert
+        assert!(!due);
+    }
+
+    #[test]
+    fn a_failed_probe_an_hour_later_is_due_again() {
+        // Arrange
+        let mut updates = PausedUpdates::default();
+        updates.due("youtube-breaker-open", at(1_000));
+        // Act
+        let due = updates.due("youtube-probe-failed", at(1_000 + 3_600));
+        // Assert
+        assert!(due);
+    }
+
+    #[test]
+    fn other_events_never_make_an_update_due() {
+        // Arrange
+        let mut updates = PausedUpdates::default();
+        // Act
+        let due: Vec<bool> = ["youtube-breaker-closed", "youtube-probe", "resolve-failed", "download-failed"].iter().map(|k| updates.due(k, at(1_000))).collect();
+        // Assert
+        assert_eq!(due, [false; 4]);
     }
 
     #[tokio::test]
