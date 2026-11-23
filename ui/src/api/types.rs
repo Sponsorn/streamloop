@@ -65,6 +65,7 @@ pub struct Youtube {
     pub breaker: Option<String>,
     pub retry_at: Option<String>,
     pub cookie_problem: Option<String>,
+    pub bot: Option<bool>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]

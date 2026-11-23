@@ -2250,7 +2250,7 @@ impl Ctl {
             "watchdog": {"last": self.watch.last},
             "playlistCount": list.len,
             "hold": self.hold.holding(self.now_s()).then(|| json!({"reason": "every video in the playlist failed; the slate airs until the next try", "level": self.hold.level, "until": iso(unix_ms() + ((self.hold.until.unwrap_or(0.0) - self.now_s()).max(0.0) * 1000.0) as u64)})),
-            "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures, "cookieProblem": self.cookie_problem},
+            "youtube": {"breaker": if self.breaker.open { "open" } else { "closed" }, "retryAt": self.breaker_retry_iso(), "level": self.breaker.level, "failures": self.breaker.failures, "cookieProblem": self.cookie_problem, "bot": self.breaker.bot},
         });
         if let (Some(h), Some(b)) = (head.as_object_mut(), body.as_object_mut()) {
             h.append(b);
@@ -3704,6 +3704,20 @@ mod tests {
         assert!(ev[0]["reason"].as_str().unwrap().starts_with("could not find firefox cookies database"), "{}", ev[0]);
         assert!(ctl.youtube_slot().is_none(), "yt-dlp runs again at once with the same broken cookies");
         assert!(ctl.status()["youtube"]["cookieProblem"].as_str().unwrap().contains("firefox"), "{}", ctl.status());
+    }
+
+    #[test]
+    fn the_status_says_whether_a_bot_check_paused_youtube() {
+        let mut failing = test_ctl("status-failing", &["a"]);
+        let mut blocked = test_ctl("status-bot", &["a"]);
+
+        for _ in 0..3 {
+            failing.breaker_result(false, false, true, false, "ERROR: [youtube] a: Requested format is not available");
+        }
+        blocked.breaker_result(false, true, true, false, "bot check");
+
+        assert_eq!(failing.status()["youtube"]["bot"], json!(false), "{}", failing.status());
+        assert_eq!(blocked.status()["youtube"]["bot"], json!(true), "{}", blocked.status());
     }
 
     #[test]

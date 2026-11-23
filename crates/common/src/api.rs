@@ -148,6 +148,9 @@ pub struct Youtube {
     pub failures: Option<u64>,
     #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub cookie_problem: Field<String>,
+    /// The breaker's last failure was YouTube's bot check, not lookups failing; older supervisors leave it out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,6 +245,17 @@ mod tests {
 
         assert_eq!(serde_json::to_string(&full).unwrap(), r#"{"playlist":"PLb","index":3,"id":"abc"}"#);
         assert_eq!(serde_json::to_string(&ReloadRequest::default()).unwrap(), "{}");
+    }
+
+    #[test]
+    fn youtube_keeps_whether_a_bot_check_paused_it_and_leaves_it_out_when_absent() {
+        let paused: SupervisorStatus = serde_json::from_value(json!({"youtube": {"breaker": "open", "bot": false}})).unwrap();
+        let older: SupervisorStatus = serde_json::from_value(json!({"youtube": {"breaker": "open"}})).unwrap();
+
+        let (paused, older) = (serde_json::to_value(&paused).unwrap(), serde_json::to_value(&older).unwrap());
+
+        assert_eq!(paused["youtube"]["bot"], json!(false));
+        assert!(older["youtube"].get("bot").is_none(), "{older}");
     }
 
     #[test]

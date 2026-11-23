@@ -247,6 +247,16 @@ describe('youtubeNote', () => {
     expect(youtubeNote({ breaker: 'open', retryAt: null })).toBe('YouTube is blocking requests.');
   });
 
+  it('says lookups keep failing when the pause is no bot check', () => {
+    const at = new Date(2026, 10, 23, 21, 56).toISOString();
+    expect(youtubeNote({ breaker: 'open', bot: false, retryAt: at })).toBe('YouTube lookups keep failing. Next try at 21:56.');
+    expect(youtubeNote({ breaker: 'open', bot: false, retryAt: null })).toBe('YouTube lookups keep failing.');
+  });
+
+  it('says YouTube is blocking requests on a bot check', () => {
+    expect(youtubeNote({ breaker: 'open', bot: true, retryAt: null })).toBe('YouTube is blocking requests.');
+  });
+
   it('says nothing while the breaker is closed or the status has no youtube part', () => {
     expect(youtubeNote({ breaker: 'closed', retryAt: null })).toBeNull();
     expect(youtubeNote(undefined)).toBeNull();

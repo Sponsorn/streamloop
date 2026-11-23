@@ -81,17 +81,23 @@ pub fn youtube_note(youtube: Option<&Youtube>) -> Option<String> {
     if youtube.breaker.as_deref() != Some("open") {
         return None;
     }
+    // Three failed lookups also pause YouTube; an older supervisor sends no `bot`, and keeps the old wording.
+    let what = if youtube.bot == Some(false) {
+        "YouTube lookups keep failing."
+    } else {
+        "YouTube is blocking requests."
+    };
     let at = youtube
         .retry_at
         .as_deref()
         .filter(|s| !s.is_empty())
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok());
     match at {
-        None => Some("YouTube is blocking requests.".to_string()),
+        None => Some(what.to_string()),
         Some(at) => {
             let at = at.with_timezone(&Local);
             Some(format!(
-                "YouTube is blocking requests. Next try at {:02}:{:02}.",
+                "{what} Next try at {:02}:{:02}.",
                 at.hour(),
                 at.minute()
             ))
@@ -1005,7 +1011,32 @@ mod tests {
                 breaker: Some(breaker.into()),
                 retry_at,
                 cookie_problem: cookie.map(Into::into),
+                bot: None,
             }
+        }
+
+        #[test]
+        fn says_lookups_keep_failing_when_the_pause_is_no_bot_check() {
+            let y = Youtube {
+                bot: Some(false),
+                ..yt("open", Some(local_rfc3339(21, 56, 0)), None)
+            };
+            assert_eq!(
+                youtube_note(Some(&y)).as_deref(),
+                Some("YouTube lookups keep failing. Next try at 21:56.")
+            );
+        }
+
+        #[test]
+        fn says_youtube_is_blocking_requests_on_a_bot_check() {
+            let y = Youtube {
+                bot: Some(true),
+                ..yt("open", None, None)
+            };
+            assert_eq!(
+                youtube_note(Some(&y)).as_deref(),
+                Some("YouTube is blocking requests.")
+            );
         }
 
         #[test]

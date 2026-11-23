@@ -27,10 +27,12 @@ export function youtubeNote(youtube) {
   if (!youtube) return null;
   if (youtube.cookieProblem) return youtube.cookieProblem;
   if (youtube.breaker !== 'open') return null;
+  // Three failed lookups also pause YouTube; an older supervisor sends no `bot`, and keeps the old wording.
+  const what = youtube.bot === false ? 'YouTube lookups keep failing.' : 'YouTube is blocking requests.';
   const at = youtube.retryAt ? new Date(youtube.retryAt) : null;
-  if (!at || Number.isNaN(at.getTime())) return 'YouTube is blocking requests.';
+  if (!at || Number.isNaN(at.getTime())) return what;
   const hhmm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
-  return `YouTube is blocking requests. Next try at ${hhmm}.`;
+  return `${what} Next try at ${hhmm}.`;
 }
 
 /** The Twitch live check and the read-back, as one line. */

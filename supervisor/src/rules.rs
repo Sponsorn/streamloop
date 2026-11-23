@@ -312,6 +312,8 @@ pub struct Breaker {
     pub retry_at: f64,
     pub probing: bool,
     pub failures: u32,
+    /// The last failure that opened it or failed its probe was a bot check.
+    pub bot: bool,
 }
 
 impl Breaker {
@@ -343,6 +345,7 @@ impl Breaker {
             self.probing = false;
             self.level += 1;
             self.retry_at = now + breaker_backoff_s(self.level);
+            self.bot = bot;
             return BreakerChange::ProbeFailed;
         }
         if counts {
@@ -353,6 +356,7 @@ impl Breaker {
             self.level = 0;
             self.probing = false;
             self.retry_at = now + breaker_backoff_s(0);
+            self.bot = bot;
             return BreakerChange::Opened;
         }
         BreakerChange::None
@@ -728,6 +732,21 @@ mod tests {
         assert!(!b.open);
         assert_eq!(b.allow(now), Allow::Yes);
         assert_eq!(b.level, 0);
+    }
+
+    #[test]
+    fn the_breaker_keeps_whether_its_last_failure_was_a_bot_check() {
+        let mut b = Breaker::default();
+
+        for _ in 0..3 {
+            b.result(false, false, true, false, 0.0);
+        }
+        assert!(b.open && !b.bot, "three failed lookups are no bot check");
+        b.result(false, true, true, true, 70.0);
+        assert!(b.bot, "a probe that met the bot check");
+        b.result(true, false, true, true, 200.0);
+
+        assert!(!b.open && !b.bot);
     }
 
     #[test]
