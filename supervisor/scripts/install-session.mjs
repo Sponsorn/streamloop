@@ -891,8 +891,10 @@ async function runMove(r) {
   b.checks = {
     v305WasLive: b.before.version === '3.0.5' && b.before.cores.length === 1,
     v305SupervisorKeptStreaming: oldPids.length === 1 && b.whileClosed.state === 'playing' && b.whileClosed.alive === true,
-    // tar skips what the running supervisor's tools hold; streamloop.exe, START.bat and app\ are new files
-    extractLeftOnlyHeldToolFiles: b.extract.status === 0 || (b.heldFiles.length > 0 && b.heldFiles.every((f) => /^streamloop\/(node|ffmpeg|yt-dlp|pot)\//.test(f.entry) && f.sameAsZip)),
+    // tar skips what the running supervisor's tools hold; streamloop.exe, START.bat and app\ are new files.
+    // yt-dlp and deno ship as the latest at each build, so a held copy may be 3.0.5's older one; ffmpeg is pinned.
+    extractLeftOnlyHeldToolFiles: b.extract.status === 0 || (b.heldFiles.length > 0 && b.heldFiles.every((f) => /^streamloop\/(node|ffmpeg|yt-dlp|pot)\//.test(f.entry)
+      && (f.sameAsZip || /^streamloop\/yt-dlp\/(yt-dlp|deno)\.exe$/.test(f.entry)))),
     replacedByVersionRule: b.afterFirstStart.cores.length === 1 && !oldPids.includes(b.afterFirstStart.cores[0].pid) && b.afterFirstStart.supervisorVersion === VERSION
       && b.timeline.includes(`Restarting the supervisor: it runs an unknown version, this is ${VERSION}.`),
     streamBack: live2.value !== null && back.value !== null,

@@ -202,7 +202,8 @@ export function grepTree(dir, needle) {
 }
 
 export async function extract(zip, dest) {
-  rmSync(dest, { recursive: true, force: true });
+  // Retries: the folder has stayed locked (EPERM) for some seconds after the last run's processes exited.
+  rmSync(dest, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
   mkdirSync(dest, { recursive: true });
   const t0 = Date.now();
   const r = await run(TAR, ['-xf', zip, '-C', dest], { timeout: 600_000 });
