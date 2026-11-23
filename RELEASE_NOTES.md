@@ -1,3 +1,18 @@
+## v3.1.0
+
+A prerelease for trial, not marked latest. 2.x installs do not update to it, and the 3.0 dashboard does not offer it: install the full ZIP by hand, as the last point says.
+
+- **StreamLoop is now one program, `streamloop.exe`.** The Node.js server that ran the dashboard, the Discord alerts, the Twitch checks and the updater is gone, and `streamloop.exe` does that work itself. The stream runs in a second `streamloop.exe` process, apart from the dashboard as before, so closing the window still leaves the stream on air. The dashboard and its settings work as they did, at http://localhost:7654/admin. The full ZIP no longer contains Node.js.
+- **The token server is now one exe, `supervisor\streamloop-pot.exe`.** It replaces the TypeScript token server in `pot\` and the Node.js in `node\` that ran it, and StreamLoop removes both folders when it starts. In a 2-hour run on the dev machine, all 52 download tries with its tokens finished, with no "HTTP Error 403: Forbidden".
+- **Updates now replace the whole program and install themselves at a planned break.** The 3.0 update replaced only `app\` and `START.bat`, so every release that changed the supervisor needed the full ZIP. With automatic update checks on (the default), the dashboard now downloads the new `streamloop.exe`, checks it and installs it by itself: just before Twitch ends the broadcast at its 48-hour limit, about 5 minutes after the stream goes off air, or right after you press Stop. Update Now installs it at once, also with the checks off. The stream is off air for about 10 seconds while an update installs. A release that changes ffmpeg or the token server says so here and still needs the full ZIP.
+- **A failed update goes back by itself.** If the new version does not come up within 3 minutes, StreamLoop puts the previous one back, restarts it and sends a Discord alert. If the new version crashes before then, `START.bat` puts the previous one back and prints a `[RECOVER]` line. Either way, that version installs again only when you press Update Now.
+- **New setting: Start the stream when StreamLoop starts** (Settings, under Startup). When it is off, StreamLoop comes up without streaming and waits for you to press Start. It is on by default, which is how 3.0 behaved. After an update the stream is as it was before: streaming, stopped or waiting for Start.
+- **The stream comes back sooner after an internet outage.** When the encoder lost Twitch, it waited out its whole retry step, up to 60 seconds, even when Twitch answered again sooner, because the check for that never worked with Twitch's address. It now reconnects within a few seconds of Twitch answering.
+- **A second StreamLoop window no longer restarts every 10 seconds.** When another StreamLoop (2.x, or another copy of 3) holds port 7654, the window says "Another StreamLoop is already running. Close it and start this one again." and stays down.
+- **To move from 3.0, install the full ZIP by hand:** press Stop, close the window, extract the ZIP to a separate folder, copy what is inside its `streamloop` folder over the install, start it again and press Start. Settings, the stream key, the timeline and `data\` are kept. At its first start StreamLoop removes what 3.0 left behind (`app\src`, `app\node_modules`, `node\`, `pot\` and the old supervisor exe). Later updates come through the dashboard.
+
+---
+
 ## v3.0.5
 
 A prerelease for trial, not marked latest. 2.x installs do not update to it.
