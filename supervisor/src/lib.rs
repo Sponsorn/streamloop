@@ -1453,6 +1453,16 @@ impl Ctl {
         }
     }
 
+    /// A video whose download or size lookup failed is tried again later, sooner as its turn comes; until then it
+    /// plays from its URL if it airs. Returns the wait in seconds.
+    fn retry_download_later(&mut self, index: usize) -> u64 {
+        let (view, pos, _) = self.view();
+        let durations: Vec<Option<f64>> = self.videos.iter().map(|v| v.entry.duration).collect();
+        let wait = rules::download_retry_s(rules::until_needed_s(view, pos, index, &durations));
+        self.videos[index].dl_retry_at = Some(Instant::now() + Duration::from_secs(wait));
+        wait
+    }
+
     fn window(&self) -> Vec<usize> {
         let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
         let skipped: Vec<bool> = self.videos.iter().map(|v| v.skipped || v.dl_failed).collect();
@@ -1671,11 +1681,7 @@ impl Ctl {
                     }
                 };
                 if result == "skip" {
-                    // Tried again later, sooner as its turn comes; until then it plays from its URL if it airs.
-                    let (view, pos, _) = self.view();
-                    let durations: Vec<Option<f64>> = self.videos.iter().map(|v| v.entry.duration).collect();
-                    let wait = rules::download_retry_s(rules::until_needed_s(view, pos, index, &durations));
-                    self.videos[index].dl_retry_at = Some(Instant::now() + Duration::from_secs(wait));
+                    let wait = self.retry_download_later(index);
                     // Many videos in a row is systemic (the merge, the token server, a player client) and
                     // needs a human; one video's later rounds count once.
                     if !std::mem::replace(&mut self.videos[index].dl_counted, true) {
@@ -2111,6 +2117,7 @@ impl Ctl {
                 match purpose {
                     Purpose::Size => {
                         self.videos[index].dl_failed = true;
+                        self.retry_download_later(index);
                         self.logs.csv("downloads", &[iso_now(), self.id(index), "skip".into(), "1".into(), "0".into(), "0".into(), reason, self.settings.player_client.clone()]);
                     }
                     // The video itself will not play: the ladder skips it, breaker open or not.
@@ -3305,6 +3312,33 @@ mod tests {
 
         assert_eq!(ctl.downloading.as_ref().map(|d| d.0), Some(ahead), "the scheduled retry never came");
         assert_eq!(ctl.videos[ahead].dl_attempts, 0, "a new round starts with the full client list");
+    }
+
+    /// On the box a size lookup that failed in an outage was never retried, and the cache sat empty while the video aired.
+    #[test]
+    fn a_failed_size_lookup_is_asked_for_again_when_its_retry_time_comes() {
+        let (mut ctl, ahead) = forbidden_ctl("size-failed");
+        ctl.videos[ahead].bytes = None;
+        let reason = "ERROR: [youtube] b: Requested format is not available. Use --list-formats for a list of available formats";
+
+        let after = (ahead + 1) % 4;
+
+        ctl.handle(Msg::Resolved { index: ahead, id: ctl.id(ahead), purpose: Purpose::Size, result: Err(reason.into()) });
+        ctl.cache_work();
+
+        assert!(!ctl.sizing, "a failed size lookup was asked for again at once");
+        assert_eq!(ctl.downloading.as_ref().map(|d| d.0), Some(after), "the look-ahead goes on past the failed video");
+        let wait = ctl.videos[ahead].dl_retry_at.expect("a failed size lookup has no retry time") - Instant::now();
+        assert!((118..=120).contains(&wait.as_secs()), "{wait:?}");
+
+        ctl.videos[ahead].dl_retry_at = Some(Instant::now() - Duration::from_secs(1));
+        ctl.cache_work();
+        assert!(ctl.downloading.as_ref().is_some_and(|d| d.2.load(Ordering::Relaxed)), "the download past it was not cancelled");
+        ctl.handle(Msg::Downloaded { index: after, id: ctl.id(after), ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
+        ctl.last_resolve = None;
+        ctl.cache_work();
+
+        assert!(ctl.sizing, "the scheduled size lookup never came");
     }
 
     #[test]
