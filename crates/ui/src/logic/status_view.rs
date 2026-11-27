@@ -2,7 +2,7 @@
 
 use super::update_text::{failure_text, step_label};
 use crate::api::types::{
-    AutostartStatus, PlaylistRef, SetupReport, Stream, SwapLine, Twitch, UpdateProgress,
+    AutostartStatus, PlaylistRef, SetupReport, Status, Stream, SwapLine, Twitch, UpdateProgress,
     UpdateStatus, Youtube,
 };
 use chrono::{DateTime, Local, Timelike};
@@ -69,6 +69,12 @@ pub fn stream_line(stream: Option<&Stream>, note: Option<&str>) -> StreamLine {
             reason,
         },
     }
+}
+
+/// The stream line of one `/api/status` answer, with YouTube's note.
+pub fn status_line(status: &Status) -> StreamLine {
+    let youtube = status.supervisor.as_ref().and_then(|s| s.youtube.as_ref());
+    stream_line(Some(&status.stream), youtube_note(youtube).as_deref())
 }
 
 /// Why YouTube is off limits, from the supervisor's /status youtube part; None when it is not.

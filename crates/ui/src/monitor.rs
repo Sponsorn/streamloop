@@ -26,9 +26,9 @@ use crate::{
     app::AppHandle,
     dashboard::TabView,
     logic::{
-        Level,
+        Level, StreamLine,
         admin::{encoder_line, local_hms, now_playing_index, now_playing_time},
-        source_label, stream_line, twitch_line, update_progress_text, update_running, youtube_note,
+        source_label, status_line, twitch_line, update_progress_text, update_running,
     },
     logs::LogViewer,
     theme::{ACCENT, BORDER, MONO_FONT, MUTED, SURFACE, level_color},
@@ -45,7 +45,7 @@ const STOP_DETAIL: &str = "The channel goes offline until you start it again.";
 const STOP_OK: &str = "Stop stream";
 
 pub(crate) struct CardLine {
-    pub word: SharedString,
+    pub word: &'static str,
     pub level: Level,
     pub reason: Option<String>,
     pub start: bool,
@@ -105,7 +105,7 @@ impl MonitorView {
     pub(crate) fn card_line(&self) -> CardLine {
         if let Some(progress) = &self.updating {
             return CardLine {
-                word: "Updating".into(),
+                word: "Updating",
                 level: Level::Warn,
                 reason: Some(progress.clone()),
                 start: false,
@@ -113,22 +113,33 @@ impl MonitorView {
             };
         }
         let status = self.card_status.as_ref();
-        let line = status.map(|s| {
-            let youtube = s.supervisor.as_ref().and_then(|sup| sup.youtube.as_ref());
-            stream_line(Some(&s.stream), youtube_note(youtube).as_deref())
-        });
-        let (word, level, reason) = match line {
+        let (word, level, reason) = match status.map(status_line) {
             Some(line) => (line.word, line.level, line.reason),
             None => ("Loading", Level::Muted, None),
         };
         // Both buttons show until the first poll, as in index.html.
         let state = status.map(|s| s.stream.state.as_str());
         CardLine {
-            word: word.into(),
+            word,
             level,
             reason,
             start: state.is_none_or(|s| s == "stopped" || s == "off-air"),
             stop: state != Some("stopped"),
+        }
+    }
+
+    /// The stream card's word, level and reason, which the tray icon shows while the window is open.
+    pub(crate) fn tray_line(&self) -> StreamLine {
+        let CardLine {
+            word,
+            level,
+            reason,
+            ..
+        } = self.card_line();
+        StreamLine {
+            word,
+            level,
+            reason,
         }
     }
 

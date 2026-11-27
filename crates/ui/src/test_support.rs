@@ -1,8 +1,10 @@
 //! The UI tests' window on a `FakeApi`: opening the app, reading what a window painted, and canned answers.
 
 use std::{
+    cell::RefCell,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
@@ -16,15 +18,64 @@ use crate::{
     api::{client::Client, fake::FakeApi},
     app::AppView,
     start::StartedBat,
+    tray::{TrayColour, TrayFeed, TrayOutput},
 };
 
-/// A shell on `fake` without a root, so the window state stays in memory.
+/// A shell on `fake` without a root, so the window state stays in memory, and without a tray icon.
 pub fn shell(fake: Arc<FakeApi>) -> Shell {
     Shell {
         client: Client(fake),
         root: None,
         state_path: None,
+        tray: TrayFeed::default(),
     }
+}
+
+/// What the tray icon was asked, in order. `dropped` once the app let go of it.
+#[derive(Default, Debug)]
+pub struct TrayLog {
+    pub shown: Vec<(TrayColour, String)>,
+    pub notes: Vec<(String, String)>,
+    pub dropped: bool,
+}
+
+impl TrayLog {
+    /// The colour and tooltip the icon shows now.
+    pub fn now(&self) -> (TrayColour, &str) {
+        let (colour, tooltip) = self.shown.last().expect("the tray showed something");
+        (*colour, tooltip.as_str())
+    }
+}
+
+struct RecordingTray(Rc<RefCell<TrayLog>>);
+
+impl TrayOutput for RecordingTray {
+    fn show(&mut self, colour: TrayColour, tooltip: &str) {
+        self.0
+            .borrow_mut()
+            .shown
+            .push((colour, tooltip.to_string()));
+    }
+
+    fn notify(&self, title: &str, text: &str) {
+        self.0
+            .borrow_mut()
+            .notes
+            .push((title.to_string(), text.to_string()));
+    }
+}
+
+impl Drop for RecordingTray {
+    fn drop(&mut self) {
+        self.0.borrow_mut().dropped = true;
+    }
+}
+
+/// Gives `shell` a tray icon that records what it is asked.
+pub fn record_tray(shell: &Shell) -> Rc<RefCell<TrayLog>> {
+    let log = Rc::new(RefCell::new(TrayLog::default()));
+    shell.tray.attach(Box::new(RecordingTray(log.clone())));
+    log
 }
 
 /// Opens the app window on `fake` and runs until it waits for a timer.

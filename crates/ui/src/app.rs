@@ -17,11 +17,13 @@ use crate::{
         types::{Event, Status, UpdateStatus},
     },
     dashboard::DashboardView,
+    logic::status_line,
     start::{self, Connecting, HINT_AFTER, StartedBat},
     theme::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
         TOAST_SUCCESS_BG, TOAST_SUCCESS_BORDER,
     },
+    tray::TrayFeed,
     widgets::{PAGE_LINE_HEIGHT, RestartNote},
     wizard::WizardView,
 };
@@ -146,6 +148,8 @@ type PollAnswer = (
 
 pub struct AppView {
     handle: AppHandle,
+    /// Fed from Connecting's tries and the dashboard's polls while this window is open.
+    tray: TrayFeed,
     body: Body,
     /// Until the first answer.
     starting: Option<StartedBat>,
@@ -165,6 +169,7 @@ impl AppView {
     /// `started_bat` when this app started `START.bat` before opening the window.
     pub fn new(
         client: Client,
+        tray: TrayFeed,
         started_bat: Option<StartedBat>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -187,6 +192,7 @@ impl AppView {
         });
         let mut view = Self {
             handle,
+            tray,
             body: Body::Connecting,
             starting: started_bat,
             focus,
@@ -313,20 +319,28 @@ impl AppView {
     /// Shows Connecting and tries `GET /api/status` every 2 s until it answers.
     fn connect(&mut self, cx: &mut Context<Self>) {
         self.set_body(Body::Connecting, cx);
-        let (client, window) = (self.handle.client.clone(), self.handle.window);
+        let (client, window, tray) = (
+            self.handle.client.clone(),
+            self.handle.window,
+            self.tray.clone(),
+        );
         self._connecting = Some(cx.spawn(async move |this, cx| {
             loop {
                 let api = client.clone();
-                if let Ok(status) = cx.background_spawn(async move { api.status() }).await {
-                    cx.update_window(window, |_, window, cx| {
-                        this.update(cx, |app, cx| {
-                            app.starting = None;
-                            app._hint_due = None;
-                            app.open_screen_for(&status, window, cx)
+                match cx.background_spawn(async move { api.status() }).await {
+                    Ok(status) => {
+                        tray.answered(status_line(&status));
+                        cx.update_window(window, |_, window, cx| {
+                            this.update(cx, |app, cx| {
+                                app.starting = None;
+                                app._hint_due = None;
+                                app.open_screen_for(&status, window, cx)
+                            })
                         })
-                    })
-                    .ok();
-                    return;
+                        .ok();
+                        return;
+                    }
+                    Err(_) => tray.unreachable(),
                 }
                 cx.background_executor().timer(POLL_EVERY).await;
             }
@@ -374,6 +388,8 @@ impl AppView {
                     dashboard.set_connection_lost(true, cx);
                     dashboard.on_server_lost(cx);
                 });
+                // The tray turns red with the banner, not on a single failed poll.
+                self.tray.unreachable();
             }
             return;
         };
@@ -386,6 +402,10 @@ impl AppView {
             dashboard.set_connection_lost(false, cx);
             dashboard.on_poll(&status, &events, update.as_ref(), window, cx);
         });
+        // The stream card's line, so an update running shows as Updating.
+        if let Some(line) = dashboard.read(cx).tray_line(cx) {
+            self.tray.answered(line);
+        }
     }
 
     /// admin.css `.toast-container`: top right.
@@ -507,14 +527,17 @@ mod tests {
 
     use gpui::{TestAppContext, WindowOptions};
     use gpui_kit::test::TestWindowExt;
+    use serde_json::json;
 
     use super::*;
     use crate::{
         api::{ApiError, fake::FakeApi},
         dashboard::Tab,
         test_support::{
-            answer_polls, count, events_json, open_app, open_app_started, shows, status_json,
+            self, answer_polls, count, events_json, full_offer_json, open_app, open_app_started,
+            open_shell, progress_json, record_tray, shows, status_json,
         },
+        tray::TrayColour,
         widgets::{ActionView, Busy, action_button, run_action},
     };
 
@@ -594,6 +617,73 @@ mod tests {
         // Assert
         assert!(!at_29_s);
         assert!(at_30_s);
+    }
+
+    #[gpui::test]
+    fn the_tray_stays_grey_and_says_retrying_until_the_first_answer(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+
+        // Act
+        open_shell(cx, &shell, None);
+        cx.executor().advance_clock(POLL_EVERY * 2);
+        let connecting = tray.borrow().now().0;
+        let connecting_tip = tray.borrow().now().1.to_string();
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        cx.executor().advance_clock(POLL_EVERY);
+
+        // Assert
+        assert_eq!(connecting, TrayColour::Grey);
+        assert_eq!(
+            connecting_tip,
+            "StreamLoop\nCan't reach StreamLoop. Retrying..."
+        );
+        assert_eq!(tray.borrow().now(), (TrayColour::Green, "StreamLoop: Live"));
+    }
+
+    #[gpui::test]
+    fn the_tray_follows_the_stream_card_while_the_window_is_open(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+        open_shell(cx, &shell, None);
+        let live = tray.borrow().now().0;
+
+        // Act: a full update downloads, then the server stops answering
+        let mut progress = progress_json(cx, "download", "running", 5.);
+        progress["downloadPercent"] = json!(42);
+        fake.reply(
+            "GET",
+            "/api/update/status",
+            Ok(full_offer_json("downloading", progress)),
+        );
+        cx.executor().advance_clock(POLL_EVERY);
+        let updating = tray.borrow().now().0;
+        let updating_tip = tray.borrow().now().1.to_string();
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        cx.executor().advance_clock(POLL_EVERY);
+        let one_failure = tray.borrow().now().0;
+        cx.executor().advance_clock(POLL_EVERY);
+        let two_failures = tray.borrow().now().0;
+
+        // Assert
+        assert_eq!(live, TrayColour::Green);
+        assert_eq!(updating, TrayColour::Amber);
+        assert_eq!(updating_tip, "StreamLoop: Updating\nDownloading, 42%, 7 s");
+        assert_eq!(
+            one_failure,
+            TrayColour::Amber,
+            "one failed poll changes nothing"
+        );
+        assert_eq!(
+            two_failures,
+            TrayColour::Red,
+            "red with the connection-lost banner"
+        );
     }
 
     #[gpui::test]

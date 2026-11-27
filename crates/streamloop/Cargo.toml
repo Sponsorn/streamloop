@@ -19,3 +19,7 @@ test-control-fails = []
 
 [dev-dependencies]
 serde_json = "1"
+
+[build-dependencies]
+# The exe's icon and version resource. Its default feature only reads `package.metadata.winresource`.
+winresource = { version = "0.1.34", default-features = false }

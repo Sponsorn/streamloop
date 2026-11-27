@@ -19,6 +19,7 @@ pub mod start;
 #[cfg(test)]
 mod test_support;
 pub mod theme;
+pub mod tray;
 pub mod update;
 pub mod videos;
 pub mod webhooks;
@@ -39,6 +40,7 @@ use crate::{
     app::{AppView, now_ms},
     instance::Claim,
     start::StartedBat,
+    tray::{Tray, TrayEvent, TrayFeed},
     window_state::{DEFAULT_SIZE, MIN_SIZE, WindowState},
 };
 
@@ -66,6 +68,8 @@ pub struct Shell {
     pub root: Option<PathBuf>,
     /// `ROOT\app\window.json`; None without a root, and the window state then lives in memory for the run.
     pub state_path: Option<PathBuf>,
+    /// The tray icon, from the start of the app to its end.
+    pub tray: TrayFeed,
 }
 
 impl Shell {
@@ -77,6 +81,7 @@ impl Shell {
             client,
             root,
             state_path,
+            tray: TrayFeed::default(),
         }
     }
 }
@@ -116,7 +121,7 @@ pub fn run(opts: UiOptions) {
         let _ = show_tx.send_blocking(());
     });
     let shell = Shell::new(Client(api), opts.root.clone());
-    let tray = opts.tray;
+    let tray_only = opts.tray;
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
@@ -124,13 +129,38 @@ pub fn run(opts: UiOptions) {
             gpui_kit::init(cx);
             theme::init(cx);
             set_started_bat(cx, started_bat);
-            if !tray {
-                open_main_window(cx, &shell);
+            let events = shell.clone();
+            // Without its icon the app still runs: a second start shows the window.
+            if let Ok(tray) = Tray::new(cx, move |event, cx| on_tray_event(event, cx, &events)) {
+                shell.tray.attach(Box::new(tray));
             }
+            begin(cx, &shell, tray_only);
             serve_show_signal(cx, shell, show_rx);
             cx.activate(true);
         });
     drop(instance);
+}
+
+/// Opens the window, or with `--tray` only polls for the tray icon.
+pub(crate) fn begin(cx: &mut App, shell: &Shell, tray_only: bool) {
+    if tray_only {
+        shell.tray.poll_while_closed(shell.client.clone(), cx);
+    } else {
+        open_main_window(cx, shell);
+    }
+}
+
+/// A left click, a double click and Open StreamLoop show the window. Quit StreamLoop takes the icon off the
+/// taskbar and ends the app; the stream stays as it is.
+pub(crate) fn on_tray_event(event: TrayEvent, cx: &mut App, shell: &Shell) {
+    match event {
+        TrayEvent::Open => show_main_window(cx, shell),
+        TrayEvent::Quit => {
+            save_window_state(cx);
+            shell.tray.detach();
+            cx.quit();
+        }
+    }
 }
 
 /// The `START.bat` this app started, for the first window it opens.
@@ -161,12 +191,14 @@ struct OpenWindow {
     _bounds: Subscription,
 }
 
-/// Opens the StreamLoop window where it last was, with every view built anew.
+/// Opens the StreamLoop window where it last was, with every view built anew. The window's own polls feed the
+/// tray icon from now on.
 pub fn open_main_window(cx: &mut App, shell: &Shell) -> AnyWindowHandle {
-    let client = shell.client.clone();
+    shell.tray.stop_polling();
+    let (client, tray) = (shell.client.clone(), shell.tray.clone());
     let started_bat = cx.default_global::<Starting>().0.take();
     open_window_of(cx, shell, |window, cx| {
-        cx.new(|cx| AppView::new(client, started_bat, window, cx))
+        cx.new(|cx| AppView::new(client, tray, started_bat, window, cx))
     })
     .0
 }
@@ -207,16 +239,29 @@ pub fn save_window_state(cx: &mut App) {
 }
 
 /// The window's close button, Alt+F4 and the taskbar's Close. GPUI removes the window and Windows' own close is
-/// refused: on gpui-pre 0.3.11 that path leaks about 26 MB per close.
+/// refused: on gpui-pre 0.3.11 that path leaks about 26 MB per close. The app goes on in the tray, which says so
+/// the first time in an install.
 pub(crate) fn close_main_window(window: &mut Window, cx: &mut App) -> bool {
+    let first_close = main_window(cx).is_some_and(|main| {
+        let first = !main.state.tray_hint_shown;
+        main.state.tray_hint_shown = true;
+        first
+    });
     remember(window, cx);
     let handle = window.window_handle();
-    if let Some(main) = main_window(cx)
-        && main.open.as_ref().is_some_and(|open| open.handle == handle)
-    {
-        main.open = None;
-    }
+    let shell = main_window(cx).map(|main| {
+        if main.open.as_ref().is_some_and(|open| open.handle == handle) {
+            main.open = None;
+        }
+        main.shell.clone()
+    });
     window.remove_window();
+    if let Some(shell) = shell {
+        if first_close {
+            shell.tray.notify(tray::NAME, tray::TRAY_HINT);
+        }
+        shell.tray.poll_while_closed(shell.client.clone(), cx);
+    }
     false
 }
 
@@ -395,9 +440,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::fake::FakeApi,
-        app::Screen,
-        test_support::{self, answer_polls, app_view, close, config_json, count, open_shell},
+        api::{ApiError, fake::FakeApi},
+        app::{POLL_EVERY, Screen},
+        test_support::{
+            self, answer_polls, app_view, close, config_json, count, open_shell, record_tray,
+            status_json,
+        },
+        tray::{CLOSED_POLL_EVERY, TRAY_HINT, TrayColour},
         window_state::{self, WindowState},
     };
 
@@ -628,6 +677,223 @@ mod tests {
 
         // Assert
         assert!(!path.exists());
+    }
+
+    /// The window that opened last.
+    fn reopen(cx: &mut TestAppContext, show: &async_channel::Sender<()>) -> AnyWindowHandle {
+        show.try_send(()).unwrap();
+        cx.run_until_parked();
+        *cx.windows().last().expect("a window opened")
+    }
+
+    #[gpui::test]
+    fn the_tray_hint_shows_on_the_first_close_only(cx: &mut TestAppContext) {
+        // Arrange: an install whose window has never closed to the tray
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let dir = StateDir::new("hint-first");
+        let path = dir.file();
+        let shell = saving_to(fake, &path);
+        let tray = record_tray(&shell);
+        let (_, first) = open_shell(cx, &shell, None);
+        let (show, signals) = async_channel::unbounded();
+        cx.update(|cx| serve_show_signal(cx, shell.clone(), signals));
+
+        // Act
+        close(cx, first);
+        let second = reopen(cx, &show);
+        close(cx, second);
+
+        // Assert
+        assert_eq!(
+            tray.borrow().notes,
+            vec![("StreamLoop".to_string(), TRAY_HINT.to_string())]
+        );
+        assert!(window_state::load(&path).tray_hint_shown);
+    }
+
+    #[gpui::test]
+    fn a_tray_hint_shown_before_is_not_shown_again(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let dir = StateDir::new("hint-shown");
+        let path = dir.file();
+        let shown = WindowState {
+            tray_hint_shown: true,
+            ..Default::default()
+        };
+        window_state::save(&path, &shown).unwrap();
+        let shell = saving_to(fake, &path);
+        let tray = record_tray(&shell);
+        let (_, window) = open_shell(cx, &shell, None);
+
+        // Act
+        close(cx, window);
+
+        // Assert
+        assert!(tray.borrow().notes.is_empty());
+    }
+
+    #[gpui::test]
+    fn without_a_root_the_tray_hint_shows_once_per_run(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let shell = test_support::shell(fake);
+        let tray = record_tray(&shell);
+        let (_, first) = open_shell(cx, &shell, None);
+        let (show, signals) = async_channel::unbounded();
+        cx.update(|cx| serve_show_signal(cx, shell.clone(), signals));
+
+        // Act
+        close(cx, first);
+        let second = reopen(cx, &show);
+        close(cx, second);
+
+        // Assert
+        assert_eq!(tray.borrow().notes.len(), 1);
+    }
+
+    #[gpui::test]
+    fn the_tray_follows_the_poll_while_the_window_is_closed(cx: &mut TestAppContext) {
+        // Arrange: the window showed a stopped stream and closed
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        fake.reply("GET", "/api/status", Ok(status_json("stopped", false)));
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+        let (_, window) = open_shell(cx, &shell, None);
+        close(cx, window);
+        let events = count(&fake, "GET", "/api/events");
+
+        // Act
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+        let live = tray.borrow().now().0;
+        let live_tip = tray.borrow().now().1.to_string();
+        fake.reply("GET", "/api/status", Ok(status_json("off-air", false)));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+        let off_air = tray.borrow().now().0;
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+        let gone = tray.borrow().now().0;
+
+        // Assert
+        assert_eq!(live, TrayColour::Green);
+        assert_eq!(live_tip, "StreamLoop: Live");
+        assert_eq!(off_air, TrayColour::Red);
+        assert_eq!(gone, TrayColour::Red);
+        assert_eq!(
+            tray.borrow().now().1,
+            "StreamLoop\nCan't reach StreamLoop. Retrying..."
+        );
+        assert_eq!(
+            count(&fake, "GET", "/api/events"),
+            events,
+            "only the status is polled while the window is closed"
+        );
+    }
+
+    #[gpui::test]
+    fn the_closed_poll_stops_when_the_window_opens(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let shell = test_support::shell(fake.clone());
+        let _tray = record_tray(&shell);
+        let (_, window) = open_shell(cx, &shell, None);
+        let (show, signals) = async_channel::unbounded();
+        cx.update(|cx| serve_show_signal(cx, shell.clone(), signals));
+        close(cx, window);
+        let closed_from = count(&fake, "GET", "/api/status");
+        cx.executor().advance_clock(CLOSED_POLL_EVERY * 2);
+        let closed_polls = count(&fake, "GET", "/api/status") - closed_from;
+
+        // Act
+        reopen(cx, &show);
+        let (status, events) = (
+            count(&fake, "GET", "/api/status"),
+            count(&fake, "GET", "/api/events"),
+        );
+        cx.executor().advance_clock(POLL_EVERY * 5);
+
+        // Assert
+        assert_eq!(closed_polls, 2, "one poll every 5 s while closed");
+        assert_eq!(
+            count(&fake, "GET", "/api/status") - status,
+            count(&fake, "GET", "/api/events") - events,
+            "only the window polls while it is open"
+        );
+    }
+
+    #[gpui::test]
+    fn a_tray_start_polls_without_a_window(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+
+        // Act
+        cx.update(|cx| begin(cx, &shell, true));
+        cx.run_until_parked();
+        let at_start = tray.borrow().now().0;
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+
+        // Assert
+        assert!(cx.windows().is_empty());
+        assert_eq!(at_start, TrayColour::Green);
+        assert_eq!(count(&fake, "GET", "/api/status"), 2);
+    }
+
+    #[gpui::test]
+    fn open_from_the_tray_opens_the_window_or_brings_it_forward(cx: &mut TestAppContext) {
+        // Arrange: a tray start, so no window is open
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let shell = test_support::shell(fake);
+        cx.update(gpui_kit::init);
+        cx.update(crate::theme::init);
+        cx.update(|cx| begin(cx, &shell, true));
+
+        // Act
+        cx.update(|cx| on_tray_event(TrayEvent::Open, cx, &shell));
+        cx.run_until_parked();
+        let opened = cx.windows();
+        VisualTestContext::from_window(opened[0], cx).deactivate_window();
+        cx.update(|cx| on_tray_event(TrayEvent::Open, cx, &shell));
+        cx.run_until_parked();
+
+        // Assert
+        assert_eq!(opened.len(), 1);
+        assert_eq!(cx.windows(), opened, "a second Open opens no second window");
+        assert_eq!(cx.update(|cx| cx.active_window()), Some(opened[0]));
+    }
+
+    #[gpui::test]
+    fn quit_from_the_tray_takes_the_icon_away(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+        cx.update(|cx| begin(cx, &shell, true));
+        cx.run_until_parked();
+
+        // Act
+        cx.update(|cx| on_tray_event(TrayEvent::Quit, cx, &shell));
+        let polled = count(&fake, "GET", "/api/status");
+        cx.executor().advance_clock(CLOSED_POLL_EVERY * 2);
+
+        // Assert
+        assert!(tray.borrow().dropped);
+        assert_eq!(
+            count(&fake, "GET", "/api/status"),
+            polled,
+            "nothing polls after Quit"
+        );
+        assert!(fake.posts().is_empty(), "Quit leaves the stream alone");
     }
 
     #[gpui::test]

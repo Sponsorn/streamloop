@@ -13,7 +13,7 @@ use gpui_kit::component::{
 use crate::{
     api::types::{Event, Status, UpdateStatus},
     app::{AppHandle, now_ms},
-    logic::{admin::format_duration, update_running},
+    logic::{StreamLine, admin::format_duration, update_running},
     monitor::MonitorView,
     playback::PlaybackView,
     settings::SettingsView,
@@ -245,6 +245,13 @@ impl DashboardView {
             tab.poll(status, events, update, now, window, cx);
         }
         cx.notify();
+    }
+
+    /// The Monitor tab's stream card line, as the tray icon shows it.
+    pub fn tray_line(&self, cx: &App) -> Option<StreamLine> {
+        let (_, monitor) = self.tabs.iter().find(|(tab, _)| *tab == Tab::Monitor)?;
+        let monitor = monitor.view().downcast::<MonitorView>().ok()?;
+        Some(monitor.read(cx).tray_line())
     }
 
     pub fn on_playlists_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
