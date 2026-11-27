@@ -1,3 +1,16 @@
+## v3.1.1
+
+A prerelease for trial, not marked latest. 3.1.0 installs get it through the dashboard's update, at the next planned break or with Update Now. 3.0 installs move to it with the full ZIP by hand, as described for 3.1.0.
+
+- **Downloads pick up again after a YouTube outage.** When a video's size lookup failed, StreamLoop marked the video as failed and did not ask for it again until it had played. On the box, after the outage on 23 November, a 7.8-hour video aired straight from YouTube. While it played, StreamLoop deleted the next two videos, which it had already downloaded, and downloaded nothing. A failed size lookup is now tried again the way a failed download is: up to an hour later while the video is far off, down to 2 minutes as its turn comes.
+- **A video that YouTube gives no size for now downloads without one.** StreamLoop used to ask YouTube for that video's size again every 5 seconds, which could set off YouTube's bot check. This hasn't been seen on the box.
+- **yt-dlp updates itself while YouTube lookups keep failing.** When YouTube changes its player in a way yt-dlp can't handle yet, every lookup fails until yt-dlp ships a fix, usually within hours. While lookups are paused, StreamLoop now runs yt-dlp's update when the pause starts and at most once an hour after that, on top of the update at each start. yt-dlp's warnings now go into `ytdlp-DATE.log` with its errors, since a warning often names the cause.
+- **The status line says why YouTube lookups are paused.** It said "YouTube is blocking requests." for every pause. When lookups fail for another reason, as with the new YouTube player on 23 November, it now says "YouTube lookups keep failing." The Discord alert says the same.
+- **A security fix in the `url` library** (RUSTSEC-2026-0592): a deeply nested `blob:` address could crash it.
+- **No full ZIP is needed.** The update installs the new `streamloop.exe`. The full ZIP also carries a token server with the `url` fix. That server only talks to yt-dlp on the same machine and to YouTube, so there is no need to install the ZIP for that alone.
+
+---
+
 ## v3.1.0
 
 A prerelease for trial, not marked latest. 2.x installs do not update to it, and the 3.0 dashboard does not offer it: install the full ZIP by hand, as the last point says.
