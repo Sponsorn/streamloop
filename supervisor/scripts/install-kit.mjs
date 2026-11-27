@@ -352,15 +352,22 @@ for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, () => void inte
 
 // The test releases, shared by install-session.mjs and ui/scripts/ui-session.mjs
 
-/** The test builds: N+1 to N+4 and the two broken N+1s. */
-export const VARIANTS = {
-  n1: { version: '3.1.1' },
-  'n1-supervisor-fails': { version: '3.1.1', feature: 'test-supervisor-fails' },
-  'n1-control-fails': { version: '3.1.1', feature: 'test-control-fails' },
-  n2: { version: '3.1.2' },
-  n3: { version: '3.1.3' },
-  n4: { version: '3.1.4' },
-};
+/** The test builds after release `version`: N+1 to N+4 and the two broken N+1s. A dev version counts from its
+ *  release number. */
+export function variantsAfter(version) {
+  const [major, minor, patch] = version.split('-')[0].split('.').map(Number);
+  const v = (k) => `${major}.${minor}.${patch + k}`;
+  return {
+    n1: { version: v(1) },
+    'n1-supervisor-fails': { version: v(1), feature: 'test-supervisor-fails' },
+    'n1-control-fails': { version: v(1), feature: 'test-control-fails' },
+    n2: { version: v(2) },
+    n3: { version: v(3) },
+    n4: { version: v(4) },
+  };
+}
+/** Above package.json's version, which names dist\'s build. */
+export const VARIANTS = variantsAfter(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version);
 export const exeName = (v) => `streamloop-v${v}.exe`;
 /** Where the release list points the control process for each build's exe and checksum. */
 export const ASSET_PORT = 8791;

@@ -2,7 +2,7 @@
 // driving streamloop-ui.exe by hand (or by computer use) through every dashboard action.
 //   node ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]
 // dev:         release N (dist\'s build) with nothing newer listed, so it is up to date.
-// update:      N with N+1 (3.1.1) listed: Update Now lands it at once; left alone, the first check stages it
+// update:      N with N+1 (N's patch number plus one) listed: Update Now lands it at once; left alone, the first check stages it
 //              and it lands at the planned break, brought forward to encoder uptime BREAK_AT_S.
 // update-fail: N with the N+1 whose supervisor mode exits at start: the landing rolls back within 180 s and
 //              the banner shows the failure.

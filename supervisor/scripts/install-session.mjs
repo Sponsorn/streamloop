@@ -20,8 +20,8 @@
 //   faults        the stage 5 gate's fault checks through POST /debug/fault (STREAMLOOP_DEBUG_FAULTS=1).
 //   all           every run above in that order. build: only the test builds.
 // N is dist\'s build (package.json's version); `npm run build:release` first, and again after a change to
-// the crates, START.bat or the dashboard. N+1 to N+4 are 3.1.1 to 3.1.4, and the two broken
-// N+1 builds are 3.1.1 with the test-supervisor-fails or test-control-fails feature, each built by cargo
+// the crates, START.bat or the dashboard. N+1 to N+4 count up N's patch number, and the two broken
+// N+1 builds are N+1 with the test-supervisor-fails or test-control-fails feature, each built by cargo
 // into its own target\install-session\<id>\. The release list (STREAMLOOP_TEST_RELEASES) carries each
 // release's ZIP, exe and exe checksum; the exe and its checksum are served on
 // 127.0.0.1:8791, and the ZIP is never fetched. Discord posts go to a catcher on 127.0.0.1:8790.
@@ -44,6 +44,7 @@ import {
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
+const [V1, V2, V3, V4] = ['n1', 'n2', 'n3', 'n4'].map((id) => VARIANTS[id].version);
 const DIST = join(REPO, 'dist');
 const DIST_ZIP = join(DIST, `streamloop-v${VERSION}.zip`);
 const DIST_EXE = join(DIST, `streamloop-v${VERSION}.exe`);
@@ -448,7 +449,7 @@ async function runUpdate(r) {
   const staged = await waitStaged('n1');
   const before = await snapshot();
   const probe = startProbe();
-  const b = await onAirLanding(r, w, probe, '3.1.1', 'break', before);
+  const b = await onAirLanding(r, w, probe, V1, 'break', before);
   r.break = { staged, before, ...b };
   r.break.checks = {
     stagedBeforeTheBreak: staged.stagedSha256Matches && staged.uptimeS !== null && staged.uptimeS < BREAK_AT_S,
@@ -460,13 +461,13 @@ async function runUpdate(r) {
   };
 
   // Update Now to N+2, once N+1's first check (30 s after its confirmation) and the 60 s cooldown have passed.
-  const tConfirmed = b.times.resultMs === null ? Date.now() : w.rows.find((x) => x.kind === 'state' && x.v?.to === '3.1.1' && x.v.result === 'ok')?.t ?? Date.now();
+  const tConfirmed = b.times.resultMs === null ? Date.now() : w.rows.find((x) => x.kind === 'state' && x.v?.to === V1 && x.v.result === 'ok')?.t ?? Date.now();
   const wait = tConfirmed + 30_000 + 62_000 - Date.now();
   if (wait > 0) await sleep(wait);
   releases(['n1', 'n2']);
-  const checked = await waitFor('the check to offer 3.1.2', async () => {
+  const checked = await waitFor(`the check to offer ${V2}`, async () => {
     const c = (await api('POST', '/update/check')).json;
-    if (c?.latestVersion === '3.1.2' && c.updateAvailable) return c;
+    if (c?.latestVersion === V2 && c.updateAvailable) return c;
     await sleep(10_000);
     return null;
   }, 120_000, 0);
@@ -476,32 +477,32 @@ async function runUpdate(r) {
   const probe3 = startProbe();
   const tApply = Date.now();
   const apply = await api('POST', '/update/apply');
-  const n = await onAirLanding(r, w, probe3, '3.1.2', 'update-now', before3);
+  const n = await onAirLanding(r, w, probe3, V2, 'update-now', before3);
   r.updateNow = { check: checked.value, autoStartStreamOff: { status: autoOff.status, inConfig: readJson(CONFIG)?.autoStartStream ?? null }, apply: { status: apply.status, body: apply.json }, applyToLandingMs: null, before: before3, ...n };
-  const landingAt = w.rows.find((x) => x.t >= tApply && x.kind === 'state' && x.v?.to === '3.1.2' && x.v.result === 'running' && x.v.step !== 'download')?.t ?? null;
+  const landingAt = w.rows.find((x) => x.t >= tApply && x.kind === 'state' && x.v?.to === V2 && x.v.result === 'running' && x.v.step !== 'download')?.t ?? null;
   r.updateNow.applyToLandingMs = rel(landingAt, tApply);
   r.updateNow.checks = {
     offered: checked.value !== null,
     autoStartStreamOff: autoOff.status === 200 && r.updateNow.autoStartStreamOff.inConfig === false,
     applyAnswered: apply.status === 200 && apply.json?.ok === true,
     landedAtOnceNotAtTheBreak: landingAt !== null && landingAt - tApply < 30_000 && before3.uptimeS !== null && before3.uptimeS < BREAK_AT_S,
-    relaunchedWithAutoStartOff: n.after.supervisorVersion === '3.1.2' && n.checks.liveAgainSteady,
+    relaunchedWithAutoStartOff: n.after.supervisorVersion === V2 && n.checks.liveAgainSteady,
     ...n.checks,
   };
 
   // Stopped from the dashboard, N+3 lands without a supervisor and `check` confirms it.
   const stop = await api('POST', '/stream/stop');
   const down = await waitFor('the supervisor to exit after Stop', async () => ((await cores()).length === 0 ? true : null), 60_000, 500);
-  const tConfirmed2 = w.rows.find((x) => x.kind === 'state' && x.v?.to === '3.1.2' && x.v.result === 'ok')?.t ?? Date.now();
+  const tConfirmed2 = w.rows.find((x) => x.kind === 'state' && x.v?.to === V2 && x.v.result === 'ok')?.t ?? Date.now();
   const wait2 = tConfirmed2 + 30_000 + 62_000 - Date.now();
   if (wait2 > 0) await sleep(wait2);
   releases(['n1', 'n2', 'n3']);
   let offered = null;
-  const h = await heldLanding(w, '3.1.3', 'stopped', async () => {
+  const h = await heldLanding(w, V3, 'stopped', async () => {
     const tCheck = Date.now();
-    offered = await waitFor('the check to offer 3.1.3', async () => {
+    offered = await waitFor(`the check to offer ${V3}`, async () => {
       const c = (await api('POST', '/update/check')).json;
-      if (c?.latestVersion === '3.1.3' && c.updateAvailable) return c;
+      if (c?.latestVersion === V3 && c.updateAvailable) return c;
       await sleep(10_000);
       return null;
     }, 120_000, 0);
@@ -525,14 +526,14 @@ async function runUpdate(r) {
   try { await fetch(`${SUP}/shutdown`, { method: 'POST', signal: AbortSignal.timeout(5000) }); } catch { /* it went away */ }
   wt.supervisorGoneMs = (await waitFor('the supervisor to exit', async () => ((await cores()).length === 0 ? true : null), 60_000, 500)).ms;
   bat = startBat(ROOT, 'update-waiting', env);
-  await nodeUp('3.1.3 waiting for Start');
+  await nodeUp(`${V3} waiting for Start`);
   await sleep(10_000);
   const st0 = await nodeStatus();
   wt.before = { stream: st0?.stream ?? null, launcher: st0?.launcher ?? null, marker: existsSync(WAITING), cores: (await cores()).length };
   releases(['n1', 'n2', 'n3', 'n4']);
   wt.staged = await waitStaged('n4', 120_000);
   let applyW = null;
-  const hw = await heldLanding(w, '3.1.4', 'waiting', async () => {
+  const hw = await heldLanding(w, V4, 'waiting', async () => {
     const t = Date.now();
     applyW = await api('POST', '/update/apply');
     return t;
@@ -643,23 +644,23 @@ async function runRollback(r) {
   r.watch = w;
   const staged = await waitStaged('n1-supervisor-fails');
   const before = await snapshot();
-  // through the landing and the 180 s that 3.1.1's control process confirms
+  // through the landing and the 180 s that N+1's control process confirms
   const probe = startProbe();
-  const L = await followLanding(w, '3.1.1', { label: 'rollback' });
+  const L = await followLanding(w, V1, { label: 'rollback' });
   const tOldGone = when(w, 'control', L.tStart, (v) => v === null);
-  const tN1 = tOldGone === null ? null : when(w, 'control', tOldGone, (v) => v?.current === '3.1.1');
+  const tN1 = tOldGone === null ? null : when(w, 'control', tOldGone, (v) => v?.current === V1);
   // The rollback's first rename (streamloop.exe to .bad) marks when N+1's control process gave up.
   const tSwapBack = tN1 === null ? null : when(w, 'files', tN1, (v) => v?.bad === true);
   const back = await waitFor(`${VERSION} on air again`, async () => when(w, 'sup', L.tResult ?? L.tStart, (v) => v?.version === VERSION && v.alive === true), 180_000, 500);
   const live = await waitLive(`live on ${VERSION} after the rollback`, 180_000);
   await sleep(20_000);
-  const p = await endProbe(probe, { by: '3.1.1' });
+  const p = await endProbe(probe, { by: V1 });
   const after = await snapshot();
   const rolled = readJson(ROLLED_BACK);
   const bad = existsSync(EXE_BAD) ? sha256File(EXE_BAD) : null;
   const tl = (await timeline()).map((e) => e.message);
   const criticals = criticalsSince(L.tStart - 10_000);
-  const text = `The update to 3.1.1 did not come up, so StreamLoop went back to ${VERSION}.`;
+  const text = `The update to ${V1} did not come up, so StreamLoop went back to ${VERSION}.`;
   r.rollback = {
     staged, before, landing: { uptimeAtLandingS: L.uptimeAtStart, n1ControlMs: rel(tN1, L.tStart), swapBackAfterN1ControlMs: rel(tSwapBack, tN1), rolledBackMs: rel(L.tResult, L.tStart),
       rolledBackAfterN1ControlMs: rel(L.tResult, tN1), liveOnNMs: rel(back.value, L.tStart), result: L.result },
@@ -676,10 +677,10 @@ async function runRollback(r) {
     landedAtTheBreak: L.uptimeAtStart !== null && L.uptimeAtStart >= BREAK_AT_S && L.uptimeAtStart < BREAK_AT_S + 30,
     n1ControlRan: tN1 !== null,
     // the window, plus a 2 s poll and its 1 s client timeout
-    rolledBackWithin180s: L.result?.result === 'rolled-back' && L.result?.to === '3.1.1' && tSwapBack !== null && tSwapBack - tN1 <= CONFIRM_MS + 5000,
+    rolledBackWithin180s: L.result?.result === 'rolled-back' && L.result?.to === V1 && tSwapBack !== null && tSwapBack - tN1 <= CONFIRM_MS + 5000,
     exeIsNAgain: after.exeVersion === VERSION && after.currentVersion === VERSION,
     streamingOnN: live.value !== null && after.supervisorVersion === VERSION && after.cores.length === 1 && noDrop(r.rollback.steadyAfter),
-    rolledBackNamesN1: rolled?.to === '3.1.1' && rolled?.from === VERSION,
+    rolledBackNamesN1: rolled?.to === V1 && rolled?.from === VERSION,
     badIsTheFailingBuild: bad === BUILT['n1-supervisor-fails'].sha256,
     changingRoutes409WhileN1Confirms: p.ok,
     oneCritical: criticals.length === 1 && criticals[0] === `**CRITICAL:** ${text}`,
@@ -697,12 +698,12 @@ async function runRollbackBat(r) {
   r.watch = w;
   const staged = await waitStaged('n1-control-fails');
   const before = await snapshot();
-  const started = await waitFor('the landing of 3.1.1', async () => when(w, 'state', w.t0, (v) => v?.to === '3.1.1' && v.result === 'running'), (BREAK_AT_S + 240) * 1000, 250);
-  if (started.value === null) throw new Stop('3.1.1 did not start landing');
+  const started = await waitFor(`the landing of ${V1}`, async () => when(w, 'state', w.t0, (v) => v?.to === V1 && v.result === 'running'), (BREAK_AT_S + 240) * 1000, 250);
+  if (started.value === null) throw new Stop(`${V1} did not start landing`);
   const tStart = started.value;
   // N+1's supervisor comes up from the landing; its PID is the one N must replace.
-  const n1Sup = await waitFor('the 3.1.1 supervisor', async () => (when(w, 'sup', tStart, (v) => v?.version === '3.1.1') !== null ? (await cores()).map((p) => p.ProcessId) : null), 120_000, 500);
-  const tN1Sup = when(w, 'sup', tStart, (v) => v?.version === '3.1.1');
+  const n1Sup = await waitFor(`the ${V1} supervisor`, async () => (when(w, 'sup', tStart, (v) => v?.version === V1) !== null ? (await cores()).map((p) => p.ProcessId) : null), 120_000, 500);
+  const tN1Sup = when(w, 'sup', tStart, (v) => v?.version === V1);
   const consoleFile = join(runOut, 'console-rollback-bat.log');
   const RECOVER = '[RECOVER] The updated StreamLoop stopped before it was confirmed, so the previous version is back.';
   const recovered = await waitFor('START.bat\'s [RECOVER] line', async () => ((readText(consoleFile) ?? '').includes(RECOVER) ? true : null), 120_000, 250);
@@ -719,9 +720,9 @@ async function runRollbackBat(r) {
   const rolled = readJson(ROLLED_BACK);
   const consoleText = readText(consoleFile) ?? '';
   const tl = (await timeline()).map((e) => e.message);
-  const replaceText = `Restarting the supervisor: it runs 3.1.1, this is ${VERSION}.`;
+  const replaceText = `Restarting the supervisor: it runs ${V1}, this is ${VERSION}.`;
   // N settles the progress START.bat's rollback left at the landing's start step, and reports it.
-  const whyText = `The update to 3.1.1 failed at starting the stream: The updated StreamLoop stopped before it was confirmed. Still on ${VERSION}.`;
+  const whyText = `The update to ${V1} failed at starting the stream: The updated StreamLoop stopped before it was confirmed. Still on ${VERSION}.`;
   const st = readJson(STATE_FILE);
   r.rollbackBat = {
     staged, before, n1SupervisorPids: n1Sup.value, n1SupervisorMs: rel(tN1Sup, tStart), recoverSeenMs: rel(tRecover, tStart), nControlMs: rel(tNControl.value, tStart), liveOnNMs: rel(back.value, tStart),
@@ -742,10 +743,10 @@ async function runRollbackBat(r) {
     n1ControlExited1: /StreamLoop exited \(code 1\)/.test(consoleText),
     recoverLinePrinted: recovered.value === true,
     exeIsNAgainBadIsN1: after.exeVersion === VERSION && r.rollbackBat.badSha256 === BUILT['n1-control-fails'].sha256,
-    rolledBackNamesN1: rolled?.to === '3.1.1' && rolled?.from === VERSION,
+    rolledBackNamesN1: rolled?.to === V1 && rolled?.from === VERSION,
     n1SupervisorReplacedByVersionRule: n1Sup.value?.length === 1 && after.cores.length === 1 && after.cores[0].pid !== n1Sup.value[0] && after.supervisorVersion === VERSION && tl.includes(replaceText),
     streamBack: live.value !== null && noDrop(r.rollbackBat.steadyAfter),
-    progressSaysRolledBack: st?.to === '3.1.1' && st.result === 'rolled-back',
+    progressSaysRolledBack: st?.to === V1 && st.result === 'rolled-back',
     timelineSaysWhy: tl.includes(whyText),
     oneCritical: r.rollbackBat.criticals.length === 1 && r.rollbackBat.criticals[0] === `**CRITICAL:** ${whyText}`,
     ...Object.fromEntries(Object.entries(r.nextBreak.checks).map(([k, v]) => [`nextBreak.${k}`, v])),
