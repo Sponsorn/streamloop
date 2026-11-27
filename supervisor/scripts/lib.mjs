@@ -218,11 +218,24 @@ export async function apiPost(path, body) {
   return res.json();
 }
 
+const TEST_KEY_PREFIX = String.raw`Software\StreamLoopTest-`;
+
+/** A fresh key name under HKCU\Software\StreamLoopTest-. */
+export function testKeyName() {
+  return `${TEST_KEY_PREFIX}${randomBytes(6).toString('hex')}`;
+}
+
+/** The `reg delete` arguments for a key this harness made, `null` for any other name. */
+export function testKeyDeleteArgs(key) {
+  if (typeof key !== 'string' || !key.startsWith(TEST_KEY_PREFIX) || !/^[0-9a-f]{12}$/.test(key.slice(TEST_KEY_PREFIX.length))) return null;
+  return ['delete', String.raw`HKCU\Software\StreamLoopTest-` + key.slice(TEST_KEY_PREFIX.length), '/f'];
+}
+
 /** Points every control process the script starts at a random test key and a temp Startup folder
  *  (STREAMLOOP_TEST_AUTOSTART_KEY, STREAMLOOP_TEST_STARTUP_DIR), deleted when the script exits.
  *  Call it before the first child process starts. */
 export function autostartSandbox(label = 'run') {
-  const key = `Software\StreamLoopTest-${randomBytes(6).toString('hex')}`;
+  const key = testKeyName();
   const startupDir = mkdtempSync(join(tmpdir(), `sl-startup-${label}-`));
   process.env.STREAMLOOP_TEST_AUTOSTART_KEY = key;
   process.env.STREAMLOOP_TEST_STARTUP_DIR = startupDir;
@@ -230,8 +243,8 @@ export function autostartSandbox(label = 'run') {
   const cleanup = () => {
     if (done) return;
     done = true;
-    // Only a key made above is ever deleted.
-    if (/^Software\StreamLoopTest-[0-9a-f]{12}$/.test(key)) spawnSync('reg.exe', ['delete', `HKCU\${key}`, '/f'], { windowsHide: true, stdio: 'ignore' });
+    const args = testKeyDeleteArgs(key);
+    if (args) spawnSync('reg.exe', args, { windowsHide: true, stdio: 'ignore' });
     rmSync(startupDir, { recursive: true, force: true });
   };
   process.on('exit', cleanup);
