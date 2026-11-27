@@ -298,6 +298,8 @@ enum Job {
 struct Video {
     entry: Entry,
     bytes: Option<u64>,
+    /// A lookup for it has answered; if `bytes` is still unknown, YouTube gives no size and it downloads without one.
+    looked_up: bool,
     on_disk: bool,
     disk_bytes: u64,
     /// Tries in this download round, one per entry of `rules::download_clients`.
@@ -313,7 +315,7 @@ struct Video {
 
 impl Video {
     fn of(entry: Entry) -> Video {
-        Video { entry, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }
+        Video { entry, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }
     }
 }
 
@@ -1537,7 +1539,7 @@ impl Ctl {
         let failed: Vec<bool> = self.videos.iter().map(|v| v.dl_failed || v.skipped).collect();
         let pick = first.filter(|&u| !failed[u]).or_else(|| rules::next_download(&win, &on_disk, &failed));
         let Some(i) = pick else { return };
-        if self.videos[i].bytes.is_none() && i != view && Some(i) != first {
+        if self.videos[i].bytes.is_none() && !self.videos[i].looked_up && i != view && Some(i) != first {
             if self.youtube_slot().is_none() {
                 return;
             }
@@ -2157,6 +2159,7 @@ impl Ctl {
             }
         }
         if let Some(v) = self.videos.get_mut(index) {
+            v.looked_up = true;
             v.bytes = v.bytes.or(r.bytes);
             v.entry.duration = r.duration.or(v.entry.duration);
         }
@@ -2866,7 +2869,7 @@ mod tests {
         let (jobs, _) = channel();
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
         ctl.playlist_wanted = false;
-        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }).collect();
+        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }).collect();
         ctl
     }
 
@@ -3339,6 +3342,20 @@ mod tests {
         ctl.cache_work();
 
         assert!(ctl.sizing, "the scheduled size lookup never came");
+    }
+
+    #[test]
+    fn a_video_whose_size_lookup_gives_no_size_is_downloaded_without_asking_again() {
+        let (mut ctl, ahead) = forbidden_ctl("size-none");
+        ctl.videos[ahead].bytes = None;
+        let r = Resolved { video: "v".into(), audio: "a".into(), headers: String::new(), duration: Some(100.0), bytes: None, expire: None, available_at: None };
+
+        ctl.handle(Msg::Resolved { index: ahead, id: ctl.id(ahead), purpose: Purpose::Size, result: Ok(r) });
+        ctl.last_resolve = None;
+        ctl.cache_work();
+
+        assert!(!ctl.sizing, "a size lookup that gave no size was asked again");
+        assert_eq!(ctl.downloading.as_ref().map(|d| d.0), Some(ahead));
     }
 
     #[test]
