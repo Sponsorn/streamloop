@@ -3,7 +3,7 @@ mod support;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use http_body_util::BodyExt;
@@ -21,7 +21,7 @@ fn app() -> Router {
     let routes = Router::new()
         .route("/echo", post(|Extension(JsonBody(v)): Extension<JsonBody>| async move { json_reply(StatusCode::OK, &v) }))
         .route("/ping", get(|| async { json_reply(StatusCode::OK, &serde_json::json!({"ok": true})) }));
-    router_with(Arc::new(state), routes)
+    router_with(Arc::new(state), routes, 7654)
 }
 
 struct Reply {
@@ -31,13 +31,22 @@ struct Reply {
     body: String,
 }
 
-async fn call(app: Router, req: Request<Body>) -> Reply {
+async fn call(app: Router, mut req: Request<Body>) -> Reply {
+    req.headers_mut().entry(header::HOST).or_insert(HeaderValue::from_static("127.0.0.1:7654"));
     let res = app.oneshot(req).await.unwrap();
     let status = res.status();
     let content_type = res.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
     let location = res.headers().get(header::LOCATION).map(|v| v.to_str().unwrap().to_string());
     let body = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
     Reply { status, content_type, location, body }
+}
+
+async fn call_raw(app: Router, req: Request<Body>) -> Reply {
+    let res = app.oneshot(req).await.unwrap();
+    let status = res.status();
+    let content_type = res.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+    let body = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
+    Reply { status, content_type, location: None, body }
 }
 
 fn post_echo(content_type: Option<&str>, token: Option<&str>, body: &str) -> Request<Body> {
@@ -197,7 +206,7 @@ async fn an_unmatched_route_with_the_token_answers_the_post_404_page() {
 #[tokio::test]
 async fn the_default_router_has_the_token_route() {
     // Arrange
-    let app = router(Arc::new(AppState::new(Rig::new().deps())));
+    let app = router(Arc::new(AppState::new(Rig::new().deps())), 7654);
     // Act
     let r = call(app, get_req("/api/token")).await;
     // Assert
@@ -235,4 +244,52 @@ async fn a_malformed_body_never_reaches_a_log_line_even_at_trace_level() {
     let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
     assert!(logged[before..].contains("entity.parse.failed"), "the capture saw no parse failure: {logged}");
     assert!(!logged.contains("SECRETHOOK"), "{logged}");
+}
+
+#[tokio::test]
+async fn refuses_a_rebinding_host_before_the_token_check() {
+    // Arrange
+    let req = Request::builder().uri("/api/token").header(header::HOST, "evil.example:7654").body(Body::empty()).unwrap();
+    // Act
+    let r = call(app(), req).await;
+    // Assert
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(r.body, r#"{"error":"Forbidden: requests from a browser are refused"}"#);
+    assert_eq!(r.content_type, "application/json; charset=utf-8");
+}
+
+#[tokio::test]
+async fn refuses_a_post_with_an_origin() {
+    // Arrange
+    let mut req = post_echo(Some("application/json"), Some(TOKEN), "{}");
+    req.headers_mut().insert(header::ORIGIN, HeaderValue::from_static("http://evil.example"));
+    // Act
+    let r = call(app(), req).await;
+    // Assert
+    assert_eq!((r.status, r.body.as_str()), (StatusCode::FORBIDDEN, r#"{"error":"Forbidden: requests from a browser are refused"}"#));
+}
+
+#[tokio::test]
+async fn refuses_a_missing_host_and_a_wrong_port_on_any_path() {
+    // Arrange
+    let bare = Request::builder().uri("/nowhere").body(Body::empty()).unwrap();
+    let wrong_port = Request::builder().uri("/api/ping").header(header::HOST, "127.0.0.1:4417").body(Body::empty()).unwrap();
+    // Act
+    let mut no_host = Request::builder().uri("/nowhere").body(Body::empty()).unwrap();
+    no_host.headers_mut().remove(header::HOST);
+    let replies = [call_raw(app(), no_host).await, call(app(), wrong_port).await, call(app(), bare).await];
+    // Assert
+    assert_eq!(replies[0].status, StatusCode::FORBIDDEN);
+    assert_eq!(replies[1].status, StatusCode::FORBIDDEN);
+    assert_eq!(replies[2].status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn answers_loopback_requests_as_before() {
+    // Act
+    let by_ip = call(app(), Request::builder().uri("/api/ping").header(header::HOST, "127.0.0.1:7654").body(Body::empty()).unwrap()).await;
+    let by_name = call(app(), Request::builder().uri("/api/ping").header(header::HOST, "LocalHost:7654").body(Body::empty()).unwrap()).await;
+    // Assert
+    assert_eq!((by_ip.status, by_ip.body.as_str()), (StatusCode::OK, r#"{"ok":true}"#));
+    assert_eq!(by_name.status, StatusCode::OK);
 }

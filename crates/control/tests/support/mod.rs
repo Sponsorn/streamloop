@@ -244,7 +244,7 @@ impl Rig {
         change(&mut deps);
         let mut state = AppState::new(deps);
         state.token = TOKEN.to_string();
-        api::router(Arc::new(state))
+        api::router(Arc::new(state), PORT)
     }
 
     pub fn config_text(&self) -> String {
@@ -272,7 +272,11 @@ impl Reply {
     }
 }
 
-pub async fn call(app: &Router, req: Request<Body>) -> Reply {
+/// The port the test routers are built for, and the Host their requests carry.
+pub const PORT: u16 = 7654;
+
+pub async fn call(app: &Router, mut req: Request<Body>) -> Reply {
+    req.headers_mut().entry(header::HOST).or_insert(header::HeaderValue::from_static("127.0.0.1:7654"));
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
     let content_type = res.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();

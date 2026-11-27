@@ -3,6 +3,7 @@
 
 use crate::Msg;
 use serde_json::{json, Value};
+use streamloop_common::local_only;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,6 +33,11 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
                 let parsed = serde_json::from_str::<Value>(if body.trim().is_empty() { "{}" } else { &body });
+                let header = |name: &'static str| req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string());
+                if local_only::refused(header("Host").as_deref(), header("Origin").as_deref(), port) {
+                    respond(req, 403, json!({"error": local_only::REFUSED}));
+                    return;
+                }
                 let (method, url) = (req.method().clone(), req.url().to_string());
                 let result: Option<Result<Value, String>> = match (method, url.as_str()) {
                     (Method::Get, "/status") => Some(Ok(snapshot.lock().unwrap().clone())),
@@ -109,7 +115,7 @@ mod tests {
         let started = Instant::now();
         let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
-        conn.write_all(b"GET /status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+        conn.write_all(format!("GET /status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
         let mut reply = String::new();
         let mut buf = [0u8; 1024];
         while !reply.ends_with('}') {
@@ -137,7 +143,7 @@ mod tests {
         std::thread::spawn(move || {
             let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             let body = r#"{"cmd":"next"}"#;
-            let _ = conn.write_all(format!("POST /control HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            let _ = conn.write_all(format!("POST /control HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
             let mut sink = Vec::new();
             let _ = conn.read_to_end(&mut sink);
         });
@@ -167,7 +173,7 @@ mod tests {
     fn post(port: u16, path: &str, body: &str) -> String {
         let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
-        conn.write_all(format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+        conn.write_all(format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
         let mut reply = String::new();
         let _ = conn.read_to_string(&mut reply);
         reply
@@ -238,5 +244,61 @@ mod tests {
             assert!(reply.starts_with("HTTP/1.1 400"), "{body}: {reply}");
         }
         assert!(seen.recv_timeout(Duration::from_millis(300)).is_err(), "a bad index reached the loop");
+    }
+
+    /// One raw request with the given header lines; the whole reply.
+    fn raw(port: u16, request_line: &str, headers: &str) -> String {
+        let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+        conn.write_all(format!("{request_line} HTTP/1.1\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+        let mut reply = String::new();
+        let _ = conn.read_to_string(&mut reply);
+        reply
+    }
+
+    const REFUSAL: &str = r#"{"error":"Forbidden: requests from a browser are refused"}"#;
+
+    #[test]
+    fn refuses_shutdown_with_an_origin_and_keeps_running() {
+        // Arrange
+        let (port, _tx, rx) = start();
+
+        // Act
+        let reply = raw(port, "POST /shutdown", &format!("Host: 127.0.0.1:{port}\r\nOrigin: http://evil.example\r\n"));
+
+        // Assert
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert!(reply.ends_with(REFUSAL), "{reply}");
+        assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "a shutdown reached the loop");
+    }
+
+    #[test]
+    fn refuses_status_for_a_foreign_host() {
+        // Arrange
+        let (port, _tx, _rx) = start();
+
+        // Act
+        let reply = raw(port, "GET /status", "Host: evil.example\r\n");
+
+        // Assert
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert!(reply.contains("application/json"), "{reply}");
+        assert!(reply.ends_with(REFUSAL), "{reply}");
+    }
+
+    #[test]
+    fn the_host_check_follows_the_api_port() {
+        // Arrange: the port moved off 4417, as --api-port does
+        let (tx, _rx) = channel::<Msg>();
+        let snapshot: Snapshot = Arc::new(Mutex::new(json!({"state": "starting"})));
+        serve(4427, false, tx, snapshot).unwrap();
+
+        // Act
+        let own = raw(4427, "GET /status", "Host: localhost:4427\r\n");
+        let default_port = raw(4427, "GET /status", "Host: 127.0.0.1:4417\r\n");
+
+        // Assert
+        assert!(own.starts_with("HTTP/1.1 200"), "{own}");
+        assert!(default_port.starts_with("HTTP/1.1 403"), "{default_port}");
     }
 }

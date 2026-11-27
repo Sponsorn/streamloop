@@ -28,6 +28,7 @@ use axum::Router;
 use serde::Serialize;
 use serde_json::{json, Value};
 use streamloop_common::config::Config;
+use streamloop_common::local_only;
 use streamloop_common::paths::Layout;
 use tokio::sync::watch;
 
@@ -254,8 +255,8 @@ pub(crate) fn js_truthy(v: &Value) -> bool {
 // express.json's default limit.
 const BODY_LIMIT: usize = 100 * 1024;
 
-/// The whole API: every route of `api.ts` on the router base.
-pub fn router(state: Arc<AppState>) -> Router {
+/// The whole API: every route of `api.ts` on the router base. `port` is the one the server is bound to.
+pub fn router(state: Arc<AppState>, port: u16) -> Router {
     let mut routes = Router::new()
         .route("/status", get(status::status))
         .route("/state", get(status::now_playing))
@@ -285,11 +286,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     if state.test_hooks {
         routes = routes.route("/test/exit-75", post(misc::exit_75));
     }
-    router_with(state, routes)
+    router_with(state, routes, port)
 }
 
-/// The base router with `api_routes` mounted under `/api`, behind the body parser and the token check.
-pub fn router_with(state: Arc<AppState>, api_routes: Router<Arc<AppState>>) -> Router {
+/// The base router with `api_routes` mounted under `/api`, behind the body parser and the token check,
+/// and behind the browser check, which runs first on every path and method.
+pub fn router_with(state: Arc<AppState>, api_routes: Router<Arc<AppState>>, port: u16) -> Router {
     let api = Router::new()
         .route("/token", get(token))
         .merge(api_routes)
@@ -301,6 +303,20 @@ pub fn router_with(state: Arc<AppState>, api_routes: Router<Arc<AppState>>) -> R
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
         .with_state(state)
+        .layer(middleware::from_fn_with_state(port, refuse_browsers))
+}
+
+/// Refuses a foreign Host or any Origin with 403 before routing, so not even `/api/token` answers a web page.
+async fn refuse_browsers(State(port): State<u16>, req: Request, next: Next) -> Response {
+    // A header that is not text still counts as present, and as a host nobody serves.
+    let refused = {
+        let text = |name: header::HeaderName| req.headers().get(name).map(|v| v.to_str().unwrap_or("?"));
+        local_only::refused(text(header::HOST), text(header::ORIGIN), port)
+    };
+    if refused {
+        return json_reply(StatusCode::FORBIDDEN, &json!({ "error": local_only::REFUSED }));
+    }
+    next.run(req).await
 }
 
 fn is_json(req: &Request) -> bool {

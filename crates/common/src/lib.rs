@@ -2,6 +2,7 @@ pub mod api;
 pub mod config;
 pub mod encoder;
 pub mod events;
+pub mod local_only;
 pub mod paths;
 pub mod playlist;
 pub mod procs;

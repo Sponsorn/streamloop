@@ -117,6 +117,8 @@ Back to 3.x: close 2.x and OBS, start 3.x's `START.bat`, press Start. Until Star
 | `logging.rs` | `tracing`, with 3.0's log line format on the console and in `app\logs\streamloop-DATE.log` |
 | `clock.rs`, `http.rs`, `runner.rs` | The wall clock, outbound HTTP and child processes behind traits, so tests answer instead |
 
+**Browsers are refused.** The control process's API (7654) and the supervisor's (4417) answer 403 to a Host other than `127.0.0.1:PORT` or `localhost:PORT` (the port the server bound) and to any `Origin` header, before routing and before the token check (`crates/common/src/local_only.rs`). A new client of either must send no Origin and its own loopback address as Host, which HTTP libraries do by default.
+
 **Configuration hot-reload:** `POST /api/config` saves `config.json`, rebuilds Discord and the Twitch checks, and asks the supervisor to `POST /reload`. The reply says when a change (ingest, key, encoder, freeze or silence duration) needs a supervisor restart.
 
 **Exit codes** (`app.rs`): 0 for Ctrl+C, a closed console window or `/api/shutdown` (a landing that has begun to stop the supervisor finishes first, up to 90 s), 1 with no install root or a config that does not load, 2 when the port is taken, 64 for an unknown argument, 75 after a landed update, a rollback or the test hook. `ARCHITECTURE.md` (Control process) has the start order, the 3.0 leftovers it removes and the exe update.

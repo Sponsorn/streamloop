@@ -686,7 +686,7 @@ impl App {
             },
         });
         let (close, closed) = oneshot::channel();
-        let server = tokio::spawn(serve_api(listener, api::router(Arc::new(state)), closed));
+        let server = tokio::spawn(serve_api(listener, api::router(Arc::new(state), port), closed));
 
         control.confirm_then_watch_updates(landed);
         control.start_services();
