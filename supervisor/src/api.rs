@@ -30,14 +30,15 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
             // One thread per request: a slow body or a request waiting on the loop must not delay GET /status.
             let (tx, snapshot) = (tx.clone(), snapshot.clone());
             std::thread::spawn(move || {
-                let mut body = String::new();
-                let _ = req.as_reader().read_to_string(&mut body);
-                let parsed = serde_json::from_str::<Value>(if body.trim().is_empty() { "{}" } else { &body });
+                // Refused before the body is read, so a browser's huge or stalled body holds nothing.
                 let header = |name: &'static str| req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string());
                 if local_only::refused(header("Host").as_deref(), header("Origin").as_deref(), port) {
                     respond(req, 403, json!({"error": local_only::REFUSED}));
                     return;
                 }
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                let parsed = serde_json::from_str::<Value>(if body.trim().is_empty() { "{}" } else { &body });
                 let (method, url) = (req.method().clone(), req.url().to_string());
                 let result: Option<Result<Value, String>> = match (method, url.as_str()) {
                     (Method::Get, "/status") => Some(Ok(snapshot.lock().unwrap().clone())),
@@ -270,6 +271,22 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
         assert!(reply.ends_with(REFUSAL), "{reply}");
         assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "a shutdown reached the loop");
+    }
+
+    #[test]
+    fn refuses_a_browser_post_before_reading_its_body() {
+        // Arrange: Content-Length promises 100000 bytes and only 2 are sent (tiny_http reads bodies up to 1 KiB before a handler sees the request)
+        let (port, _tx, _rx) = start();
+        let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        conn.write_all(format!("POST /control HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://evil.example\r\nContent-Length: 100000\r\n\r\n{{}}").as_bytes()).unwrap();
+
+        // Act: the reply must arrive while the body is still unfinished
+        let mut buf = [0u8; 512];
+        let n = conn.read(&mut buf).expect("the 403 waited for the body");
+
+        // Assert
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 403"));
     }
 
     #[test]

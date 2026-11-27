@@ -270,18 +270,31 @@ async fn refuses_a_post_with_an_origin() {
 }
 
 #[tokio::test]
-async fn refuses_a_missing_host_and_a_wrong_port_on_any_path() {
+async fn refuses_a_missing_host_on_an_unknown_path() {
     // Arrange
-    let bare = Request::builder().uri("/nowhere").body(Body::empty()).unwrap();
-    let wrong_port = Request::builder().uri("/api/ping").header(header::HOST, "127.0.0.1:4417").body(Body::empty()).unwrap();
+    let req = Request::builder().uri("/nowhere").body(Body::empty()).unwrap();
     // Act
-    let mut no_host = Request::builder().uri("/nowhere").body(Body::empty()).unwrap();
-    no_host.headers_mut().remove(header::HOST);
-    let replies = [call_raw(app(), no_host).await, call(app(), wrong_port).await, call(app(), bare).await];
+    let r = call_raw(app(), req).await;
     // Assert
-    assert_eq!(replies[0].status, StatusCode::FORBIDDEN);
-    assert_eq!(replies[1].status, StatusCode::FORBIDDEN);
-    assert_eq!(replies[2].status, StatusCode::NOT_FOUND);
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn refuses_the_right_host_on_another_port() {
+    // Arrange
+    let req = Request::builder().uri("/api/ping").header(header::HOST, "127.0.0.1:4417").body(Body::empty()).unwrap();
+    // Act
+    let r = call(app(), req).await;
+    // Assert
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn answers_an_unknown_path_on_the_loopback_host_with_the_404_page() {
+    // Act
+    let r = call(app(), get_req("/nowhere")).await;
+    // Assert
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
