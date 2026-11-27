@@ -3,19 +3,29 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{AnyWindowHandle, AppContext, ElementId, Entity, TestAppContext};
-use gpui_kit::{base::test_support::texts, test::TestWindowExt};
+use gpui_kit::{base::test_support::texts, component::Root, test::TestWindowExt};
 use serde_json::{Value, json};
 
 use crate::{
+    Shell,
     api::{client::Client, fake::FakeApi},
     app::AppView,
     start::StartedBat,
 };
 
+/// A shell on `fake` without a root, so the window state stays in memory.
+pub fn shell(fake: Arc<FakeApi>) -> Shell {
+    Shell {
+        client: Client(fake),
+        root: None,
+        state_path: None,
+    }
+}
+
 /// Opens the app window on `fake` and runs until it waits for a timer.
 /// Drive it with `cx.update_window` and `TestWindowExt`; move time with `cx.executor().advance_clock`.
 pub fn open_app(cx: &mut TestAppContext, fake: Arc<FakeApi>) -> (Entity<AppView>, AnyWindowHandle) {
-    open(cx, fake, None)
+    open_shell(cx, &shell(fake), None)
 }
 
 /// `open_app` for an app that started `START.bat` in `root` `ago` before its window opened, as `run` opens it.
@@ -25,12 +35,13 @@ pub fn open_app_started(
     root: PathBuf,
     ago: Duration,
 ) -> (Entity<AppView>, AnyWindowHandle) {
-    open(cx, fake, Some((root, ago)))
+    open_shell(cx, &shell(fake), Some((root, ago)))
 }
 
-fn open(
+/// `open_app` on `shell`, through `open_main_window` as `run` opens the window.
+pub fn open_shell(
     cx: &mut TestAppContext,
-    fake: Arc<FakeApi>,
+    shell: &Shell,
     started_bat: Option<(PathBuf, Duration)>,
 ) -> (Entity<AppView>, AnyWindowHandle) {
     // Init gets its own update: in the window's update, its effects draw the new window a second time.
@@ -41,16 +52,28 @@ fn open(
         root,
         at_ms: now - ago.as_millis() as i64,
     });
-    let client = Client(fake);
-    let (window, app) = cx
-        .update(|cx| {
-            crate::open_main_window(cx, |window, cx| {
-                cx.new(|cx| AppView::new(client, started_bat, window, cx))
-            })
-        })
-        .expect("open the app window");
+    cx.update(|cx| crate::set_started_bat(cx, started_bat));
+    let window = cx.update(|cx| crate::open_main_window(cx, shell));
     cx.run_until_parked();
-    (app, window)
+    (app_view(cx, window), window)
+}
+
+/// The app's view inside `window`.
+pub fn app_view(cx: &mut TestAppContext, window: AnyWindowHandle) -> Entity<AppView> {
+    cx.update(|cx| {
+        let root = window.downcast::<Root>().expect("the window holds a Root");
+        let view = root.read(cx).expect("the window is open").view().clone();
+        view.downcast::<AppView>().ok().expect("the Root holds the app")
+    })
+}
+
+/// The window's close button as Windows reports it; false when GPUI closed the window itself.
+pub fn close(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
+    let native_close = cx
+        .update_window(window, |_, window, cx| crate::close_main_window(window, cx))
+        .expect("the window is open");
+    cx.run_until_parked();
+    native_close
 }
 
 /// Draws a frame and returns the text it painted inside the window, in paint order.
