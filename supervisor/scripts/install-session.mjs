@@ -101,7 +101,8 @@ const supQuick = async (timeoutMs = 1500) => { try { return await (await fetch(`
 
 const IN_TEMP = tempFolders(['sl3 install ']);
 const underS = () => runningFrom([S], IN_TEMP);
-const mode = (p) => exeMode(p.CommandLine);
+// START.bat runs streamloop.exe with no mode word, so the census reads the control process from its parent.
+const mode = (p) => p.mode ?? exeMode(p.CommandLine);
 /** The streaming core: `streamloop.exe supervisor`, or a 3.0 install's streamloop-supervisor.exe. */
 const isCore = (p) => (p.Name === 'streamloop.exe' && mode(p) === 'supervisor')
   || (p.Name === 'streamloop-supervisor.exe' && !['launch', 'protect', 'check'].includes(mode(p)));

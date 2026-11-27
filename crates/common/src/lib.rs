@@ -1,5 +1,6 @@
 pub mod api;
 pub mod config;
+pub mod console;
 pub mod encoder;
 pub mod events;
 pub mod local_only;

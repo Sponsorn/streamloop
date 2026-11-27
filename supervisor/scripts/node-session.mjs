@@ -11,19 +11,20 @@
 //    the control process.
 // --port: the dashboard API port written to the fresh config (default 7654), for when 7654 is taken.
 // Processes are told apart by command line: ROOT\streamloop.exe with `supervisor` is the core, with
-// `launch` the intermediate, with no mode word the control process.
+// `launch` the intermediate, with `control` the control process (launch.bat names the mode, since a plain
+// streamloop.exe outside START.bat opens the app).
 // Faults go to the supervisor's POST /debug/fault (STREAMLOOP_DEBUG_FAULTS=1 has the control process
 // start it with --debug-faults).
 // The dummy key is never printed: the script's own notes go through redact(); what the control process
-// sends (replies, alerts, read-back status, its console) is stored as received, so the key grep can
-// catch a leak. Each run ends with its verdict: one line per check, then PASS or FAIL.
+// sends (replies, alerts, read-back status) is stored as received, so the key grep, which also reads its
+// log in app\logs, can catch a leak. Each run ends with its verdict: one line per check, then PASS or FAIL.
 import * as cp from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, appendFileSync, readdirSync, createWriteStream, cpSync } from 'node:fs';
 import { join, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
-import { dailyFiles, EVENTS, TOKEN_PORT, TOKEN_PORT_TAKEN, FFMPEG, FFPROBE, PLAYLIST, redact, leaks, exeMode } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_PORT, TOKEN_PORT_TAKEN, FFMPEG, FFPROBE, PLAYLIST, redact, leaks, withModes } from './lib.mjs';
 import { makeDevRoot } from './dev-root.mjs';
 
 // Every child hidden: nothing this script starts may show a window.
@@ -126,19 +127,21 @@ async function ps() {
     "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','streamloop-pot.exe') } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8', windowsHide: true });
   const v = JSON.parse(r.stdout || '[]');
-  return Array.isArray(v) ? v : [v];
+  return withModes(Array.isArray(v) ? v : [v]);
 }
 const samePath = (a, b) => String(a ?? '').toLowerCase().replaceAll('/', '\\') === String(b ?? '').toLowerCase().replaceAll('/', '\\');
 /** This root's streamloop.exe, in any mode; another install's or worktree's is never counted. */
 const isOurs = (p) => p.Name === 'streamloop.exe' && samePath(p.ExecutablePath, EXE);
-const isControl = (p) => isOurs(p) && exeMode(p.CommandLine) === 'control';
-const isCore = (p) => isOurs(p) && exeMode(p.CommandLine) === 'supervisor';
+const isControl = (p) => isOurs(p) && p.mode === 'control';
+const isCore = (p) => isOurs(p) && p.mode === 'supervisor';
 const BAT = join(ROOT, 'launch.bat');
 const launcherCmd = async () => (await ps()).find((p) => p.Name === 'cmd.exe' && (p.CommandLine ?? '').includes(BAT));
 const supervisors = async () => (await ps()).filter(isCore).map((p) => p.ProcessId);
 
 // The launcher console: a hidden cmd (it gets its own console host) running launch.bat, which
-// runs the control process and records its exit code.
+// runs the control process and records its exit code. The control process inherits cmd's NUL, as under
+// a hidden START.bat, so it attaches to cmd's console; a file redirect would keep it off, out of run B's
+// console event. Its lines are in app\logs.
 const PATH_NO_FFMPEG = (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
 const controlEnv = [
   `set "STREAMLOOP_ROOT=${ROOT}"`,
@@ -148,7 +151,7 @@ const controlEnv = [
   `set "PATH=${PATH_NO_FFMPEG}"`,
 ];
 writeFileSync(BAT, ['@echo off', 'title StreamLoop end-to-end test', ...controlEnv, `cd /d "${ROOT}"`,
-  `"${EXE}" >> "${join(OUT, 'control-console.log')}" 2>&1`,
+  `"${EXE}" control`,
   `echo %DATE% %TIME% control exited %ERRORLEVEL% >> "${join(OUT, 'control-exits.log')}"`, ''].join('\r\n'));
 
 let token = '';

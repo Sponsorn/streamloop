@@ -354,7 +354,7 @@ function seedRoot(root) {
 function launchServer(root) {
   const env = { ...process.env, STREAMLOOP_ROOT: root, STREAMLOOP_TEST_HOOKS: '1', LOG_LEVEL: 'info' };
   for (const k of ['STREAMLOOP_DEBUG_FAULTS', 'STREAMLOOP_TEST_HLS_URL', 'STREAMLOOP_TEST_RELEASES']) delete env[k];
-  return cp.spawn(RUST_EXE, ['--root', root], { cwd: join(root, 'app'), env, windowsHide: true, stdio: 'ignore' });
+  return cp.spawn(RUST_EXE, ['control', '--root', root], { cwd: join(root, 'app'), env, windowsHide: true, stdio: 'ignore' });
 }
 
 const RUST_EXE = join(REPO, 'target', 'release', 'streamloop.exe');

@@ -62,4 +62,15 @@ export function makeDevRoot(root = DEFAULT_ROOT, { potExe = DEFAULT_POT_EXE, plu
   return root;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) console.log(makeDevRoot(process.argv[2]));
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const root = makeDevRoot(process.argv[2]);
+  const exe = join(root, 'streamloop.exe');
+  // A prompt does not wait for the GUI-subsystem exe: `start /wait` (cmd) or a pipe does.
+  console.log([
+    root,
+    'Copy config.example.json to app\\config.json and edit it. Then, from cmd:',
+    `  the control process, in this console:  start /wait "" "${exe}" control`,
+    `  the app:                               "${exe}" ui`,
+    `  the version:                           "${exe}" --version | more`,
+  ].join('\n'));
+}

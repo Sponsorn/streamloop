@@ -9,7 +9,7 @@ import { join, relative, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
-import { FFPROBE, redact, exeMode } from './lib.mjs';
+import { FFPROBE, redact, exeMode, withModes } from './lib.mjs';
 
 export const spawn = (cmd, args, opts = {}) => cp.spawn(cmd, args, { windowsHide: true, ...opts });
 export const run = (cmd, args, opts = {}) => new Promise((resolve) => {
@@ -49,7 +49,7 @@ export async function ps() {
     "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('node.exe','cmd.exe','streamloop.exe','streamloop-supervisor.exe','streamloop-pot.exe','ffmpeg.exe','ffprobe.exe','yt-dlp.exe','mediamtx.exe') } | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json"],
     { encoding: 'utf8' });
   const v = JSON.parse(r.stdout || '[]');
-  return Array.isArray(v) ? v : [v];
+  return withModes(Array.isArray(v) ? v : [v]);
 }
 
 export async function waitFor(what, fn, timeoutMs, everyMs = 1000) {
@@ -233,7 +233,7 @@ export const portOpen = (port) => new Promise((resolve) => {
 });
 
 /** Every process with its exe path, command line and start time (`created`, epoch ms), in UTF-8 so a
- *  non-ASCII install path comes back intact. */
+ *  non-ASCII install path comes back intact; each streamloop.exe also has its `mode` (`withModes`). */
 export async function allProcesses() {
   const r = await run('powershell', ['-NoProfile', '-Command',
     '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress'],
@@ -241,7 +241,7 @@ export async function allProcesses() {
   try {
     const v = JSON.parse(r.stdout || '[]');
     // ConvertTo-Json writes a date as "/Date(<ms>)/".
-    return (Array.isArray(v) ? v : [v]).map((p) => ({ ...p, created: Number(/\d+/.exec(String(p.CreationDate))?.[0] ?? 0) }));
+    return withModes((Array.isArray(v) ? v : [v]).map((p) => ({ ...p, created: Number(/\d+/.exec(String(p.CreationDate))?.[0] ?? 0) })));
   } catch { return []; }
 }
 /** The processes whose exe or command line names one of `dirs`; `ascii` also matches, in case a command
@@ -253,11 +253,12 @@ export function under(procs, dirs, ascii = null) {
 }
 export const runningFrom = async (dirs, ascii = null) => under(await allProcesses(), dirs, ascii);
 
-// START.bat first, so it cannot restart the control process (Node in a 3.0 install); that before the
-// supervisor, so its launcher cannot relaunch it. streamloop.exe ranks by its mode word.
-const KILL_ORDER = ['cmd.exe', 'node.exe', 'streamloop.exe control', 'streamloop.exe launch', 'streamloop.exe supervisor', 'streamloop-supervisor.exe', 'streamloop-pot.exe'];
+// The app first, so it cannot start START.bat again; START.bat next, so it cannot restart the control
+// process (Node in a 3.0 install); that before the supervisor, so its launcher cannot relaunch it.
+// streamloop.exe ranks by its mode (the census's `mode`, else its command line alone).
+const KILL_ORDER = ['streamloop.exe detach', 'streamloop.exe ui', 'cmd.exe', 'node.exe', 'streamloop.exe control', 'streamloop.exe launch', 'streamloop.exe supervisor', 'streamloop-supervisor.exe', 'streamloop-pot.exe'];
 export async function killAll(procs) {
-  const key = (p) => { const name = String(p.Name).toLowerCase(); return name === 'streamloop.exe' ? `${name} ${exeMode(p.CommandLine)}` : name; };
+  const key = (p) => { const name = String(p.Name).toLowerCase(); return name === 'streamloop.exe' ? `${name} ${p.mode ?? exeMode(p.CommandLine)}` : name; };
   const rank = (p) => { const i = KILL_ORDER.indexOf(key(p)); return i < 0 ? KILL_ORDER.length : i; };
   const killed = [];
   for (const p of [...procs].sort((a, b) => rank(a) - rank(b))) {
@@ -400,7 +401,7 @@ export async function buildVariants({ repo, serve, ids = Object.keys(VARIANTS) }
     const runs = {
       version: await exeRun(exe, ['--version']),
       supervisor: await exeRun(exe, v.feature === 'test-supervisor-fails' ? ['supervisor', '--root', tmpdir()] : ['supervisor', '--bogus']),
-      control: await exeRun(exe, v.feature === 'test-control-fails' ? ['--root', tmpdir()] : ['--bogus']),
+      control: await exeRun(exe, v.feature === 'test-control-fails' ? ['control', '--root', tmpdir()] : ['control', '--bogus']),
     };
     // A plain build refuses a bad flag (3, 64); a broken one exits 1 in its mode before it reads anything.
     const ok = runs.version.code === 0 && runs.version.out === v.version

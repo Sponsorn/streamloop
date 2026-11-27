@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   epochAt, effectiveSeams, viewAt, readerReach, riseAt, lagSpikes, slateEdge, resumeErrorSec, deletionOk,
-  firstEventAfter, leaks, splitCsv, median, dailyFiles, EVENTS, redact, cpuRows, watchdogPlace, wallAtMedia, exeMode,
+  firstEventAfter, leaks, splitCsv, median, dailyFiles, EVENTS, redact, cpuRows, watchdogPlace, wallAtMedia, exeMode, withModes,
 } from './lib.mjs';
 
 describe('epochAt', () => {
@@ -249,12 +249,66 @@ describe('exeMode', () => {
     expect(exeMode(intermediate)).toBe('launch');
   });
 
-  it('takes a command line with no mode word for the control process', () => {
+  it('reads the control, ui and detach words, whoever the parent is', () => {
+    // Arrange
+    const bat = 'C:\\WINDOWS\\system32\\cmd.exe /d /s /c ""C:\\sl3\\streamloop\\START.bat""';
+
     // Act + Assert
-    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe"')).toBe('control');
-    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe"  ')).toBe('control');
-    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe" --root C:\\Temp\\devroot')).toBe('control');
-    expect(exeMode('C:\\Temp\\devroot\\streamloop.exe constructor')).toBe('control');
+    expect(exeMode('"C:\\Temp\\devroot\\streamloop.exe" control --root C:\\Temp\\devroot')).toBe('control');
+    expect(exeMode('"C:\\sl3\\streamloop\\streamloop.exe" ui --tray', bat)).toBe('ui');
+    expect(exeMode('"C:\\sl3\\streamloop\\streamloop.exe" detach start-bat')).toBe('detach');
+  });
+
+  it('takes a command line with no mode word under START.bat or launch.bat for the control process', () => {
+    // Arrange: what cmd shows for a double-clicked START.bat, the harness's START.bat and node-session's launch.bat
+    const clicked = 'C:\\WINDOWS\\system32\\cmd.exe /c ""C:\\sl3 Ö (x)\\streamloop\\START.bat" "';
+    const harness = 'cmd.exe /d /s /c ""C:\\Temp\\sl3 install Ö\\streamloop\\START.bat""';
+    const launchBat = 'cmd.exe /d /c "C:\\Temp\\dev root\\launch.bat"';
+
+    // Act + Assert
+    expect(exeMode('"C:\\sl3 Ö (x)\\streamloop\\streamloop.exe"', clicked)).toBe('control');
+    expect(exeMode('"C:\\Temp\\sl3 install Ö\\streamloop\\streamloop.exe"  ', harness)).toBe('control');
+    expect(exeMode('"C:\\Temp\\dev root\\streamloop.exe" --root C:\\Temp\\devroot', launchBat)).toBe('control');
+    expect(exeMode('C:\\Temp\\devroot\\streamloop.exe constructor', launchBat)).toBe('control');
+  });
+
+  it('takes a command line with no mode word anywhere else for the app', () => {
+    // Act + Assert: a double-click (Explorer), a dead parent, another batch file
+    expect(exeMode('"C:\\sl3\\streamloop\\streamloop.exe"', 'C:\\WINDOWS\\Explorer.EXE')).toBe('ui');
+    expect(exeMode('"C:\\sl3\\streamloop\\streamloop.exe" --root C:\\sl3\\streamloop')).toBe('ui');
+    expect(exeMode('C:\\sl3\\streamloop\\streamloop.exe constructor', 'cmd.exe /c C:\\tools\\restart.bat')).toBe('ui');
+  });
+});
+
+describe('withModes', () => {
+  it('gives each streamloop.exe the mode its parent in the same census implies', () => {
+    // Arrange
+    const ps = [
+      { ProcessId: 10, ParentProcessId: 1, Name: 'cmd.exe', CommandLine: 'cmd.exe /d /s /c ""C:\\sl3\\START.bat""', created: 100 },
+      { ProcessId: 11, ParentProcessId: 10, Name: 'streamloop.exe', CommandLine: '"C:\\sl3\\streamloop.exe"', created: 200 },
+      { ProcessId: 12, ParentProcessId: 99, Name: 'streamloop.exe', CommandLine: '"C:\\sl3\\streamloop.exe" supervisor --root C:\\sl3', created: 300 },
+      { ProcessId: 13, ParentProcessId: 2, Name: 'streamloop.exe', CommandLine: '"C:\\sl3\\streamloop.exe"', created: 400 },
+    ];
+
+    // Act
+    const modes = withModes(ps).map((p) => p.mode);
+
+    // Assert
+    expect(modes).toEqual([undefined, 'control', 'supervisor', 'ui']);
+  });
+
+  it('does not take a cmd that started after the exe for its parent', () => {
+    // Arrange: the START.bat cmd that started the exe is gone and a new one has its PID
+    const ps = [
+      { ProcessId: 10, ParentProcessId: 1, Name: 'cmd.exe', CommandLine: 'cmd.exe /d /s /c ""C:\\other\\START.bat""', created: 500 },
+      { ProcessId: 11, ParentProcessId: 10, Name: 'streamloop.exe', CommandLine: '"C:\\sl3\\streamloop.exe"', created: 200 },
+    ];
+
+    // Act
+    const [, exe] = withModes(ps);
+
+    // Assert
+    expect(exe.mode).toBe('ui');
   });
 });
 

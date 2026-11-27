@@ -139,14 +139,33 @@ export function leaks(processes, root = null) {
   });
 }
 
-const EXE_MODES = ['supervisor', 'launch', 'protect', 'check', '--version'];
+const EXE_MODES = ['control', 'ui', 'detach', 'supervisor', 'launch', 'protect', 'check', '--version'];
+// START.bat, and node-session's launch.bat that stands in for it
+const LAUNCHER = /\bcmd(\.exe)?\b.*\b(start|launch)\.bat\b/i;
 
-/** The mode word after the exe on a streamloop.exe command line: `supervisor` (the core), `launch`
- *  (the intermediate), or `control` when there is none (nothing, or `--root DIR`). */
-export function exeMode(commandLine) {
+/** The mode of a streamloop.exe from its command line: the word after the exe (`control`, `ui`,
+ *  `detach`, `supervisor` for the core, `launch` for its intermediate, `check`, `protect`, `--version`).
+ *  With no word (nothing, a flag, an unknown word) the exe picks its mode from STREAMLOOP_START, which a
+ *  census cannot read, so it counts as the control process when its parent is a cmd.exe running a
+ *  START.bat or launch.bat (both set the variable), and as the app (`ui`) otherwise. */
+export function exeMode(commandLine, parentCommandLine = null) {
   const args = String(commandLine ?? '').trim().replace(/^("[^"]*"|\S+)\s*/, '');
   const word = args.split(/\s+/)[0];
-  return EXE_MODES.includes(word) ? word : 'control';
+  if (EXE_MODES.includes(word)) return word;
+  return LAUNCHER.test(String(parentCommandLine ?? '')) ? 'control' : 'ui';
+}
+
+/** A Win32_Process census (ProcessId, ParentProcessId, Name, CommandLine) with `mode` on each
+ *  streamloop.exe, read with its parent's command line from the same census. A parent that started after
+ *  its child (`created`, when the census has it) took over a dead parent's PID and does not count. */
+export function withModes(procs) {
+  const byPid = new Map(procs.map((p) => [p.ProcessId, p]));
+  return procs.map((p) => {
+    if (String(p.Name ?? '').toLowerCase() !== 'streamloop.exe') return p;
+    const parent = byPid.get(p.ParentProcessId);
+    const real = parent && !(parent.created > p.created) ? parent : null;
+    return { ...p, mode: exeMode(p.CommandLine, real?.CommandLine) };
+  });
 }
 
 /** The supervisor's events log: `supervisor-events-DATE.jsonl` from 3.0.5, `events-DATE.jsonl` before. */

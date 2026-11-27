@@ -1,4 +1,4 @@
-//! Control mode, `streamloop.exe [--root DIR]`: the dashboard, alerts, checks and updater that replace the
+//! Control mode, `streamloop.exe control [--root DIR]`: the dashboard, alerts, checks and updater that replace the
 //! Node backend. This is `src/server/index.ts`: the wiring, the start order, a config save, the shutdown and
 //! the exit codes.
 
@@ -47,7 +47,7 @@ pub const EXIT_USAGE: i32 = 64;
 /// START.bat starts the control process again: an update landed or rolled back, or the test hook asked.
 pub const EXIT_RESTART: i32 = 75;
 
-const USAGE: &str = "Usage: streamloop.exe [--root DIR]";
+const USAGE: &str = "Usage: streamloop.exe control [--root DIR]";
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(30);
 const EVENTS_EVERY: Duration = Duration::from_secs(2);
 const OBSERVE_EVERY: Duration = Duration::from_secs(2);
@@ -734,7 +734,8 @@ pub async fn serve(w: Wiring) -> i32 {
     }
 }
 
-/// `streamloop.exe [--root DIR]`; `args` is every argument after the exe name.
+/// `streamloop.exe control [--root DIR]`, or `streamloop.exe [--root DIR]` under START.bat; `args` is every
+/// argument after the mode word. The exe has attached to its parent's console before this runs.
 pub fn run(args: Vec<String>) -> i32 {
     // The supervisor outlives this process; holding its output file, it would stop a launcher that
     // redirects to that file from starting the control process again.

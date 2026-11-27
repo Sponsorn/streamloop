@@ -1,4 +1,4 @@
-//! The control process as `streamloop.exe [--root DIR]` wires it: start order, a config save,
+//! The control process as `streamloop.exe control [--root DIR]` wires it: start order, a config save,
 //! the busy port, the 3.0 leftovers and the exit codes, on a real socket with fakes behind it.
 
 mod support;
