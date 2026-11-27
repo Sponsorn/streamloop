@@ -987,3 +987,75 @@ fn debug_output_hides_the_secrets() {
     }
     assert!(shown.contains("PLtest123"), "{shown}");
 }
+
+// read_port: the app's read of the port
+
+#[test]
+fn reads_the_port_without_writing_config_json() {
+    // Arrange: a compact file the loader would write back in schema order
+    let path = config_file("read-port", &with(json!({"port": 8123})));
+    let before = std::fs::read(&path).unwrap();
+    let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+
+    // Act
+    let port = config::read_port(&path);
+
+    // Assert
+    assert_eq!(port, Some(8123));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+}
+
+#[test]
+fn reads_the_port_after_a_byte_order_mark() {
+    // Arrange: Notepad writes one
+    let path = dir("read-port-bom").join("config.json");
+    std::fs::write(&path, b"\xEF\xBB\xBF{\"port\": 7700}").unwrap();
+
+    // Act
+    let port = config::read_port(&path);
+
+    // Assert
+    assert_eq!(port, Some(7700));
+}
+
+#[test]
+fn reads_a_port_written_as_a_whole_float_as_the_schema_does() {
+    // Arrange
+    let path = dir("read-port-float").join("config.json");
+    std::fs::write(&path, "{\"port\": 7655.0}").unwrap();
+
+    // Act
+    let port = config::read_port(&path);
+
+    // Assert
+    assert_eq!(port, Some(7655));
+}
+
+#[test]
+fn reads_no_port_from_a_missing_broken_or_portless_file() {
+    // Arrange
+    let folder = dir("read-port-none");
+    let cases = [
+        ("missing.json", None),
+        ("broken.json", Some("{\"port\": 81")),
+        ("portless.json", Some("{\"playlists\": []}")),
+        ("zero.json", Some("{\"port\": 0}")),
+        ("too-big.json", Some("{\"port\": 70000}")),
+        ("fraction.json", Some("{\"port\": 7654.5}")),
+        ("text.json", Some("{\"port\": \"7654\"}")),
+    ];
+    for (name, text) in cases {
+        if let Some(text) = text {
+            std::fs::write(folder.join(name), text).unwrap();
+        }
+    }
+
+    // Act
+    let ports: Vec<Option<u16>> = cases.iter().map(|(name, _)| config::read_port(&folder.join(name))).collect();
+
+    // Assert
+    assert_eq!(ports, vec![None; cases.len()]);
+    assert!(!folder.join("missing.json").exists());
+}

@@ -8,12 +8,14 @@ const DEFAULT_PORT: u16 = 7654;
 pub mod api;
 pub mod app;
 pub mod dashboard;
+pub mod instance;
 pub mod logic;
 pub mod logs;
 pub mod monitor;
 pub mod playback;
 pub mod settings;
 pub mod setup_check;
+pub mod start;
 #[cfg(test)]
 mod test_support;
 pub mod theme;
@@ -23,19 +25,21 @@ pub mod webhooks;
 pub mod widgets;
 pub mod wizard;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Entity, Render, Result, TitlebarOptions, Window,
     WindowBounds, WindowOptions, px, size,
 };
+use streamloop_common::{config, paths::Layout};
 
 use crate::{
-    api::{client::Client, http::HttpApi},
+    api::{Api, ApiError, client::Client, http::HttpApi},
     app::AppView,
+    instance::Claim,
 };
 
-/// What `streamloop.exe ui` was asked for. `root`, `tray` and `follow` are read by later stages.
+/// What `streamloop.exe ui` was asked for. `root` is absolute; `follow` is read by a later stage.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiOptions {
     pub root: Option<PathBuf>,
@@ -44,19 +48,57 @@ pub struct UiOptions {
     pub follow: Option<String>,
 }
 
-/// Opens the StreamLoop window against the backend and runs until it is closed.
+/// Takes the install's lock, starts `START.bat` when nothing answers and opens the window unless `--tray`,
+/// then runs until it closes. A second app of the install asks the first to show its window and returns.
 pub fn run(opts: UiOptions) {
-    let port = opts.port.unwrap_or(DEFAULT_PORT);
+    let root = opts.root.as_deref();
+    let instance = match instance::claim(root, Duration::ZERO) {
+        Claim::Ours(instance) => instance,
+        Claim::Running => {
+            if !opts.tray {
+                instance::signal_show(root);
+            }
+            return;
+        }
+    };
+    let port = opts
+        .port
+        .or_else(|| root.and_then(|r| config::read_port(&Layout::new(r).config)))
+        .unwrap_or(DEFAULT_PORT);
+    let api = Arc::new(HttpApi::new(port));
+    let answered = api.get_json("/api/status").err() != Some(ApiError::Unreachable);
+    let started_bat = if start::start_if_needed(root, answered) {
+        opts.root.clone()
+    } else {
+        None
+    };
+    // The show signal arrives on a thread of its own; GPUI's main thread takes it from this channel.
+    let (show_tx, show_rx) = async_channel::unbounded::<()>();
+    instance.on_show(move || {
+        let _ = show_tx.send_blocking(());
+    });
+    let tray = opts.tray;
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx: &mut App| {
             gpui_kit::init(cx);
             theme::init(cx);
-            let client = Client(Arc::new(HttpApi::new(port)));
-            open_main_window(cx, |window, cx| {
-                cx.new(|cx| AppView::new(client, window, cx))
+            let client = Client(api);
+            let window = (!tray).then(|| {
+                open_main_window(cx, |window, cx| {
+                    cx.new(|cx| AppView::new(client, started_bat, window, cx))
+                })
+                .expect("open the StreamLoop window")
+                .0
+            });
+            cx.spawn(async move |cx| {
+                while show_rx.recv().await.is_ok() {
+                    if let Some(window) = window {
+                        let _ = cx.update_window(window, |_, window, _| window.activate_window());
+                    }
+                }
             })
-            .expect("open the StreamLoop window");
+            .detach();
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -65,6 +107,7 @@ pub fn run(opts: UiOptions) {
             .detach();
             cx.activate(true);
         });
+    drop(instance);
 }
 
 /// The StreamLoop window, with `build`'s view inside gpui-component's `Root`.

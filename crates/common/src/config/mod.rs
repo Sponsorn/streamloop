@@ -91,6 +91,16 @@ pub fn read(path: &Path) -> Result<Config, ConfigError> {
     read_migrated(path).map(|(_, config)| config)
 }
 
+/// The `port` in config.json, read without the loader's write-back; None when missing or unreadable.
+pub fn read_port(config_json: &Path) -> Option<u16> {
+    let bytes = std::fs::read(config_json).ok()?;
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    // As the schema reads it: a whole number, `7654.0` included.
+    let port = json.get("port")?.as_f64().filter(|p| p.fract() == 0.0)?;
+    (1.0..=f64::from(u16::MAX)).contains(&port).then_some(port as u16)
+}
+
 /// Merges `patch` into the file (see `merge`), checks the result and writes it. A refused save
 /// leaves the file as it was. A file that cannot be read or parsed counts as empty.
 pub fn save(patch: &serde_json::Value, path: &Path) -> Result<Config, ConfigError> {

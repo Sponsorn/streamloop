@@ -1,7 +1,7 @@
 //! The window's root view: the Connecting screen, the wizard or the dashboard, and what every view
 //! shares: the dashboard's poll, toasts and confirm dialogs.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use gpui::{
     AnyWindowHandle, App, AppContext, AsyncApp, Context, Entity, FocusHandle, FontWeight,
@@ -17,6 +17,7 @@ use crate::{
         types::{Event, Status, UpdateStatus},
     },
     dashboard::DashboardView,
+    start::{self, Connecting, HINT_AFTER},
     theme::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
         TOAST_SUCCESS_BG, TOAST_SUCCESS_BORDER,
@@ -32,10 +33,6 @@ pub const TOAST_FOR: Duration = Duration::from_secs(4);
 /// Failed polls in a row that show the connection-lost banner and, while a full update runs, start
 /// the restart wait.
 const LOST_AFTER: u32 = 2;
-
-const CONNECTING_TITLE: &str = "StreamLoop backend is not running";
-const CONNECTING_HINT: &str =
-    "Start it with START.bat. This window switches to the dashboard when the backend is up.";
 
 /// The wall clock in milliseconds since the epoch. In tests it is the test scheduler's clock, which
 /// `advance_clock` moves, so elapsed times are exact.
@@ -142,22 +139,36 @@ type PollAnswer = (
     Option<UpdateStatus>,
 );
 
+/// This app started `START.bat` in `root` at `at_ms`, and nothing has answered since.
+struct Starting {
+    root: PathBuf,
+    at_ms: i64,
+}
+
 pub struct AppView {
     handle: AppHandle,
     body: Body,
+    starting: Option<Starting>,
     /// Holds the keyboard focus whenever no control does, so Tab always reaches the first control.
     focus: FocusHandle,
     failures: u32,
     toasts: Vec<Toast>,
     next_toast: u64,
     _focus_lost: Subscription,
+    _hint_due: Option<Task<()>>,
     _connecting: Option<Task<()>>,
     _polling: Option<Task<()>>,
     _poll_once: Option<Task<()>>,
 }
 
 impl AppView {
-    pub fn new(client: Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `started_bat` is the root when this app has just started `START.bat` there.
+    pub fn new(
+        client: Client,
+        started_bat: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let handle = AppHandle {
             client,
             view: cx.weak_entity(),
@@ -166,14 +177,27 @@ impl AppView {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let focus_lost = cx.on_focus_lost(window, |app, window, cx| app.focus.focus(window, cx));
+        let starting = started_bat.map(|root| Starting {
+            root,
+            at_ms: now_ms(cx),
+        });
+        // Connecting redraws when the hint is due, which can fall between two tries.
+        let hint_due = starting.is_some().then(|| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(HINT_AFTER).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+        });
         let mut view = Self {
             handle,
             body: Body::Connecting,
+            starting,
             focus,
             failures: 0,
             toasts: Vec::new(),
             next_toast: 0,
             _focus_lost: focus_lost,
+            _hint_due: hint_due,
             _connecting: None,
             _polling: None,
             _poll_once: None,
@@ -298,7 +322,11 @@ impl AppView {
                 let api = client.clone();
                 if let Ok(status) = cx.background_spawn(async move { api.status() }).await {
                     cx.update_window(window, |_, window, cx| {
-                        this.update(cx, |app, cx| app.open_screen_for(&status, window, cx))
+                        this.update(cx, |app, cx| {
+                            app.starting = None;
+                            app._hint_due = None;
+                            app.open_screen_for(&status, window, cx)
+                        })
                     })
                     .ok();
                     return;
@@ -306,6 +334,14 @@ impl AppView {
                 cx.background_executor().timer(POLL_EVERY).await;
             }
         }));
+    }
+
+    fn connecting_state(&self, cx: &App) -> Connecting {
+        let since = self.starting.as_ref().map_or(Duration::ZERO, |s| {
+            Duration::from_millis(now_ms(cx).saturating_sub(s.at_ms).max(0) as u64)
+        });
+        let root = self.starting.as_ref().map(|s| s.root.as_path());
+        start::connecting(self.starting.is_some(), since, root)
     }
 
     /// admin.js `init()`.
@@ -428,7 +464,7 @@ fn confirm(title: &str, detail: &str, ok: &str, window: &mut Window, cx: &mut Ap
     cx.background_spawn(async move { matches!(answer.await, Ok(0)) })
 }
 
-fn connecting() -> impl IntoElement {
+fn connecting(state: &Connecting) -> impl IntoElement {
     div()
         .size_full()
         .flex()
@@ -439,18 +475,22 @@ fn connecting() -> impl IntoElement {
         .p_4()
         .text_center()
         .child(
-            Label::new(CONNECTING_TITLE)
+            Label::new(state.title())
                 .text_size(px(28.))
                 .line_height(relative(PAGE_LINE_HEIGHT))
                 .font_weight(FontWeight::SEMIBOLD),
         )
-        .child(Label::new(CONNECTING_HINT).text_color(rgb(MUTED)))
+        .children(
+            state
+                .hint()
+                .map(|hint| Label::new(hint.to_string()).text_color(rgb(MUTED))),
+        )
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.body {
-            Body::Connecting => connecting().into_any_element(),
+            Body::Connecting => connecting(&self.connecting_state(cx)).into_any_element(),
             Body::Wizard(view) => view.clone().into_any_element(),
             Body::Dashboard(view) => view.clone().into_any_element(),
         };
@@ -477,7 +517,9 @@ mod tests {
     use crate::{
         api::{ApiError, fake::FakeApi},
         dashboard::Tab,
-        test_support::{answer_polls, count, events_json, open_app, shows, status_json},
+        test_support::{
+            answer_polls, count, events_json, open_app, open_app_started, shows, status_json,
+        },
         widgets::{ActionView, Busy, action_button, run_action},
     };
 
@@ -493,18 +535,49 @@ mod tests {
         let (app, window) = open_app(cx, fake.clone());
 
         assert_eq!(screen(cx, &app), Screen::Connecting);
-        assert!(shows(cx, window, "StreamLoop backend is not running"));
-        assert!(shows(
-            cx,
-            window,
-            "Start it with START.bat. This window switches to the dashboard when the backend is up."
-        ));
+        assert!(shows(cx, window, "Can't reach StreamLoop. Retrying..."));
+        assert!(!shows(cx, window, "Starting StreamLoop..."));
 
         fake.reply("GET", "/api/status", Ok(status_json("live", false)));
         cx.executor().advance_clock(POLL_EVERY);
 
         assert_eq!(screen(cx, &app), Screen::Dashboard);
-        assert!(!shows(cx, window, "StreamLoop backend is not running"));
+        assert!(!shows(cx, window, "Can't reach StreamLoop. Retrying..."));
+    }
+
+    #[gpui::test]
+    fn a_start_with_nothing_answering_shows_starting_then_the_hint(cx: &mut TestAppContext) {
+        // Arrange
+        let root = std::path::PathBuf::from(r"C:\Temp\sl4 Ö (x)");
+        let hint = r"StreamLoop did not start. Double-click START.bat in C:\Temp\sl4 Ö (x) to see why.";
+        let fake = FakeApi::new();
+
+        // Act
+        let (app, window) = open_app_started(cx, fake.clone(), root);
+
+        // Assert
+        assert_eq!(screen(cx, &app), Screen::Connecting);
+        assert!(shows(cx, window, "Starting StreamLoop..."));
+        assert!(!shows(cx, window, "Can't reach StreamLoop. Retrying..."));
+        cx.executor().advance_clock(Duration::from_secs(29));
+        assert!(!shows(cx, window, hint));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        assert!(shows(cx, window, "Starting StreamLoop..."));
+        assert!(shows(cx, window, hint));
+        assert_eq!(count(&fake, "GET", "/api/status"), 16, "one try every 2 s");
+
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        cx.executor().advance_clock(POLL_EVERY);
+        assert_eq!(screen(cx, &app), Screen::Dashboard);
+
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        app.update(cx, |app, cx| app.start_over(cx));
+        cx.run_until_parked();
+        assert_eq!(screen(cx, &app), Screen::Connecting);
+        assert!(
+            shows(cx, window, "Can't reach StreamLoop. Retrying..."),
+            "Starting shows only until the first answer"
+        );
     }
 
     #[gpui::test]

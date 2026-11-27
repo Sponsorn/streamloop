@@ -128,7 +128,8 @@ pub fn detach_main(args: Vec<String>) -> i32 {
             let exe_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
             let env_root = std::env::var_os("STREAMLOOP_ROOT").filter(|v| !v.is_empty()).map(PathBuf::from);
             let root = match install_root(root.as_deref(), &exe_dir, env_root.as_deref()) {
-                Ok(r) => r.dir,
+                // cmd starts in the temp folder, so a relative root would name a START.bat there.
+                Ok(r) => std::path::absolute(&r.dir).unwrap_or(r.dir),
                 Err(why) => {
                     eprintln!("{why}");
                     return EXIT_FAILED;

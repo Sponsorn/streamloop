@@ -6995,13 +6995,18 @@ dependencies = [
 name = "streamloop-ui"
 version = "3.1.2"
 dependencies = [
+ "async-channel",
  "chrono",
  "gpui-kit",
  "indexmap",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "streamloop-common",
+ "sysinfo",
  "ureq",
  "url",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

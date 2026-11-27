@@ -158,6 +158,32 @@ fn detach_start_bat_runs_the_batch_with_from_app_set() {
     assert_eq!(left, 0, "a cmd for the batch is still running");
 }
 
+#[cfg(windows)]
+#[test]
+fn detach_start_bat_runs_a_relative_root_from_the_folder_it_was_started_in() {
+    use std::time::{Duration, Instant};
+    // Arrange: `rel\START.bat` under a folder that is not the temp folder, where cmd itself starts
+    let base = std::env::temp_dir().join(format!("sl-cli-detach-rel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("rel")).unwrap();
+    let seen = base.join("rel").join("seen.txt");
+    std::fs::write(base.join("rel").join("START.bat"), "@echo off\r\n(echo ran) > \"%~dp0seen.txt\"\r\n").unwrap();
+
+    // Act
+    let status = exe().current_dir(&base).args(["detach", "start-bat", "--root", "rel"]).status().unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !seen.exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let text = std::fs::read_to_string(&seen).unwrap_or_default();
+
+    // Assert
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(text.trim(), "ran");
+}
+
 #[test]
 fn detach_start_bat_without_a_batch_file_exits_1() {
     // Arrange

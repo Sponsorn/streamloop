@@ -48,8 +48,10 @@ pub fn ui_main(args: Vec<String>) -> i32 {
         let env_root = std::env::var_os("STREAMLOOP_ROOT").filter(|v| !v.is_empty()).map(PathBuf::from);
         install_root(flag.as_deref(), dir, env_root.as_deref()).ok()
     });
+    // Before the working folder moves: the lock names, the START.bat check and `detach` all take this path.
+    let root = root.map(|r| full_path(r.dir));
     let log_dir = match (&root, &exe_dir) {
-        (Some(root), _) => Some(Layout::new(&root.dir).app_logs),
+        (Some(root), _) => Some(Layout::new(root).app_logs),
         (None, Some(dir)) => Some(dir.clone()),
         (None, None) => None,
     };
@@ -70,12 +72,17 @@ pub fn ui_main(args: Vec<String>) -> i32 {
         log_panics(dir);
     }
     streamloop_ui::run(UiOptions {
-        root: root.map(|r| r.dir),
+        root,
         port: parsed.port,
         tray: parsed.tray,
         follow: parsed.follow,
     });
     0
+}
+
+/// `dir` from the current folder, with no trailing separator, so `C:\SL\` and `C:\SL` name one install.
+fn full_path(dir: PathBuf) -> PathBuf {
+    std::path::absolute(&dir).unwrap_or(dir).components().collect()
 }
 
 fn log_panics(dir: PathBuf) {
@@ -166,6 +173,21 @@ mod tests {
             // Assert
             assert!(parsed.is_err(), "{bad:?}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_root_is_made_full_without_a_trailing_separator() {
+        // Arrange
+        let cwd = std::env::current_dir().unwrap();
+
+        // Act
+        let relative = full_path(PathBuf::from(r"dev\root"));
+        let trailing = full_path(PathBuf::from(r"C:\SL\"));
+
+        // Assert
+        assert_eq!(relative, cwd.join("dev").join("root"));
+        assert_eq!(trailing.as_os_str(), r"C:\SL");
     }
 
     #[test]
