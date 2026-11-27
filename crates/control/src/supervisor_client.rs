@@ -190,6 +190,7 @@ pub mod fake {
         control_result: Mutex<ControlResult>,
         reload_result: Mutex<ReloadResult>,
         shutdown_result: Mutex<bool>,
+        stops_on_shutdown: Mutex<bool>,
         calls: Mutex<Vec<Call>>,
         hanging: Mutex<bool>,
         released: Notify,
@@ -202,6 +203,7 @@ pub mod fake {
                 control_result: Mutex::new(ControlResult { ok: true, ..ControlResult::default() }),
                 reload_result: Mutex::new(ReloadResult { ok: true, ..ReloadResult::default() }),
                 shutdown_result: Mutex::new(true),
+                stops_on_shutdown: Mutex::new(false),
                 calls: Mutex::new(Vec::new()),
                 hanging: Mutex::new(false),
                 released: Notify::new(),
@@ -229,6 +231,11 @@ pub mod fake {
 
         pub fn set_shutdown_result(&self, ok: bool) {
             *self.shutdown_result.lock().unwrap() = ok;
+        }
+
+        /// From now on `shutdown` also makes `status` answer as an unreachable supervisor does.
+        pub fn stop_answering_on_shutdown(&self) {
+            *self.stops_on_shutdown.lock().unwrap() = true;
         }
 
         pub fn calls(&self) -> Vec<Call> {
@@ -278,6 +285,9 @@ pub mod fake {
 
         async fn shutdown(&self) -> bool {
             self.enter(Call::Shutdown).await;
+            if *self.stops_on_shutdown.lock().unwrap() {
+                self.set_status(None);
+            }
             *self.shutdown_result.lock().unwrap()
         }
     }

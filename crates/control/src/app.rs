@@ -48,6 +48,7 @@ pub const EXIT_USAGE: i32 = 64;
 pub const EXIT_RESTART: i32 = 75;
 
 const USAGE: &str = "Usage: streamloop.exe control [--root DIR]";
+pub const QUIT_LINE: &str = "Quitting StreamLoop. The stream goes off air.";
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(30);
 const EVENTS_EVERY: Duration = Duration::from_secs(2);
 const OBSERVE_EVERY: Duration = Duration::from_secs(2);
@@ -327,6 +328,7 @@ struct Control {
     started: AtomicBool,
     confirming: Arc<AtomicBool>,
     landing_running: AtomicBool,
+    quitting: AtomicBool,
     /// The events tail, the update checks and the landing watch.
     tasks: Mutex<Vec<JoinHandle<()>>>,
     /// One config save's rebuild at a time.
@@ -463,6 +465,22 @@ impl Control {
                 Err(err) => tracing::error!(%err, "The update could not be landed"),
             }
         });
+    }
+
+    /// The app's Quit, once however often it is asked. `data\stopped-by-user` is left as it is, so the next start
+    /// follows `autoStartStream`.
+    async fn quit(&self) {
+        if self.quitting.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.launcher.suspend();
+        tracing::info!("Quitting StreamLoop");
+        self.timeline.add(QUIT_LINE);
+        self.notifier.notify_event(landing::recovery(QUIT_LINE)).await;
+        landing::stop_supervisor(&self.landing).await;
+        // The alert waits out Discord's 5 s batch otherwise, which the exit would cut off.
+        self.notifier.flush().await;
+        self.request_exit(EXIT_OK);
     }
 
     /// The control process's own timers only: the supervisor and the stream keep running.
@@ -646,6 +664,7 @@ impl App {
             started: AtomicBool::new(false),
             confirming: confirming.clone(),
             landing_running: AtomicBool::new(false),
+            quitting: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             reload: Mutex::new(()),
             exit: ExitSwitch::new(),
@@ -684,6 +703,13 @@ impl App {
                 let control = control.clone();
                 Arc::new(move || control.request_exit(EXIT_OK))
             },
+            trigger_quit: {
+                let control = control.clone();
+                Arc::new(move || {
+                    let control = control.clone();
+                    tokio::spawn(async move { control.quit().await });
+                })
+            },
         });
         let (close, closed) = oneshot::channel();
         let server = tokio::spawn(serve_api(listener, api::router(Arc::new(state), port), closed));
@@ -702,9 +728,10 @@ impl App {
         self.control.twitch()
     }
 
-    /// Runs until Ctrl+C, the console closing, `/api/shutdown` (0), or a landed update, a rollback or the
-    /// test hook (75). A landing under way finishes first, so the exit does not leave the stream stopped. Stops the
-    /// control process's own timers and closes the server; the stream keeps running.
+    /// Runs until Ctrl+C, the console closing, `/api/shutdown`, the app's Quit once the supervisor has stopped (0),
+    /// or a landed update, a rollback or the test hook (75). A landing under way finishes first, so the exit does
+    /// not leave the stream stopped. Stops the control process's own timers and closes the server; the stream
+    /// keeps running unless the app quit it.
     pub async fn wait(self) -> i32 {
         let App { control, server, close, mut stop_signal } = self;
         let code = tokio::select! {

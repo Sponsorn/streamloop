@@ -1377,6 +1377,7 @@ fn changing_routes() -> Vec<(&'static str, Value)> {
         ("/update/apply", json!({})),
         ("/yt-dlp/update", json!({})),
         ("/setup-check/run", json!({})),
+        ("/quit", json!({})),
     ]
 }
 
@@ -1396,6 +1397,7 @@ async fn expect_refused(rig: &Rig) {
     assert_eq!(rig.updates.lands(), 0);
     assert!(rig.setup_runs.lock().unwrap().is_empty());
     assert!(rig.runner.calls().is_empty());
+    assert_eq!(rig.quits.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -1731,6 +1733,69 @@ async fn shutdown_answers_then_stops_after_500_ms() {
         tokio::task::yield_now().await;
     }
     assert_eq!(rig.shutdowns.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn quit_answers_ok_before_it_stops_anything() {
+    // Arrange
+    let rig = Rig::new();
+    rig.sup.set_status(status_of(&playing(json!({}))));
+
+    // Act
+    let r = post(&rig.app(), "/quit", json!({})).await;
+    let quits_at_the_reply = rig.quits.load(Ordering::SeqCst);
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(500)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    // Assert
+    assert_eq!((r.status, r.json()), (StatusCode::OK, json!({ "ok": true })));
+    assert_eq!(quits_at_the_reply, 0, "nothing stops before the reply is out");
+    assert_eq!(rig.quits.load(Ordering::SeqCst), 1);
+    assert!(rig.sup.calls().is_empty(), "the route itself sends the supervisor nothing");
+    assert_eq!(rig.launcher.marks(), 0, "a quit is not a Stop");
+}
+
+#[tokio::test(start_paused = true)]
+async fn quit_during_a_landing_or_confirmation_answers_409() {
+    // Arrange: a landing of this process, then a confirmation, where Stop alone is let through
+    let landing = Rig::new();
+    landing.updates.set_landing(true);
+    let confirming = Rig::new();
+    write(&confirming.layout.update_state, running_state().to_string().as_bytes());
+    confirming.updates.set_confirming(true);
+
+    for rig in [&landing, &confirming] {
+        // Act
+        let r = post(&rig.app(), "/quit", json!({})).await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        // Assert
+        assert_eq!((r.status, r.error()), (StatusCode::CONFLICT, "An update is running. Try again when it is done.".to_string()));
+        assert_eq!(rig.quits.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn quit_needs_the_token() {
+    // Arrange
+    let rig = Rig::new();
+
+    // Act
+    let r = post_without_token(&rig.app(), "/quit", json!({})).await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    // Assert
+    assert_eq!((r.status, r.error()), (StatusCode::FORBIDDEN, "Forbidden: invalid API token".to_string()));
+    assert_eq!(rig.quits.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

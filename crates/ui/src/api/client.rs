@@ -178,8 +178,9 @@ impl Client {
         self.send_for("/api/yt-dlp/update", None)
     }
 
-    pub fn shutdown(&self) -> Result<(), ApiError> {
-        self.send("/api/shutdown", None)
+    /// The control process answers first, then stops the stream and exits.
+    pub fn quit(&self) -> Result<(), ApiError> {
+        self.send("/api/quit", None)
     }
 }
 

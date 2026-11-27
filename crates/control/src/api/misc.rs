@@ -1,4 +1,4 @@
-//! `/discord/test`, `/discord/defaults`, `/yt-dlp/update`, `/test/exit-75` and `/shutdown`.
+//! `/discord/test`, `/discord/defaults`, `/yt-dlp/update`, `/test/exit-75`, `/shutdown` and `/quit`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,8 @@ use super::{error_reply, json_reply, text_reply, typed_reply, AppState};
 use crate::discord::Level;
 use crate::ytdlp_update::update_ytdlp as run_update;
 
-const SHUTDOWN_DELAY: Duration = Duration::from_millis(500);
+/// `/shutdown` and `/quit` act this long after their reply, so it gets out first.
+const ACT_AFTER: Duration = Duration::from_millis(500);
 
 pub(super) async fn discord_test(State(state): State<Arc<AppState>>) -> Response {
     if state.config().discord.webhook_url.is_empty() {
@@ -70,8 +71,23 @@ pub(super) async fn exit_75(State(state): State<Arc<AppState>>) -> Response {
 pub(super) async fn shutdown(State(state): State<Arc<AppState>>) -> Response {
     let stop = state.trigger_shutdown.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(SHUTDOWN_DELAY).await;
+        tokio::time::sleep(ACT_AFTER).await;
         stop();
     });
     text_reply(StatusCode::OK, r#"{"ok":true,"message":"Shutting down..."}"#.into())
+}
+
+/// The app's Quit. Answers first; half a second later the control process stops the supervisor and exits 0.
+/// Refused during a landing and its confirmation, where Stop alone goes through.
+pub(super) async fn quit(State(state): State<Arc<AppState>>) -> Response {
+    if let Some(refused) = refuse_during_update(&state) {
+        return refused;
+    }
+    let quit = state.trigger_quit.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(ACT_AFTER).await;
+        quit();
+    });
+    tracing::info!("Quit requested from the app");
+    json_reply(StatusCode::OK, &json!({ "ok": true }))
 }

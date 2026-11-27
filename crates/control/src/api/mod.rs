@@ -123,6 +123,8 @@ pub struct AppDeps {
     pub trigger_restart: Trigger,
     /// Exits 0; the supervisor and the stream keep running.
     pub trigger_shutdown: Trigger,
+    /// Stops the supervisor, then exits 0.
+    pub trigger_quit: Trigger,
 }
 
 /// Shared by every handler.
@@ -148,6 +150,7 @@ pub struct AppState {
     pub apply_config: ApplyConfig,
     pub trigger_restart: Trigger,
     pub trigger_shutdown: Trigger,
+    pub trigger_quit: Trigger,
     /// The setup check that runs now, so a second click waits for it instead of probing again.
     setup_run: Mutex<Option<watch::Receiver<Option<Result<SetupReport, String>>>>>,
 }
@@ -174,6 +177,7 @@ impl AppState {
             apply_config,
             trigger_restart,
             trigger_shutdown,
+            trigger_quit,
         } = deps;
         Self {
             token: new_token(),
@@ -196,6 +200,7 @@ impl AppState {
             apply_config,
             trigger_restart,
             trigger_shutdown,
+            trigger_quit,
             setup_run: Mutex::new(None),
         }
     }
@@ -282,7 +287,8 @@ pub fn router(state: Arc<AppState>, port: u16) -> Router {
         .route("/logs", get(logs::list))
         .route("/logs/{source}/{name}", get(logs::read))
         .route("/yt-dlp/update", post(misc::update_ytdlp))
-        .route("/shutdown", post(misc::shutdown));
+        .route("/shutdown", post(misc::shutdown))
+        .route("/quit", post(misc::quit));
     if state.test_hooks {
         routes = routes.route("/test/exit-75", post(misc::exit_75));
     }

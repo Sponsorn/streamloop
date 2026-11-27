@@ -13,6 +13,7 @@ pub mod logic;
 pub mod logs;
 pub mod monitor;
 pub mod playback;
+pub mod quit;
 pub mod settings;
 pub mod setup_check;
 pub mod start;
@@ -33,6 +34,7 @@ use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Entity, Global, Pixels, QuitMode, Render,
     Subscription, Task, TitlebarOptions, Window, WindowOptions, point, px,
 };
+use gpui_kit::component::Root;
 use streamloop_common::{config, paths::Layout};
 
 use crate::{
@@ -150,16 +152,12 @@ pub(crate) fn begin(cx: &mut App, shell: &Shell, tray_only: bool) {
     }
 }
 
-/// A left click, a double click and Open StreamLoop show the window. Quit StreamLoop takes the icon off the
-/// taskbar and ends the app; the stream stays as it is.
+/// A left click, a double click and Open StreamLoop show the window. Quit StreamLoop asks in the window
+/// whether to quit StreamLoop.
 pub(crate) fn on_tray_event(event: TrayEvent, cx: &mut App, shell: &Shell) {
     match event {
         TrayEvent::Open => show_main_window(cx, shell),
-        TrayEvent::Quit => {
-            save_window_state(cx);
-            shell.tray.detach();
-            cx.quit();
-        }
+        TrayEvent::Quit => quit::ask_to_quit(shell, cx),
     }
 }
 
@@ -341,6 +339,17 @@ fn open_handle(cx: &App) -> Option<AnyWindowHandle> {
         .map(|open| open.handle)
 }
 
+/// The shell of the StreamLoop window, for a view inside it.
+pub(crate) fn main_shell(cx: &App) -> Option<Shell> {
+    Some(cx.try_global::<MainWindow>()?.shell.clone())
+}
+
+/// The app view of the window open now.
+pub(crate) fn main_view(cx: &App) -> Option<Entity<AppView>> {
+    let root = open_handle(cx)?.downcast::<Root>()?;
+    root.read(cx).ok()?.view().clone().downcast::<AppView>().ok()
+}
+
 /// Saves the window's bounds once a move or resize has ended, from the open's settling on.
 fn bounds_changed(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
@@ -426,12 +435,7 @@ mod harness {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        sync::Arc,
-        time::Duration,
-    };
+    use std::time::Duration;
 
     use gpui::{
         AnyWindowHandle, Bounds, Pixels, TestAppContext, VisualTestContext, WindowBounds, point,
@@ -443,8 +447,8 @@ mod tests {
         api::{ApiError, fake::FakeApi},
         app::{POLL_EVERY, Screen},
         test_support::{
-            self, answer_polls, app_view, close, config_json, count, open_shell, record_tray,
-            status_json,
+            self, StateDir, answer_polls, app_view, close, config_json, count, open_shell,
+            record_tray, saving_to, status_json,
         },
         tray::{CLOSED_POLL_EVERY, TRAY_HINT, TrayColour},
         window_state::{self, WindowState},
@@ -452,36 +456,6 @@ mod tests {
 
     /// Past the time in which the window's bounds are still the open's own.
     const SETTLED: Duration = Duration::from_secs(3);
-
-    /// A folder of this test process alone for `window.json`, removed when the test ends.
-    struct StateDir(PathBuf);
-
-    impl StateDir {
-        fn new(name: &str) -> StateDir {
-            let dir =
-                std::env::temp_dir().join(format!("sl-ui-lib-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            fs::create_dir_all(&dir).unwrap();
-            StateDir(dir)
-        }
-
-        fn file(&self) -> PathBuf {
-            self.0.join("window.json")
-        }
-    }
-
-    impl Drop for StateDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn saving_to(fake: Arc<FakeApi>, path: &Path) -> Shell {
-        Shell {
-            state_path: Some(path.to_path_buf()),
-            ..test_support::shell(fake)
-        }
-    }
 
     fn window_bounds(cx: &mut TestAppContext, window: AnyWindowHandle) -> WindowBounds {
         cx.update_window(window, |_, window, _| window.window_bounds())
@@ -869,31 +843,6 @@ mod tests {
         assert_eq!(opened.len(), 1);
         assert_eq!(cx.windows(), opened, "a second Open opens no second window");
         assert_eq!(cx.update(|cx| cx.active_window()), Some(opened[0]));
-    }
-
-    #[gpui::test]
-    fn quit_from_the_tray_takes_the_icon_away(cx: &mut TestAppContext) {
-        // Arrange
-        let fake = FakeApi::new();
-        answer_polls(&fake);
-        let shell = test_support::shell(fake.clone());
-        let tray = record_tray(&shell);
-        cx.update(|cx| begin(cx, &shell, true));
-        cx.run_until_parked();
-
-        // Act
-        cx.update(|cx| on_tray_event(TrayEvent::Quit, cx, &shell));
-        let polled = count(&fake, "GET", "/api/status");
-        cx.executor().advance_clock(CLOSED_POLL_EVERY * 2);
-
-        // Assert
-        assert!(tray.borrow().dropped);
-        assert_eq!(
-            count(&fake, "GET", "/api/status"),
-            polled,
-            "nothing polls after Quit"
-        );
-        assert!(fake.posts().is_empty(), "Quit leaves the stream alone");
     }
 
     #[gpui::test]

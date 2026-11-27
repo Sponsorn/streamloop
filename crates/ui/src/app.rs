@@ -465,7 +465,13 @@ async fn poll(
 }
 
 /// A native dialog with `title`, `detail` and the buttons `ok` and Cancel; true only for `ok`. Escape answers Cancel.
-fn confirm(title: &str, detail: &str, ok: &str, window: &mut Window, cx: &mut App) -> Task<bool> {
+pub(crate) fn confirm(
+    title: &str,
+    detail: &str,
+    ok: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Task<bool> {
     let answer = window.prompt(
         PromptLevel::Warning,
         title,

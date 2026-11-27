@@ -320,7 +320,7 @@ impl<'a> Progress<'a> {
 }
 
 /// Info under the `recovery` toggle, whose template reads "Recovery action: {step}".
-fn recovery(text: &str) -> Alert {
+pub(crate) fn recovery(text: &str) -> Alert {
     Alert { kind: DiscordKind::Recovery, vars: vec![("step".into(), Value::String(text.into()))], level: Level::Info }
 }
 
@@ -581,7 +581,7 @@ impl<'a> Landing<'a> {
 
 /// Asks the supervisor to shut down and gives it 20 s to stop answering and let go of port 4417,
 /// then ends its tree.
-async fn stop_supervisor(deps: &LandingDeps) {
+pub(crate) async fn stop_supervisor(deps: &LandingDeps) {
     let first_pid = (deps.pid_on_port)(SUPERVISOR_PORT);
     deps.client.shutdown().await;
     if wait_until_gone(deps, SHUTDOWN_WAIT).await {

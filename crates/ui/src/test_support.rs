@@ -2,8 +2,9 @@
 
 use std::{
     cell::RefCell,
+    fs,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -28,6 +29,36 @@ pub fn shell(fake: Arc<FakeApi>) -> Shell {
         root: None,
         state_path: None,
         tray: TrayFeed::default(),
+    }
+}
+
+/// `shell` with its window state in `path`.
+pub fn saving_to(fake: Arc<FakeApi>, path: &Path) -> Shell {
+    Shell {
+        state_path: Some(path.to_path_buf()),
+        ..shell(fake)
+    }
+}
+
+/// A folder of this test process alone for `window.json`, removed when the test ends.
+pub struct StateDir(PathBuf);
+
+impl StateDir {
+    pub fn new(name: &str) -> StateDir {
+        let dir = std::env::temp_dir().join(format!("sl-ui-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        StateDir(dir)
+    }
+
+    pub fn file(&self) -> PathBuf {
+        self.0.join("window.json")
+    }
+}
+
+impl Drop for StateDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

@@ -148,6 +148,7 @@ pub struct Rig {
     pub applied: Arc<AtomicUsize>,
     pub restarts: Arc<AtomicUsize>,
     pub shutdowns: Arc<AtomicUsize>,
+    pub quits: Arc<AtomicUsize>,
 }
 
 impl Rig {
@@ -177,6 +178,7 @@ impl Rig {
             applied: Arc::new(AtomicUsize::new(0)),
             restarts: Arc::new(AtomicUsize::new(0)),
             shutdowns: Arc::new(AtomicUsize::new(0)),
+            quits: Arc::new(AtomicUsize::new(0)),
             dir,
         }
     }
@@ -189,7 +191,7 @@ impl Rig {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let notifier: Arc<dyn Notifier> = self.notifier.clone();
         let (setup_runs, protected) = (self.setup_runs.clone(), self.protected.clone());
-        let (applied, restarts, shutdowns) = (self.applied.clone(), self.restarts.clone(), self.shutdowns.clone());
+        let (applied, restarts, shutdowns, quits) = (self.applied.clone(), self.restarts.clone(), self.shutdowns.clone(), self.quits.clone());
         AppDeps {
             config: self.config.clone(),
             config_path: self.layout.config.clone(),
@@ -231,6 +233,9 @@ impl Rig {
             }),
             trigger_shutdown: Arc::new(move || {
                 shutdowns.fetch_add(1, Ordering::SeqCst);
+            }),
+            trigger_quit: Arc::new(move || {
+                quits.fetch_add(1, Ordering::SeqCst);
             }),
         }
     }

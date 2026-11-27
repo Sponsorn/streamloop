@@ -24,6 +24,7 @@ use crate::{
         admin::{check_update_result, stream_key_state, without_blanks},
         autostart_label, changed_fields,
     },
+    quit,
     theme::{ACCENT, BG, BORDER, MONO_FONT, MUTED, TEXT},
     update::{UpdateFlow, update_button},
     widgets::{
@@ -65,10 +66,7 @@ const AUTO_START_DESC: &str = "When off, StreamLoop comes up without streaming a
 const CHECK_LABEL: &str = "Check for Updates";
 const YTDLP_LABEL: &str = "Update yt-dlp";
 const YTDLP_HINT: &str = "yt-dlp updates itself on startup. Update it by hand if playlists show fewer videos than expected.";
-const SHUTDOWN_LABEL: &str = "Shut down the dashboard";
-const SHUTDOWN_TITLE: &str = "Shut down the dashboard server?";
-const SHUTDOWN_DETAIL: &str =
-    "The stream keeps running, but this window stops working until StreamLoop starts again.";
+const QUIT_LABEL: &str = "Quit StreamLoop";
 
 /// The Settings tab, with admin.js's settings variables as fields.
 pub struct SettingsView {
@@ -114,7 +112,6 @@ pub struct SettingsView {
     update_now_shown: bool,
     ytdlp_updating: bool,
     ytdlp_result: SharedString,
-    shutting_down: bool,
     _notes: Subscription,
 }
 
@@ -170,7 +167,6 @@ impl SettingsView {
             update_now_shown: false,
             ytdlp_updating: false,
             ytdlp_result: SharedString::default(),
-            shutting_down: false,
             _notes: RestartNote::observe(cx),
         }
     }
@@ -546,40 +542,6 @@ impl SettingsView {
         .detach();
     }
 
-    /// admin.js `handleShutdown`, with a native dialog for its `confirm()`.
-    fn ask_to_shut_down(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.shutting_down {
-            return;
-        }
-        let ask = self
-            .app
-            .confirm(SHUTDOWN_TITLE, SHUTDOWN_DETAIL, "Shut down", window, cx);
-        cx.spawn(async move |this, cx| {
-            if !ask.await {
-                return;
-            }
-            this.update(cx, |this, cx| this.shut_down(cx)).ok();
-        })
-        .detach();
-    }
-
-    /// The button stays "Shutting down..." for good: the server is going away.
-    fn shut_down(&mut self, cx: &mut Context<Self>) {
-        if self.shutting_down {
-            return;
-        }
-        self.shutting_down = true;
-        cx.notify();
-        let (app, client) = (self.app.clone(), self.app.client.clone());
-        cx.spawn(async move |_, cx| {
-            let answer = cx.background_spawn(async move { client.shutdown() }).await;
-            if let Err(err) = answer {
-                cx.update(|cx| app.toast(err.to_string(), ToastKind::Error, cx));
-            }
-        })
-        .detach();
-    }
-
     fn render_playlists(&self) -> Div {
         settings_panel().child(
             div()
@@ -912,20 +874,16 @@ impl SettingsView {
             .child(hint(YTDLP_HINT))
     }
 
-    fn render_server(&self, cx: &mut Context<Self>) -> Div {
-        let shutdown = btn(Button::new("shutdown-btn")
-            .danger()
-            .label(if self.shutting_down {
-                "Shutting down..."
-            } else {
-                SHUTDOWN_LABEL
-            })
-            .disabled(self.shutting_down))
-        .on_click(cx.listener(|this, _, window, cx| this.ask_to_shut_down(window, cx)));
-        section("Dashboard Server").child(action_row(
-            [shutdown],
-            "Stops the dashboard server only. The stream keeps running.".into(),
-        ))
+    fn render_server(&self) -> Div {
+        let quit = btn(Button::new("quit-btn").danger().label(QUIT_LABEL)).on_click(|_, _, cx| {
+            // The dialog opens in this window, which this click is still updating.
+            cx.defer(|cx| {
+                if let Some(shell) = crate::main_shell(cx) {
+                    quit::ask_to_quit(&shell, cx);
+                }
+            });
+        });
+        section("Dashboard Server").child(action_row([quit], SharedString::default()))
     }
 }
 
@@ -986,7 +944,7 @@ impl Render for SettingsView {
             .children(NOTE.render(&self.app, &self.busy, cx))
             .child(self.render_startup(cx))
             .child(self.render_updates(cx))
-            .child(self.render_server(cx))
+            .child(self.render_server())
     }
 }
 
@@ -1032,6 +990,7 @@ mod tests {
         api::{ApiError, fake::FakeApi},
         app::{AppView, TOAST_FOR},
         dashboard::Tab,
+        quit::{QUIT_DETAIL, QUIT_TITLE},
         test_support::{
             UPDATE_RUNNING, answer_polls, config_json, count, open_app, painted, saved_json, shows,
         },
@@ -1041,9 +1000,6 @@ mod tests {
     const VIDEO_URL: &str = "That looks like a single video URL. Paste a playlist URL or a playlist ID (starts with PL).";
     const NOTE_TEXT: &str =
         "The new ingest URL applies after the stream restarts. Viewers see a short drop.";
-    const SHUTDOWN_TITLE: &str = "Shut down the dashboard server?";
-    const SHUTDOWN_DETAIL: &str =
-        "The stream keeps running, but this window stops working until StreamLoop starts again.";
     const OTHER_BAT: &str = r"C:\StreamLoop3-old\streamloop\START.bat";
 
     /// `GET /api/autostart`.
@@ -1081,11 +1037,7 @@ mod tests {
             "/api/yt-dlp/update",
             Ok(json!({ "ok": true, "version": "2026.11.01" })),
         );
-        fake.reply(
-            "POST",
-            "/api/shutdown",
-            Ok(json!({ "ok": true, "message": "Shutting down..." })),
-        );
+        fake.reply("POST", "/api/quit", Ok(json!({ "ok": true })));
         let (app, window) = open_app(cx, fake.clone());
         click(cx, window, "tab-settings");
         cx.run_until_parked();
@@ -1139,7 +1091,7 @@ mod tests {
         "auto-open-toggle",
         "auto-start-stream-toggle",
         "update-ytdlp-btn",
-        "shutdown-btn",
+        "quit-btn",
     ];
 
     /// Scrolls the dashboard so `id` sits in the middle of the window.
@@ -2093,57 +2045,26 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shutdown_asks_first(cx: &mut TestAppContext) {
+    fn quit_from_settings_confirms_then_posts_quit(cx: &mut TestAppContext) {
+        // Arrange
         let (fake, window, _) = open_settings(cx, config_json());
-        reveal(cx, window, "shutdown-btn");
-        assert!(shows(
-            cx,
-            window,
-            "Stops the dashboard server only. The stream keeps running."
-        ));
+        let label = button(cx, window, "quit-btn");
 
-        click(cx, window, "shutdown-btn");
-        assert_eq!(
-            cx.pending_prompt(),
-            Some((SHUTDOWN_TITLE.to_string(), SHUTDOWN_DETAIL.to_string()))
-        );
-        cx.simulate_prompt_answer("Cancel");
+        // Act
+        click(cx, window, "quit-btn");
         cx.run_until_parked();
+        let asked = cx.pending_prompt();
+        cx.simulate_prompt_answer("Quit");
+        cx.run_until_parked();
+
+        // Assert
+        assert_eq!(label, (Some("Quit StreamLoop".into()), false));
+        assert_eq!(
+            asked,
+            Some((QUIT_TITLE.to_string(), QUIT_DETAIL.to_string()))
+        );
+        assert_eq!(count(&fake, "POST", "/api/quit"), 1);
         assert_eq!(count(&fake, "POST", "/api/shutdown"), 0);
-        assert_eq!(
-            button(cx, window, "shutdown-btn"),
-            (Some("Shut down the dashboard".into()), false)
-        );
-
-        click(cx, window, "shutdown-btn");
-        cx.simulate_prompt_answer("Shut down");
-        cx.run_until_parked();
-
-        assert_eq!(count(&fake, "POST", "/api/shutdown"), 1);
-        assert_eq!(
-            button(cx, window, "shutdown-btn"),
-            (Some("Shutting down...".into()), true)
-        );
-    }
-
-    #[gpui::test]
-    fn a_failed_shutdown_is_a_toast(cx: &mut TestAppContext) {
-        let (fake, window, _) = open_settings(cx, config_json());
-        fake.reply(
-            "POST",
-            "/api/shutdown",
-            Err(ApiError::Server("Forbidden: invalid API token".into())),
-        );
-
-        click(cx, window, "shutdown-btn");
-        cx.simulate_prompt_answer("Shut down");
-        cx.run_until_parked();
-
-        assert!(shows(cx, window, "Forbidden: invalid API token"));
-        assert_eq!(
-            button(cx, window, "shutdown-btn"),
-            (Some("Shutting down...".into()), true)
-        );
     }
 
     #[gpui::test]
@@ -2174,7 +2095,7 @@ mod tests {
             "auto-start-stream-toggle".into(),
             "check-update-btn".into(),
             "update-ytdlp-btn".into(),
-            "shutdown-btn".into(),
+            "quit-btn".into(),
         ];
         walk(cx, window, &stops, "tab");
 

@@ -169,6 +169,11 @@ impl TrayFeed {
         feed.show();
     }
 
+    /// False when the last poll found nothing answering, as the icon shows it.
+    pub fn reachable(&self) -> bool {
+        !self.0.borrow().unreachable
+    }
+
     pub fn notify(&self, title: &str, text: &str) {
         if let Some(output) = &self.0.borrow().output {
             output.notify(title, text);

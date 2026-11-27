@@ -5,7 +5,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -14,7 +14,7 @@ use streamloop_common::api::{ControlCmd, SupervisorStatus};
 use streamloop_common::paths::{Layout, Root};
 use streamloop_common::time::local_date;
 use streamloop_common::version::VERSION;
-use streamloop_control::app::{self, App, EnvVars, ExitSwitch, Wiring};
+use streamloop_control::app::{self, App, EnvVars, ExitSwitch, Wiring, QUIT_LINE};
 use streamloop_control::clock::SystemClock;
 use streamloop_control::http::FakeHttp;
 use streamloop_control::landing::LandedRecord;
@@ -252,6 +252,17 @@ impl Rig {
 
     fn status_polls(&self) -> usize {
         self.sup.calls().iter().filter(|c| **c == Call::Status).count()
+    }
+
+    fn supervisor_shutdowns(&self) -> usize {
+        self.sup.calls().iter().filter(|c| **c == Call::Shutdown).count()
+    }
+
+    /// The day's timeline as the exit leaves it on disk, for after the API has gone.
+    fn timeline_on_disk(&self) -> Vec<String> {
+        let file = self.layout().app_logs.join(format!("events-{}.jsonl", local_date(SystemTime::now())));
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["message"].as_str().unwrap().to_string()).collect()
     }
 
     fn restart_encoder_calls(&self) -> usize {
@@ -631,6 +642,135 @@ async fn shutdown_returns_0_and_never_stops_the_supervisor() {
     assert_eq!(reply.status(), 200);
     assert_eq!(code, 0);
     assert!(!rig.sup.calls().contains(&Call::Shutdown), "no /shutdown reaches the supervisor");
+}
+
+/// Starts the control process with a supervisor that stops at `/shutdown`, quits it once the launcher has
+/// attached, and returns the exit code.
+async fn quit_and_exit(rig: &Rig) -> i32 {
+    rig.sup.stop_answering_on_shutdown();
+    let app = rig.start().await;
+    rig.wait_until("the launcher attaches", || rig.status_polls() > 0).await;
+    let reply = rig.post("/api/quit", json!({})).await;
+    assert_eq!(reply.status(), 200);
+    exit_code(app).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quit_stops_the_supervisor_and_exits_0() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.stop_answering_on_shutdown();
+    let app = rig.start().await;
+    rig.wait_until("the launcher attaches", || rig.status_polls() > 0).await;
+
+    // Act
+    let reply = rig.post("/api/quit", json!({})).await;
+    let status = reply.status();
+    let body = json_of(reply).await;
+    let code = exit_code(app).await;
+
+    // Assert
+    assert_eq!((status, body), (reqwest::StatusCode::OK, json!({ "ok": true })));
+    assert_eq!(code, 0);
+    assert_eq!(rig.supervisor_shutdowns(), 1, "the supervisor got POST /shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quit_writes_no_stopped_by_user_marker() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+
+    // Act
+    let code = quit_and_exit(&rig).await;
+
+    // Assert
+    assert_eq!(code, 0);
+    assert!(!rig.layout().stopped_marker.exists(), "the next start follows autoStartStream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quit_keeps_an_earlier_marker() {
+    // Arrange: stopped from the dashboard before, so no supervisor runs
+    let rig = Rig::new("PLrealplaylist001");
+    rig.write("data/stopped-by-user", b"");
+    rig.sup.set_status(None);
+    let app = rig.start().await;
+
+    // Act
+    let reply = rig.post("/api/quit", json!({})).await;
+    let code = exit_code(app).await;
+
+    // Assert
+    assert_eq!(reply.status(), 200);
+    assert_eq!(code, 0);
+    assert!(rig.layout().stopped_marker.exists(), "Stop then Quit stays stopped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quit_holds_the_launcher_so_nothing_relaunches() {
+    // Arrange: a supervisor that stops answering at /shutdown but holds port 4417 for 9 s more, past the
+    // launcher's three missed polls, and a launch that would spawn
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.stop_answering_on_shutdown();
+    rig.launchable();
+    let port_held_until = Arc::new(Mutex::new(None::<Instant>));
+    let mut wiring = rig.wiring();
+    let held = port_held_until.clone();
+    wiring.pid_on_port = Arc::new(move |_| held.lock().unwrap().filter(|until| Instant::now() < *until).map(|_| 4242));
+    let app = App::start(wiring).await.unwrap_or_else(|code| panic!("the control process did not start: exit {code}"));
+    rig.wait_until("the launcher attaches", || rig.status_polls() > 0).await;
+
+    // Act
+    *port_held_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(9));
+    let reply = rig.post("/api/quit", json!({})).await;
+    let code = tokio::time::timeout(Duration::from_secs(20), app.wait()).await.expect("the control process exited");
+
+    // Assert
+    assert_eq!(reply.status(), 200);
+    assert_eq!(code, 0);
+    assert_eq!(rig.supervisor_shutdowns(), 1);
+    assert_eq!(rig.spawns(), 0, "nothing was launched while the supervisor went away");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quit_puts_its_line_on_the_timeline_and_on_discord_as_info() {
+    // Arrange: the recovery toggle on, as by default, and off
+    let on = Rig::new("PLrealplaylist001");
+    let off = Rig::new("PLrealplaylist001");
+    off.patch_config(json!({ "discord": { "webhookUrl": OLD_HOOK, "events": { "recovery": false } } }));
+
+    // Act
+    let codes = [quit_and_exit(&on).await, quit_and_exit(&off).await];
+
+    // Assert
+    assert_eq!(codes, [0, 0]);
+    for rig in [&on, &off] {
+        assert!(rig.timeline_on_disk().contains(&QUIT_LINE.to_string()), "{:?}", rig.timeline_on_disk());
+    }
+    let sent: Vec<Value> = on.discord_posts().iter().map(|p| serde_json::from_str(p).unwrap()).filter(|p: &Value| p.to_string().contains(QUIT_LINE)).collect();
+    assert_eq!(sent.len(), 1, "{:?}", on.discord_posts());
+    assert_eq!(sent[0]["embeds"][0]["color"], 3_447_003, "sent as info");
+    assert!(!off.discord_posts().iter().any(|p| p.contains(QUIT_LINE)), "{:?}", off.discord_posts());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quit_asked_twice_runs_once() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.stop_answering_on_shutdown();
+    let app = rig.start().await;
+    rig.wait_until("the launcher attaches", || rig.status_polls() > 0).await;
+
+    // Act
+    let first = rig.post("/api/quit", json!({})).await;
+    let second = rig.post("/api/quit", json!({})).await;
+    let code = exit_code(app).await;
+
+    // Assert
+    assert_eq!((first.status(), second.status()), (reqwest::StatusCode::OK, reqwest::StatusCode::OK));
+    assert_eq!(code, 0);
+    assert_eq!(rig.supervisor_shutdowns(), 1);
+    assert_eq!(rig.timeline_on_disk().iter().filter(|m| *m == QUIT_LINE).count(), 1);
 }
 
 #[test]
