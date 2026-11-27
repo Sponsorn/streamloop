@@ -1,6 +1,6 @@
 //! The UI tests' window on a `FakeApi`: opening the app, reading what a window painted, and canned answers.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gpui::{AnyWindowHandle, AppContext, ElementId, Entity, TestAppContext};
 use gpui_kit::{base::test_support::texts, test::TestWindowExt};
@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::{
     api::{client::Client, fake::FakeApi},
     app::AppView,
+    start::StartedBat,
 };
 
 /// Opens the app window on `fake` and runs until it waits for a timer.
@@ -17,23 +18,29 @@ pub fn open_app(cx: &mut TestAppContext, fake: Arc<FakeApi>) -> (Entity<AppView>
     open(cx, fake, None)
 }
 
-/// `open_app` for an app that has just started `START.bat` in `root`, as `run` opens it.
+/// `open_app` for an app that started `START.bat` in `root` `ago` before its window opened, as `run` opens it.
 pub fn open_app_started(
     cx: &mut TestAppContext,
     fake: Arc<FakeApi>,
     root: PathBuf,
+    ago: Duration,
 ) -> (Entity<AppView>, AnyWindowHandle) {
-    open(cx, fake, Some(root))
+    open(cx, fake, Some((root, ago)))
 }
 
 fn open(
     cx: &mut TestAppContext,
     fake: Arc<FakeApi>,
-    started_bat: Option<PathBuf>,
+    started_bat: Option<(PathBuf, Duration)>,
 ) -> (Entity<AppView>, AnyWindowHandle) {
     // Init gets its own update: in the window's update, its effects draw the new window a second time.
     cx.update(gpui_kit::init);
     cx.update(crate::theme::init);
+    let now = cx.update(|cx| crate::app::now_ms(cx));
+    let started_bat = started_bat.map(|(root, ago)| StartedBat {
+        root,
+        at_ms: now - ago.as_millis() as i64,
+    });
     let client = Client(fake);
     let (window, app) = cx
         .update(|cx| {

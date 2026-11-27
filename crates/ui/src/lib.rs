@@ -37,6 +37,7 @@ use crate::{
     api::{Api, ApiError, client::Client, http::HttpApi},
     app::AppView,
     instance::Claim,
+    start::StartedBat,
 };
 
 /// What `streamloop.exe ui` was asked for. `root` is absolute; `follow` is read by a later stage.
@@ -67,11 +68,15 @@ pub fn run(opts: UiOptions) {
         .unwrap_or(DEFAULT_PORT);
     let api = Arc::new(HttpApi::new(port));
     let answered = api.get_json("/api/status").err() != Some(ApiError::Unreachable);
-    let started_bat = if start::start_if_needed(root, answered) {
-        opts.root.clone()
-    } else {
-        None
-    };
+    // GPUI's production clock is `Utc::now`, the time base the view measures the hint against.
+    let started_bat = opts
+        .root
+        .clone()
+        .filter(|_| start::start_if_needed(root, answered))
+        .map(|root| StartedBat {
+            root,
+            at_ms: chrono::Utc::now().timestamp_millis(),
+        });
     // The show signal arrives on a thread of its own; GPUI's main thread takes it from this channel.
     let (show_tx, show_rx) = async_channel::unbounded::<()>();
     instance.on_show(move || {

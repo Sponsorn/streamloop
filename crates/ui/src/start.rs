@@ -2,7 +2,7 @@
 
 use std::{
     ffi::OsStr,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
 };
@@ -85,6 +85,13 @@ fn names_start_bat<S: AsRef<OsStr>>(args: &[S], root: &Path) -> bool {
     let bat = fold(&root.join("START.bat").to_string_lossy());
     line.match_indices(&bat)
         .any(|(at, _)| line[at + bat.len()..].chars().next().is_none_or(|c| c == ' '))
+}
+
+/// This app started `START.bat` in `root` at `at_ms`, wall-clock milliseconds since the epoch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StartedBat {
+    pub root: PathBuf,
+    pub at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]

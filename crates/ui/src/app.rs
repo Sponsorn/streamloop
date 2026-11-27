@@ -1,7 +1,7 @@
 //! The window's root view: the Connecting screen, the wizard or the dashboard, and what every view
 //! shares: the dashboard's poll, toasts and confirm dialogs.
 
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use gpui::{
     AnyWindowHandle, App, AppContext, AsyncApp, Context, Entity, FocusHandle, FontWeight,
@@ -17,7 +17,7 @@ use crate::{
         types::{Event, Status, UpdateStatus},
     },
     dashboard::DashboardView,
-    start::{self, Connecting, HINT_AFTER},
+    start::{self, Connecting, HINT_AFTER, StartedBat},
     theme::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
         TOAST_SUCCESS_BG, TOAST_SUCCESS_BORDER,
@@ -43,6 +43,11 @@ pub fn now_ms(cx: &App) -> i64 {
         .clock()
         .utc_now()
         .timestamp_millis()
+}
+
+/// How long ago this app started `START.bat`.
+fn since(started: &StartedBat, cx: &App) -> Duration {
+    Duration::from_millis(now_ms(cx).saturating_sub(started.at_ms).max(0) as u64)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,16 +144,11 @@ type PollAnswer = (
     Option<UpdateStatus>,
 );
 
-/// This app started `START.bat` in `root` at `at_ms`, and nothing has answered since.
-struct Starting {
-    root: PathBuf,
-    at_ms: i64,
-}
-
 pub struct AppView {
     handle: AppHandle,
     body: Body,
-    starting: Option<Starting>,
+    /// Until the first answer.
+    starting: Option<StartedBat>,
     /// Holds the keyboard focus whenever no control does, so Tab always reaches the first control.
     focus: FocusHandle,
     failures: u32,
@@ -162,10 +162,10 @@ pub struct AppView {
 }
 
 impl AppView {
-    /// `started_bat` is the root when this app has just started `START.bat` there.
+    /// `started_bat` when this app started `START.bat` before opening the window.
     pub fn new(
         client: Client,
-        started_bat: Option<PathBuf>,
+        started_bat: Option<StartedBat>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -177,21 +177,18 @@ impl AppView {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let focus_lost = cx.on_focus_lost(window, |app, window, cx| app.focus.focus(window, cx));
-        let starting = started_bat.map(|root| Starting {
-            root,
-            at_ms: now_ms(cx),
-        });
         // Connecting redraws when the hint is due, which can fall between two tries.
-        let hint_due = starting.is_some().then(|| {
+        let hint_due = started_bat.as_ref().map(|s| {
+            let due_in = HINT_AFTER.saturating_sub(since(s, cx));
             cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(HINT_AFTER).await;
+                cx.background_executor().timer(due_in).await;
                 this.update(cx, |_, cx| cx.notify()).ok();
             })
         });
         let mut view = Self {
             handle,
             body: Body::Connecting,
-            starting,
+            starting: started_bat,
             focus,
             failures: 0,
             toasts: Vec::new(),
@@ -337,11 +334,9 @@ impl AppView {
     }
 
     fn connecting_state(&self, cx: &App) -> Connecting {
-        let since = self.starting.as_ref().map_or(Duration::ZERO, |s| {
-            Duration::from_millis(now_ms(cx).saturating_sub(s.at_ms).max(0) as u64)
-        });
+        let elapsed = self.starting.as_ref().map_or(Duration::ZERO, |s| since(s, cx));
         let root = self.starting.as_ref().map(|s| s.root.as_path());
-        start::connecting(self.starting.is_some(), since, root)
+        start::connecting(self.starting.is_some(), elapsed, root)
     }
 
     /// admin.js `init()`.
@@ -553,7 +548,7 @@ mod tests {
         let fake = FakeApi::new();
 
         // Act
-        let (app, window) = open_app_started(cx, fake.clone(), root);
+        let (app, window) = open_app_started(cx, fake.clone(), root, Duration::ZERO);
 
         // Assert
         assert_eq!(screen(cx, &app), Screen::Connecting);
@@ -578,6 +573,27 @@ mod tests {
             shows(cx, window, "Can't reach StreamLoop. Retrying..."),
             "Starting shows only until the first answer"
         );
+    }
+
+    #[gpui::test]
+    fn the_hint_is_due_30_s_after_start_bat_started_not_after_the_window_opened(
+        cx: &mut TestAppContext,
+    ) {
+        // Arrange: START.bat started 10 s before the window opened, as a slow GPUI start-up leaves it
+        let root = std::path::PathBuf::from(r"C:\Temp\sl4 Ö (x)");
+        let hint = r"StreamLoop did not start. Double-click START.bat in C:\Temp\sl4 Ö (x) to see why.";
+        let (_, window) =
+            open_app_started(cx, FakeApi::new(), root, Duration::from_secs(10));
+
+        // Act
+        cx.executor().advance_clock(Duration::from_secs(19));
+        let at_29_s = shows(cx, window, hint);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        let at_30_s = shows(cx, window, hint);
+
+        // Assert
+        assert!(!at_29_s);
+        assert!(at_30_s);
     }
 
     #[gpui::test]
