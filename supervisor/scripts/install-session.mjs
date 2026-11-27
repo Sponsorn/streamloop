@@ -39,7 +39,7 @@ import {
   spawn, run, KEY, INGEST, READ_URL, SUP, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, nodeStatus, supStatus, waitLive,
   packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
   allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders, useApiPort,
-  VARIANTS, exeName, ASSET_PORT, buildVariants, writeReleaseList, assetHost,
+  VARIANTS, exeName, ASSET_PORT, buildVariants, writeReleaseList, assetHost, TAR,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -774,6 +774,9 @@ async function v305Zip(r) {
 /** 3.0.5 extracted, started from its own START.bat and taken live with the wizard's calls. */
 async function install305(zip, label) {
   const i = { extractMs: await extract(zip, S) };
+  // 3.0.5's own yt-dlp falls behind YouTube and quietConfig turns its self-update off, so it runs the tested ZIP's.
+  const ytdlp = await run(TAR, ['-xf', DIST_ZIP, '-C', S, 'streamloop/yt-dlp/yt-dlp.exe'], { timeout: 120_000 });
+  if (ytdlp.status !== 0) throw new Stop(`tar could not take yt-dlp.exe from ${DIST_ZIP}: ${ytdlp.stderr}`);
   quietConfig(join(ROOT, 'app', 'config.example.json'), { port: API_PORT });
   bat = startBat(ROOT, label, { STREAMLOOP_TEST_HOOKS: '1' });
   i.nodeUpMs = await nodeUp(`3.0.5 (${label})`);
