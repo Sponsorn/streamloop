@@ -63,13 +63,16 @@ export async function waitFor(what, fn, timeoutMs, everyMs = 1000) {
 }
 
 // One START.bat in a hidden cmd. Its console output goes to a file; stdin is NUL, so its
-// `pause` lines return at once.
-export function startBat(root, label, extraEnv = {}) {
+// `pause` lines return at once. STREAMLOOP_FROM_APP=1 says an app started it, so the control process opens no
+// window of its own at its first start; a run that tests that window passes `{ fromApp: false }`.
+export function startBat(root, label, extraEnv = {}, { fromApp = true } = {}) {
   const log = openSync(join(OUT, `console-${label}.log`), 'a');
   const pathNoFfmpeg = (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
+  const env = { ...process.env, PATH: pathNoFfmpeg, ...extraEnv };
+  if (fromApp) env.STREAMLOOP_FROM_APP ??= '1';
+  else delete env.STREAMLOOP_FROM_APP;
   const child = spawn('cmd.exe', ['/d', '/s', '/c', `""${join(root, 'START.bat')}""`], {
-    windowsVerbatimArguments: true, stdio: ['ignore', log, log], cwd: root,
-    env: { ...process.env, PATH: pathNoFfmpeg, ...extraEnv },
+    windowsVerbatimArguments: true, stdio: ['ignore', log, log], cwd: root, env,
   });
   child.on('exit', (code) => { closeSync(log); note(`START.bat (${label}) exited`, { code }); });
   return child;

@@ -126,6 +126,8 @@ const config = JSON.parse(readFileSync(example, 'utf8'));
 config.supervisor = { ...config.supervisor, ingestUrl: INGEST };
 writeFileSync(example, JSON.stringify(config, null, 2));
 const env = {
+  // This script starts the app itself, so the control process opens no second window.
+  STREAMLOOP_FROM_APP: '1',
   STREAMLOOP_TEST_HLS_URL: HLS,
   STREAMLOOP_TEST_RELEASES: releasesFile,
   ...(LISTED.length ? { STREAMLOOP_TEST_BREAK_AT_S: String(BREAK_AT_S) } : {}),

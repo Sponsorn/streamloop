@@ -59,8 +59,6 @@ const REDIRECT_URL: &str = "https://localhost";
 /// admin.js `copyRedirectUrl` shows "Copied" this long.
 const COPIED_FOR: Duration = Duration::from_secs(2);
 const AUTOSTART_LABEL: &str = "Run on Windows startup";
-const AUTO_OPEN_LABEL: &str = "Open the web dashboard when StreamLoop starts";
-const AUTO_OPEN_DESC: &str = "Opens the web dashboard in your browser each time the server starts";
 const AUTO_START_LABEL: &str = "Start the stream when StreamLoop starts";
 const AUTO_START_DESC: &str = "When off, StreamLoop comes up without streaming and waits for Start";
 const CHECK_LABEL: &str = "Check for Updates";
@@ -104,7 +102,6 @@ pub struct SettingsView {
     autostart: bool,
     /// `#autostart-target`.
     autostart_target: SharedString,
-    auto_open: bool,
     auto_start_stream: bool,
     checking: bool,
     check_result: SharedString,
@@ -160,7 +157,6 @@ impl SettingsView {
             save_disabled: false,
             autostart: false,
             autostart_target: "-".into(),
-            auto_open: true,
             auto_start_stream: true,
             checking: false,
             check_result: SharedString::default(),
@@ -220,7 +216,6 @@ impl SettingsView {
             cx,
         );
         put_text(&self.channel, &settings.twitch_channel, window, cx);
-        self.auto_open = settings.auto_open_admin;
         self.auto_start_stream = settings.auto_start_stream;
         self.loaded = config;
         self.form_loaded = true;
@@ -422,32 +417,6 @@ impl SettingsView {
                     );
                 }
                 this.load_autostart(cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// admin.js `handleAutoOpenToggle`: a failed save puts the switch back.
-    fn change_auto_open(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.auto_open = on;
-        cx.notify();
-        let client = self.app.client.clone();
-        cx.spawn(async move |this, cx| {
-            let answer = cx
-                .background_spawn(async move { client.save_config(json!({ "autoOpenAdmin": on })) })
-                .await;
-            this.update(cx, |this, cx| match answer {
-                Ok(saved) => reload_warning(&this.app, &saved, cx),
-                Err(err) => {
-                    this.app.toast(
-                        format!("Could not change the setting: {err}"),
-                        ToastKind::Error,
-                        cx,
-                    );
-                    this.auto_open = !on;
-                    cx.notify();
-                }
             })
             .ok();
         })
@@ -808,12 +777,6 @@ impl SettingsView {
             .on_click(
                 cx.listener(|this, checked: &bool, _, cx| this.change_autostart(*checked, cx)),
             );
-        let auto_open = Switch::new("auto-open-toggle")
-            .checked(self.auto_open)
-            .accessibility_label(AUTO_OPEN_LABEL)
-            .on_click(
-                cx.listener(|this, checked: &bool, _, cx| this.change_auto_open(*checked, cx)),
-            );
         let auto_start_stream = Switch::new("auto-start-stream-toggle")
             .checked(self.auto_start_stream)
             .accessibility_label(AUTO_START_LABEL)
@@ -831,9 +794,6 @@ impl SettingsView {
             ))
             .child(
                 // admin.css `.toggle-row-stacked`.
-                toggle_row(AUTO_OPEN_LABEL, &[AUTO_OPEN_DESC.into()], auto_open).mt(px(8.)),
-            )
-            .child(
                 toggle_row(
                     AUTO_START_LABEL,
                     &[AUTO_START_DESC.into()],
@@ -1075,7 +1035,7 @@ mod tests {
     }
 
     /// Controls the wheel can be sent to: the window draws only part of the tab.
-    const LANDMARKS: [&str; 16] = [
+    const LANDMARKS: [&str; 15] = [
         "tab-settings",
         "set-add-playlist",
         "set-ingest",
@@ -1088,7 +1048,6 @@ mod tests {
         "set-twitch-channel",
         "set-btn",
         "autostart-toggle",
-        "auto-open-toggle",
         "auto-start-stream-toggle",
         "update-ytdlp-btn",
         "quit-btn",
@@ -1230,7 +1189,6 @@ mod tests {
         config["twitchClientId"] = json!("abc123");
         config["twitchClientSecret"] = json!("********");
         config["twitchChannel"] = json!("loopchannel");
-        config["autoOpenAdmin"] = json!(false);
         let autostart = autostart_json(true, Some(r"C:\StreamLoop3\streamloop\START.bat"), true);
         let (_, window, app) = open_settings_with(cx, Ok(config), autostart);
         let view = settings(cx, &app);
@@ -1259,7 +1217,6 @@ mod tests {
             assert!(shows(cx, window, hint), "{hint}");
         }
         assert_eq!(checked(cx, window, "twitch-enabled-toggle"), Some(true));
-        assert_eq!(checked(cx, window, "auto-open-toggle"), Some(false));
         assert_eq!(checked(cx, window, "autostart-toggle"), Some(true));
         reveal(cx, window, "set-twitch-channel");
         assert!(shows(
@@ -1881,65 +1838,23 @@ mod tests {
     }
 
     #[gpui::test]
-    fn auto_open_flips_back_when_the_save_fails(cx: &mut TestAppContext) {
+    fn settings_has_no_web_dashboard_toggle(cx: &mut TestAppContext) {
+        // The config still holds the old key, as an upgraded install's does.
         let (fake, window, _) = open_settings(cx, config_json());
-        reveal(cx, window, "auto-open-toggle");
-        assert!(shows(
+        reveal(cx, window, "auto-start-stream-toggle");
+
+        assert!(shows(cx, window, "Start the stream when StreamLoop starts"));
+        assert!(!shows(
             cx,
             window,
             "Open the web dashboard when StreamLoop starts"
         ));
-        assert!(shows(
+        assert!(!shows(
             cx,
             window,
             "Opens the web dashboard in your browser each time the server starts"
         ));
-        assert_eq!(
-            named(cx, window, "auto-open-toggle").0.as_deref(),
-            Some("Open the web dashboard when StreamLoop starts")
-        );
-        assert_eq!(checked(cx, window, "auto-open-toggle"), Some(true));
-
-        click(cx, window, "auto-open-toggle");
-        cx.run_until_parked();
-
-        assert_eq!(config_posts(&fake), [json!({ "autoOpenAdmin": false })]);
-        assert_eq!(checked(cx, window, "auto-open-toggle"), Some(false));
-
-        fake.reply(
-            "POST",
-            "/api/config",
-            Err(ApiError::Server("EPERM: operation not permitted".into())),
-        );
-        click(cx, window, "auto-open-toggle");
-        assert_eq!(checked(cx, window, "auto-open-toggle"), Some(true));
-        cx.run_until_parked();
-
-        assert_eq!(config_posts(&fake)[1], json!({ "autoOpenAdmin": true }));
-        assert!(shows(
-            cx,
-            window,
-            "Could not change the setting: EPERM: operation not permitted"
-        ));
-        assert_eq!(checked(cx, window, "auto-open-toggle"), Some(false));
-
-        fake.reply(
-            "POST",
-            "/api/config",
-            Ok(json!({
-                "ok": true, "restartRequired": false,
-                "reloadError": "timeout", "reloadErrorCode": "ETIMEDOUT"
-            })),
-        );
-        click(cx, window, "auto-open-toggle");
-        cx.run_until_parked();
-
-        assert!(shows(
-            cx,
-            window,
-            "Saved, but the supervisor could not reload: timeout"
-        ));
-        assert_eq!(checked(cx, window, "auto-open-toggle"), Some(true));
+        assert!(config_posts(&fake).is_empty());
     }
 
     #[gpui::test]
@@ -2091,7 +2006,6 @@ mod tests {
             "set-twitch-channel".into(),
             "set-btn".into(),
             "autostart-toggle".into(),
-            "auto-open-toggle".into(),
             "auto-start-stream-toggle".into(),
             "check-update-btn".into(),
             "update-ytdlp-btn".into(),
@@ -2235,7 +2149,6 @@ mod tests {
             let stops: Vec<ElementId> = vec![
                 "set-btn".into(),
                 "autostart-toggle".into(),
-                "auto-open-toggle".into(),
                 "auto-start-stream-toggle".into(),
                 "check-update-btn".into(),
                 "settings-update-btn".into(),

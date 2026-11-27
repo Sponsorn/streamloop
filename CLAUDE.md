@@ -31,6 +31,8 @@ Rust stable with the MSVC toolchain. `config.json` is gitignored to prevent comm
 
 `supervisor/scripts/node-session.mjs` runs the end-to-end sessions against `ROOT\streamloop.exe control`, started from a hidden launcher console that hands it NUL handles, as a hidden `START.bat` does.
 
+The control process opens the app window (`ROOT\streamloop.exe detach ui --root ROOT`) at the first start of a `START.bat` started by hand: `STREAMLOOP_START=first`, no update landed, and `STREAMLOOP_FROM_APP` not `1` (`detach start-bat` sets it, and `install-kit.mjs`'s `startBat` and `ui-session.mjs` do, unless a run passes `{ fromApp: false }`). A restart, an update, a rollback and a start with no `START.bat` word (`control --root`, as `node-session.mjs` and `api-parity.mjs` run it) open nothing. `autoOpenAdmin` stays in `config.json`, loaded and saved, and nothing reads it.
+
 Test-only environment variables, never set by `config.json` or a release:
 - `STREAMLOOP_DEBUG_FAULTS=1`: the launcher starts the supervisor with `--debug-faults` (opens `POST /debug/fault`). The flag belongs to the supervisor process, not to the control process: a control process restarted without the variable attaches to the running supervisor, and `/debug/fault` stays open until that supervisor is restarted.
 - `STREAMLOOP_TEST_HOOKS=1`: adds `POST /api/test/exit-75`, the update restart without an update.

@@ -61,6 +61,8 @@ const CLOSE_LIMIT: Duration = Duration::from_secs(5);
 pub struct EnvVars {
     /// `STREAMLOOP_START`: `first`, `restart` or `rollback`.
     pub start: Option<String>,
+    /// `STREAMLOOP_FROM_APP=1`: the app started this START.bat, so it has its window already.
+    pub from_app: bool,
     /// `STREAMLOOP_DEBUG_FAULTS=1`: the supervisor starts with `--debug-faults`.
     pub debug_faults: bool,
     /// `STREAMLOOP_TEST_HOOKS=1`: opens `POST /api/test/exit-75`.
@@ -78,6 +80,7 @@ impl EnvVars {
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
         EnvVars {
             start: var("STREAMLOOP_START"),
+            from_app: var("STREAMLOOP_FROM_APP").as_deref() == Some("1"),
             debug_faults: var("STREAMLOOP_DEBUG_FAULTS").as_deref() == Some("1"),
             test_hooks: var("STREAMLOOP_TEST_HOOKS").as_deref() == Some("1"),
             test_hls_url: var("STREAMLOOP_TEST_HLS_URL"),
@@ -105,6 +108,8 @@ pub struct Wiring {
     pub pid_on_port: PidOnPort,
     pub protect: Protect,
     pub setup_check: RunSetupCheck,
+    /// Opens the app's window; called once per start that `opens_window` accepts, and only reaps what it starts.
+    pub open_window: Arc<dyn Fn() + Send + Sync>,
     /// One message per Ctrl+C or console close, whenever it came; the first one after the start ends the process.
     pub stop_signal: mpsc::UnboundedReceiver<()>,
 }
@@ -116,8 +121,10 @@ impl Wiring {
         let vars = EnvVars::from_env();
         let http: Arc<dyn Http> = Arc::new(ReqwestHttp::new());
         let runner: Arc<dyn Runner> = Arc::new(ProcessRunner);
+        let window_root = root.dir.clone();
         Wiring {
             root,
+            open_window: Arc::new(move || open_app_window(&window_root)),
             client: Arc::new(SupervisorClient::new(http.clone(), None, None)),
             updater_http: Arc::new(updater::updater_http(vars.test_releases.is_some())),
             http,
@@ -523,6 +530,7 @@ impl App {
             pid_on_port,
             protect,
             setup_check,
+            open_window,
             stop_signal,
         } = w;
         let layout = Layout::new(&root.dir);
@@ -720,6 +728,9 @@ impl App {
 
         control.confirm_then_watch_updates(landed);
         control.start_services();
+        if opens_window(vars.start.as_deref(), &kind, vars.from_app) {
+            open_window();
+        }
         // An outdated yt-dlp can stop after the first page of a playlist, so it updates itself at every start.
         if config.auto_update_ytdlp {
             update_ytdlp_in_background(runner, layout.ytdlp.clone(), playlists, "start");
@@ -843,6 +854,32 @@ fn start_kind(word: Option<&str>, landed: Option<&LandedRecord>, layout: &Layout
         Some("restart") => StartKind::Restart,
         Some("rollback") => StartKind::Rollback { held: LandedRecord::read(&layout.rolled_back).map(|r| r.held) },
         _ => StartKind::First,
+    }
+}
+
+/// True only when START.bat's word is `first`, the start kind is First (no update landed), and the app did
+/// not start this START.bat. No word (dev, the harness's `control --root`) opens nothing.
+pub fn opens_window(word: Option<&str>, kind: &StartKind, from_app: bool) -> bool {
+    word == Some("first") && *kind == StartKind::First && !from_app
+}
+
+/// `ROOT\streamloop.exe detach ui --root ROOT`: the intermediate starts the app with no living parent, or
+/// makes one that is already running show its window, and exits. Failing to start it costs only the window.
+fn open_app_window(root: &Path) {
+    let exe = root.join("streamloop.exe");
+    let mut command = streamloop_common::procs::command(&exe);
+    command
+        .args(["detach", "ui", "--root"])
+        .arg(std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match command.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(err) => tracing::warn!(%err, "Could not open the app's window"),
     }
 }
 

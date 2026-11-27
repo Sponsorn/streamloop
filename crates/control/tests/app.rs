@@ -4,6 +4,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -14,11 +15,11 @@ use streamloop_common::api::{ControlCmd, SupervisorStatus};
 use streamloop_common::paths::{Layout, Root};
 use streamloop_common::time::local_date;
 use streamloop_common::version::VERSION;
-use streamloop_control::app::{self, App, EnvVars, ExitSwitch, Wiring, QUIT_LINE};
+use streamloop_control::app::{self, opens_window, App, EnvVars, ExitSwitch, Wiring, QUIT_LINE};
 use streamloop_control::clock::SystemClock;
 use streamloop_control::http::FakeHttp;
 use streamloop_control::landing::LandedRecord;
-use streamloop_control::launcher::{SpawnHandle, Spawner};
+use streamloop_control::launcher::{SpawnHandle, Spawner, StartKind};
 use streamloop_control::leftovers::remove_3_0_leftovers;
 use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::fake::{Call, FakeSupervisor};
@@ -93,6 +94,8 @@ struct Rig {
     /// never run, since neither is installed.
     runner: Arc<FakeRunner>,
     spawner: Arc<NoSpawner>,
+    /// How many times the control process asked for the app's window.
+    window_opens: Arc<AtomicUsize>,
     vars: EnvVars,
     /// The root is the exe's own folder: the updater stages, as in an install.
     from_exe: bool,
@@ -124,6 +127,7 @@ impl Rig {
             updater_http: Arc::new(FakeHttp::new()),
             runner,
             spawner: Arc::new(NoSpawner::default()),
+            window_opens: Arc::new(AtomicUsize::new(0)),
             vars: EnvVars::default(),
             from_exe: false,
             stop,
@@ -152,6 +156,12 @@ impl Rig {
             pid_on_port: Arc::new(|_| None),
             protect: Arc::new(|_| Ok("blob".to_string())),
             setup_check: streamloop_control::api::setup_check_with(runner),
+            open_window: {
+                let opens = self.window_opens.clone();
+                Arc::new(move || {
+                    opens.fetch_add(1, Ordering::SeqCst);
+                })
+            },
             stop_signal: self.stop_rx.lock().unwrap().take().expect("one wiring per rig"),
         }
     }
@@ -1195,4 +1205,149 @@ async fn a_ctrl_c_during_a_landing_exits_once_the_new_supervisor_is_launched() {
     assert_eq!(code, 0);
     assert_eq!(std::fs::read(rig.layout().exe).unwrap(), NEW_EXE.as_bytes());
     assert!(rig.layout().landed.exists(), "the next start confirms the update");
+}
+
+fn kinds() -> [StartKind; 5] {
+    [StartKind::First, StartKind::Restart, StartKind::Update { held: false }, StartKind::Rollback { held: None }, StartKind::Rollback { held: Some(true) }]
+}
+
+#[test]
+fn a_first_start_by_hand_opens_the_window() {
+    // Arrange: START.bat's `first` word, no update landed, the app did not start it
+    let (word, kind, from_app) = (Some("first"), StartKind::First, false);
+
+    // Act
+    let opens = opens_window(word, &kind, from_app);
+
+    // Assert
+    assert!(opens);
+}
+
+#[test]
+fn a_first_start_from_the_app_does_not() {
+    // Arrange: the app started this START.bat, so it has its window already
+    let (word, kind, from_app) = (Some("first"), StartKind::First, true);
+
+    // Act
+    let opens = opens_window(word, &kind, from_app);
+
+    // Assert
+    assert!(!opens);
+}
+
+#[test]
+fn a_start_without_start_bats_word_opens_nothing() {
+    // Arrange: dev and the harness run `control --root` with no word, whatever kind the start is taken for
+    for kind in kinds() {
+        // Act
+        let opens = opens_window(None, &kind, false);
+
+        // Assert
+        assert!(!opens, "{kind:?}");
+    }
+}
+
+#[test]
+fn restart_update_and_rollback_starts_never_do() {
+    // Arrange: every kind but First, under each word START.bat sets
+    for kind in kinds().into_iter().filter(|k| *k != StartKind::First) {
+        for word in [Some("first"), Some("restart"), Some("rollback")] {
+            // Act
+            let opens = opens_window(word, &kind, false);
+
+            // Assert
+            assert!(!opens, "{word:?} {kind:?}");
+        }
+    }
+    assert!(!opens_window(Some("restart"), &StartKind::First, false), "an unknown pairing stays shut");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_start_by_hand_asks_for_the_window_once() {
+    // Arrange
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.vars.start = Some("first".into());
+
+    // Act
+    let app = rig.start().await;
+
+    // Assert
+    assert_eq!(rig.window_opens.load(Ordering::SeqCst), 1);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_run_with_no_playlist_still_asks_for_the_window() {
+    // Arrange: the shipped example's placeholder playlist, so the wizard is what the window shows
+    let mut rig = Rig::new("PLxxxxxxxxxxxxxxxx");
+    rig.vars.start = Some("first".into());
+
+    // Act
+    let app = rig.start().await;
+
+    // Assert
+    assert_eq!(rig.window_opens.load(Ordering::SeqCst), 1);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_start_from_the_app_asks_for_no_window() {
+    // Arrange
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.vars.start = Some("first".into());
+    rig.vars.from_app = true;
+
+    // Act
+    let app = rig.start().await;
+
+    // Assert
+    assert_eq!(rig.window_opens.load(Ordering::SeqCst), 0);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_landed_update_asks_for_no_window_on_a_first_word() {
+    // Arrange: START.bat's word says first, but an update landed
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.vars.start = Some("first".into());
+    rig.landed(VERSION, true, false);
+
+    // Act
+    let app = rig.start().await;
+
+    // Assert
+    assert_eq!(rig.window_opens.load(Ordering::SeqCst), 0);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_open_admin_is_no_longer_read() {
+    // Arrange: the old setting on, and a restart start
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.patch_config(json!({ "autoOpenAdmin": true }));
+    rig.vars.start = Some("restart".into());
+
+    // Act
+    let app = rig.start().await;
+
+    // Assert
+    assert_eq!(rig.window_opens.load(Ordering::SeqCst), 0);
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_config_with_auto_open_admin_still_loads_and_keeps_the_key() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+    rig.patch_config(json!({ "autoOpenAdmin": true }));
+    let app = rig.start().await;
+
+    // Act
+    let saved = rig.post("/api/config", json!({ "discord": { "webhookUrl": NEW_HOOK } })).await;
+
+    // Assert
+    assert_eq!(saved.status(), 200);
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(rig.layout().config).unwrap()).unwrap();
+    assert_eq!(file["autoOpenAdmin"], json!(true));
+    drop(app);
 }

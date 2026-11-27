@@ -75,7 +75,6 @@ npm test                # the dashboard's tests and the test harness's (vitest)
 | `twitchLivenessEnabled` | `false` | Check that the channel is live (needs `twitchClientId`, `twitchClientSecret`, `twitchChannel`) |
 | `autoUpdateCheck` | `true` | Check GitHub Releases for updates and install them at the planned break |
 | `autoUpdateYtdlp` | `true` | Update yt-dlp each time StreamLoop starts |
-| `autoOpenAdmin` | `true` | Open the dashboard in the browser on start |
 | `autoStartStream` | `true` | Start the stream when StreamLoop starts; when off, it waits for Start |
 | `ytdlCookiesFromBrowser` | `""` | Browser to take YouTube cookies from (for age- or region-gated videos) |
 

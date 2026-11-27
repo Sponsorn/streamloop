@@ -268,7 +268,6 @@ pub struct Config {
     pub twitch_client_id: String,
     pub twitch_client_secret: String,
     pub twitch_channel: String,
-    pub auto_open_admin: bool,
     pub auto_start_stream: bool,
     pub ytdl_cookies_from_browser: String,
 }
@@ -363,7 +362,6 @@ impl Config {
             twitch_client_id: text(v, "twitchClientId"),
             twitch_client_secret: text(v, "twitchClientSecret"),
             twitch_channel: text(v, "twitchChannel"),
-            auto_open_admin: flag_default_on(v, "autoOpenAdmin"),
             auto_start_stream: flag_default_on(v, "autoStartStream"),
             ytdl_cookies_from_browser: text(v, "ytdlCookiesFromBrowser"),
         }
@@ -634,10 +632,10 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_overlay_and_auto_open_to_true() {
+    fn config_defaults_overlay_to_true() {
         let config = Config::from_value(&json!({}));
 
-        assert!(config.supervisor.overlay && config.auto_open_admin);
+        assert!(config.supervisor.overlay);
         assert!(!config.twitch_liveness_enabled);
     }
 }
