@@ -876,7 +876,7 @@ fn save_encoders(config: &RwLock<Config>, path: &Path, encoder: Encoder, preferr
 /// yt-dlp's self-update on its own task, so it never holds up the start or the stream; `why` goes to the log.
 fn update_ytdlp_in_background(runner: Arc<dyn Runner>, ytdlp: PathBuf, playlists: Arc<PlaylistCache>, why: &'static str) {
     tokio::spawn(async move {
-        let result = update_ytdlp(runner.as_ref(), &ytdlp, |p| p.exists()).await;
+        let result = update_ytdlp(runner.as_ref(), &ytdlp).await;
         if result.ok {
             tracing::info!(version = ?result.version, why, "yt-dlp auto-update complete");
             playlists.clear();

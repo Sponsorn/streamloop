@@ -154,7 +154,7 @@ impl PlaylistCache {
     async fn run(&self, id: &str) -> Result<PlaylistMetadata, String> {
         tracing::info!(playlist_id = id, "Fetching playlist metadata via yt-dlp");
         let spec = RunSpec {
-            program: self.ytdlp.to_string_lossy().into_owned(),
+            program: streamloop_common::paths::ytdlp_to_run(&self.ytdlp).to_string_lossy().into_owned(),
             args: build_argv(id, &self.cookies),
             stdin: None,
             timeout: YTDLP_TIMEOUT,
@@ -246,6 +246,23 @@ mod tests {
         for out in ["", "   ", "\n\n\n", "  \n  \n  "] {
             assert!(parse_videos(out).is_empty(), "{out:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_fetch_runs_the_newest_updated_yt_dlp() {
+        // Arrange
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["yt-dlp.exe", "yt-dlp-2026.11.24.exe"] {
+            std::fs::write(dir.path().join(file), "").unwrap();
+        }
+        let runner = Arc::new(FakeRunner::new());
+        runner.push(Ok(RunOutput::ok("abc123\tVideo One\t120\n")));
+        let clock = Arc::new(TestClock::new(UNIX_EPOCH + Duration::from_secs(1_000_000)));
+        let cache = PlaylistCache::new(runner.clone(), dir.path().join("yt-dlp.exe"), String::new(), clock);
+        // Act
+        cache.fetch("PLx").await.unwrap();
+        // Assert
+        assert_eq!(runner.calls()[0].program, dir.path().join("yt-dlp-2026.11.24.exe").to_string_lossy());
     }
 
     #[test]

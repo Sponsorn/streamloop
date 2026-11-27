@@ -94,6 +94,48 @@ impl Layout {
     }
 }
 
+/// The newest `yt-dlp-<version>.exe` beside `base`, else `base`. yt-dlp reads its modules from its exe as it runs,
+/// so its self-update adds a copy instead of replacing an exe in use.
+pub fn ytdlp_to_run(base: &Path) -> PathBuf {
+    ytdlp_copies(base).into_iter().next().unwrap_or_else(|| base.to_path_buf())
+}
+
+/// The updated copies beside `base`, newest version first.
+pub fn ytdlp_copies(base: &Path) -> Vec<PathBuf> {
+    let Some(dir) = base.parent() else { return Vec::new() };
+    let mut found: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let version = name.strip_prefix(&format!("{}-", ytdlp_stem(base)?))?.strip_suffix(".exe")?;
+            Some((version_parts(version)?, entry.path()))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
+/// The name an update that reached `version` takes; none for a version that is not digits and dots.
+pub fn ytdlp_copy(base: &Path, version: &str) -> Option<PathBuf> {
+    version_parts(version)?;
+    Some(base.with_file_name(format!("{}-{version}.exe", ytdlp_stem(base)?)))
+}
+
+/// Where the self-update works, run by nothing else.
+pub fn ytdlp_update_copy(base: &Path) -> PathBuf {
+    base.with_file_name(format!("{}-update.exe", ytdlp_stem(base).unwrap_or("yt-dlp")))
+}
+
+fn ytdlp_stem(base: &Path) -> Option<&str> {
+    base.file_stem()?.to_str()
+}
+
+fn version_parts(version: &str) -> Option<Vec<u64>> {
+    version.split('.').map(|part| if part.bytes().all(|b| b.is_ascii_digit()) { part.parse().ok() } else { None }).collect()
+}
+
 /// The install root, and whether it was the exe's own folder (anything else is dev mode).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Root {
@@ -124,6 +166,61 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(if with_app { d.join("app") } else { d.clone() }).unwrap();
         d
+    }
+
+    fn ytdlp_folder(name: &str, files: &[&str]) -> PathBuf {
+        let dir = scratch(&format!("ytdlp-{name}"), false).join("yt-dlp");
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            std::fs::write(dir.join(file), file).unwrap();
+        }
+        dir.join("yt-dlp.exe")
+    }
+
+    #[test]
+    fn yt_dlp_runs_from_the_shipped_exe_until_an_update_made_a_copy() {
+        // Arrange
+        let base = ytdlp_folder("shipped", &["yt-dlp.exe", "deno.exe"]);
+        // Act
+        let exe = ytdlp_to_run(&base);
+        // Assert
+        assert_eq!(exe, base);
+    }
+
+    #[test]
+    fn yt_dlp_runs_from_the_newest_copy_by_version_not_by_name() {
+        // Arrange
+        let base = ytdlp_folder("newest", &["yt-dlp.exe", "yt-dlp-2026.11.3.exe", "yt-dlp-2026.11.24.232653.exe", "yt-dlp-2026.11.24.exe"]);
+        // Act
+        let exe = ytdlp_to_run(&base);
+        let copies = ytdlp_copies(&base);
+        // Assert
+        assert_eq!(exe, base.with_file_name("yt-dlp-2026.11.24.232653.exe"));
+        let names: Vec<String> = copies.iter().map(|c| c.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["yt-dlp-2026.11.24.232653.exe", "yt-dlp-2026.11.24.exe", "yt-dlp-2026.11.3.exe"]);
+    }
+
+    #[test]
+    fn the_update_work_copy_and_yt_dlp_leftovers_are_never_run() {
+        // Arrange
+        let base = ytdlp_folder("leftovers", &["yt-dlp.exe", "yt-dlp-update.exe", "yt-dlp-2026.11.30.exe.old", "yt-dlp-2026.11.30.exe.new", "yt-dlp-.exe"]);
+        // Act
+        let exe = ytdlp_to_run(&base);
+        // Assert
+        assert_eq!(exe, base);
+        assert_eq!(ytdlp_update_copy(&base), base.with_file_name("yt-dlp-update.exe"));
+    }
+
+    #[test]
+    fn a_copy_is_named_only_from_a_version_of_digits_and_dots() {
+        // Arrange
+        let base = Path::new("R:/sl/yt-dlp/yt-dlp.exe");
+        // Act
+        let named = ["2026.11.24.232653", "2026.11.24", "nightly@2026.11.24", "2026..24", "", "..\\x"].map(|v| ytdlp_copy(base, v));
+        // Assert
+        assert_eq!(named[0], Some(PathBuf::from("R:/sl/yt-dlp/yt-dlp-2026.11.24.232653.exe")));
+        assert_eq!(named[1], Some(PathBuf::from("R:/sl/yt-dlp/yt-dlp-2026.11.24.exe")));
+        assert_eq!(named[2..], [None, None, None, None]);
     }
 
     #[test]

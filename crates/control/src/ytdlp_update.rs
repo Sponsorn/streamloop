@@ -1,7 +1,9 @@
-//! The bundled yt-dlp's self-update: `-U`, then `--version` for the result.
+//! The bundled yt-dlp's self-update: `-U` on a copy, then `--version` for the result.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
+
+use streamloop_common::paths;
 
 use crate::runner::{RunOutput, RunSpec, Runner};
 
@@ -35,20 +37,52 @@ pub(crate) async fn run_checked(runner: &dyn Runner, spec: RunSpec) -> Result<Ru
     }
 }
 
-/// Self-update only works on the standalone binary in the install. In dev the file may be missing;
-/// that returns `ok: false` instead of an error, so the caller can run it at start unguarded.
-pub async fn update_ytdlp(runner: &dyn Runner, ytdlp: &Path, exists: impl Fn(&Path) -> bool) -> YtdlpUpdate {
-    if !exists(ytdlp) {
+/// Copies past the newest two are removed: a run may have picked the second newest just before the newest appeared.
+const COPIES_KEPT: usize = 2;
+
+/// One update at a time, since they share the work copy.
+static UPDATING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Updates a copy of the yt-dlp runs use and keeps it as `yt-dlp-<version>.exe` beside `base`, the shipped exe.
+/// A missing exe (dev) is `ok: false`, not an error, so the start can run it unguarded.
+pub async fn update_ytdlp(runner: &dyn Runner, base: &Path) -> YtdlpUpdate {
+    let _one = UPDATING.lock().await;
+    let current = paths::ytdlp_to_run(base);
+    if !current.exists() {
         return YtdlpUpdate::failed("yt-dlp binary not found (dev mode or missing install)");
     }
-    let program = ytdlp.to_string_lossy();
+    let work = paths::ytdlp_update_copy(base);
+    if let Err(e) = tokio::fs::copy(&current, &work).await {
+        return YtdlpUpdate::failed(format!("Could not copy {} to update it: {e}", current.display()));
+    }
+    let result = update_copy(runner, base, &work).await;
+    // Gone already when the update was kept.
+    let _ = tokio::fs::remove_file(&work).await;
+    for old in paths::ytdlp_copies(base).into_iter().skip(COPIES_KEPT) {
+        // Windows refuses to delete an exe that runs, so a copy in use stays for a later update.
+        let _ = tokio::fs::remove_file(&old).await;
+    }
+    result
+}
+
+async fn update_copy(runner: &dyn Runner, base: &Path, work: &Path) -> YtdlpUpdate {
+    let program = work.to_string_lossy();
     if let Err(e) = run_checked(runner, RunSpec::new(&program, &["-U"], UPDATE_TIMEOUT)).await {
         return YtdlpUpdate::failed(e);
     }
-    match run_checked(runner, RunSpec::new(&program, &["--version"], VERSION_TIMEOUT)).await {
-        Ok(out) => YtdlpUpdate { ok: true, version: Some(out.stdout_text().trim().to_string()), error: None },
-        Err(e) => YtdlpUpdate::failed(e),
+    let version = match run_checked(runner, RunSpec::new(&program, &["--version"], VERSION_TIMEOUT)).await {
+        Ok(out) => out.stdout_text().trim().to_string(),
+        Err(e) => return YtdlpUpdate::failed(e),
+    };
+    let Some(copy) = paths::ytdlp_copy(base, &version) else {
+        return YtdlpUpdate::failed(format!("yt-dlp printed an unexpected version: {version}"));
+    };
+    if !copy.exists() {
+        if let Err(e) = tokio::fs::rename(work, &copy).await {
+            return YtdlpUpdate::failed(format!("Could not keep the updated yt-dlp as {}: {e}", copy.display()));
+        }
     }
+    YtdlpUpdate { ok: true, version: Some(version), error: None }
 }
 
 /// While YouTube lookups are paused, at most one update this often.
@@ -79,14 +113,36 @@ impl PausedUpdates {
 mod tests {
     use super::*;
     use std::time::UNIX_EPOCH;
-    use crate::runner::{FakeRunner, RunError, RunErrorKind};
+    use std::path::PathBuf;
+    use crate::runner::{FakeRunner, RunError, RunErrorKind, RunOutput};
+
+    /// An install's `yt-dlp\` with `files`, each holding its own name; returns the shipped exe's path.
+    fn install(files: &[&str]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        for file in files {
+            std::fs::write(dir.path().join(file), file).unwrap();
+        }
+        let base = dir.path().join("yt-dlp.exe");
+        (dir, base)
+    }
+
+    fn names(dir: &tempfile::TempDir) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    fn updated_to(runner: &FakeRunner, version: &str) {
+        runner.push(Ok(RunOutput::ok(&format!("Updated yt-dlp to nightly@{version}"))));
+        runner.push(Ok(RunOutput::ok(&format!("{version}\n"))));
+    }
 
     #[tokio::test]
     async fn skips_without_running_anything_when_the_binary_does_not_exist() {
         // Arrange
         let runner = FakeRunner::new();
         // Act
-        let result = update_ytdlp(&runner, Path::new("/missing/yt-dlp.exe"), |_| false).await;
+        let result = update_ytdlp(&runner, Path::new("/missing/yt-dlp.exe")).await;
         // Assert
         assert!(!result.ok);
         assert!(result.error.unwrap().to_lowercase().contains("not found"));
@@ -94,19 +150,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runs_update_then_version_and_returns_the_trimmed_version() {
+    async fn the_update_runs_on_a_copy_and_never_on_the_exe_runs_use() {
         // Arrange
+        let (dir, base) = install(&["yt-dlp.exe", "deno.exe"]);
         let runner = FakeRunner::new();
-        runner.push(Ok(RunOutput::ok("Updated yt-dlp to stable@2026.06.01")));
-        runner.push(Ok(RunOutput::ok("2026.06.01\n")));
+        updated_to(&runner, "2026.11.24.232653");
         // Act
-        let result = update_ytdlp(&runner, Path::new("/bin/yt-dlp.exe"), |_| true).await;
+        let result = update_ytdlp(&runner, &base).await;
         // Assert
-        assert_eq!(result, YtdlpUpdate { ok: true, version: Some("2026.06.01".into()), error: None });
+        assert_eq!(result, YtdlpUpdate { ok: true, version: Some("2026.11.24.232653".into()), error: None });
         let calls = runner.calls();
-        assert_eq!(calls[0].args, ["-U"]);
-        assert_eq!(calls[1].args, ["--version"]);
+        let work = dir.path().join("yt-dlp-update.exe").to_string_lossy().into_owned();
+        assert_eq!((calls[0].program.as_str(), calls[0].args.as_slice()), (work.as_str(), ["-U".to_string()].as_slice()));
+        assert_eq!((calls[1].program.as_str(), calls[1].args.as_slice()), (work.as_str(), ["--version".to_string()].as_slice()));
         assert_eq!((calls[0].timeout, calls[1].timeout), (Duration::from_secs(120), Duration::from_secs(10)));
+        assert_eq!(names(&dir), ["deno.exe", "yt-dlp-2026.11.24.232653.exe", "yt-dlp.exe"]);
+        assert_eq!(std::fs::read_to_string(&base).unwrap(), "yt-dlp.exe", "the shipped exe is never changed");
+    }
+
+    #[tokio::test]
+    async fn the_next_update_starts_from_the_newest_copy() {
+        // Arrange
+        let (dir, base) = install(&["yt-dlp.exe", "yt-dlp-2026.11.20.exe", "yt-dlp-2026.11.3.exe"]);
+        let runner = FakeRunner::new();
+        updated_to(&runner, "2026.11.24");
+        // Act
+        update_ytdlp(&runner, &base).await;
+        // Assert
+        assert_eq!(std::fs::read_to_string(dir.path().join("yt-dlp-2026.11.24.exe")).unwrap(), "yt-dlp-2026.11.20.exe");
+    }
+
+    #[tokio::test]
+    async fn an_update_that_finds_nothing_newer_leaves_the_copy_as_it_was() {
+        // Arrange
+        let (dir, base) = install(&["yt-dlp.exe", "yt-dlp-2026.11.24.exe"]);
+        let runner = FakeRunner::new();
+        runner.push(Ok(RunOutput::ok("yt-dlp is up to date (nightly@2026.11.24)")));
+        runner.push(Ok(RunOutput::ok("2026.11.24\n")));
+        // Act
+        let result = update_ytdlp(&runner, &base).await;
+        // Assert
+        assert!(result.ok);
+        assert_eq!(names(&dir), ["yt-dlp-2026.11.24.exe", "yt-dlp.exe"]);
+        assert_eq!(std::fs::read_to_string(dir.path().join("yt-dlp-2026.11.24.exe")).unwrap(), "yt-dlp-2026.11.24.exe");
+    }
+
+    #[tokio::test]
+    async fn an_update_keeps_the_two_newest_copies_and_the_shipped_exe() {
+        // Arrange
+        let (dir, base) = install(&["yt-dlp.exe", "yt-dlp-2026.11.20.exe", "yt-dlp-2026.11.22.exe", "yt-dlp-2026.11.23.exe"]);
+        let runner = FakeRunner::new();
+        updated_to(&runner, "2026.11.24");
+        // Act
+        update_ytdlp(&runner, &base).await;
+        // Assert
+        assert_eq!(names(&dir), ["yt-dlp-2026.11.23.exe", "yt-dlp-2026.11.24.exe", "yt-dlp.exe"]);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_copy_still_running_is_left_for_a_later_update() {
+        // Arrange
+        let (dir, base) = install(&["yt-dlp.exe", "yt-dlp-2026.11.22.exe", "yt-dlp-2026.11.23.exe"]);
+        let running = dir.path().join("yt-dlp-2026.11.1.exe");
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &running).unwrap();
+        let mut child = streamloop_common::procs::command(&running).args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap();
+        let runner = FakeRunner::new();
+        updated_to(&runner, "2026.11.24");
+        // Act
+        update_ytdlp(&runner, &base).await;
+        let left = names(&dir);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        // Assert
+        assert_eq!(left, ["yt-dlp-2026.11.1.exe", "yt-dlp-2026.11.23.exe", "yt-dlp-2026.11.24.exe", "yt-dlp.exe"]);
+    }
+
+    #[tokio::test]
+    async fn a_version_that_is_not_digits_and_dots_makes_no_copy() {
+        // Arrange
+        let (dir, base) = install(&["yt-dlp.exe"]);
+        let runner = FakeRunner::new();
+        runner.push(Ok(RunOutput::ok("Updated")));
+        runner.push(Ok(RunOutput::ok("nightly@2026.11.24\n")));
+        // Act
+        let result = update_ytdlp(&runner, &base).await;
+        // Assert
+        assert!(!result.ok);
+        assert!(result.error.unwrap().contains("nightly@2026.11.24"));
+        assert_eq!(names(&dir), ["yt-dlp.exe"]);
     }
 
     fn at(s: u64) -> SystemTime {
@@ -156,15 +288,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_the_error_message_when_the_update_fails() {
+    async fn a_failed_update_reports_why_and_removes_its_work_copy() {
         // Arrange
+        let (dir, base) = install(&["yt-dlp.exe"]);
         let runner = FakeRunner::new();
         runner.push(Err(RunError { kind: RunErrorKind::Wait, message: "network unreachable".into() }));
         // Act
-        let result = update_ytdlp(&runner, Path::new("/bin/yt-dlp.exe"), |_| true).await;
+        let result = update_ytdlp(&runner, &base).await;
         // Assert
         assert!(!result.ok);
         assert!(result.error.unwrap().contains("network unreachable"));
         assert_eq!(runner.calls().len(), 1);
+        assert_eq!(names(&dir), ["yt-dlp.exe"]);
     }
 }

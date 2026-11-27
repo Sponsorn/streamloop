@@ -112,7 +112,7 @@ Back to 3.x: close 2.x and OBS, start 3.x's `START.bat`, press Start. Until Star
 | `playlists.rs` | Playlist video lists for the dashboard, fetched with the install's yt-dlp and cached |
 | `updater.rs` | GitHub Releases: picks a release, stages its exe, decides when it lands, writes the notice line |
 | `landing.rs` | Lands a staged exe, confirms it on the next start or rolls it back; `data\update-state.json` |
-| `ytdlp_update.rs` | yt-dlp self-update (`-U`, then `--version`), at start and at most hourly while YouTube lookups are paused |
+| `ytdlp_update.rs` | yt-dlp self-update: `-U` and `--version` on a copy, kept as `yt-dlp\yt-dlp-<version>.exe`, which every yt-dlp run then takes; at start and at most hourly while YouTube lookups are paused |
 | `leftovers.rs` | Removes what 3.0 left in an install, by name, at every start |
 | `logging.rs` | `tracing`, with 3.0's log line format on the console and in `app\logs\streamloop-DATE.log` |
 | `clock.rs`, `http.rs`, `runner.rs` | The wall clock, outbound HTTP and child processes behind traits, so tests answer instead |

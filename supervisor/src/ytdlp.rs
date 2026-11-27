@@ -17,6 +17,7 @@ pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height
 pub const FORMAT_HD: &str = "bv*[height>=720][height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height>=720][height<=1080][dynamic_range=?SDR]+ba/b[height>=720][height<=1080][dynamic_range=?SDR]/bv*[height>=720][height<=1080]+ba";
 
 pub struct Ytdlp {
+    /// The shipped exe; a run takes the newest updated copy beside it.
     exe: PathBuf,
     deno: PathBuf,
     plugins: PathBuf,
@@ -120,10 +121,14 @@ impl Ytdlp {
         a
     }
 
+    fn exe(&self) -> PathBuf {
+        streamloop_common::paths::ytdlp_to_run(&self.exe)
+    }
+
     /// Run yt-dlp; stdout lines go to `on_line`, `[pot` lines and all stderr to ytdlp.log.
     /// `cancel` or `timeout` kill the whole tree.
     pub fn run(&self, client: Option<&str>, args: &[String], logs: &Logs, cancel: &AtomicBool, timeout: Duration, pid: impl FnOnce(u32), mut on_line: impl FnMut(&str)) -> Output {
-        let mut child = match command(&self.exe).env("PYTHONIOENCODING", "utf-8").args(self.base(client)).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        let mut child = match command(self.exe()).env("PYTHONIOENCODING", "utf-8").args(self.base(client)).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => return Output { ok: false, stdout: String::new(), stderr: format!("spawn failed: {e}"), cancelled: false },
         };
@@ -534,6 +539,24 @@ mod tests {
 
         // Assert
         assert_eq!(format_of(&args), format!("{FORMAT_HD}/{FORMAT}"));
+    }
+
+    #[test]
+    fn a_run_takes_the_newest_updated_yt_dlp() {
+        // Arrange
+        let root = std::env::temp_dir().join(format!("sl-ytdlp-copies-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("yt-dlp")).unwrap();
+        for file in ["yt-dlp.exe", "yt-dlp-2026.11.24.exe", "yt-dlp-update.exe"] {
+            std::fs::write(root.join("yt-dlp").join(file), "").unwrap();
+        }
+        let yt = Ytdlp::new(&Paths::new(&root), "mweb", None, 4416);
+
+        // Act
+        let exe = yt.exe();
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Assert
+        assert_eq!(exe, root.join("yt-dlp").join("yt-dlp-2026.11.24.exe"));
     }
 
     #[test]

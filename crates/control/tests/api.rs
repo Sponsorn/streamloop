@@ -1661,7 +1661,8 @@ async fn yt_dlp_update_reports_the_version_and_refetches_playlists() {
     let after = get(&app, "/playlist/videos").await.json();
     // Assert
     assert_eq!((r.status, r.json()), (StatusCode::OK, json!({ "ok": true, "version": "2026.11.01" })));
-    assert_eq!(rig.runner.calls()[0].program, rig.layout.ytdlp.to_string_lossy());
+    assert_eq!(rig.runner.calls()[0].program, rig.layout.ytdlp.with_file_name("yt-dlp-update.exe").to_string_lossy());
+    assert!(rig.layout.ytdlp.with_file_name("yt-dlp-2026.11.01.exe").exists());
     assert_eq!(after["total"], 2);
 }
 

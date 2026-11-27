@@ -47,7 +47,7 @@ pub(super) async fn update_ytdlp(State(state): State<Arc<AppState>>) -> Response
     if let Some(refused) = refuse_during_update(&state) {
         return refused;
     }
-    let result = run_update(&*state.runner, &state.layout.ytdlp, |p| p.exists()).await;
+    let result = run_update(&*state.runner, &state.layout.ytdlp).await;
     if result.ok {
         // A newer yt-dlp may list more of a playlist, so the cached listings go.
         state.playlists.clear();
