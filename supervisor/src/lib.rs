@@ -290,8 +290,8 @@ pub enum Msg {
 
 enum Job {
     Size(usize, String),
-    /// index, id, cancel, player client list for this try
-    Download(usize, String, Arc<AtomicBool>, String),
+    /// index, id, cancel, player client list for this try, whether it asks for 720p or more
+    Download(usize, String, Arc<AtomicBool>, String, bool),
 }
 
 
@@ -309,13 +309,17 @@ struct Video {
     dl_retry_at: Option<Instant>,
     /// Already counted toward `dl_fail_streak`, so its later rounds do not add to it.
     dl_counted: bool,
+    /// A client in this round answered but offered nothing from 720p up.
+    hd_missing: bool,
+    /// This round takes the best each client offers, since the last one found nothing from 720p up.
+    below_720p: bool,
     skipped: bool,
     retries: u32,
 }
 
 impl Video {
     fn of(entry: Entry) -> Video {
-        Video { entry, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }
+        Video { entry, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, hd_missing: false, below_720p: false, skipped: false, retries: 0 }
     }
 }
 
@@ -1515,7 +1519,7 @@ impl Ctl {
             }
             if !reach.contains(&i) {
                 let v = &mut self.videos[i];
-                (v.dl_failed, v.dl_retry_at, v.dl_counted) = (false, None, false);
+                (v.dl_failed, v.dl_retry_at, v.dl_counted, v.hd_missing, v.below_720p) = (false, None, false, false, false);
             }
             if !self.videos[i].on_disk || self.downloading.as_ref().is_some_and(|d| d.0 == i) {
                 continue;
@@ -1551,7 +1555,7 @@ impl Ctl {
             self.downloading = Some((i, 0.0, cancel.clone()));
             let clients = rules::download_clients(&self.settings.player_client);
             let client = clients[(self.videos[i].dl_attempts as usize).min(clients.len() - 1)].clone();
-            let _ = self.jobs.send(Job::Download(i, self.id(i), cancel, client));
+            let _ = self.jobs.send(Job::Download(i, self.id(i), cancel, client, !self.videos[i].below_720p));
         }
     }
 
@@ -1659,6 +1663,7 @@ impl Ctl {
                     }
                 }
                 let v = &mut self.videos[index];
+                let mut below_720p = false;
                 let result = if cancelled {
                     "cancel"
                 } else if !ok && rules::is_cookie_problem(&reason) {
@@ -1668,20 +1673,31 @@ impl Ctl {
                     v.disk_bytes = bytes;
                     v.bytes = Some(bytes);
                     v.dl_attempts = 0;
-                    (v.dl_retry_at, v.dl_counted) = (None, false);
+                    (v.dl_retry_at, v.dl_counted, v.hd_missing) = (None, false, false);
+                    below_720p = std::mem::take(&mut v.below_720p);
                     self.dl_fail_streak = 0;
                     "done"
                 } else {
                     v.dl_attempts += 1;
                     self.dl_after = Instant::now() + Duration::from_secs(5);
+                    v.hd_missing |= !v.below_720p && rules::is_format_missing(&reason);
                     if v.dl_attempts as usize >= rules::download_clients(&self.settings.player_client).len() {
-                        v.dl_failed = true;
                         v.dl_attempts = 0;
-                        "skip"
+                        // A round with nothing from 720p up is followed at once by one that takes what there is.
+                        v.below_720p = std::mem::take(&mut v.hd_missing);
+                        if v.below_720p {
+                            "below-720p"
+                        } else {
+                            v.dl_failed = true;
+                            "skip"
+                        }
                     } else {
                         "retry"
                     }
                 };
+                if below_720p {
+                    self.logs.event("warn", "download-low-quality", json!({"index": self.number(index), "id": self.id(index), "client": client}));
+                }
                 if result == "skip" {
                     let wait = self.retry_download_later(index);
                     // Many videos in a row is systemic (the merge, the token server, a player client) and
@@ -2454,11 +2470,11 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 let result = yt.resolve(&id, &logs);
                 let _ = tx.send(Msg::Resolved { index, id, purpose: Purpose::Size, result });
             }
-            Job::Download(index, id, cancel, client) => {
+            Job::Download(index, id, cancel, client, hd) => {
                 let started = Instant::now();
                 let file = cache.join(format!("{id}.mp4"));
                 let mut last = -1.0;
-                let out = yt.download(&client, &id, &file, &logs, &cancel, |_| {}, |p| {
+                let out = yt.download(&client, &id, &file, hd, &logs, &cancel, |_| {}, |p| {
                     if p - last >= 1.0 || p >= 100.0 {
                         last = p;
                         let _ = tx.send(Msg::DlProgress { index, percent: p });
@@ -2869,7 +2885,7 @@ mod tests {
         let (jobs, _) = channel();
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
         ctl.playlist_wanted = false;
-        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, skipped: false, retries: 0 }).collect();
+        ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, hd_missing: false, below_720p: false, skipped: false, retries: 0 }).collect();
         ctl
     }
 
@@ -3376,6 +3392,75 @@ mod tests {
         let csv = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("downloads-")).unwrap();
         let clients: Vec<String> = std::fs::read_to_string(csv.path()).unwrap().lines().map(|l| l.rsplit(',').next().unwrap().to_string()).collect();
         assert_eq!(clients[..2], ["mweb", "web_embedded"], "each row names the client it tried");
+    }
+
+    /// One round in which each client answers but offers nothing from 720p up.
+    fn no_hd_round(ctl: &mut Ctl, index: usize) {
+        for client in ["mweb", "web_embedded"] {
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: [youtube] b: Requested format is not available. Use --list-formats for a list of available formats".into(), client: client.into(), used_token: false });
+        }
+    }
+
+    /// On the box every download came down at 360p for two days: mweb offered only that, and it "succeeded".
+    #[test]
+    fn a_round_with_nothing_from_720p_up_is_followed_by_one_that_takes_the_best_there_is() {
+        // Arrange
+        let (mut ctl, ahead) = forbidden_ctl("no-hd");
+
+        // Act
+        no_hd_round(&mut ctl, ahead);
+        ctl.dl_after = Instant::now() - Duration::from_secs(1);
+        ctl.cache_work();
+
+        // Assert
+        let v = &ctl.videos[ahead];
+        assert!(!v.dl_failed, "the video waits for a retry instead of taking what there is");
+        assert!(v.below_720p, "the next round still asks for 720p or more");
+        assert_eq!(ctl.downloading.as_ref().map(|d| d.0), Some(ahead), "the next round does not start at once");
+        assert!(!events(&ctl).iter().any(|(_, k)| k == "download-failed"), "{:?}", events(&ctl));
+    }
+
+    #[test]
+    fn a_download_below_720p_is_a_warning_and_the_next_round_asks_for_720p_again() {
+        // Arrange
+        let (mut ctl, ahead) = forbidden_ctl("low-done");
+        no_hd_round(&mut ctl, ahead);
+
+        // Act
+        ctl.handle(Msg::Downloaded { index: ahead, id: ctl.id(ahead), ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
+
+        // Assert
+        assert!(events(&ctl).contains(&("warn".into(), "download-low-quality".into())), "{:?}", events(&ctl));
+        assert!(!ctl.videos[ahead].below_720p, "a later download of this video takes below 720p without asking for more first");
+    }
+
+    #[test]
+    fn a_round_that_fails_from_720p_up_and_below_waits_for_its_retry() {
+        // Arrange
+        let (mut ctl, ahead) = forbidden_ctl("low-fails");
+        no_hd_round(&mut ctl, ahead);
+
+        // Act
+        fail_round(&mut ctl, ahead);
+
+        // Assert
+        let v = &ctl.videos[ahead];
+        assert!(v.dl_failed && v.dl_retry_at.is_some());
+        assert!(!v.below_720p, "the retry would not ask for 720p first");
+        assert_eq!(events(&ctl).iter().filter(|(_, k)| k == "download-failed").count(), 1);
+    }
+
+    #[test]
+    fn a_refused_download_does_not_lower_the_quality() {
+        // Arrange
+        let (mut ctl, ahead) = forbidden_ctl("refused-hd");
+
+        // Act
+        fail_round(&mut ctl, ahead);
+
+        // Assert
+        assert!(ctl.videos[ahead].dl_failed);
+        assert!(!ctl.videos[ahead].below_720p);
     }
 
     /// Four 100 s videos, sizes known, the one on air on disk, both clients configured; returns the video after it.

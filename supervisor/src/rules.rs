@@ -268,6 +268,11 @@ pub fn is_video_unavailable(reason: &str) -> bool {
         && ["video unavailable", "private video", "has been removed", "has been terminated", "in your country", "confirm your age", "members-only"].iter().any(|w| r.contains(w))
 }
 
+/// The client answered, but offered nothing the format asked for.
+pub fn is_format_missing(reason: &str) -> bool {
+    reason.to_lowercase().contains("requested format is not available")
+}
+
 pub fn is_bot_check(reason: &str) -> bool {
     let r = reason.to_lowercase();
     r.contains("not a bot") || r.contains("bot check")
@@ -612,6 +617,14 @@ mod tests {
         assert!(!is_cookie_problem(&format!("{dpapi}\nERROR: [youtube] a: Sign in to confirm you're not a bot")));
         assert!(!is_cookie_problem(&format!("{dpapi}\nERROR: [youtube] a: Requested format is not available")));
         assert!(is_cookie_problem(&format!("[youtube] a: Downloading webpage\n{dpapi}\n")));
+    }
+
+    #[test]
+    fn a_missing_format_is_told_apart_from_a_refused_download() {
+        // Act and assert
+        assert!(is_format_missing("ERROR: [youtube] k3XioxDPt4c: Requested format is not available. Use --list-formats for a list of available formats"));
+        assert!(!is_format_missing("ERROR: unable to download video data: HTTP Error 403: Forbidden"));
+        assert!(!is_format_missing("ERROR: [youtube] a: Video unavailable"));
     }
 
     #[test]

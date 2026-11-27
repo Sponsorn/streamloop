@@ -220,6 +220,11 @@ fn critical(message: String) -> Described {
     critical_with(message.clone(), message)
 }
 
+/// Through the critical toggle at warning level: the only template that carries free text.
+fn warning(message: String) -> Described {
+    alert(message.clone(), DiscordKind::Critical, vec![("message", Value::String(message))], AlertLevel::Warn)
+}
+
 /// The supervisor knows lists by id; this adds the names people gave them in the config.
 pub fn with_playlist_names(mut e: SupervisorEvent, playlists: &[Playlist]) -> SupervisorEvent {
     if !matches!(e.kind.as_str(), "playlist-advance" | "playlist-restart" | "playlist-failed") {
@@ -414,6 +419,7 @@ pub fn describe(e: &SupervisorEvent) -> Described {
             let next = if retry > 0.0 { format!("; trying again in {} min", js_num((retry / 60.0).round().max(1.0))) } else { String::new() };
             plain(format!("Download of video {n_text} failed: {}{next}", one(get(e, "reason"))))
         }
+        "download-low-quality" => warning(format!("Video {n_text} ({}) was downloaded below 720p: none of the player clients offered 720p or better.", one(get(e, "id")))),
         "resolve-failed" => plain(format!("Lookup of video {n_text} failed: {}", one(get(e, "reason")))),
         "url-refresh" => plain(format!("Refreshed the address of video {n_text}")),
         "slate-stall" => plain("Standby slate stalled"),

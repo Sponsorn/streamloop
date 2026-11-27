@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use streamloop_common::config::Playlist;
 use streamloop_control::clock::TestClock;
 use streamloop_control::events::{
-    describe, launcher_event, with_playlist_names, Alert, AlertGate, Described, DiscordKind, SupervisorEvent, SupervisorEvents,
+    describe, launcher_event, with_playlist_names, Alert, AlertGate, AlertLevel, Described, DiscordKind, SupervisorEvent, SupervisorEvents,
 };
 use streamloop_control::setup_check::{FFMPEG_MISSING, NO_ENCODER};
 
@@ -425,6 +425,21 @@ fn says_lookups_keep_failing_when_the_pause_is_no_bot_check() {
     // Assert
     assert_eq!(d.message, format!("YouTube lookups keep failing ({reason}). Downloads and lookups are paused."));
     assert_eq!(kind_of(&d), Some("critical"));
+}
+
+#[test]
+fn a_download_below_720p_reaches_the_timeline_and_discord_as_a_warning() {
+    // Arrange
+    let text = "Video 12 (k3XioxDPt4c) was downloaded below 720p: none of the player clients offered 720p or better.";
+
+    // Act
+    let d = dsc(&ev("download-low-quality", json!({"index": 11, "id": "k3XioxDPt4c", "client": "mweb"}), "warn"));
+
+    // Assert
+    assert_eq!(d.message, text);
+    let alert = d.discord.expect("a Discord alert");
+    assert_eq!((alert.kind, alert.level), (DiscordKind::Critical, AlertLevel::Warn));
+    assert_eq!(alert.vars, vec![("message".to_string(), Value::String(text.into()))]);
 }
 
 #[test]

@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const FORMAT: &str = "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][dynamic_range=?SDR]+ba/b[height<=1080][dynamic_range=?SDR]/bv*[height<=1080]+ba";
+/// FORMAT from 720p up, so a client that offers only 360p fails its try instead of winning it.
+pub const FORMAT_HD: &str = "bv*[height>=720][height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height>=720][height<=1080][dynamic_range=?SDR]+ba/b[height>=720][height<=1080][dynamic_range=?SDR]/bv*[height>=720][height<=1080]+ba";
 
 pub struct Ytdlp {
     exe: PathBuf,
@@ -210,8 +212,13 @@ impl Ytdlp {
         Ok(entries)
     }
 
+    /// Every client answers a lookup together, so 720p or more from any of them comes before anything lower.
+    fn resolve_args(&self, id: &str) -> Vec<String> {
+        ["-j".into(), "--no-playlist".into(), "-f".into(), format!("{FORMAT_HD}/{FORMAT}"), watch_url(id)].to_vec()
+    }
+
     pub fn resolve(&self, id: &str, logs: &Logs) -> Result<Resolved, String> {
-        let args: Vec<String> = ["-j", "--no-playlist", "-f", FORMAT, &watch_url(id)].map(String::from).to_vec();
+        let args = self.resolve_args(id);
         let out = self.run(None, &args, logs, &AtomicBool::new(false), Duration::from_secs(90), |_| {}, |_| {});
         if !out.ok {
             return Err(describe_error(&out.stderr, None));
@@ -220,12 +227,19 @@ impl Ytdlp {
         parse_resolved(line)
     }
 
-    pub fn download(&self, client: &str, id: &str, file: &Path, logs: &Logs, cancel: &AtomicBool, pid: impl FnOnce(u32), mut progress: impl FnMut(f64)) -> Output {
-        let mut args: Vec<String> = ["--no-playlist", "--newline", "--no-continue", "-f", FORMAT, "--merge-output-format", "mp4"].map(String::from).to_vec();
+    /// `hd` asks for 720p or more; without it the download takes the best the client offers.
+    fn download_args(&self, id: &str, file: &Path, hd: bool) -> Vec<String> {
+        let format = if hd { FORMAT_HD } else { FORMAT };
+        let mut args: Vec<String> = ["--no-playlist", "--newline", "--no-continue", "-f", format, "--merge-output-format", "mp4"].map(String::from).to_vec();
         if let Some(r) = &self.limit_rate {
             args.extend(["--limit-rate".into(), r.clone()]);
         }
         args.extend(["-o".into(), file.to_string_lossy().into_owned(), watch_url(id)]);
+        args
+    }
+
+    pub fn download(&self, client: &str, id: &str, file: &Path, hd: bool, logs: &Logs, cancel: &AtomicBool, pid: impl FnOnce(u32), mut progress: impl FnMut(f64)) -> Output {
+        let args = self.download_args(id, file, hd);
         self.run(Some(client), &args, logs, cancel, Duration::from_secs(6 * 3600), pid, |line| {
             if let Some(p) = parse_download_progress(line) {
                 progress(p);
@@ -476,6 +490,50 @@ mod tests {
 
         assert!(token_server_command(&paths, 4416).is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn format_of(args: &[String]) -> String {
+        args[args.iter().position(|x| x == "-f").expect("-f") + 1].clone()
+    }
+
+    #[test]
+    fn every_alternative_of_the_hd_format_asks_for_720p_to_1080p() {
+        // Arrange
+        let alternatives: Vec<&str> = FORMAT_HD.split('/').collect();
+
+        // Act
+        let without_floor: Vec<&&str> = alternatives.iter().filter(|a| !a.split('+').next().unwrap().contains("[height>=720][height<=1080]")).collect();
+
+        // Assert
+        assert_eq!(alternatives.len(), FORMAT.split('/').count(), "one HD alternative per alternative of FORMAT");
+        assert!(without_floor.is_empty(), "{without_floor:?}");
+    }
+
+    #[test]
+    fn a_download_asks_for_720p_or_more_unless_its_round_takes_what_there_is() {
+        // Arrange
+        let yt = Ytdlp::new(&Paths::new(&std::env::temp_dir().join("sl-root")), "mweb", None, 4416);
+
+        // Act
+        let hd = yt.download_args("a", Path::new("a.mp4"), true);
+        let any = yt.download_args("a", Path::new("a.mp4"), false);
+
+        // Assert
+        assert_eq!(format_of(&hd), FORMAT_HD);
+        assert_eq!(format_of(&any), FORMAT);
+        assert_eq!(hd.last().map(String::as_str), Some("https://www.youtube.com/watch?v=a"));
+    }
+
+    #[test]
+    fn a_lookup_takes_720p_or_more_from_any_client_before_anything_lower() {
+        // Arrange
+        let yt = Ytdlp::new(&Paths::new(&std::env::temp_dir().join("sl-root")), "mweb,web_embedded", None, 4416);
+
+        // Act
+        let args = yt.resolve_args("a");
+
+        // Assert
+        assert_eq!(format_of(&args), format!("{FORMAT_HD}/{FORMAT}"));
     }
 
     #[test]
