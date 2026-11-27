@@ -467,13 +467,12 @@ mod tests {
         cx.simulate_window_resize(window, size(px(1000.), px(750.)));
 
         // Act
-        let native_close = close(cx, window);
+        close(cx, window);
         let polled = count(&fake, "GET", "/api/status");
         cx.executor().advance_clock(Duration::from_secs(10));
 
         // Assert
-        assert!(!native_close, "GPUI closes the window, never Windows' own close");
-        assert!(cx.windows().is_empty());
+        assert!(cx.windows().is_empty(), "the window's close callback removed it");
         assert_eq!(count(&fake, "GET", "/api/status"), polled, "the closed window polls no more");
         assert_eq!(
             window_state::load(&path),
@@ -486,6 +485,22 @@ mod tests {
         show.try_send(()).unwrap();
         cx.run_until_parked();
         assert_eq!(cx.windows().len(), 1, "the app still answers the show signal");
+    }
+
+    #[gpui::test]
+    fn the_close_callback_refuses_windows_own_close(cx: &mut TestAppContext) {
+        // Arrange
+        let (_, window) = open_shell(cx, &test_support::shell(FakeApi::new()), None);
+
+        // Act
+        let native_close = cx
+            .update_window(window, |_, window, cx| close_main_window(window, cx))
+            .expect("the window is open");
+        cx.run_until_parked();
+
+        // Assert
+        assert!(!native_close, "GPUI closes the window, never Windows' own close");
+        assert!(cx.windows().is_empty());
     }
 
     #[gpui::test]

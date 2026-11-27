@@ -1,8 +1,13 @@
 //! The UI tests' window on a `FakeApi`: opening the app, reading what a window painted, and canned answers.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
-use gpui::{AnyWindowHandle, AppContext, ElementId, Entity, TestAppContext};
+use gpui::{AnyWindowHandle, AppContext, ElementId, Entity, TestAppContext, VisualTestContext};
 use gpui_kit::{base::test_support::texts, component::Root, test::TestWindowExt};
 use serde_json::{Value, json};
 
@@ -67,13 +72,22 @@ pub fn app_view(cx: &mut TestAppContext, window: AnyWindowHandle) -> Entity<AppV
     })
 }
 
-/// The window's close button as Windows reports it; false when GPUI closed the window itself.
-pub fn close(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
-    let native_close = cx
-        .update_window(window, |_, window, cx| crate::close_main_window(window, cx))
-        .expect("the window is open");
+/// The window's close button: runs the close callback the window registered, as Windows' WM_CLOSE does.
+pub fn close(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    let mut visual = VisualTestContext::from_window(window, cx);
+    // `simulate_close` hands the callback back to the window after it ran, which panics with "window not
+    // found" once the callback has removed the window. Only that panic is contained.
+    if let Err(panic) = catch_unwind(AssertUnwindSafe(|| visual.simulate_close())) {
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if !message.contains("window not found") {
+            resume_unwind(panic);
+        }
+    }
     cx.run_until_parked();
-    native_close
 }
 
 /// Draws a frame and returns the text it painted inside the window, in paint order.

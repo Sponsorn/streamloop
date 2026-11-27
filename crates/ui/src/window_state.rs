@@ -61,12 +61,12 @@ pub fn save(path: &Path, state: &WindowState) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-/// The saved bounds when the top 32 px of the saved window lie on one of `displays`; else 1280 × 800 centred on
-/// `primary`; never smaller than 720 × 560; maximised when saved so.
+/// The saved bounds when the top 32 px of the saved window lie on one of `displays` and its centre on one too;
+/// else 1280 × 800 centred on `primary`; never smaller than 720 × 560; maximised when saved so.
 pub fn placement(state: &WindowState, displays: &[Bounds<Pixels>], primary: Bounds<Pixels>) -> WindowBounds {
     let bounds = state
         .bounds()
-        .filter(|bounds| top_on_a_display(bounds, displays))
+        .filter(|bounds| top_on_a_display(bounds, displays) && display_for(*bounds, displays).is_some())
         .unwrap_or_else(|| {
             Bounds::centered_at(primary.center(), DEFAULT_SIZE.min(&primary.size).max(&MIN_SIZE))
         });
@@ -169,6 +169,19 @@ mod tests {
         // Assert
         assert_eq!(placed, [WindowBounds::Windowed(centred()); 3]);
         assert_eq!(display, Some(0));
+    }
+
+    #[test]
+    fn centres_when_the_saved_centre_is_off_every_display() {
+        // Arrange: the title strip is on the display's last 40 px, the rest of the window below it
+        let one = [rect(0., 0., 2560., 1440.)];
+        let hanging_below = saved(100., 1400., 1084., 800.);
+
+        // Act
+        let placed = placement(&hanging_below, &one, primary());
+
+        // Assert
+        assert_eq!(placed, WindowBounds::Windowed(centred()));
     }
 
     #[test]
