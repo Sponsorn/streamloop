@@ -116,3 +116,70 @@ fn a_log_line_to_a_closed_stdout_does_not_crash_the_control_process() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(status.code(), Some(1), "a panic in the log layer exits 101");
 }
+
+#[cfg(windows)]
+fn cmds_naming(needle: &str) -> usize {
+    let filter = format!("(Get-CimInstance Win32_Process -Filter \"Name='cmd.exe'\" | Where-Object {{ $_.CommandLine -like '*{needle}*' }} | Measure-Object).Count");
+    let out = Command::new("powershell").args(["-NoProfile", "-Command", &filter]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+}
+
+#[cfg(windows)]
+#[test]
+fn detach_start_bat_runs_the_batch_with_from_app_set() {
+    use std::time::{Duration, Instant};
+    // Arrange: a root with a space, an umlaut and a parenthesis, whose START.bat reports its variables and pauses
+    let root = std::env::temp_dir().join(format!("sl4 Ö (x) {}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    let seen = root.join("seen.txt");
+    let bat = "@echo off\r\n(echo from-app=%STREAMLOOP_FROM_APP%& echo start=%STREAMLOOP_START%) > \"%~dp0seen.txt\"\r\npause\r\n";
+    std::fs::write(root.join("START.bat"), bat).unwrap();
+    let needle = root.file_name().unwrap().to_string_lossy().into_owned();
+
+    // Act: the parent has STREAMLOOP_START set too, which detach must drop
+    let status = exe().args(["detach", "start-bat", "--root"]).arg(&root).env("STREAMLOOP_START", "first").status().unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !seen.exists() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let text = std::fs::read_to_string(&seen).unwrap_or_default();
+    let mut left = cmds_naming(&needle);
+    while left > 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(200));
+        left = cmds_naming(&needle);
+    }
+
+    // Assert
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(text.lines().collect::<Vec<_>>(), ["from-app=1", "start="], "{text:?}");
+    assert_eq!(left, 0, "a cmd for the batch is still running");
+}
+
+#[test]
+fn detach_start_bat_without_a_batch_file_exits_1() {
+    // Arrange
+    let root = std::env::temp_dir().join(format!("sl-cli-detach-nobat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    // Act
+    let out = exe().args(["detach", "start-bat", "--root"]).arg(&root).output().unwrap();
+
+    // Assert
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("START.bat"));
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn detach_with_bad_arguments_says_the_usage() {
+    // Act
+    let out = exe().args(["detach", "bogus"]).output().unwrap();
+
+    // Assert
+    assert!(String::from_utf8_lossy(&out.stderr).contains("streamloop.exe detach"));
+    assert_eq!(out.status.code(), Some(64));
+}

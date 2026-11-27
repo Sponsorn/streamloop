@@ -5,14 +5,12 @@
 //! A Windows GUI program, so a double-click opens no console; the console modes attach to their parent's.
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod detach;
 mod dispatch;
 mod ui_mode;
 
 use dispatch::Mode;
 use streamloop_common::version::VERSION;
-
-/// `detach` is reserved for the intermediate that starts the app and START.bat.
-const DETACH_USAGE: &str = "Usage: streamloop.exe detach ui [ARGS] | streamloop.exe detach start-bat [--root DIR]";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -29,10 +27,7 @@ fn main() {
         Mode::Protect => streamloop_supervisor::protect_main(),
         Mode::Check => streamloop_supervisor::check_main(rest),
         Mode::Ui => ui_mode::ui_main(rest),
-        Mode::Detach => {
-            eprintln!("{DETACH_USAGE}");
-            streamloop_control::app::EXIT_USAGE
-        }
+        Mode::Detach => detach::detach_main(rest),
         Mode::Version => {
             println!("{VERSION}");
             0

@@ -4,6 +4,7 @@
 mod api;
 mod config;
 mod launch;
+pub use launch::retry_without_breakaway;
 mod logs;
 mod media;
 mod overlay;
