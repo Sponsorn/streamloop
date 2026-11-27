@@ -1,4 +1,4 @@
-//! Port of `src/admin/status-view.js`: the texts and colour levels the dashboard shows.
+//! The texts and colour levels the status banner shows, ported from the web dashboard's status-view.js.
 
 use super::update_text::{failure_text, step_label};
 use crate::api::types::{

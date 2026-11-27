@@ -162,49 +162,6 @@ async fn a_json_content_type_with_a_charset_still_parses() {
 }
 
 #[tokio::test]
-async fn admin_redirects_to_admin_slash() {
-    // Act
-    let r = call(app(), get_req("/admin")).await;
-    // Assert
-    assert_eq!(r.status, StatusCode::MOVED_PERMANENTLY);
-    assert_eq!(r.location.as_deref(), Some("/admin/"));
-    assert_eq!(r.content_type, "text/html; charset=UTF-8");
-    assert_eq!(
-        r.body,
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Redirecting</title>\n</head>\n<body>\n<pre>Redirecting to /admin/</pre>\n</body>\n</html>\n"
-    );
-}
-
-#[tokio::test]
-async fn admin_slash_serves_index_html() {
-    // Act
-    let r = call(app(), get_req("/admin/")).await;
-    let direct = call(app(), get_req("/admin/index.html")).await;
-    // Assert
-    assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(r.content_type, "text/html; charset=UTF-8");
-    assert!(r.body.contains("<html"));
-    assert_eq!(r.body, direct.body);
-}
-
-#[tokio::test]
-async fn scripts_go_out_as_text_javascript() {
-    // Act
-    let r = call(app(), get_req("/admin/admin.js")).await;
-    // Assert
-    assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(r.content_type, "text/javascript; charset=UTF-8");
-}
-
-#[tokio::test]
-async fn styles_go_out_as_text_css() {
-    // Act
-    let r = call(app(), get_req("/admin/admin.css")).await;
-    // Assert
-    assert_eq!((r.status, r.content_type.as_str()), (StatusCode::OK, "text/css; charset=UTF-8"));
-}
-
-#[tokio::test]
 async fn the_root_path_is_404() {
     // Act
     let r = call(app(), get_req("/")).await;
@@ -215,31 +172,17 @@ async fn the_root_path_is_404() {
 }
 
 #[tokio::test]
-async fn an_unknown_admin_file_is_the_same_404_page_naming_the_path() {
-    // Act
-    let r = call(app(), get_req("/admin/nope.js?x=1")).await;
-    // Assert
-    assert_eq!(r.status, StatusCode::NOT_FOUND);
-    assert!(r.body.contains("<pre>Cannot GET /admin/nope.js</pre>"), "{}", r.body);
-}
-
-#[tokio::test]
-async fn the_dashboards_own_tests_are_not_served() {
+async fn admin_paths_answer_404() {
     // Arrange
-    let test_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/admin/__tests__/status-view.test.ts");
-    assert!(test_file.is_file(), "{} is missing, so this test proves nothing", test_file.display());
-    // Act
-    let r = call(app(), get_req("/admin/__tests__/status-view.test.ts")).await;
-    // Assert
-    assert_eq!(r.status, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn a_path_that_climbs_out_of_the_admin_folder_is_404() {
-    // Act
-    let r = call(app(), get_req("/admin/..%2f..%2fCargo.toml")).await;
-    // Assert
-    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let paths = ["/admin", "/admin/", "/admin/admin.js"];
+    for path in paths {
+        // Act
+        let r = call(app(), get_req(path)).await;
+        // Assert
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(r.content_type, "text/html; charset=utf-8", "{path}");
+        assert!(r.body.contains(&format!("<pre>Cannot GET {path}</pre>")), "{path}: {}", r.body);
+    }
 }
 
 #[tokio::test]
@@ -252,7 +195,7 @@ async fn an_unmatched_route_with_the_token_answers_the_post_404_page() {
 }
 
 #[tokio::test]
-async fn the_default_router_has_the_token_and_admin_routes() {
+async fn the_default_router_has_the_token_route() {
     // Arrange
     let app = router(Arc::new(AppState::new(Rig::new().deps())));
     // Act
@@ -267,13 +210,12 @@ async fn the_default_router_has_the_token_and_admin_routes() {
 async fn a_wrong_method_on_an_existing_path_gets_the_express_404_page() {
     // Arrange
     let post_token = Request::builder().method(Method::POST).uri("/api/token").header("x-api-token", TOKEN).body(Body::empty()).unwrap();
-    let post_admin = Request::builder().method(Method::POST).uri("/admin/").body(Body::empty()).unwrap();
     let delete_ping = Request::builder().method(Method::DELETE).uri("/api/ping").body(Body::empty()).unwrap();
-    let put_script = Request::builder().method(Method::PUT).uri("/admin/admin.js").body(Body::empty()).unwrap();
+    let put_ping = Request::builder().method(Method::PUT).uri("/api/ping").body(Body::empty()).unwrap();
     // Act
-    let replies = [call(app(), post_token).await, call(app(), post_admin).await, call(app(), delete_ping).await, call(app(), put_script).await];
+    let replies = [call(app(), post_token).await, call(app(), delete_ping).await, call(app(), put_ping).await];
     // Assert
-    let texts = ["POST /api/token", "POST /admin/", "DELETE /api/ping", "PUT /admin/admin.js"];
+    let texts = ["POST /api/token", "DELETE /api/ping", "PUT /api/ping"];
     for (r, text) in replies.iter().zip(texts) {
         assert_eq!(r.status, StatusCode::NOT_FOUND, "{text}");
         assert_eq!(r.content_type, "text/html; charset=utf-8", "{text}");

@@ -1,9 +1,8 @@
-// Stand-in for the Node backend on 127.0.0.1:7654 for the GPUI memory spike. The Tauri shell
-// (the real /admin from src/admin) and the GPUI window poll it, so both draw the same data.
+// Stand-in for the control process on 127.0.0.1:7654, so the GPUI window has data to draw without a supervisor.
 // Run: node crates/ui/scripts/stub-backend.mjs
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { dirname, extname, join, normalize, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freemem, totalmem } from 'node:os';
 
@@ -29,7 +28,6 @@ const MAX_EVENTS = 100;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..');
-const adminDir = join(repo, 'src', 'admin');
 const example = JSON.parse(await readFile(join(repo, 'config.example.json'), 'utf8'));
 
 // Seeded, so every run serves the same titles and durations.
@@ -561,21 +559,6 @@ function seek(index) {
   addEvent(`Now playing video ${state.index + 1}: ${current().title}`);
 }
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
-
-async function serveAdmin(path, res) {
-  const rel = path === '/admin/' ? 'index.html' : path.slice('/admin/'.length);
-  const file = normalize(join(adminDir, rel));
-  if (!file.startsWith(adminDir + sep)) return send(res, 404, { error: 'Not found' });
-  try {
-    const body = await readFile(file);
-    res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream' });
-    res.end(body);
-  } catch {
-    send(res, 404, { error: 'Not found' });
-  }
-}
-
 function send(res, code, json) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(json));
@@ -594,11 +577,6 @@ async function readBody(req) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const path = url.pathname;
-  if (path === '/' || path === '/admin') {
-    res.writeHead(302, { Location: '/admin/' });
-    return res.end();
-  }
-  if (path.startsWith('/admin/')) return serveAdmin(path, res);
   if (req.method === 'GET' && path === '/api/playlist/videos') return send(res, ...videoPage(url.searchParams));
   const log = req.method === 'GET' && path.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (log) {
@@ -618,5 +596,5 @@ const server = createServer(async (req, res) => {
   }
   send(res, 404, { error: 'Not found' });
 }).listen(PORT, '127.0.0.1', () => {
-  process.stdout.write(`stub backend on http://127.0.0.1:${PORT}/admin/\n`);
+  process.stdout.write(`stub backend on http://127.0.0.1:${PORT}\n`);
 });

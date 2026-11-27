@@ -31,7 +31,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -71,7 +71,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -116,7 +116,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "2 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "2 events | Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -166,7 +166,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "3 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "3 events | Uptime: 1h 2m | v3.0.5"
               }
             }
           ],
@@ -209,7 +209,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               },
               "fields": [
                 {
@@ -263,7 +263,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               },
               "fields": [
                 {
@@ -316,7 +316,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -358,7 +358,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ],
@@ -401,7 +401,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ],
@@ -442,7 +442,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 42s | v3.0.5"
+                "text": "Uptime: 42s | v3.0.5"
               }
             }
           ]
@@ -482,7 +482,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 2m 5s | v3.0.5"
+                "text": "Uptime: 2m 5s | v3.0.5"
               }
             }
           ]
@@ -522,7 +522,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 25h 1m | v3.0.5"
+                "text": "Uptime: 25h 1m | v3.0.5"
               }
             }
           ]
@@ -614,7 +614,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               },
               "fields": [
                 {
@@ -677,7 +677,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "2 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "2 events | Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -727,7 +727,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "2 events | Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "2 events | Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -747,7 +747,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -795,7 +795,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -815,7 +815,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -879,7 +879,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -926,7 +926,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -974,7 +974,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1020,7 +1020,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1066,7 +1066,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1111,7 +1111,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1157,7 +1157,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1202,7 +1202,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1253,7 +1253,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1345,7 +1345,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               },
               "fields": [
                 {
@@ -1396,7 +1396,7 @@
               "color": 15158332,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               },
               "fields": [
                 {
@@ -1447,7 +1447,7 @@
               "color": 16776960,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1486,7 +1486,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]
@@ -1555,7 +1555,7 @@
               "color": 3447003,
               "timestamp": "<timestamp>",
               "footer": {
-                "text": "Dashboard: http://localhost:7654/admin | Uptime: 1h 2m | v3.0.5"
+                "text": "Uptime: 1h 2m | v3.0.5"
               }
             }
           ]

@@ -104,7 +104,6 @@ pub struct Wiring {
     pub pid_on_port: PidOnPort,
     pub protect: Protect,
     pub setup_check: RunSetupCheck,
-    pub open_admin: Arc<dyn Fn(&str) + Send + Sync>,
     /// One message per Ctrl+C or console close, whenever it came; the first one after the start ends the process.
     pub stop_signal: mpsc::UnboundedReceiver<()>,
 }
@@ -130,7 +129,6 @@ impl Wiring {
             kill_tree: Arc::new(streamloop_common::procs::kill_tree),
             pid_on_port: Arc::new(streamloop_common::procs::pid_on_port),
             protect: Arc::new(streamloop_common::secret::protect),
-            open_admin: Arc::new(open_in_browser),
             stop_signal: console_stop(),
             vars,
         }
@@ -242,14 +240,13 @@ fn send_alerts(mut alerts: mpsc::UnboundedReceiver<Alert>, notifier: Arc<dyn Not
 /// What a config save needs to build a new Discord notifier.
 struct DiscordParts {
     uptime_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
-    admin_url: String,
     http: Arc<dyn Http>,
     clock: Arc<dyn Clock>,
 }
 
 impl DiscordParts {
     fn build(&self, c: &Config) -> Arc<dyn Notifier> {
-        Arc::new(DiscordNotifier::new(c.discord.clone(), VERSION, self.uptime_ms.clone(), &self.admin_url, self.http.clone(), self.clock.clone()))
+        Arc::new(DiscordNotifier::new(c.discord.clone(), VERSION, self.uptime_ms.clone(), self.http.clone(), self.clock.clone()))
     }
 }
 
@@ -504,7 +501,6 @@ impl App {
             pid_on_port,
             protect,
             setup_check,
-            open_admin,
             stop_signal,
         } = w;
         let layout = Layout::new(&root.dir);
@@ -518,9 +514,7 @@ impl App {
         tracing::info!(port = config.port, playlists = config.playlists.len(), "Starting StreamLoop");
         // Nothing starts before the port is ours, so a second StreamLoop never starts a second stream.
         let (listener, port) = bind(config.port).await?;
-        let admin_url = format!("http://localhost:{port}/admin");
         tracing::info!(port, "Server listening");
-        tracing::info!("Admin URL: {admin_url}");
 
         let leftovers = layout.clone();
         if let Err(err) = tokio::task::spawn_blocking(move || remove_3_0_leftovers(&leftovers)).await {
@@ -544,7 +538,7 @@ impl App {
         let timeline = Arc::new(EventLog::new(EventStore::new(&layout.app_logs, clock.clone())));
         let playlists = Arc::new(PlaylistCache::new(runner.clone(), layout.ytdlp.clone(), config.ytdl_cookies_from_browser.clone(), clock.clone()));
 
-        let discord_parts = DiscordParts { uptime_ms: uptime_ms.clone(), admin_url: admin_url.clone(), http: http.clone(), clock: clock.clone() };
+        let discord_parts = DiscordParts { uptime_ms: uptime_ms.clone(), http: http.clone(), clock: clock.clone() };
         let notifier = CurrentNotifier::new(discord_parts.build(&config));
         let forwarding: Arc<dyn Notifier> = Arc::new(notifier.clone());
         let (alerts, alerts_rx) = mpsc::unbounded_channel();
@@ -699,9 +693,6 @@ impl App {
         // An outdated yt-dlp can stop after the first page of a playlist, so it updates itself at every start.
         if config.auto_update_ytdlp {
             update_ytdlp_in_background(runner, layout.ytdlp.clone(), playlists, "start");
-        }
-        if config.auto_open_admin {
-            open_admin(&admin_url);
         }
         Ok(App { control, server, close, stop_signal })
     }
@@ -884,21 +875,6 @@ fn update_ytdlp_in_background(runner: Arc<dyn Runner>, ytdlp: PathBuf, playlists
             tracing::warn!(error = ?result.error, why, "yt-dlp auto-update skipped");
         }
     });
-}
-
-/// Opens the dashboard in the default browser, as Node's `start "" URL` did.
-fn open_in_browser(url: &str) {
-    #[cfg(windows)]
-    {
-        use std::process::Stdio;
-        let mut cmd = streamloop_common::procs::command("cmd.exe");
-        cmd.args(["/c", "start", "", url]).stdout(Stdio::null()).stderr(Stdio::null());
-        if let Err(err) = cmd.spawn() {
-            tracing::warn!(%err, "Could not open the dashboard");
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = url;
 }
 
 /// Ctrl+C and the console closing, from now until the runtime ends, so neither reaches Windows' default handler

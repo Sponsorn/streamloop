@@ -1,4 +1,4 @@
-//! The web dashboard's look (`src/admin/admin.css`), set as gpui-component's theme.
+//! The look the web dashboard had, set as gpui-component's theme.
 
 use std::rc::Rc;
 

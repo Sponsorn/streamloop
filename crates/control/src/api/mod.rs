@@ -1,5 +1,5 @@
 //! The dashboard's REST API on 127.0.0.1:7654: what Express did around the routes in `src/server/index.ts`
-//! (JSON body parsing, the API token check, the static `/admin` files and Express's own 404 page) and the
+//! (JSON body parsing, the API token check and Express's own 404 page) and the
 //! routes of `api.ts`, one file per group.
 
 mod autostart;
@@ -19,13 +19,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
-use axum::extract::{OriginalUri, Path, Request, State};
+use axum::extract::{OriginalUri, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use rust_embed::RustEmbed;
 use serde::Serialize;
 use serde_json::{json, Value};
 use streamloop_common::config::Config;
@@ -255,11 +254,6 @@ pub(crate) fn js_truthy(v: &Value) -> bool {
 // express.json's default limit.
 const BODY_LIMIT: usize = 100 * 1024;
 
-#[derive(RustEmbed)]
-#[folder = "../../src/admin/"]
-#[exclude = "__tests__/*"]
-struct AdminFiles;
-
 /// The whole API: every route of `api.ts` on the router base.
 pub fn router(state: Arc<AppState>) -> Router {
     let mut routes = Router::new()
@@ -304,9 +298,6 @@ pub fn router_with(state: Arc<AppState>, api_routes: Router<Arc<AppState>>) -> R
         .layer(middleware::from_fn_with_state(state.clone(), api_guard));
     Router::new()
         .nest("/api", api)
-        .route("/admin", get(admin_redirect))
-        .route("/admin/", get(admin_index))
-        .route("/admin/{*path}", get(admin_file))
         .fallback(not_found)
         .method_not_allowed_fallback(not_found)
         .with_state(state)
@@ -384,51 +375,6 @@ fn escape_html(s: &str) -> String {
 async fn not_found(method: Method, OriginalUri(uri): OriginalUri) -> Response {
     let text = format!("Cannot {method} {}", escape_html(uri.path()));
     express_page(StatusCode::NOT_FOUND, "text/html; charset=utf-8", "Error", &text)
-}
-
-async fn admin_redirect() -> Response {
-    let mut res = express_page(StatusCode::MOVED_PERMANENTLY, "text/html; charset=UTF-8", "Redirecting", "Redirecting to /admin/");
-    res.headers_mut().insert(header::LOCATION, HeaderValue::from_static("/admin/"));
-    res
-}
-
-fn content_type(name: &str) -> &'static str {
-    match name.rsplit('.').next().unwrap_or("") {
-        "html" => "text/html; charset=UTF-8",
-        "css" => "text/css; charset=UTF-8",
-        "js" | "mjs" => "text/javascript; charset=UTF-8",
-        "json" => "application/json; charset=UTF-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "ico" => "image/x-icon",
-        _ => "application/octet-stream",
-    }
-}
-
-fn serve_admin(name: &str) -> Option<Response> {
-    if name.is_empty() || name.contains("..") || name.contains('\\') {
-        return None;
-    }
-    let file = AdminFiles::get(name)?;
-    let mut res = (StatusCode::OK, file.data.into_owned()).into_response();
-    let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type(name)));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=0"));
-    Some(res)
-}
-
-async fn admin_index(method: Method, uri: OriginalUri) -> Response {
-    match serve_admin("index.html") {
-        Some(r) => r,
-        None => not_found(method, uri).await,
-    }
-}
-
-async fn admin_file(Path(name): Path<String>, method: Method, uri: OriginalUri) -> Response {
-    match serve_admin(&name) {
-        Some(r) => r,
-        None => not_found(method, uri).await,
-    }
 }
 
 /// Stand-ins for the launcher and the updater, for tests of the routes.

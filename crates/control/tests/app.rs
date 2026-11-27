@@ -152,7 +152,6 @@ impl Rig {
             pid_on_port: Arc::new(|_| None),
             protect: Arc::new(|_| Ok("blob".to_string())),
             setup_check: streamloop_control::api::setup_check_with(runner),
-            open_admin: Arc::new(|_| {}),
             stop_signal: self.stop_rx.lock().unwrap().take().expect("one wiring per rig"),
         }
     }

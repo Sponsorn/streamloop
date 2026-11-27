@@ -264,7 +264,6 @@ struct Inner {
     discord: Discord,
     version: String,
     uptime_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
-    admin_url: String,
     http: Arc<dyn Http>,
     clock: Arc<dyn Clock>,
     batch: Mutex<Batch>,
@@ -281,11 +280,10 @@ impl DiscordNotifier {
         discord: Discord,
         version: &str,
         uptime_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
-        admin_url: &str,
         http: Arc<dyn Http>,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        let inner = Inner { discord, version: version.into(), uptime_ms, admin_url: admin_url.into(), http, clock, batch: Mutex::new(Batch::default()), sending: tokio::sync::Mutex::new(()) };
+        let inner = Inner { discord, version: version.into(), uptime_ms, http, clock, batch: Mutex::new(Batch::default()), sending: tokio::sync::Mutex::new(()) };
         Self { inner: Arc::new(inner) }
     }
 }
@@ -297,9 +295,6 @@ impl Inner {
 
     fn footer_text(&self, extra: Option<String>) -> String {
         let mut parts = Vec::new();
-        if !self.admin_url.is_empty() {
-            parts.push(format!("Dashboard: {}", self.admin_url));
-        }
         parts.push(format!("Uptime: {}", format_uptime((self.uptime_ms)())));
         parts.push(format!("v{}", self.version));
         let footer = parts.join(" | ");

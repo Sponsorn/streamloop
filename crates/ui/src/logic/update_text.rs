@@ -1,4 +1,4 @@
-//! Port of `src/admin/update-text.js`: update wording shared with the server's Discord post.
+//! Update wording shared with the server's Discord post, ported from the web dashboard's update-text.js.
 
 use crate::api::types::UpdateProgress;
 

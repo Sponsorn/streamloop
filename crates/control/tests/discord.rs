@@ -30,7 +30,7 @@ fn hooked(overrides: serde_json::Value) -> Discord {
 
 fn notifier_with(d: Discord, http: &Arc<FakeHttp>) -> Arc<DiscordNotifier> {
     let clock = Arc::new(TestClock::new(UNIX_EPOCH + Duration::from_secs(1_792_929_600)));
-    Arc::new(DiscordNotifier::new(d, "1.0.0", Arc::new(|| 3_600_000), "http://localhost:7654/admin", http.clone(), clock))
+    Arc::new(DiscordNotifier::new(d, "1.0.0", Arc::new(|| 3_600_000), http.clone(), clock))
 }
 
 fn ok_http() -> Arc<FakeHttp> {
@@ -212,7 +212,19 @@ async fn leaves_out_bot_identity_when_empty() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn includes_the_dashboard_url_uptime_and_version_in_the_footer() {
+async fn alerts_carry_no_dashboard_line() {
+    // Arrange
+    let http = ok_http();
+    let n = notifier_with(hooked(json!({})), &http);
+    // Act
+    n.send("test", Level::Error, None).await;
+    // Assert
+    let sent = body(&http, 0).to_string();
+    assert!(!sent.contains("Dashboard:"), "{sent}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn includes_the_uptime_and_version_in_the_footer() {
     // Arrange
     let http = ok_http();
     let n = notifier_with(hooked(json!({})), &http);
@@ -220,7 +232,7 @@ async fn includes_the_dashboard_url_uptime_and_version_in_the_footer() {
     n.send("test", Level::Error, None).await;
     // Assert
     let footer = body(&http, 0)["embeds"][0]["footer"]["text"].as_str().unwrap().to_string();
-    assert_eq!(footer, "Dashboard: http://localhost:7654/admin | Uptime: 1h 0m | v1.0.0");
+    assert_eq!(footer, "Uptime: 1h 0m | v1.0.0");
 }
 
 #[tokio::test(start_paused = true)]
@@ -502,7 +514,6 @@ async fn run_case(input: &Json) -> Arc<FakeHttp> {
         discord(overrides),
         &text(input.get("appVersion")),
         Arc::new(move || uptime_ms),
-        &text(input.get("adminUrl")),
         http.clone(),
         clock,
     );
@@ -598,7 +609,7 @@ async fn flush_waits_for_a_post_the_timer_already_started() {
     // Arrange
     let http = Arc::new(GatedHttp { gate: tokio::sync::Notify::new(), posts: Mutex::new(0) });
     let clock = Arc::new(TestClock::new(UNIX_EPOCH));
-    let n = Arc::new(DiscordNotifier::new(hooked(json!({})), "1.0.0", Arc::new(|| 0), "", http.clone(), clock));
+    let n = Arc::new(DiscordNotifier::new(hooked(json!({})), "1.0.0", Arc::new(|| 0), http.clone(), clock));
     n.send("batched", Level::Info, None).await;
     pass(Duration::from_secs(5)).await;
     // Act
