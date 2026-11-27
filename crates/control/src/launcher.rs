@@ -159,14 +159,16 @@ struct State {
     suspended: bool,
     /// A Start while suspended: one launch goes through, and the hold stays on.
     launch_once: bool,
+    /// The app's Quit has begun: nothing launches for the rest of the process, Start included.
+    quitting: bool,
     last_version_restart: Option<SystemTime>,
     last_status: Option<SupervisorStatus>,
 }
 
 impl State {
-    /// Suspended for a landing, with no Start waiting to go through.
+    /// Quitting, or suspended for a landing with no Start waiting to go through.
     fn held_back(&self) -> bool {
-        self.suspended && !self.launch_once
+        self.quitting || (self.suspended && !self.launch_once)
     }
 }
 
@@ -267,6 +269,7 @@ impl Launcher {
                 refused: None,
                 suspended: false,
                 launch_once: false,
+                quitting: false,
                 last_version_restart: None,
                 last_status: None,
             }),
@@ -357,8 +360,12 @@ impl Launcher {
     }
 
     /// An operator Start: no backoff, and the spawn still goes through the one guarded poll.
-    /// While suspended it launches once and the hold stays on: a landing starts the new exe this way.
+    /// While suspended it launches once and the hold stays on: a landing starts the new exe this way. While
+    /// quitting it does nothing, so `data\stopped-by-user` stays as it is.
     pub fn launch_now(&self) {
+        if self.inner.state.lock().unwrap().quitting {
+            return;
+        }
         self.inner.end_hold();
         let _ = std::fs::remove_file(&self.inner.layout.stopped_marker);
         let now = self.inner.clock.now();
@@ -418,6 +425,14 @@ impl Launcher {
         let mut st = self.inner.state.lock().unwrap();
         st.suspended = false;
         st.misses = 0;
+    }
+
+    /// The app's Quit: no launch, no version replacement and no outage alert until the process exits. Unlike
+    /// `suspend`, neither `launch_now` nor `resume` lifts it.
+    pub fn hold_for_quit(&self) {
+        let mut st = self.inner.state.lock().unwrap();
+        st.quitting = true;
+        st.launch_once = false;
     }
 
     pub fn last_status(&self) -> Option<SupervisorStatus> {
@@ -524,7 +539,7 @@ impl Inner {
                 }
                 let paused = st.last_version_restart.is_some_and(|at| since(t, at) < VERSION_RESTART_PAUSE);
                 match &self.own_version {
-                    Some(own) if !st.stopped_by_user && !st.suspended && !paused && status.version.as_ref() != Some(own) => {
+                    Some(own) if !st.stopped_by_user && !st.suspended && !st.quitting && !paused && status.version.as_ref() != Some(own) => {
                         Next::ReplaceVersion(status.version)
                     }
                     _ => Next::Done,
@@ -565,7 +580,7 @@ impl Inner {
             let mut st = self.state.lock().unwrap();
             // Whether or not it went, the next try waits out the pause.
             st.last_version_restart = Some(now);
-            if !shut || st.stopped_by_user || st.suspended {
+            if !shut || st.stopped_by_user || st.suspended || st.quitting {
                 return;
             }
             st.draining = true;
@@ -636,15 +651,19 @@ impl Inner {
         if self.debug_faults {
             args.push("--debug-faults".into());
         }
-        let spawned = self.spawner.spawn(&exe, &args);
-        let seq = {
+        let (spawned, seq) = {
             let mut st = self.state.lock().unwrap();
+            // Under the lock `hold_for_quit` takes, so no spawn begins once a quit has begun.
+            if st.quitting {
+                return;
+            }
+            let spawned = self.spawner.spawn(&exe, &args);
             st.spawn_seq += 1;
             st.spawns += 1;
             st.launch_once = false;
             st.last_spawn_at = Some(spawned_at);
             st.phase = LauncherState::Starting;
-            st.spawn_seq
+            (spawned, st.spawn_seq)
         };
         match spawned {
             Ok(handle) => {

@@ -12,7 +12,7 @@ use streamloop_common::config::ordered::Value as Ordered;
 use streamloop_common::config::{DEFAULT_TEMPLATES, TEMPLATE_VARIABLES};
 
 use super::config::ordered_reply;
-use super::update::refuse_during_update;
+use super::update::{refuse_during_update, UPDATE_RUNNING};
 use super::{error_reply, json_reply, text_reply, typed_reply, AppState};
 use crate::discord::Level;
 use crate::ytdlp_update::update_ytdlp as run_update;
@@ -82,6 +82,10 @@ pub(super) async fn shutdown(State(state): State<Arc<AppState>>) -> Response {
 pub(super) async fn quit(State(state): State<Arc<AppState>>) -> Response {
     if let Some(refused) = refuse_during_update(&state) {
         return refused;
+    }
+    // Begun before the reply, so no landing can begin in the half second before the quit acts.
+    if !state.updates.begin_quit() {
+        return error_reply(StatusCode::CONFLICT, UPDATE_RUNNING);
     }
     let quit = state.trigger_quit.clone();
     tokio::spawn(async move {

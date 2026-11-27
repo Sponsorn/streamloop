@@ -580,6 +580,10 @@ pub mod fake {
             self.confirming.load(Ordering::SeqCst)
         }
 
+        fn begin_quit(&self) -> bool {
+            !self.landing_in_progress()
+        }
+
         async fn land(&self) -> Result<(), String> {
             self.lands.fetch_add(1, Ordering::SeqCst);
             loop {

@@ -1059,6 +1059,41 @@ async fn an_exit_before_the_landing_stops_the_supervisor_makes_it_give_up() {
     assert!(!r.deps.landing_in_progress());
 }
 
+// The app's Quit
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_gives_up_once_a_quit_has_begun() {
+    // Arrange
+    let r = landing_rig().await;
+    let quit = r.deps.begin_quit();
+    // Act
+    let result = land(&r.deps).await;
+    // Assert
+    assert!(quit);
+    assert_eq!(result, Err("StreamLoop was closed before the update could start.".to_string()));
+    assert_eq!(r.sup.shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert!(!r.layout.landed.exists());
+    assert!(r.spawns.all().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quit_does_not_begin_once_a_landing_has_begun() {
+    // Arrange: the supervisor takes its 20 s to stop, and the quit is asked during them
+    let r = landing_rig().await;
+    r.sup.ignores_shutdown.store(true, Ordering::SeqCst);
+    // Act
+    let (result, quit) = tokio::join!(land(&r.deps), async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        r.deps.begin_quit()
+    });
+    // Assert
+    assert!(!quit, "the landing marked first");
+    assert_eq!(result, Ok(()));
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+    assert_eq!(r.spawns.all().len(), 1, "the landing launched the new supervisor");
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_exit_after_a_landing_went_through_does_not_wait() {
     // Arrange

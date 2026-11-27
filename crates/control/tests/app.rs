@@ -258,6 +258,24 @@ impl Rig {
         self.sup.calls().iter().filter(|c| **c == Call::Shutdown).count()
     }
 
+    /// Starts with a supervisor that stops answering at `/shutdown` and a port 4417 that the returned hold keeps
+    /// taken, so that a quit's stop lasts as long as the hold.
+    async fn start_with_port_hold(&self) -> (App, PortHold) {
+        self.sup.stop_answering_on_shutdown();
+        let hold = PortHold::default();
+        let mut wiring = self.wiring();
+        let until = hold.0.clone();
+        wiring.pid_on_port = Arc::new(move |_| until.lock().unwrap().filter(|t| Instant::now() < *t).map(|_| 4242));
+        let app = App::start(wiring).await.unwrap_or_else(|code| panic!("the control process did not start: exit {code}"));
+        self.wait_until("the launcher attaches", || self.status_polls() > 0).await;
+        (app, hold)
+    }
+
+    /// Whether an update landed: `_update\landed` written, or the exe `launchable` wrote replaced.
+    fn landed_anything(&self) -> bool {
+        self.layout().landed.exists() || std::fs::read(self.layout().exe).unwrap() != b"old exe"
+    }
+
     /// The day's timeline as the exit leaves it on disk, for after the API has gone.
     fn timeline_on_disk(&self) -> Vec<String> {
         let file = self.layout().app_logs.join(format!("events-{}.jsonl", local_date(SystemTime::now())));
@@ -297,6 +315,25 @@ impl Rig {
 
 /// Long enough for the launcher's three missed polls, 2 s apart, and its launch.
 const RELAUNCH_WITHIN: Duration = Duration::from_secs(12);
+
+/// Port 4417 as `pid_on_port` reports it: taken by PID 4242 until the instant `hold_for` sets.
+#[derive(Default)]
+struct PortHold(Arc<Mutex<Option<Instant>>>);
+
+impl PortHold {
+    fn hold_for(&self, d: Duration) {
+        *self.0.lock().unwrap() = Some(Instant::now() + d);
+    }
+}
+
+/// Past the launcher's three missed polls, 2 s apart, and the landing watch's polls, 2 s apart too.
+const SLOW_STOP: Duration = Duration::from_secs(9);
+/// The slow stop, the exit and some slack.
+const SLOW_QUIT_EXITS_WITHIN: Duration = Duration::from_secs(20);
+
+async fn exit_code_after_a_slow_quit(app: App) -> i32 {
+    tokio::time::timeout(SLOW_QUIT_EXITS_WITHIN, app.wait()).await.expect("the control process exited")
+}
 
 async fn json_of(reply: reqwest::Response) -> Value {
     let text = reply.text().await.expect("the whole reply arrives");
@@ -711,25 +748,113 @@ async fn quit_holds_the_launcher_so_nothing_relaunches() {
     // Arrange: a supervisor that stops answering at /shutdown but holds port 4417 for 9 s more, past the
     // launcher's three missed polls, and a launch that would spawn
     let rig = Rig::new("PLrealplaylist001");
-    rig.sup.stop_answering_on_shutdown();
     rig.launchable();
-    let port_held_until = Arc::new(Mutex::new(None::<Instant>));
-    let mut wiring = rig.wiring();
-    let held = port_held_until.clone();
-    wiring.pid_on_port = Arc::new(move |_| held.lock().unwrap().filter(|until| Instant::now() < *until).map(|_| 4242));
-    let app = App::start(wiring).await.unwrap_or_else(|code| panic!("the control process did not start: exit {code}"));
-    rig.wait_until("the launcher attaches", || rig.status_polls() > 0).await;
+    let (app, port) = rig.start_with_port_hold().await;
 
     // Act
-    *port_held_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(9));
+    port.hold_for(SLOW_STOP);
     let reply = rig.post("/api/quit", json!({})).await;
-    let code = tokio::time::timeout(Duration::from_secs(20), app.wait()).await.expect("the control process exited");
+    let code = exit_code_after_a_slow_quit(app).await;
 
     // Assert
     assert_eq!(reply.status(), 200);
     assert_eq!(code, 0);
     assert_eq!(rig.supervisor_shutdowns(), 1);
     assert_eq!(rig.spawns(), 0, "nothing was launched while the supervisor went away");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_during_the_quit_launches_nothing() {
+    // Arrange: the quit's stop lasts 9 s, and a launch would spawn
+    let rig = Rig::new("PLrealplaylist001");
+    rig.launchable();
+    let (app, port) = rig.start_with_port_hold().await;
+    port.hold_for(SLOW_STOP);
+    let quit = rig.post("/api/quit", json!({})).await;
+    rig.wait_until("the quit stops the supervisor", || rig.supervisor_shutdowns() == 1).await;
+
+    // Act
+    let start = rig.post("/api/stream/start", json!({})).await;
+    let code = exit_code_after_a_slow_quit(app).await;
+
+    // Assert
+    assert_eq!((quit.status(), start.status()), (reqwest::StatusCode::OK, reqwest::StatusCode::OK), "Start keeps its usual reply");
+    assert_eq!(code, 0);
+    assert_eq!(rig.spawns(), 0, "no supervisor outlives the control process");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_during_the_quit_keeps_an_earlier_marker() {
+    // Arrange: stopped from the dashboard before, the quit's stop lasting 9 s, and a launch that would spawn
+    let rig = Rig::new("PLrealplaylist001");
+    rig.write("data/stopped-by-user", b"");
+    rig.sup.set_status(None);
+    rig.launchable();
+    let (app, port) = rig.start_with_port_hold().await;
+    port.hold_for(SLOW_STOP);
+    let quit = rig.post("/api/quit", json!({})).await;
+    rig.wait_until("the quit stops the supervisor", || rig.supervisor_shutdowns() == 1).await;
+
+    // Act
+    let start = rig.post("/api/stream/start", json!({})).await;
+    let code = exit_code_after_a_slow_quit(app).await;
+
+    // Assert
+    assert_eq!((quit.status(), start.status()), (reqwest::StatusCode::OK, reqwest::StatusCode::OK));
+    assert_eq!(code, 0);
+    assert!(rig.layout().stopped_marker.exists(), "the next start stays stopped");
+    assert_eq!(rig.spawns(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_now_right_after_the_quit_answers_lands_nothing() {
+    // Arrange: the new exe staged, the quit's stop lasting 9 s, and a launch that would spawn
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.offer_new_version();
+    rig.runner.push(Ok(RunOutput::ok(&format!("{NEW_VERSION}\r\n"))));
+    rig.launchable();
+    let (app, port) = rig.start_with_port_hold().await;
+    rig.post("/api/update/check", json!({})).await;
+    rig.wait_until("the exe is staged", || rig.layout().staged_exe.exists()).await;
+    port.hold_for(SLOW_STOP);
+
+    // Act: within the half second before the quit acts
+    let quit = rig.post("/api/quit", json!({})).await;
+    let applied = rig.post("/api/update/apply", json!({})).await;
+    let code = exit_code_after_a_slow_quit(app).await;
+
+    // Assert
+    assert_eq!((quit.status(), applied.status()), (reqwest::StatusCode::OK, reqwest::StatusCode::OK), "Update Now keeps its usual reply");
+    assert_eq!(code, 0);
+    assert!(!rig.landed_anything());
+    assert_eq!(rig.spawns(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_the_quit_lands_nothing() {
+    // Arrange: the new exe staged with autoUpdateCheck on, so a dashboard Stop would land it, and the quit's
+    // stop lasting 9 s
+    let mut rig = Rig::new("PLrealplaylist001");
+    rig.patch_config(json!({ "autoUpdateCheck": true }));
+    rig.offer_new_version();
+    rig.runner.push(Ok(RunOutput::ok(&format!("{NEW_VERSION}\r\n"))));
+    rig.launchable();
+    let (app, port) = rig.start_with_port_hold().await;
+    rig.post("/api/update/check", json!({})).await;
+    rig.wait_until("the exe is staged", || rig.layout().staged_exe.exists()).await;
+    port.hold_for(SLOW_STOP);
+    let quit = rig.post("/api/quit", json!({})).await;
+    rig.wait_until("the quit stops the supervisor", || rig.supervisor_shutdowns() == 1).await;
+
+    // Act
+    let stop = rig.post("/api/stream/stop", json!({})).await;
+    let code = exit_code_after_a_slow_quit(app).await;
+
+    // Assert
+    assert_eq!((quit.status(), stop.status()), (reqwest::StatusCode::OK, reqwest::StatusCode::OK));
+    assert_eq!(code, 0);
+    assert!(!rig.landed_anything());
+    assert_eq!(rig.spawns(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

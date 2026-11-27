@@ -74,7 +74,7 @@ pub fn ask_to_quit(shell: &Shell, cx: &mut App) {
 
 /// The Quit dialog; Quit sends `POST /api/quit`.
 fn confirm_quit(shell: &Shell, cx: &mut App) {
-    let Some(answer) = ask(QUIT_DETAIL, QUIT, cx) else {
+    let Some(answer) = ask(QUIT_TITLE, Some(QUIT_DETAIL), QUIT, cx) else {
         return;
     };
     set_quitting(cx, true);
@@ -100,9 +100,10 @@ fn confirm_quit(shell: &Shell, cx: &mut App) {
     .detach();
 }
 
-/// StreamLoop does not answer, so nothing can stop the stream: Close ends the app alone.
+/// StreamLoop does not answer, so nothing can stop the stream: Close ends the app alone. No "Quit StreamLoop?"
+/// title, since Close leaves the stream on air.
 fn offer_to_close(shell: &Shell, cx: &mut App) {
-    let Some(answer) = ask(QUIT_UNREACHABLE, CLOSE, cx) else {
+    let Some(answer) = ask(QUIT_UNREACHABLE, None, CLOSE, cx) else {
         set_quitting(cx, false);
         return;
     };
@@ -122,9 +123,9 @@ fn offer_to_close(shell: &Shell, cx: &mut App) {
 }
 
 /// The dialog in the window open now; `None` without one.
-fn ask(detail: &str, ok: &str, cx: &mut App) -> Option<Task<bool>> {
+fn ask(message: &str, detail: Option<&str>, ok: &str, cx: &mut App) -> Option<Task<bool>> {
     open_handle(cx)?
-        .update(cx, |_, window, cx| confirm(QUIT_TITLE, detail, ok, window, cx))
+        .update(cx, |_, window, cx| confirm(message, detail, ok, window, cx))
         .ok()
 }
 
@@ -283,7 +284,7 @@ mod tests {
         answer(cx, "Close");
 
         // Assert
-        assert_eq!(asked, asks(QUIT_TITLE, QUIT_UNREACHABLE));
+        assert_eq!(asked, asks(QUIT_UNREACHABLE, ""), "its one text, with no title above it");
         assert!(fake.posts().is_empty(), "no POST /api/quit");
         assert!(tray.borrow().dropped, "the app quits");
     }
@@ -305,7 +306,7 @@ mod tests {
         answer(cx, "Close");
 
         // Assert
-        assert_eq!(asked, asks(QUIT_TITLE, QUIT_UNREACHABLE));
+        assert_eq!(asked, asks(QUIT_UNREACHABLE, ""), "its one text, with no title above it");
         assert_eq!(count(&fake, "POST", "/api/quit"), 1);
         assert!(tray.borrow().dropped, "the app quits");
     }

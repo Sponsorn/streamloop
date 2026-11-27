@@ -304,6 +304,10 @@ impl Updates for RouteUpdates {
         self.confirming.load(Ordering::SeqCst)
     }
 
+    fn begin_quit(&self) -> bool {
+        !self.confirming.load(Ordering::SeqCst) && self.exe.begin_quit()
+    }
+
     async fn land(&self) -> Result<(), String> {
         self.exe.land().await
     }
@@ -328,7 +332,7 @@ struct Control {
     started: AtomicBool,
     confirming: Arc<AtomicBool>,
     landing_running: AtomicBool,
-    quitting: AtomicBool,
+    quit_running: AtomicBool,
     /// The events tail, the update checks and the landing watch.
     tasks: Mutex<Vec<JoinHandle<()>>>,
     /// One config save's rebuild at a time.
@@ -453,7 +457,7 @@ impl Control {
         let sup = self.launcher.last_status();
         let auto = read(&self.config).auto_update_check;
         let land = self.updater.observe(sup.as_ref(), self.launcher.is_stopped_by_user(), auto);
-        if !land || self.landing.landing_in_progress() || self.landing_running.swap(true, Ordering::SeqCst) {
+        if !land || self.landing.quitting() || self.landing.landing_in_progress() || self.landing_running.swap(true, Ordering::SeqCst) {
             return;
         }
         let me = self.clone();
@@ -470,10 +474,10 @@ impl Control {
     /// The app's Quit, once however often it is asked. `data\stopped-by-user` is left as it is, so the next start
     /// follows `autoStartStream`.
     async fn quit(&self) {
-        if self.quitting.swap(true, Ordering::SeqCst) {
+        // The route has begun the quit already; asked again, `begin_quit` answers true.
+        if self.quit_running.swap(true, Ordering::SeqCst) || !self.landing.begin_quit() {
             return;
         }
-        self.launcher.suspend();
         tracing::info!("Quitting StreamLoop");
         self.timeline.add(QUIT_LINE);
         self.notifier.notify_event(landing::recovery(QUIT_LINE)).await;
@@ -664,7 +668,7 @@ impl App {
             started: AtomicBool::new(false),
             confirming: confirming.clone(),
             landing_running: AtomicBool::new(false),
-            quitting: AtomicBool::new(false),
+            quit_running: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             reload: Mutex::new(()),
             exit: ExitSwitch::new(),

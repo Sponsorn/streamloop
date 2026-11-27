@@ -94,7 +94,7 @@ pub enum Confirmation {
 
 type Outcome = Option<Result<(), String>>;
 
-/// One landing at a time. Build it with `LandingGate::default()`.
+/// One landing at a time, and never beside the app's Quit. Build it with `LandingGate::default()`.
 #[derive(Default)]
 pub struct LandingGate {
     /// The landing that runs, or the one that went through. A failed one is cleared, so Update Now can try again.
@@ -102,6 +102,32 @@ pub struct LandingGate {
     in_progress: AtomicBool,
     /// The process is exiting: a landing that has not stopped the supervisor yet gives up instead.
     closing: AtomicBool,
+    /// The app's Quit has begun, for the rest of the process.
+    quitting: AtomicBool,
+    /// Held while a landing or a quit checks the other's flag and sets its own, so the first to take it wins.
+    begin: Mutex<()>,
+}
+
+impl LandingGate {
+    /// Marks a landing as begun, unless a quit has begun.
+    fn begin_landing(&self) -> bool {
+        let _one = self.begin.lock().unwrap_or_else(|e| e.into_inner());
+        if self.quitting.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.in_progress.store(true, Ordering::SeqCst);
+        true
+    }
+
+    /// Marks the quit as begun, unless a landing has begun.
+    fn begin_quit(&self) -> bool {
+        let _one = self.begin.lock().unwrap_or_else(|e| e.into_inner());
+        if self.in_progress.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.quitting.store(true, Ordering::SeqCst);
+        true
+    }
 }
 
 pub struct LandingDeps {
@@ -125,6 +151,20 @@ impl LandingDeps {
     /// True from the landing's first step until the process exits, or until the landing fails.
     pub fn landing_in_progress(&self) -> bool {
         self.gate.in_progress.load(Ordering::SeqCst)
+    }
+
+    /// The app's Quit. False when a landing has begun; otherwise, from now until the process exits, no landing
+    /// begins and nothing is launched, Start included. Asked again, it answers true again.
+    pub fn begin_quit(&self) -> bool {
+        if !self.gate.begin_quit() {
+            return false;
+        }
+        self.launcher.hold_for_quit();
+        true
+    }
+
+    pub fn quitting(&self) -> bool {
+        self.gate.quitting.load(Ordering::SeqCst)
     }
 
     /// The process is exiting. A landing that has not stopped the supervisor gives up before it does, and one
@@ -429,6 +469,10 @@ impl Drop for Landing<'_> {
 impl<'a> Landing<'a> {
     async fn run(&mut self) -> Result<(), String> {
         let deps = self.deps;
+        // Saves a download for a process that is about to exit; `begin_landing` below is what decides.
+        if deps.quitting() {
+            return Err(self.fail_before_stop(CLOSED.into()));
+        }
         // A check or a stage in flight could replace `_update\streamloop.exe` under the swap.
         deps.updater.wait_for_check().await;
         if deps.updater.staged_version().is_none() {
@@ -436,7 +480,9 @@ impl<'a> Landing<'a> {
         }
         self.held = deps.launcher.is_stopped_by_user() || deps.launcher.is_waiting_for_start() || (deps.first_run)();
 
-        deps.gate.in_progress.store(true, Ordering::SeqCst);
+        if !deps.gate.begin_landing() {
+            return Err(self.fail_before_stop(CLOSED.into()));
+        }
         // `ready` refuses new checks and stages; one that began before it is waited for.
         deps.updater.landing_started();
         // No relaunch and no outage alert until the process exits.

@@ -110,7 +110,7 @@ impl AppHandle {
         window: &mut Window,
         cx: &mut App,
     ) -> Task<bool> {
-        confirm(title, detail, ok, window, cx)
+        confirm(title, Some(detail), ok, window, cx)
     }
 
     fn later(
@@ -268,7 +268,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<bool> {
-        confirm(title, detail, ok, window, cx)
+        confirm(title, Some(detail), ok, window, cx)
     }
 
     /// admin.js `pollOnce` outside the 2 s rhythm, as after an action. Only the dashboard polls.
@@ -464,10 +464,11 @@ async fn poll(
     .unwrap_or(false)
 }
 
-/// A native dialog with `title`, `detail` and the buttons `ok` and Cancel; true only for `ok`. Escape answers Cancel.
+/// A native dialog with `title`, `detail` under it when there is one, and the buttons `ok` and Cancel; true only
+/// for `ok`. Escape answers Cancel.
 pub(crate) fn confirm(
     title: &str,
-    detail: &str,
+    detail: Option<&str>,
     ok: &str,
     window: &mut Window,
     cx: &mut App,
@@ -475,7 +476,7 @@ pub(crate) fn confirm(
     let answer = window.prompt(
         PromptLevel::Warning,
         title,
-        Some(detail),
+        detail,
         &[
             PromptButton::ok(ok.to_string()),
             PromptButton::cancel("Cancel"),

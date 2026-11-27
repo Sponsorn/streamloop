@@ -23,6 +23,9 @@ pub trait Updates: Send + Sync {
     fn landing_in_progress(&self) -> bool;
     /// While this process confirms a landed update.
     fn confirming(&self) -> bool;
+    /// The app's Quit, marked as begun unless a landing has begun or a confirmation runs. From then on no landing
+    /// begins and nothing is launched.
+    fn begin_quit(&self) -> bool;
     /// Stages first when nothing is staged. On `Ok` the caller exits 75.
     async fn land(&self) -> Result<(), String>;
 }
@@ -48,6 +51,10 @@ impl Updates for ExeUpdates {
 
     fn confirming(&self) -> bool {
         false
+    }
+
+    fn begin_quit(&self) -> bool {
+        self.landing.begin_quit()
     }
 
     async fn land(&self) -> Result<(), String> {
