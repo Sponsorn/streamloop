@@ -1,5 +1,6 @@
 pub mod api;
 pub mod app;
+pub mod autostart_store;
 pub mod clock;
 pub mod discord;
 pub mod events;

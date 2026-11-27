@@ -20,6 +20,7 @@ use streamloop_control::clock::SystemClock;
 use streamloop_control::http::FakeHttp;
 use streamloop_control::landing::LandedRecord;
 use streamloop_control::launcher::{SpawnHandle, Spawner, StartKind};
+use streamloop_control::autostart_store::AutostartStore;
 use streamloop_control::leftovers::remove_3_0_leftovers;
 use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::fake::{Call, FakeSupervisor};
@@ -97,6 +98,7 @@ struct Rig {
     /// How many times the control process asked for the app's window.
     window_opens: Arc<AtomicUsize>,
     vars: EnvVars,
+    autostart: Arc<streamloop_control::autostart_store::FakeAutostart>,
     /// The root is the exe's own folder: the updater stages, as in an install.
     from_exe: bool,
     /// Ctrl+C or the console closing.
@@ -129,6 +131,7 @@ impl Rig {
             spawner: Arc::new(NoSpawner::default()),
             window_opens: Arc::new(AtomicUsize::new(0)),
             vars: EnvVars::default(),
+            autostart: Arc::new(streamloop_control::autostart_store::FakeAutostart::new()),
             from_exe: false,
             stop,
             stop_rx: Mutex::new(Some(stop_rx)),
@@ -151,6 +154,7 @@ impl Rig {
             spawner: self.spawner.clone(),
             clock: Arc::new(SystemClock),
             startup_dir: self.root.join("startup"),
+            autostart: self.autostart.clone(),
             obs_running: Arc::new(|| false),
             kill_tree: Arc::new(|_| {}),
             pid_on_port: Arc::new(|_| None),
@@ -474,6 +478,25 @@ async fn removes_the_3_0_leftovers_and_nothing_else() {
     for kept in keepers.iter().chain(["app/config.json", "app/logs", "data"].iter()) {
         assert!(at(kept).exists(), "{kept} must stay");
     }
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_replaces_this_installs_vbs_with_the_run_value() {
+    // Arrange
+    let rig = Rig::new("PLrealplaylist001");
+    let bat = rig.root.join("START.bat");
+    let text = format!("Set WshShell = CreateObject(\"WScript.Shell\")\r\nWshShell.Run \"\"\"{}\"\"\", 1, False", bat.display());
+    let vbs = rig.root.join("startup").join("StreamLoop.vbs");
+    std::fs::create_dir_all(vbs.parent().unwrap()).unwrap();
+    std::fs::write(&vbs, text).unwrap();
+    // Act
+    let app = rig.start().await;
+    // Assert
+    let value = rig.autostart.run_value().unwrap().expect("the Run value is written");
+    assert!(value.ends_with("streamloop.exe\" ui --tray"), "{value}");
+    assert!(!vbs.exists());
+    assert!(captured_logs().text().contains("Autostart moved from StreamLoop.vbs to the Run entry"));
     drop(app);
 }
 

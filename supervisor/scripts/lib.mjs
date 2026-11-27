@@ -1,4 +1,9 @@
 // Pure helpers for the supervisor's session/drive/analyze scripts (adapted from spike 5's).
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export const API = 'http://127.0.0.1:4417';
 /** The real ffmpeg: the one on PATH is a Chocolatey shim, which a kill or suspend does not reach. */
@@ -211,4 +216,24 @@ export async function apiGet(path) {
 export async function apiPost(path, body) {
   const res = await fetch(`${API}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
   return res.json();
+}
+
+/** Points every control process the script starts at a random test key and a temp Startup folder
+ *  (STREAMLOOP_TEST_AUTOSTART_KEY, STREAMLOOP_TEST_STARTUP_DIR), deleted when the script exits.
+ *  Call it before the first child process starts. */
+export function autostartSandbox(label = 'run') {
+  const key = `Software\StreamLoopTest-${randomBytes(6).toString('hex')}`;
+  const startupDir = mkdtempSync(join(tmpdir(), `sl-startup-${label}-`));
+  process.env.STREAMLOOP_TEST_AUTOSTART_KEY = key;
+  process.env.STREAMLOOP_TEST_STARTUP_DIR = startupDir;
+  let done = false;
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    // Only a key made above is ever deleted.
+    if (/^Software\StreamLoopTest-[0-9a-f]{12}$/.test(key)) spawnSync('reg.exe', ['delete', `HKCU\${key}`, '/f'], { windowsHide: true, stdio: 'ignore' });
+    rmSync(startupDir, { recursive: true, force: true });
+  };
+  process.on('exit', cleanup);
+  return { key, startupDir, cleanup };
 }

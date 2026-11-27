@@ -960,7 +960,7 @@ mod tests {
     const VIDEO_URL: &str = "That looks like a single video URL. Paste a playlist URL or a playlist ID (starts with PL).";
     const NOTE_TEXT: &str =
         "The new ingest URL applies after the stream restarts. Viewers see a short drop.";
-    const OTHER_BAT: &str = r"C:\StreamLoop3-old\streamloop\START.bat";
+    const OTHER_EXE: &str = r"C:\StreamLoop3-old\streamloop\streamloop.exe";
 
     /// `GET /api/autostart`.
     fn autostart_json(enabled: bool, target: Option<&str>, this_install: bool) -> Value {
@@ -1189,7 +1189,7 @@ mod tests {
         config["twitchClientId"] = json!("abc123");
         config["twitchClientSecret"] = json!("********");
         config["twitchChannel"] = json!("loopchannel");
-        let autostart = autostart_json(true, Some(r"C:\StreamLoop3\streamloop\START.bat"), true);
+        let autostart = autostart_json(true, Some(r"C:\StreamLoop3\streamloop\streamloop.exe"), true);
         let (_, window, app) = open_settings_with(cx, Ok(config), autostart);
         let view = settings(cx, &app);
 
@@ -1766,11 +1766,11 @@ mod tests {
             named(cx, window, "autostart-toggle").0.as_deref(),
             Some("Run on Windows startup")
         );
-        let this_bat = r"C:\StreamLoop3\streamloop\START.bat";
+        let this_exe = r"C:\StreamLoop3\streamloop\streamloop.exe";
         fake.reply(
             "GET",
             "/api/autostart",
-            Ok(autostart_json(true, Some(this_bat), true)),
+            Ok(autostart_json(true, Some(this_exe), true)),
         );
 
         let before = fake.requests().len();
@@ -1797,7 +1797,7 @@ mod tests {
         assert_eq!(checked(cx, window, "autostart-toggle"), Some(true));
 
         // Another install took autostart over in the meantime: Node refuses with 409.
-        let refusal = format!("Autostart points to another StreamLoop install: {OTHER_BAT}.");
+        let refusal = format!("Autostart points to another StreamLoop install: {OTHER_EXE}.");
         fake.reply(
             "POST",
             "/api/autostart",
@@ -1806,7 +1806,7 @@ mod tests {
         fake.reply(
             "GET",
             "/api/autostart",
-            Ok(autostart_json(true, Some(OTHER_BAT), false)),
+            Ok(autostart_json(true, Some(OTHER_EXE), false)),
         );
         click(cx, window, "autostart-toggle");
         cx.run_until_parked();
@@ -1823,7 +1823,7 @@ mod tests {
         assert!(shows(
             cx,
             window,
-            &format!("Autostart: Another install: {OTHER_BAT}")
+            &format!("Autostart: Another install: {OTHER_EXE}")
         ));
         assert_eq!(checked(cx, window, "autostart-toggle"), Some(false));
 
@@ -1835,6 +1835,23 @@ mod tests {
 
         assert!(shows(cx, window, "Autostart: -"));
         assert_eq!(checked(cx, window, "autostart-toggle"), Some(true));
+    }
+
+    #[gpui::test]
+    fn the_autostart_line_names_streamloop_exe(cx: &mut TestAppContext) {
+        let (_, window, _) = open_settings_with(
+            cx,
+            Ok(config_json()),
+            autostart_json(true, Some(OTHER_EXE), false),
+        );
+        reveal(cx, window, "autostart-toggle");
+
+        assert!(shows(
+            cx,
+            window,
+            r"Autostart: Another install: C:\StreamLoop3-old\streamloop\streamloop.exe"
+        ));
+        assert!(!shows(cx, window, "START.bat"));
     }
 
     #[gpui::test]

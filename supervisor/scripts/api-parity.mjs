@@ -14,8 +14,11 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { autostartSandbox } from './lib.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
+// Autostart goes to a test key and a temp Startup folder, never the user's own entries.
+autostartSandbox('parity');
 const API_PORT = 7654;
 const SUPERVISOR_PORT = 4417;
 const CATCHER_PORT = 8791;

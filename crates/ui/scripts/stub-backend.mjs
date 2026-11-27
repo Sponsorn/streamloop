@@ -261,16 +261,16 @@ function setStreamKey(body) {
   return [200, { ok: true, streamKeySet: true }];
 }
 
-// StreamLoop.vbs in the Startup folder, as Node reads it back.
-const THIS_BAT = 'C:\\StreamLoop3\\streamloop\\START.bat';
+// The Run value that starts the app at logon, as the control process reads it back.
+const THIS_EXE = 'C:\\StreamLoop3\\streamloop\\streamloop.exe';
 let autostart = FIRST_RUN_MODE
   ? { enabled: false, target: null, thisInstall: false }
-  : { enabled: true, target: THIS_BAT, thisInstall: true };
+  : { enabled: true, target: THIS_EXE, thisInstall: true };
 
-/** `POST /api/autostart`: writes or removes the file; another install's file answers 409. */
+/** `POST /api/autostart`: writes or removes the value; another install's value answers 409. */
 function setAutostart(body) {
   if (body.enabled) {
-    autostart = { enabled: true, target: THIS_BAT, thisInstall: true };
+    autostart = { enabled: true, target: THIS_EXE, thisInstall: true };
   } else if (autostart.enabled) {
     if (!autostart.thisInstall) {
       return [409, { error: `Autostart points to another StreamLoop install: ${autostart.target}.` }];

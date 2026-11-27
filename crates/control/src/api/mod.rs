@@ -32,6 +32,7 @@ use streamloop_common::local_only;
 use streamloop_common::paths::Layout;
 use tokio::sync::watch;
 
+use crate::autostart_store::AutostartStore;
 use crate::discord::Notifier;
 use crate::launcher::{Launcher, LauncherState};
 use crate::playlists::PlaylistCache;
@@ -42,6 +43,7 @@ use crate::timeline::EventLog;
 use crate::twitch::TwitchStatus;
 
 pub use autostart::startup_folder;
+pub(crate) use autostart::{decode_vbs, vbs_target};
 pub use setup::{free_mb, setup_check_with};
 pub use status::{stream_state, StreamState};
 pub use update::{ExeUpdates, Updates};
@@ -108,8 +110,10 @@ pub struct AppDeps {
     pub notifier: GetNotifier,
     pub twitch: GetTwitchStatus,
     pub uptime_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
-    /// The Windows Startup folder that holds `StreamLoop.vbs`; tests point it at a temp folder.
+    /// The Windows Startup folder that holds R3's `StreamLoop.vbs`; tests point it at a temp folder.
     pub startup_dir: PathBuf,
+    /// The Run value that starts the app at logon.
+    pub autostart: Arc<dyn AutostartStore>,
     /// `STREAMLOOP_TEST_HOOKS=1` only: adds `POST /test/exit-75`.
     pub test_hooks: bool,
     /// Runs `yt-dlp -U`.
@@ -143,6 +147,7 @@ pub struct AppState {
     pub twitch: GetTwitchStatus,
     pub uptime_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     pub startup_dir: PathBuf,
+    pub autostart: Arc<dyn AutostartStore>,
     pub test_hooks: bool,
     pub runner: Arc<dyn Runner>,
     pub setup_check: RunSetupCheck,
@@ -170,6 +175,7 @@ impl AppState {
             twitch,
             uptime_ms,
             startup_dir,
+            autostart,
             test_hooks,
             runner,
             setup_check,
@@ -193,6 +199,7 @@ impl AppState {
             twitch,
             uptime_ms,
             startup_dir,
+            autostart,
             test_hooks,
             runner,
             setup_check,

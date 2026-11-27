@@ -34,7 +34,7 @@ import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
-import { dailyFiles, EVENTS, PLAYLIST, redact, exeMode } from './lib.mjs';
+import { dailyFiles, EVENTS, PLAYLIST, redact, exeMode, autostartSandbox } from './lib.mjs';
 import {
   spawn, run, KEY, INGEST, READ_URL, SUP, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, nodeStatus, supStatus, waitLive,
   packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
@@ -43,6 +43,8 @@ import {
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
+// Autostart goes to a test key and a temp Startup folder, never the user's own entries.
+autostartSandbox('install');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const [V1, V2, V3, V4] = ['n1', 'n2', 'n3', 'n4'].map((id) => VARIANTS[id].version);
 const DIST = join(REPO, 'dist');

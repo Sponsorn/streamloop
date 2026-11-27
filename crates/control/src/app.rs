@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
+use crate::autostart_store::{migrate_vbs, AutostartStore, Registry};
 use crate::api::{self, AppDeps, AppState, ExeUpdates, Protect, RunSetupCheck, Updates};
 use crate::clock::{Clock, SystemClock};
 use crate::discord::{CurrentNotifier, DiscordNotifier, Notifier};
@@ -71,6 +72,11 @@ pub struct EnvVars {
     pub test_hls_url: Option<String>,
     /// `STREAMLOOP_TEST_RELEASES`: the release list file that replaces GitHub.
     pub test_releases: Option<PathBuf>,
+    /// `STREAMLOOP_TEST_AUTOSTART_KEY`: a subkey of HKCU used in place of the Run key, so a run never touches
+    /// the user's own entry.
+    pub test_autostart_key: Option<String>,
+    /// `STREAMLOOP_TEST_STARTUP_DIR`: used in place of the Startup folder.
+    pub test_startup_dir: Option<PathBuf>,
     /// `STREAMLOOP_TEST_BREAK_AT_S` moves the planned break.
     pub policy: BreakPolicy,
 }
@@ -85,6 +91,8 @@ impl EnvVars {
             test_hooks: var("STREAMLOOP_TEST_HOOKS").as_deref() == Some("1"),
             test_hls_url: var("STREAMLOOP_TEST_HLS_URL"),
             test_releases: updater::test_releases_from_env(),
+            test_autostart_key: var("STREAMLOOP_TEST_AUTOSTART_KEY"),
+            test_startup_dir: var("STREAMLOOP_TEST_STARTUP_DIR").map(PathBuf::from),
             policy: BreakPolicy::from_env(),
         }
     }
@@ -102,7 +110,10 @@ pub struct Wiring {
     pub runner: Arc<dyn Runner>,
     pub spawner: Arc<dyn Spawner>,
     pub clock: Arc<dyn Clock>,
+    /// The Startup folder, where R3's `StreamLoop.vbs` may still be.
     pub startup_dir: PathBuf,
+    /// The Run value that starts the app at logon.
+    pub autostart: Arc<dyn AutostartStore>,
     pub obs_running: Arc<dyn Fn() -> bool + Send + Sync>,
     pub kill_tree: KillTree,
     pub pid_on_port: PidOnPort,
@@ -132,7 +143,8 @@ impl Wiring {
             runner,
             spawner: Arc::new(ProcessSpawner),
             clock: Arc::new(SystemClock),
-            startup_dir: api::startup_folder(),
+            startup_dir: vars.test_startup_dir.clone().unwrap_or_else(api::startup_folder),
+            autostart: Arc::new(Registry::real(vars.test_autostart_key.as_deref())),
             obs_running: Arc::new(setup_check::obs_running),
             kill_tree: Arc::new(streamloop_common::procs::kill_tree),
             pid_on_port: Arc::new(streamloop_common::procs::pid_on_port),
@@ -525,6 +537,7 @@ impl App {
             spawner,
             clock,
             startup_dir,
+            autostart,
             obs_running,
             kill_tree,
             pid_on_port,
@@ -554,6 +567,7 @@ impl App {
         if let Err(err) = removed.await {
             tracing::error!(%err, "Removing the 3.0 leftovers stopped");
         }
+        migrate_autostart(autostart.clone(), startup_dir.clone(), layout.clone()).await;
         let landed = landed_record(&layout);
 
         if vars.debug_faults {
@@ -561,6 +575,9 @@ impl App {
         }
         if vars.test_hooks {
             tracing::warn!("STREAMLOOP_TEST_HOOKS=1: POST /api/test/exit-75 is open");
+        }
+        if vars.test_autostart_key.is_some() || vars.test_startup_dir.is_some() {
+            tracing::warn!("STREAMLOOP_TEST_AUTOSTART_KEY or STREAMLOOP_TEST_STARTUP_DIR is set: autostart is kept off the user's own entries");
         }
         if vars.test_hls_url.is_some() {
             tracing::warn!("STREAMLOOP_TEST_HLS_URL is set: the Twitch read-back reads a local test stream and Twitch is never asked");
@@ -702,6 +719,7 @@ impl App {
             },
             uptime_ms,
             startup_dir,
+            autostart,
             test_hooks: vars.test_hooks,
             runner: runner.clone(),
             setup_check,
@@ -865,6 +883,17 @@ fn start_kind(word: Option<&str>, landed: Option<&LandedRecord>, layout: &Layout
 /// not start this START.bat. No word (dev, the harness's `control --root`) opens nothing.
 pub fn opens_window(word: Option<&str>, kind: &StartKind, from_app: bool) -> bool {
     word == Some("first") && *kind == StartKind::First && !from_app
+}
+
+/// Replaces a `StreamLoop.vbs` this install wrote with the Run value, and logs it. A failed write keeps the VBS.
+async fn migrate_autostart(store: Arc<dyn AutostartStore>, startup_dir: PathBuf, layout: Layout) {
+    let migrated = tokio::task::spawn_blocking(move || migrate_vbs(store.as_ref(), &startup_dir, &layout)).await;
+    match migrated {
+        Ok(Ok(true)) => tracing::info!("Autostart moved from StreamLoop.vbs to the Run entry"),
+        Ok(Ok(false)) => {}
+        Ok(Err(err)) => tracing::warn!(%err, "Autostart stays on StreamLoop.vbs: the Run entry could not be written"),
+        Err(err) => tracing::error!(%err, "Moving autostart stopped"),
+    }
 }
 
 /// `ROOT\streamloop.exe detach ui --root ROOT`: the intermediate starts the app with no living parent, or

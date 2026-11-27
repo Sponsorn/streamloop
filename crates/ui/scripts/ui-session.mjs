@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
-import { PLAYLIST, SECOND_PLAYLIST } from '../../../supervisor/scripts/lib.mjs';
+import { PLAYLIST, SECOND_PLAYLIST, autostartSandbox } from '../../../supervisor/scripts/lib.mjs';
 import {
   spawn, run, KEY, INGEST, sleep, iso, useOut, note, extract, quietConfig, startBat, nodeUp, portOpen,
   allProcesses, sweepLeftovers, quickStop, tempFolders, onInterrupt,
@@ -33,6 +33,8 @@ if (!MODES.includes(MODE)) {
 const START_APP = !process.argv.includes('--no-app');
 
 const REPO = fileURLToPath(new URL('../../..', import.meta.url));
+// Autostart goes to a test key and a temp Startup folder, never the user's own entries.
+const sandbox = autostartSandbox('ui');
 // A worktree has no spikes\tools: those are ignored files of the main checkout.
 const common = await run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: REPO, encoding: 'utf8' });
 const MAIN = common.status === 0 ? dirname(common.stdout.trim()) : REPO;
@@ -49,7 +51,6 @@ const BREAK_AT_S = 300;
 const OUT = join(REPO, 'supervisor', 'results', `ui-${MODE}`);
 const STOP = join(OUT, 'stop');
 const RESTART = join(OUT, 'restart');
-const STARTUP_VBS = join(process.env.APPDATA ?? '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'StreamLoop.vbs');
 const S = join(tmpdir(), 'sl3 ui Ö');
 const ROOT = join(S, 'streamloop');
 const IN_TEMP = tempFolders(['sl3 ui ']);
@@ -185,11 +186,9 @@ async function teardown() {
   note('sweep', await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') }));
   if (mediamtx && mediamtx.exitCode === null) await run('taskkill', ['/F', '/T', '/PID', String(mediamtx.pid)]);
   for (const s of servers) s.close();
-  // Autostart turned on from the app points the user's Startup folder at this temp install.
-  if (existsSync(STARTUP_VBS) && readFileSync(STARTUP_VBS, 'utf16le').includes(ROOT)) {
-    rmSync(STARTUP_VBS, { force: true });
-    note('removed StreamLoop.vbs from the Startup folder: it started this temp install');
-  }
+  // Autostart turned on from the app wrote the test key, which goes with its Startup folder.
+  sandbox.cleanup();
+  note('removed the test autostart key and Startup folder', { key: sandbox.key });
   // streamloop-pot.exe is the token server; node.exe only runs the TypeScript fallback.
   const names = ['streamloop.exe', 'node.exe', 'streamloop-pot.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'cmd.exe'];
   const left = (await allProcesses())

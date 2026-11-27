@@ -39,6 +39,8 @@ Test-only environment variables, never set by `config.json` or a release:
 - `STREAMLOOP_TEST_HLS_URL`: the Twitch read-back reads this HLS instead of the channel's, and the channel counts as live, so no request reaches Twitch and Helix credentials are not needed.
 - `STREAMLOOP_TEST_RELEASES=<file>`: the updater reads its release list from this JSON file (GitHub's shape) instead of GitHub, and takes asset URLs only from `http://127.0.0.1:<port>/`.
 - `STREAMLOOP_TEST_BREAK_AT_S=<seconds>`: a staged update lands at this encoder uptime instead of 47 h 45 min.
+- `STREAMLOOP_TEST_AUTOSTART_KEY=<subkey>`: a subkey of HKCU used in place of the Run key, with its `StartupApproved\Run` beside it, so autostart never touches the user's own entry.
+- `STREAMLOOP_TEST_STARTUP_DIR=<dir>`: used in place of the Startup folder. The harness sets both for every control process it starts (`autostartSandbox` in `supervisor/scripts/lib.mjs`) and deletes the key when it ends.
 
 Test-only builds, never released: the `streamloop` crate's features `test-supervisor-fails` and `test-control-fails` make supervisor mode or control mode exit 1 at start, for the rollback runs of `install-session.mjs`. A test in `release_layout.rs` fails if the release build turns either on. The updater stages only an exe that prints the release's `X.Y.Z`, so test builds take a plain version (`STREAMLOOP_BUILD_VERSION=3.1.1`), not a `-dev` one.
 
@@ -115,6 +117,7 @@ Back to 3.x: close 2.x and OBS, start 3.x's `START.bat`, press Start. Until Star
 | `updater.rs` | GitHub Releases: picks a release, stages its exe, decides when it lands, writes the notice line |
 | `landing.rs` | Lands a staged exe, confirms it on the next start or rolls it back; `data\update-state.json` |
 | `ytdlp_update.rs` | yt-dlp self-update: `-U` and `--version` on a copy, kept as `yt-dlp\yt-dlp-<version>.exe`, which every yt-dlp run then takes; at start and at most hourly while YouTube lookups are paused |
+| `autostart_store.rs` | The Run value and its Task Manager flag in the registry behind a trait, and the VBS migration at start |
 | `leftovers.rs` | Removes what 3.0 left in an install, by name, at every start |
 | `logging.rs` | `tracing`, with 3.0's log line format on the console and in `app\logs\streamloop-DATE.log` |
 | `clock.rs`, `http.rs`, `runner.rs` | The wall clock, outbound HTTP and child processes behind traits, so tests answer instead |
@@ -133,7 +136,7 @@ Back to 3.x: close 2.x and OBS, start 3.x's `START.bat`, press Start. Until Star
 
 ## Platform Notes
 
-Windows-specific: the `/api/autostart` endpoint manages a VBS script in the Windows Startup folder. The release build (`build/prepare-release.js`) lays out the install that `crates/common/src/paths.rs` expects; `build/release-layout.js` lists the required paths and `crates/streamloop/tests/release_layout.rs` checks them against `Layout` so the two cannot drift. It bundles no Node: `streamloop-pot.exe` is built in `tokenserver\` (outside the root workspace, with the static CRT its `.cargo\config.toml` sets, so it needs no VC++ runtime) and copied to `supervisor\`. It also bundles yt-dlp nightly and deno (latest), and pinned inputs whose SHA-256 must match: ffmpeg 8.0 essentials (gyan.dev, only `ffmpeg.exe`) and the bgutil-ytdlp-pot-provider 2.0.0 yt-dlp plugin.
+Windows-specific: the `/api/autostart` endpoint manages the `StreamLoop` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (`"ROOT\streamloop.exe" ui --tray`); a `StreamLoop.vbs` that 3.1 wrote in the Startup folder is replaced by it at start. The release build (`build/prepare-release.js`) lays out the install that `crates/common/src/paths.rs` expects; `build/release-layout.js` lists the required paths and `crates/streamloop/tests/release_layout.rs` checks them against `Layout` so the two cannot drift. It bundles no Node: `streamloop-pot.exe` is built in `tokenserver\` (outside the root workspace, with the static CRT its `.cargo\config.toml` sets, so it needs no VC++ runtime) and copied to `supervisor\`. It also bundles yt-dlp nightly and deno (latest), and pinned inputs whose SHA-256 must match: ffmpeg 8.0 essentials (gyan.dev, only `ffmpeg.exe`) and the bgutil-ytdlp-pot-provider 2.0.0 yt-dlp plugin.
 
 The harness scripts are ES modules (`"type": "module"` in package.json).
 

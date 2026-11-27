@@ -17,6 +17,7 @@ use streamloop_common::encoder::Encoder;
 use streamloop_common::paths::Layout;
 use streamloop_control::api::fake::{FakeLauncher, FakeUpdates};
 use streamloop_control::api::{self, AppDeps, AppState};
+use streamloop_control::autostart_store::FakeAutostart;
 use streamloop_control::clock::{Clock, SystemClock};
 use streamloop_control::discord::{EmbedField, Level, Notifier};
 use streamloop_control::events::Alert;
@@ -149,6 +150,7 @@ pub struct Rig {
     pub restarts: Arc<AtomicUsize>,
     pub shutdowns: Arc<AtomicUsize>,
     pub quits: Arc<AtomicUsize>,
+    pub autostart: Arc<FakeAutostart>,
 }
 
 impl Rig {
@@ -179,6 +181,7 @@ impl Rig {
             restarts: Arc::new(AtomicUsize::new(0)),
             shutdowns: Arc::new(AtomicUsize::new(0)),
             quits: Arc::new(AtomicUsize::new(0)),
+            autostart: Arc::new(FakeAutostart::new()),
             dir,
         }
     }
@@ -215,6 +218,7 @@ impl Rig {
             }),
             uptime_ms: Arc::new(|| 1234),
             startup_dir: self.startup_dir(),
+            autostart: self.autostart.clone(),
             test_hooks: false,
             runner: self.runner.clone(),
             setup_check: Arc::new(move |layout: Layout, durations: Vec<f64>| {

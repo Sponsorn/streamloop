@@ -257,7 +257,7 @@ pub fn encoder_label(report: &SetupReport) -> (String, Level) {
     (name.to_string(), Level::Ok)
 }
 
-/// Where the Startup folder's StreamLoop.vbs points, from GET /api/autostart.
+/// Where the Run entry points, from GET /api/autostart.
 pub fn autostart_label(status: &AutostartStatus) -> String {
     if !status.enabled {
         return "Off".to_string();
@@ -268,7 +268,7 @@ pub fn autostart_label(status: &AutostartStatus) -> String {
     if let Some(target) = status.target.as_deref().filter(|t| !t.is_empty()) {
         return format!("Another install: {target}");
     }
-    "set by another program (StreamLoop.vbs in the Startup folder)".to_string()
+    "set by another program (the startup entry has no streamloop.exe path)".to_string()
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -840,7 +840,7 @@ mod tests {
         #[test]
         fn says_this_install_when_the_file_starts_this_install() {
             assert_eq!(
-                autostart_label(&status(true, Some("C:\\SL\\START.bat"), true)),
+                autostart_label(&status(true, Some("C:\\SL\\streamloop.exe"), true)),
                 "This install"
             );
         }
@@ -848,16 +848,16 @@ mod tests {
         #[test]
         fn names_the_other_install_the_file_starts() {
             assert_eq!(
-                autostart_label(&status(true, Some("D:\\Old\\START.bat"), false)),
-                "Another install: D:\\Old\\START.bat"
+                autostart_label(&status(true, Some("D:\\Old\\streamloop.exe"), false)),
+                "Another install: D:\\Old\\streamloop.exe"
             );
         }
 
         #[test]
-        fn flags_a_streamloop_vbs_that_streamloop_did_not_write() {
+        fn flags_an_entry_with_no_exe_path() {
             assert_eq!(
                 autostart_label(&status(true, None, false)),
-                "set by another program (StreamLoop.vbs in the Startup folder)"
+                "set by another program (the startup entry has no streamloop.exe path)"
             );
         }
     }

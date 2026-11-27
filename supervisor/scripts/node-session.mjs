@@ -24,7 +24,7 @@ import { join, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import net from 'node:net';
-import { dailyFiles, EVENTS, TOKEN_PORT, TOKEN_PORT_TAKEN, FFMPEG, FFPROBE, PLAYLIST, redact, leaks, withModes } from './lib.mjs';
+import { dailyFiles, EVENTS, TOKEN_PORT, TOKEN_PORT_TAKEN, FFMPEG, FFPROBE, PLAYLIST, redact, leaks, withModes, autostartSandbox } from './lib.mjs';
 import { makeDevRoot } from './dev-root.mjs';
 
 // Every child hidden: nothing this script starts may show a window.
@@ -41,6 +41,8 @@ if (!['A', 'B', 'C', 'freeze', 'treekill', 'smoke'].includes(RUN) || !Number.isI
   process.exit(2);
 }
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
+// Autostart goes to a test key and a temp Startup folder, never the user's own entries.
+autostartSandbox('node');
 const TOOLS = join(REPO, 'spikes', 'tools');
 const KEY = 'live_DUMMYKEY_stage3';
 const API = `http://127.0.0.1:${PORT}/api`;
@@ -147,6 +149,8 @@ const controlEnv = [
   `set "STREAMLOOP_ROOT=${ROOT}"`,
   'set "STREAMLOOP_DEBUG_FAULTS=1"',
   'set "STREAMLOOP_TEST_HOOKS=1"',
+  `set "STREAMLOOP_TEST_AUTOSTART_KEY=${process.env.STREAMLOOP_TEST_AUTOSTART_KEY}"`,
+  `set "STREAMLOOP_TEST_STARTUP_DIR=${process.env.STREAMLOOP_TEST_STARTUP_DIR}"`,
   RUN === 'C' ? `set "STREAMLOOP_TEST_HLS_URL=http://127.0.0.1:${PROXY_PORT}/index.m3u8"` : 'set "STREAMLOOP_TEST_HLS_URL="',
   `set "PATH=${PATH_NO_FFMPEG}"`,
 ];
