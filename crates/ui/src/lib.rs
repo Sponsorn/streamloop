@@ -8,6 +8,7 @@ const DEFAULT_PORT: u16 = 7654;
 pub mod api;
 pub mod app;
 pub mod dashboard;
+pub mod follow;
 pub mod instance;
 pub mod logic;
 pub mod logs;
@@ -28,19 +29,20 @@ pub mod widgets;
 pub mod window_state;
 pub mod wizard;
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Entity, Global, Pixels, QuitMode, Render,
     Subscription, Task, TitlebarOptions, Window, WindowOptions, point, px,
 };
 use gpui_kit::component::Root;
-use streamloop_common::{config, paths::Layout};
+use streamloop_common::{config, paths::Layout, version::VERSION};
 
 use crate::{
     api::{Api, ApiError, client::Client, http::HttpApi},
     app::{AppView, now_ms},
-    instance::Claim,
+    follow::{Detach, Spawn},
+    instance::{Claim, Instance},
     start::StartedBat,
     tray::{Tray, TrayEvent, TrayFeed},
     window_state::{DEFAULT_SIZE, MIN_SIZE, WindowState},
@@ -54,7 +56,8 @@ const OPEN_SETTLES_IN: Duration = Duration::from_secs(2);
 /// A move or resize is saved once the window has stayed put this long.
 const SAVE_AFTER_MOVE: Duration = Duration::from_secs(1);
 
-/// What `streamloop.exe ui` was asked for. `root` is absolute; `follow` is read by a later stage.
+/// What `streamloop.exe ui` was asked for. `root` is absolute; `follow` is the version an update restart
+/// started this app to follow.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiOptions {
     pub root: Option<PathBuf>,
@@ -72,18 +75,56 @@ pub struct Shell {
     pub state_path: Option<PathBuf>,
     /// The tray icon, from the start of the app to its end.
     pub tray: TrayFeed,
+    /// `--port N`, which the app that follows an update is given too.
+    pub port: Option<u16>,
+    /// `--follow V`: while the control process reports V, this app does not restart again.
+    pub followed: Option<String>,
+    /// This app's version, the one `--version` prints.
+    pub version: &'static str,
+    /// Starts the app that follows an update.
+    pub spawn: Rc<dyn Spawn>,
 }
 
 impl Shell {
-    pub fn new(client: Client, root: Option<PathBuf>) -> Shell {
-        let state_path = root
+    pub fn new(client: Client, opts: &UiOptions) -> Shell {
+        let state_path = opts
+            .root
             .as_deref()
             .map(|root| Layout::new(root).app_dir.join(WINDOW_STATE));
         Shell {
             client,
-            root,
+            root: opts.root.clone(),
             state_path,
             tray: TrayFeed::default(),
+            port: opts.port,
+            followed: opts.follow.clone(),
+            version: VERSION,
+            spawn: Rc::new(Detach),
+        }
+    }
+}
+
+/// How long a start waits for the install's lock: only an app that follows an update waits, for the app it
+/// replaces to quit.
+fn lock_wait(opts: &UiOptions) -> Duration {
+    if opts.follow.is_some() {
+        follow::LOCK_WAIT
+    } else {
+        Duration::ZERO
+    }
+}
+
+/// The install's lock, or None when another app of the install keeps it. A start without `--tray` then asks that
+/// app to show its window, except a follower: the app it waited for is the one it replaces.
+fn take_lock(opts: &UiOptions) -> Option<Instance> {
+    let root = opts.root.as_deref();
+    match instance::claim(root, lock_wait(opts)) {
+        Claim::Ours(instance) => Some(instance),
+        Claim::Running => {
+            if !opts.tray && opts.follow.is_none() {
+                instance::signal_show(root);
+            }
+            None
         }
     }
 }
@@ -92,16 +133,10 @@ impl Shell {
 /// Closing the window leaves the app running; a second app of the install asks the first to show its window
 /// and returns.
 pub fn run(opts: UiOptions) {
-    let root = opts.root.as_deref();
-    let instance = match instance::claim(root, Duration::ZERO) {
-        Claim::Ours(instance) => instance,
-        Claim::Running => {
-            if !opts.tray {
-                instance::signal_show(root);
-            }
-            return;
-        }
+    let Some(instance) = take_lock(&opts) else {
+        return;
     };
+    let root = opts.root.as_deref();
     let port = opts
         .port
         .or_else(|| root.and_then(|r| config::read_port(&Layout::new(r).config)))
@@ -122,7 +157,7 @@ pub fn run(opts: UiOptions) {
     instance.on_show(move || {
         let _ = show_tx.send_blocking(());
     });
-    let shell = Shell::new(Client(api), opts.root.clone());
+    let shell = Shell::new(Client(api), &opts);
     let tray_only = opts.tray;
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -146,10 +181,31 @@ pub fn run(opts: UiOptions) {
 /// Opens the window, or with `--tray` only polls for the tray icon.
 pub(crate) fn begin(cx: &mut App, shell: &Shell, tray_only: bool) {
     if tray_only {
-        shell.tray.poll_while_closed(shell.client.clone(), cx);
+        poll_while_closed(shell, cx);
     } else {
         open_main_window(cx, shell);
     }
+}
+
+/// The tray icon's poll while no window is open. After a reconnect the app follows the control process's
+/// version when it differs.
+fn poll_while_closed(shell: &Shell, cx: &mut App) {
+    // The tray feed owns the poll, so the poll keeps the shell without the feed and is handed the feed instead.
+    let rest = Shell {
+        tray: TrayFeed::default(),
+        ..shell.clone()
+    };
+    let on_reconnect = move |tray: &TrayFeed, control: Option<&str>, cx: &mut App| {
+        let shell = Shell {
+            tray: tray.clone(),
+            ..rest.clone()
+        };
+        let window_open = open_handle(cx).is_some();
+        follow::check(&shell, control, window_open, cx);
+    };
+    shell
+        .tray
+        .poll_while_closed(shell.client.clone(), on_reconnect, cx);
 }
 
 /// A left click, a double click and Open StreamLoop show the window. Quit StreamLoop asks in the window
@@ -258,7 +314,7 @@ pub(crate) fn close_main_window(window: &mut Window, cx: &mut App) -> bool {
         if first_close {
             shell.tray.notify(tray::NAME, tray::TRAY_HINT);
         }
-        shell.tray.poll_while_closed(shell.client.clone(), cx);
+        poll_while_closed(&shell, cx);
     }
     false
 }
@@ -843,6 +899,86 @@ mod tests {
         assert_eq!(opened.len(), 1);
         assert_eq!(cx.windows(), opened, "a second Open opens no second window");
         assert_eq!(cx.update(|cx| cx.active_window()), Some(opened[0]));
+    }
+
+    /// A root of this test process alone, so parallel tests never share a lock.
+    fn lock_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("sl-ui-lock-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_follower_waits_60_s_for_the_lock_and_other_starts_do_not_wait() {
+        // Arrange
+        let follower = UiOptions {
+            follow: Some("3.2.1".into()),
+            tray: true,
+            ..Default::default()
+        };
+        let plain = UiOptions::default();
+
+        // Act
+        let waits = (lock_wait(&follower), lock_wait(&plain));
+
+        // Assert
+        assert_eq!(waits, (Duration::from_secs(60), Duration::ZERO));
+    }
+
+    #[test]
+    fn a_follower_takes_the_lock_once_the_old_app_lets_go_and_never_signals_it() {
+        // Arrange: the old app keeps the lock 300 ms longer and records every show signal
+        let root = lock_root("follower");
+        let Claim::Ours(old) = instance::claim(Some(&root), Duration::ZERO) else {
+            panic!("the old app's claim is ours");
+        };
+        let (shown, show) = std::sync::mpsc::channel();
+        old.on_show(move || {
+            let _ = shown.send(());
+        });
+        let letting_go = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(old);
+        });
+        let follower = UiOptions {
+            root: Some(root),
+            follow: Some("3.2.1".into()),
+            ..Default::default()
+        };
+
+        // Act
+        let lock = take_lock(&follower);
+
+        // Assert
+        letting_go.join().unwrap();
+        assert!(lock.is_some(), "the follower took the lock");
+        assert!(
+            show.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the old app was never asked to show its window"
+        );
+    }
+
+    #[test]
+    fn a_second_start_asks_the_app_of_the_install_to_show_its_window() {
+        // Arrange
+        let root = lock_root("second");
+        let Claim::Ours(first) = instance::claim(Some(&root), Duration::ZERO) else {
+            panic!("the first app's claim is ours");
+        };
+        let (shown, show) = std::sync::mpsc::channel();
+        first.on_show(move || {
+            let _ = shown.send(());
+        });
+        let second = UiOptions {
+            root: Some(root),
+            ..Default::default()
+        };
+
+        // Act
+        let lock = take_lock(&second);
+
+        // Assert
+        assert!(lock.is_none(), "the second start exits");
+        assert_eq!(show.recv_timeout(Duration::from_secs(5)), Ok(()));
+        drop(first);
     }
 
     #[gpui::test]

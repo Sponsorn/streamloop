@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    fs,
+    fs, io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::{Path, PathBuf},
     rc::Rc,
@@ -18,17 +18,31 @@ use crate::{
     Shell,
     api::{client::Client, fake::FakeApi},
     app::AppView,
+    follow::Spawn,
     start::StartedBat,
     tray::{TrayColour, TrayFeed, TrayOutput},
 };
 
-/// A shell on `fake` without a root, so the window state stays in memory, and without a tray icon.
+/// A shell on `fake` without a root, so the window state stays in memory and the app never follows an update,
+/// and without a tray icon. Its starts all fail, so no test starts a process.
 pub fn shell(fake: Arc<FakeApi>) -> Shell {
     Shell {
         client: Client(fake),
         root: None,
         state_path: None,
         tray: TrayFeed::default(),
+        port: None,
+        followed: None,
+        version: streamloop_common::version::VERSION,
+        spawn: Rc::new(NoStart),
+    }
+}
+
+struct NoStart;
+
+impl Spawn for NoStart {
+    fn spawn(&self, _exe: &Path, _args: &[String]) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
 
@@ -53,6 +67,10 @@ impl StateDir {
 
     pub fn file(&self) -> PathBuf {
         self.0.join("window.json")
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
     }
 }
 

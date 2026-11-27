@@ -180,9 +180,15 @@ impl TrayFeed {
         }
     }
 
-    /// Polls `GET /api/status` at once and then every 5 s, until `stop_polling`. Without a tray icon there is
-    /// nothing to feed, so nothing polls.
-    pub fn poll_while_closed(&self, client: Client, cx: &mut App) {
+    /// Polls `GET /api/status` at once and then every 5 s, until `stop_polling`. After a reconnect, an answer after
+    /// polls that found nothing, it reads `GET /api/update/status` once and hands `on_reconnect` the version.
+    /// Without a tray icon there is nothing to feed, so nothing polls.
+    pub fn poll_while_closed(
+        &self,
+        client: Client,
+        on_reconnect: impl Fn(&TrayFeed, Option<&str>, &mut App) + 'static,
+        cx: &mut App,
+    ) {
         if self.0.borrow().output.is_none() {
             return;
         }
@@ -195,7 +201,17 @@ impl TrayFeed {
                 let Some(fed) = feed.upgrade() else {
                     return;
                 };
-                TrayFeed(fed).take(status);
+                let fed = TrayFeed(fed);
+                let reconnected = status.is_ok() && !fed.reachable();
+                fed.take(status);
+                drop(fed);
+                if reconnected {
+                    let api = client.clone();
+                    let update = cx.background_spawn(async move { api.update_status() }).await;
+                    if let (Ok(update), Some(fed)) = (update, feed.upgrade()) {
+                        cx.update(|cx| on_reconnect(&TrayFeed(fed), update.current_version.as_deref(), cx));
+                    }
+                }
                 cx.background_executor().timer(CLOSED_POLL_EVERY).await;
             }
         });

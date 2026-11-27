@@ -1,3 +1,5 @@
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,6 +22,7 @@ use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::{ControlResult, ReloadResult, SupervisorApi};
 use streamloop_control::timeline::{EventLog, EventStore};
 use streamloop_control::updater::{BreakPolicy, UpdateStatus, Updater, UpdaterOptions, GITHUB_RELEASES_URL};
+use support::captured_logs;
 use tokio::time::Instant;
 
 const OLD: &str = "3.1.0";
@@ -533,6 +536,31 @@ async fn a_locked_staged_exe_leaves_the_old_one_in_place() {
     assert_eq!(spawns[0].2.as_slice(), OLD_EXE);
 }
 
+#[cfg(windows)]
+#[tokio::test(start_paused = true)]
+async fn a_held_old_exe_fails_the_landing_as_any_failed_swap_does() {
+    // Arrange: the app of an earlier update still runs from the streamloop.exe.old it left
+    let r = landing_rig().await;
+    std::fs::write(&r.layout.exe_old, b"an earlier streamloop.exe").unwrap();
+    let held = hold(&r.layout.exe_old);
+    // Act
+    let result = land(&r.deps).await;
+    r.settle().await;
+    drop(held);
+    // Assert
+    let reason = result.unwrap_err();
+    assert!(reason.starts_with("streamloop.exe could not be renamed to streamloop.exe.old"), "{reason}");
+    assert_eq!(r.read(&r.layout.exe), OLD_EXE);
+    assert_eq!(r.read(&r.layout.staged_exe), NEW_EXE);
+    assert!(!r.layout.landed.exists());
+    assert_eq!(r.deps.updater.status().status, UpdateStatus::Error);
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("swap"), Some("failed")));
+    let spawns = r.spawns.all();
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].2.as_slice(), OLD_EXE);
+}
+
 #[tokio::test(start_paused = true)]
 async fn ends_a_supervisor_that_ignores_shutdown_after_20_s() {
     // Arrange
@@ -780,6 +808,92 @@ async fn confirms_an_off_air_landing_without_an_encoder() {
     assert!(r.timeline().contains(&UPDATED.to_string()));
     let s = r.update_state();
     assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("start"), Some("ok")));
+}
+
+/// Holds `path` open without delete sharing, so Windows refuses to remove it, as it refuses while an app runs from it.
+#[cfg(windows)]
+fn hold(path: &Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path).unwrap()
+}
+
+/// A warning in the log that names `path`. The log is the whole test process's, and the path is this test's own.
+#[cfg(windows)]
+fn warned_about(path: &Path) -> bool {
+    let name = path.display().to_string();
+    captured_logs().text().lines().any(|line| line.contains("WARN") && line.contains(&name))
+}
+
+#[cfg(windows)]
+#[tokio::test(start_paused = true)]
+async fn confirm_removes_a_held_old_exe_once_it_is_let_go() {
+    // Arrange: the old app runs from streamloop.exe.old for 7 s more, so the first try and the one at 5 s are refused
+    captured_logs();
+    let r = confirming_rig(record(true, false), false);
+    r.sup.answer(Some(status(NEW, true)));
+    let held = hold(&r.layout.exe_old);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        drop(held);
+    });
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record(true, false), CONFIRM_WITHIN).await;
+    tokio::time::sleep(Duration::from_secs(9)).await;
+    let at_9_s = r.layout.exe_old.exists();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert!(at_9_s, "refused while the old app held it");
+    assert!(!r.layout.exe_old.exists(), "removed by the try at 10 s");
+    assert!(!warned_about(&r.layout.exe_old), "no warning");
+}
+
+#[cfg(windows)]
+#[tokio::test(start_paused = true)]
+async fn confirm_gives_up_on_old_after_two_minutes_with_a_warning() {
+    // Arrange: the old app never lets go
+    captured_logs();
+    let r = confirming_rig(record(true, false), false);
+    r.sup.answer(Some(status(NEW, true)));
+    let held = hold(&r.layout.exe_old);
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record(true, false), CONFIRM_WITHIN).await;
+    tokio::time::sleep(Duration::from_secs(119)).await;
+    let warned_before = warned_about(&r.layout.exe_old);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let warned_at_120_s = warned_about(&r.layout.exe_old);
+    drop(held);
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert!(!warned_before, "still trying before the two minutes are over");
+    assert!(warned_at_120_s);
+    assert!(r.layout.exe_old.exists(), "no try after the two minutes");
+}
+
+#[cfg(windows)]
+#[tokio::test(start_paused = true)]
+async fn confirm_does_not_wait_for_the_old_exe() {
+    // Arrange
+    let r = confirming_rig(record(true, false), false);
+    r.sup.answer(Some(status(NEW, true)));
+    let held = hold(&r.layout.exe_old);
+    let started = Instant::now();
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record(true, false), CONFIRM_WITHIN).await;
+    let took = started.elapsed();
+    let old_at_confirm = r.layout.exe_old.exists();
+    drop(held);
+    // Assert
+    assert_eq!(outcome, Confirmation::Confirmed);
+    assert!(took < Duration::from_secs(1), "the confirmation waited {took:?}");
+    assert!(old_at_confirm, "the old exe was still held");
+    assert!(!r.layout.landed.exists());
+    assert!(!r.layout.update_dir.exists());
+    assert!(r.timeline().contains(&UPDATED.to_string()));
+    let s = r.update_state();
+    assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("done"), Some("ok")));
 }
 
 #[tokio::test(start_paused = true)]

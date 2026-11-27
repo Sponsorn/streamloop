@@ -17,6 +17,7 @@ use crate::{
         types::{Event, Status, UpdateStatus},
     },
     dashboard::DashboardView,
+    follow,
     logic::status_line,
     start::{self, Connecting, HINT_AFTER, StartedBat},
     theme::{
@@ -338,6 +339,17 @@ impl AppView {
                             })
                         })
                         .ok();
+                        // The dashboard's first poll reads the control process's version; the wizard does not poll.
+                        if status.first_run {
+                            let api = client.clone();
+                            if let Ok(update) =
+                                cx.background_spawn(async move { api.update_status() }).await
+                            {
+                                cx.update(|cx| {
+                                    follow::check_from_window(update.current_version.as_deref(), cx)
+                                });
+                            }
+                        }
                         return;
                     }
                     Err(_) => tray.unreachable(),
@@ -457,11 +469,18 @@ async fn poll(
     let events = cx.background_spawn(async move { b.events() });
     let update = cx.background_spawn(async move { c.update_status().ok() });
     let answer = (status.await, events.await, update.await);
-    cx.update_window(window, |_, window, cx| {
-        this.update(cx, |app, cx| app.apply_poll(answer, window, cx))
-            .is_ok()
-    })
-    .unwrap_or(false)
+    let control_version = answer.2.as_ref().and_then(|u| u.current_version.clone());
+    let open = cx
+        .update_window(window, |_, window, cx| {
+            this.update(cx, |app, cx| app.apply_poll(answer, window, cx))
+                .is_ok()
+        })
+        .unwrap_or(false);
+    // Outside the window's update: following saves the window state, which reads the window.
+    if open {
+        cx.update(|cx| follow::check_from_window(control_version.as_deref(), cx));
+    }
+    open
 }
 
 /// A native dialog with `title`, `detail` under it when there is one, and the buttons `ok` and Cancel; true only

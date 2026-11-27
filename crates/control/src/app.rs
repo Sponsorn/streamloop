@@ -27,7 +27,7 @@ use crate::events::{launcher_event, with_playlist_names, Alert, AlertGate, Super
 use crate::http::{Http, ReqwestHttp};
 use crate::landing::{self, Confirmation, KillTree, LandedRecord, LandingDeps, LandingGate, PidOnPort, CONFIRM_WITHIN, FINISH_BEFORE_EXIT};
 use crate::launcher::{should_hold, Launcher, LauncherOptions, ProcessSpawner, Spawner, StartKind};
-use crate::leftovers::remove_3_0_leftovers;
+use crate::leftovers::{remove_3_0_leftovers, remove_stale_old_exe};
 use crate::logging;
 use crate::playlists::PlaylistCache;
 use crate::runner::{ProcessRunner, Runner};
@@ -547,7 +547,11 @@ impl App {
         tracing::info!(port, "Server listening");
 
         let leftovers = layout.clone();
-        if let Err(err) = tokio::task::spawn_blocking(move || remove_3_0_leftovers(&leftovers)).await {
+        let removed = tokio::task::spawn_blocking(move || {
+            remove_3_0_leftovers(&leftovers);
+            remove_stale_old_exe(&leftovers);
+        });
+        if let Err(err) = removed.await {
             tracing::error!(%err, "Removing the 3.0 leftovers stopped");
         }
         let landed = landed_record(&layout);

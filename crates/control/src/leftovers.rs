@@ -1,9 +1,12 @@
-//! What 3.0 left in an install that 3.1 no longer uses, removed by name at every start.
+//! What 3.0 left in an install that 3.1 no longer uses, and an earlier update's `streamloop.exe.old`, removed by
+//! name at every start.
 
 use streamloop_common::paths::Layout;
 
 /// Master's full update could leave a copy of each of these beside the install.
 const UPDATE_PARTS: [&str; 5] = ["node", "supervisor", "ffmpeg", "pot", "yt-dlp"];
+/// How the log names a path of 3.0's.
+const LEFTOVER: &str = "a 3.0 leftover";
 
 /// The Node app, the old supervisor exe and the leftovers of 3.0's update swaps, plus `pot\` and `node\` once
 /// `supervisor\streamloop-pot.exe` exists (the TypeScript fallback needs them until then). A path a running process
@@ -34,16 +37,24 @@ pub fn remove_3_0_leftovers(layout: &Layout) {
         paths.push(root.join(format!("_update_bad_{part}")));
     }
     for path in paths {
-        remove(&path);
+        remove(&path, LEFTOVER);
     }
     // node\ first: while a fallback server runs, its node.exe is held, and pot\ (its scripts) must stay whole.
-    if layout.token_server.is_file() && remove(&root.join("node")) {
-        remove(&root.join("pot"));
+    if layout.token_server.is_file() && remove(&root.join("node"), LEFTOVER) {
+        remove(&root.join("pot"), LEFTOVER);
     }
 }
 
-/// Removes a leftover and logs it; true when the path is gone afterwards.
-fn remove(path: &std::path::Path) -> bool {
+/// Removes streamloop.exe.old when streamloop.exe exists and _update\landed does not. With `landed` the update may
+/// still roll back to it, and without `streamloop.exe` START.bat renames it back. Blocking file work.
+pub fn remove_stale_old_exe(layout: &Layout) {
+    if layout.exe.is_file() && !layout.landed.exists() {
+        remove(&layout.exe_old, "the streamloop.exe.old of an earlier update");
+    }
+}
+
+/// Removes `what` and logs it; true when the path is gone afterwards.
+fn remove(path: &std::path::Path, what: &str) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else { return true };
     let kind = meta.file_type();
     let removed = if kind.is_symlink() {
@@ -56,11 +67,11 @@ fn remove(path: &std::path::Path) -> bool {
     };
     match removed {
         Ok(()) => {
-            tracing::info!(path = %path.display(), "Removed a 3.0 leftover");
+            tracing::info!(path = %path.display(), "Removed {what}");
             true
         }
         Err(err) => {
-            tracing::warn!(path = %path.display(), %err, "Could not remove a 3.0 leftover");
+            tracing::warn!(path = %path.display(), %err, "Could not remove {what}");
             false
         }
     }

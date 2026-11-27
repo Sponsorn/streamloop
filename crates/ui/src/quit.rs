@@ -150,6 +150,11 @@ pub fn wait_for_the_port_to_close(shell: &Shell, cx: &mut App) {
 /// Ends the app. The window state is saved and the tray icon dropped before GPUI quits.
 fn quit_app(shell: &Shell, cx: &mut App) {
     save_window_state(cx);
+    end_app(shell, cx);
+}
+
+/// Drops the tray icon, which takes it off the taskbar, then quits GPUI.
+pub(crate) fn end_app(shell: &Shell, cx: &mut App) {
     shell.tray.detach();
     cx.quit();
 }

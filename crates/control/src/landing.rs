@@ -44,6 +44,10 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 /// The wait before a failed check of a held landing runs again, until the confirmation window ends.
 const CHECK_RETRY: Duration = Duration::from_secs(5);
 const PERCENT_POLL: Duration = Duration::from_secs(1);
+/// After a confirmation, `streamloop.exe.old` is tried again this often while Windows refuses to remove it,
+const OLD_EXE_RETRY: Duration = Duration::from_secs(5);
+/// for this long.
+const OLD_EXE_TRIES_FOR: Duration = Duration::from_secs(120);
 const RENAME_RETRIES: u32 = 3;
 const RENAME_PAUSE: Duration = Duration::from_millis(200);
 const CHECK_PREFIX: &str = "streamloop-supervisor check:";
@@ -778,13 +782,10 @@ async fn run_check(deps: &LandingDeps) -> Result<(), String> {
 
 async fn confirm(deps: &LandingDeps, record: &LandedRecord, progress: Option<Progress<'_>>, on_air_now: bool) {
     let layout = &deps.layout;
-    for path in [&layout.landed, &layout.exe_old] {
-        if let Err(e) = std::fs::remove_file(path) {
-            if e.kind() != io::ErrorKind::NotFound {
-                tracing::warn!(path = %path.display(), error = %e, "Could not remove a file the update left");
-            }
-        }
+    if let Err(e) = remove_if_there(&layout.landed) {
+        tracing::warn!(path = %layout.landed.display(), error = %e, "Could not remove a file the update left");
     }
+    remove_old_exe(layout);
     if let Err(e) = std::fs::remove_dir_all(&layout.update_dir) {
         if e.kind() != io::ErrorKind::NotFound {
             tracing::warn!(error = %e, "Could not remove _update");
@@ -797,6 +798,39 @@ async fn confirm(deps: &LandingDeps, record: &LandedRecord, progress: Option<Pro
     if let Some(mut p) = progress {
         let step = if on_air_now { UpdateStep::Done } else { UpdateStep::Start };
         p.finish(step, UpdateResult::Ok, None);
+    }
+}
+
+/// Removes streamloop.exe.old. When Windows refuses (the old app still runs from it), a task of its own tries
+/// again every 5 s for 2 minutes, then leaves it and logs a warning; the caller does not wait for that task.
+pub(crate) fn remove_old_exe(layout: &Layout) {
+    let path = layout.exe_old.clone();
+    let Err(e) = remove_if_there(&path) else { return };
+    tracing::info!(error = %e, "streamloop.exe.old is still in use; trying again every 5 s for 2 minutes");
+    tokio::spawn(async move {
+        let until = Instant::now() + OLD_EXE_TRIES_FOR;
+        loop {
+            tokio::time::sleep(OLD_EXE_RETRY).await;
+            match remove_if_there(&path) {
+                Ok(()) => {
+                    tracing::info!("Removed streamloop.exe.old");
+                    return;
+                }
+                Err(e) if Instant::now() >= until => {
+                    tracing::warn!(path = %path.display(), error = %e, "Could not remove streamloop.exe.old; leaving it");
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
+    });
+}
+
+/// A file that is not there counts as removed.
+fn remove_if_there(path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
     }
 }
 
