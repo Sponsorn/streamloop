@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["supervisor", "crates/common", "crates/control", "crates/streamloop"]
-exclude = ["spikes/gpui-ui", "spikes/supervisor", "shell/src-tauri", "ui", "tokenserver"]
+members = ["supervisor", "crates/common", "crates/control", "crates/ui", "crates/streamloop"]
+exclude = ["spikes/gpui-ui", "spikes/supervisor", "shell/src-tauri", "tokenserver"]
 
 [workspace.package]
 version = "3.1.2"

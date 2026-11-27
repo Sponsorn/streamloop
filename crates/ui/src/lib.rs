@@ -3,6 +3,8 @@
 // GPUI's macros expand to `gpui::` paths; this resolves them through the Kit.
 extern crate gpui_kit as gpui;
 
+const DEFAULT_PORT: u16 = 7654;
+
 pub mod api;
 pub mod app;
 pub mod dashboard;
@@ -21,7 +23,7 @@ pub mod webhooks;
 pub mod widgets;
 pub mod wizard;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Entity, Render, Result, TitlebarOptions, Window,
@@ -33,8 +35,18 @@ use crate::{
     app::AppView,
 };
 
-/// Opens the StreamLoop window against the backend on `port` and runs until it is closed.
-pub fn run(port: u16) {
+/// What `streamloop.exe ui` was asked for. `root`, `tray` and `follow` are read by later stages.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UiOptions {
+    pub root: Option<PathBuf>,
+    pub port: Option<u16>,
+    pub tray: bool,
+    pub follow: Option<String>,
+}
+
+/// Opens the StreamLoop window against the backend and runs until it is closed.
+pub fn run(opts: UiOptions) {
+    let port = opts.port.unwrap_or(DEFAULT_PORT);
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx: &mut App| {

@@ -8,6 +8,8 @@ publish.workspace = true
 streamloop-common = { path = "../common" }
 streamloop-control = { path = "../control" }
 streamloop-supervisor = { path = "../../supervisor" }
+streamloop-ui = { path = "../ui" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [features]
 # Broken builds for install-session.mjs's rollback runs, never in a release: supervisor mode, or

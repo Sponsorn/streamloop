@@ -1,6 +1,6 @@
 // R3's click-through session: a real StreamLoop install, local MediaMTX and a Discord catcher, for
-// driving streamloop-ui.exe by hand (or by computer use) through every dashboard action.
-//   node ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]
+// driving the app (streamloop.exe ui) by hand (or by computer use) through every dashboard action.
+//   node crates/ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]
 // dev:         release N (dist\'s build) with nothing newer listed, so it is up to date.
 // update:      N with N+1 (N's patch number plus one) listed: Update Now lands it at once; left alone, the first check stages it
 //              and it lands at the planned break, brought forward to encoder uptime BREAK_AT_S.
@@ -12,33 +12,32 @@
 // START.bat, hidden. The session holds until supervisor\results\ui-<mode>\stop exists or Ctrl+C (a `restart`
 // file there starts START.bat again), then stops everything it started, removes the install and lists what
 // still runs.
-import { existsSync, readFileSync, rmSync, writeFileSync, appendFileSync, copyFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
-import { PLAYLIST, SECOND_PLAYLIST } from '../../supervisor/scripts/lib.mjs';
+import { PLAYLIST, SECOND_PLAYLIST } from '../../../supervisor/scripts/lib.mjs';
 import {
   spawn, run, KEY, INGEST, sleep, iso, useOut, note, extract, quietConfig, startBat, nodeUp, portOpen,
   allProcesses, sweepLeftovers, quickStop, tempFolders, onInterrupt,
   VARIANTS, ASSET_PORT, buildVariants, writeReleaseList, assetHost,
-} from '../../supervisor/scripts/install-kit.mjs';
+} from '../../../supervisor/scripts/install-kit.mjs';
 
 const MODES = ['dev', 'update', 'update-fail'];
 const MODE = process.argv[2];
 if (!MODES.includes(MODE)) {
-  console.error(`usage: node ui/scripts/ui-session.mjs ${MODES.join('|')} [--no-app]`);
+  console.error(`usage: node crates/ui/scripts/ui-session.mjs ${MODES.join('|')} [--no-app]`);
   process.exit(2);
 }
 const START_APP = !process.argv.includes('--no-app');
 
-const REPO = fileURLToPath(new URL('../..', import.meta.url));
+const REPO = fileURLToPath(new URL('../../..', import.meta.url));
 // A worktree has no spikes\tools: those are ignored files of the main checkout.
 const common = await run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: REPO, encoding: 'utf8' });
 const MAIN = common.status === 0 ? dirname(common.stdout.trim()) : REPO;
 const inRepo = (...parts) => [join(REPO, ...parts), join(MAIN, ...parts)].find((p) => existsSync(p)) ?? join(REPO, ...parts);
 const TOOLS = dirname(inRepo('spikes', 'tools', 'mediamtx.exe'));
-const UI_EXE = join(REPO, 'ui', 'target', 'release', 'streamloop-ui.exe');
 
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const DIST = join(REPO, 'dist');
@@ -68,7 +67,6 @@ let app = null;
 // preflight
 
 if (!existsSync(ZIP)) { note(`missing ${ZIP}: run npm run build:release first`); process.exit(2); }
-if (START_APP && !existsSync(UI_EXE)) { note(`missing ${UI_EXE}: cargo build --release in ui\\`); process.exit(2); }
 const swept = await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a session that is still running', swept); process.exit(3); }
 const ports = [7654, 4417, 4416, CATCHER_PORT, ...(LISTED.length ? [ASSET_PORT] : [])];
@@ -136,10 +134,8 @@ bat = startBat(ROOT, MODE, env);
 await nodeUp(`${MODE} first start`);
 
 if (START_APP) {
-  // The app runs from a copy in the results folder, so a rebuild in ui\target is not blocked.
-  const exe = join(OUT, 'streamloop-ui.exe');
-  copyFileSync(UI_EXE, exe);
-  app = spawn(exe, [], { cwd: OUT, stdio: 'ignore', windowsHide: false });
+  // The app is the install's own exe in ui mode: its folder holds app\, so that is its root.
+  app = spawn(join(ROOT, 'streamloop.exe'), ['ui'], { cwd: OUT, stdio: 'ignore', windowsHide: false });
   note('app started', { pid: app.pid });
 }
 
@@ -193,7 +189,7 @@ async function teardown() {
     note('removed StreamLoop.vbs from the Startup folder: it started this temp install');
   }
   // streamloop-pot.exe is the token server; node.exe only runs the TypeScript fallback.
-  const names = ['streamloop.exe', 'node.exe', 'streamloop-pot.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'streamloop-ui.exe', 'cmd.exe'];
+  const names = ['streamloop.exe', 'node.exe', 'streamloop-pot.exe', 'ffmpeg.exe', 'ffprobe.exe', 'yt-dlp.exe', 'mediamtx.exe', 'cmd.exe'];
   const left = (await allProcesses())
     .filter((p) => names.includes(String(p.Name).toLowerCase()) && p.ProcessId !== process.pid)
     .filter((p) => p.Name !== 'cmd.exe' || /start\.bat/i.test(p.CommandLine ?? ''))

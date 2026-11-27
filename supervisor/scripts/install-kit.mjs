@@ -350,7 +350,7 @@ async function interrupt(signal) {
 }
 for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, () => void interrupt(s));
 
-// The test releases, shared by install-session.mjs and ui/scripts/ui-session.mjs
+// The test releases, shared by install-session.mjs and crates/ui/scripts/ui-session.mjs
 
 /** The test builds after release `version`: N+1 to N+4 and the two broken N+1s. A dev version counts from its
  *  release number. */

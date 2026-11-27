@@ -43,8 +43,8 @@ Test-only builds, never released: the `streamloop` crate's features `test-superv
 ## Commands
 
 ```bash
-cargo build --release       # at the repo root: target\release\streamloop.exe (the control process, and the supervisor, launch, protect and check modes)
-cargo test --workspace      # all Rust tests: supervisor, common, control, the exe's CLI and the repo guards
+cargo build --release       # at the repo root: target\release\streamloop.exe (the control process, and the supervisor, launch, protect, check and ui modes; builds gpui, so a clean build takes several minutes)
+cargo test --workspace      # all Rust tests: supervisor, common, control, ui, the exe's CLI and the repo guards
 cargo test                  # in tokenserver/: the token server's tests (it is no workspace member and compiles V8)
 npm test                    # vitest once: the dashboard (src/admin/__tests__), the Notion-link and leak guards (scripts/__tests__), the harness and the spikes
 npm run test:watch          # vitest in watch mode
@@ -54,8 +54,7 @@ node supervisor/scripts/api-parity.mjs record --server rust --out FILE   # the d
 node supervisor/scripts/api-parity.mjs compare supervisor/scripts/api-parity/node.json FILE   # exit 0 when the answers match Node's, apart from the differences it names
 node supervisor/scripts/node-session.mjs A|B|C|treekill [--port N]   # end-to-end runs of streamloop.exe (control process and supervisor) against local MediaMTX; each ends with its verdict; --port when 7654 is taken
 node supervisor/scripts/install-session.mjs all|<run>[,<run>...]|build   # dist/'s full ZIP in a temp folder against local MediaMTX and a local release list; runs: install, update (planned break, Update Now, landings while stopped and while waiting for Start), rollback (by the control process), rollback-bat (by START.bat), move (from v3.0.5), faults (the gate's fault checks); build only makes the test exes
-cargo build --release       # in ui/: the app, ui/target/release/streamloop-ui.exe
-node ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]   # dist/'s full ZIP, local MediaMTX and a Discord catcher, for driving the app through every dashboard action; update lists N+1, update-fail the N+1 whose supervisor fails (install-session.mjs's test builds); from PowerShell
+node crates/ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]   # dist/'s full ZIP, local MediaMTX and a Discord catcher, for driving the app (`ROOT\streamloop.exe ui`) through every dashboard action; update lists N+1, update-fail the N+1 whose supervisor fails (install-session.mjs's test builds); from PowerShell
 ```
 
 `api-parity/node.json` is the Node backend's recording, made before 3.1 removed `src/server/`; it is fixed history, and `record --server node` only says so.
@@ -89,7 +88,8 @@ Back to 3.x: close 2.x and OBS, start 3.x's `START.bat`, press Start. Until Star
 
 **One exe, two processes, and the web dashboard.** `ARCHITECTURE.md` has the diagram, the modes, the supervisor's interface and the main flows.
 
-- **`crates/streamloop`**: the exe. `main.rs` only dispatches on the first argument: `supervisor`, `launch`, `protect`, `check`, `--version`, else control mode.
+- **`crates/streamloop`**: the exe. `main.rs` only dispatches on the first argument: `supervisor`, `launch`, `protect`, `check`, `ui`, `--version`, else control mode. `ui_mode.rs` parses the `ui` arguments, sets the working folder and the panic log (`app\logs\ui.log`) and calls the window crate.
+- **`crates/ui`** (crate `streamloop-ui`, a library, edition 2024): R3's native GPUI window on gpui-kit `=0.9.0`, built into the exe as `streamloop.exe ui`. It talks to the control process over the REST API on 127.0.0.1:7654 with its own API types (`api/types.rs`) and has 278 tests of its own.
 - **`supervisor/`** (crate `streamloop-supervisor`, a library): the streaming core, launched by the control process through `streamloop.exe launch`, a short-lived intermediate, so it is a sibling with a dead parent: a control process crash, restart or tree kill leaves the stream up. The control process talks to it over HTTP on 127.0.0.1:4417 and reads its events from `ROOT\data\logs\supervisor-events-DATE.jsonl` (`events-DATE.jsonl` up to 3.0.4; both are read). It stays threads plus tiny_http, with no async runtime.
 - **`crates/common`**: what both processes share, with no async runtime and no HTTP: `config/` (the schema, load, save and merge; the supervisor's read-only view), `api.rs` (the `/status`, `/control` and `/reload` types), `paths.rs` (the install layout and root), `procs.rs` (the one place a child process is built), `secret.rs` (DPAPI), `encoder.rs` (the encoder argument sets the supervisor streams with and the setup check probes with), `playlist.rs` (yt-dlp's playlist listing), `events.rs`, `time.rs`, `version.rs`.
 - **`crates/control`**: the control process on tokio, axum and reqwest (rustls), a module per Node module of 3.0.
@@ -123,7 +123,7 @@ Back to 3.x: close 2.x and OBS, start 3.x's `START.bat`, press Start. Until Star
 
 ## Testing
 
-- **Rust:** `cargo test --workspace`. Each crate's tests sit in its own `tests/` (one file per module in `crates/control/tests/`, with `support/` for the shared fakes; `tests/app.rs` drives the wired process on a real socket), plus unit tests inside the modules. The behaviours 3.0's Node tests covered carry over by name. Golden fixtures recorded from the TypeScript before it was removed live in `crates/*/tests/fixtures/` and are test data now. Repo guards are cargo tests in `crates/streamloop/tests/`: `start_bat.rs` (the batch rules), `release_layout.rs` (the layout covers `Layout`, ships `supervisor\streamloop-pot.exe` and no `config.json`, `pot\` or `node\`, no test feature in the release build, the versions match, the token server's too) and `repo_guards.rs` (no `Command::new` outside `procs.rs`).
+- **Rust:** `cargo test --workspace`. Each crate's tests sit in its own `tests/` (one file per module in `crates/control/tests/`, with `support/` for the shared fakes; `tests/app.rs` drives the wired process on a real socket), plus unit tests inside the modules; `crates/ui` keeps its tests inside its modules, on GPUI's `TestAppContext`. The behaviours 3.0's Node tests covered carry over by name. Golden fixtures recorded from the TypeScript before it was removed live in `crates/*/tests/fixtures/` and are test data now. Repo guards are cargo tests in `crates/streamloop/tests/`: `start_bat.rs` (the batch rules), `release_layout.rs` (the layout covers `Layout`, ships `supervisor\streamloop-pot.exe` and no `config.json`, `pot\` or `node\`, no test feature in the release build, the versions match, the token server's too) and `repo_guards.rs` (no `Command::new` outside `procs.rs`).
 - **JavaScript:** `npm test` runs vitest over every `*.test.*` file outside `node_modules` and `.claude/` (where other sessions' worktrees live): the dashboard's own logic (`src/admin/__tests__/status-view.test.ts`), the guard that no tracked file holds a Notion URL (`scripts/__tests__/no-notion-links.test.ts`), the leak guard that no tracked file holds a key, token or webhook URL apart from YouTube's public API key, which it allows by its SHA-256 (`scripts/__tests__/leak-guard.test.ts`), the harness (`supervisor/scripts/*.test.mjs`) and the spikes. The token server has its own tests: `cargo test` in `tokenserver\`.
 - Test names describe the behaviour; tests are arrange-act-assert.
 

@@ -1,6 +1,6 @@
 // Stand-in for the Node backend on 127.0.0.1:7654 for the GPUI memory spike. The Tauri shell
 // (the real /admin from src/admin) and the GPUI window poll it, so both draw the same data.
-// Run: node ui/scripts/stub-backend.mjs
+// Run: node crates/ui/scripts/stub-backend.mjs
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { dirname, extname, join, normalize, sep } from 'node:path';
@@ -28,7 +28,7 @@ const EXTRA_EVENT_EVERY_S = 15;
 const MAX_EVENTS = 100;
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repo = join(here, '..', '..');
+const repo = join(here, '..', '..', '..');
 const adminDir = join(repo, 'src', 'admin');
 const example = JSON.parse(await readFile(join(repo, 'config.example.json'), 'utf8'));
 

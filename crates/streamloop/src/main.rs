@@ -1,4 +1,6 @@
-//! One exe: `supervisor`, `launch`, `protect` and `check` run the supervisor crate; anything else is control mode.
+//! One exe: `supervisor`, `launch`, `protect` and `check` run the supervisor crate, `ui` runs the window; anything else is control mode.
+
+mod ui_mode;
 
 use streamloop_common::version::VERSION;
 
@@ -11,6 +13,7 @@ fn main() {
         Some("launch") => streamloop_supervisor::launch_main(rest()),
         Some("protect") => streamloop_supervisor::protect_main(),
         Some("check") => streamloop_supervisor::check_main(rest()),
+        Some("ui") => ui_mode::ui_main(rest()),
         Some("--version") => {
             println!("{VERSION}");
             0
