@@ -1,3 +1,13 @@
+## v3.1.2
+
+A prerelease for trial, not marked latest. 3.1.0 and 3.1.1 installs get it through the dashboard's update, at the next planned break or with Update Now. 3.0 installs move to it with the full ZIP by hand, as described for 3.1.0.
+
+- **Videos download at 720p or better again.** Since 24 November, YouTube's mweb player client, the first in the default list, offers only 360p that yt-dlp can download, and StreamLoop took it, so the box streamed 360p for days. Each player client is now asked for 720p to 1080p first, and a client that offers nothing in that range is passed over for the next one. On the dev machine, web_embedded, the second client in the default list, offered 1080p. Only when no client offers 720p does StreamLoop take the best there is. It then puts a warning on the timeline, "Video N (id) was downloaded below 720p: none of the player clients offered 720p or better.", and sends it to Discord through the critical alerts setting, so there it starts with CRITICAL. The next time that video comes up for download, StreamLoop asks for 720p again.
+- **yt-dlp's update no longer breaks lookups and downloads that are running.** yt-dlp reads its own code from `yt-dlp.exe` while it runs, and its update replaced that file, so a playlist fetch or a download running at that moment could fail with "Error -3 while decompressing data". On the box this happened when 3.1.1 installed. The update now works on a copy and keeps the result as `yt-dlp\yt-dlp-<version>.exe`, which every later yt-dlp run uses. `yt-dlp.exe` stays as the ZIP shipped it. StreamLoop keeps the two newest copies and removes older ones at a later update, once nothing runs them.
+- **No full ZIP is needed.** The update installs the new `streamloop.exe`.
+
+---
+
 ## v3.1.1
 
 A prerelease for trial, not marked latest. 3.1.0 installs get it through the dashboard's update, at the next planned break or with Update Now. 3.0 installs move to it with the full ZIP by hand, as described for 3.1.0.
