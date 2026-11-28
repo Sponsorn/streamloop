@@ -14,6 +14,7 @@ use streamloop_common::config::{to_json, Config, ConfigError};
 
 use super::update::refuse_during_update;
 use super::{error_reply, is_js_space, text_reply, AppState, JsonBody};
+use crate::launcher::LauncherState;
 
 const MASK: &str = "********";
 
@@ -85,8 +86,17 @@ pub(super) async fn save_and_reload(state: &AppState, patch: &Value) -> Result<S
     };
     (state.apply_config)(&config);
     let reload = state.client.reload(ReloadRequest::default()).await;
-    let (reload_error, reload_error_code) = if reload.ok { (None, None) } else { (Some(reload.error.unwrap_or_else(|| "reload failed".into())), reload.code) };
+    // On Windows a refused loopback connect takes about 2 s, so with nothing on 4417 the reload times out;
+    // only the launcher tells that apart from a supervisor that hangs.
+    let failed = !reload.ok && (!reload.unanswered || supervisor_up(state));
+    let (reload_error, reload_error_code) = if failed { (Some(reload.error.unwrap_or_else(|| "reload failed".into())), reload.code) } else { (None, None) };
     Ok(Saved { config, restart_required: reload.restart_required, reload_error, reload_error_code })
+}
+
+/// A supervisor answers the launcher's polls and no Stop is sending it away. Without one (a first run, a Stop,
+/// waiting for Start, down or just launched) the next supervisor reads the saved file when it starts.
+fn supervisor_up(state: &AppState) -> bool {
+    state.launcher.state() == LauncherState::Running && !state.launcher.is_stopped_by_user()
 }
 
 fn text_or_null(s: Option<String>) -> Ordered {

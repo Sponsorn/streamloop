@@ -124,7 +124,7 @@ Back to 3.x: close 2.x and OBS, start 3.x's `streamloop.exe`, press Start. Until
 
 **Browsers are refused.** The control process's API (7654) and the supervisor's (4417) answer 403 to a Host other than `127.0.0.1:PORT` or `localhost:PORT` (the port the server bound) and to any `Origin` header, before routing and before the token check (`crates/common/src/local_only.rs`). A new client of either must send no Origin and its own loopback address as Host, which HTTP libraries do by default.
 
-**Configuration hot-reload:** `POST /api/config` saves `config.json`, rebuilds Discord and the Twitch checks, and asks the supervisor to `POST /reload`. The reply says when a change (ingest, key, encoder, freeze or silence duration) needs a supervisor restart.
+**Configuration hot-reload:** `POST /api/config` saves `config.json`, rebuilds Discord and the Twitch checks, and asks the supervisor to `POST /reload`. The reply says when a change (ingest, key, encoder, freeze or silence duration) needs a supervisor restart, and why the reload failed (`reloadError`). A reload that nothing answers while the launcher has no supervisor up (a first run, after Stop, waiting for Start, down) is no failure.
 
 **Exit codes** (`app.rs`): 0 for Ctrl+C, a closed console window, `/api/shutdown` (a landing that has begun to stop the supervisor finishes first, up to 100 s) or the app's Quit (`/api/quit`, once it has stopped the supervisor), 1 with no install root or a config that does not load, 2 when the port is taken, 64 for an unknown argument, 75 after a landed update, a rollback or the test hook. `ARCHITECTURE.md` (Control process) has the start order, the 3.0 leftovers it removes and the exe update.
 

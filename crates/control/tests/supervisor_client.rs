@@ -274,7 +274,7 @@ async fn reload_returns_restart_required() {
     // Act
     let r = client.reload(ReloadRequest::default()).await;
     // Assert
-    assert_eq!(r, ReloadResult { ok: true, restart_required: true, error: None, code: None });
+    assert_eq!(r, ReloadResult { ok: true, restart_required: true, error: None, code: None, unanswered: false });
 }
 
 #[tokio::test]
@@ -300,7 +300,7 @@ async fn reload_returns_the_error_from_a_rejected_reload() {
     // Act
     let r = client.reload(ReloadRequest::default()).await;
     // Assert
-    assert_eq!(r, ReloadResult { ok: false, restart_required: false, error: Some("bad config".into()), code: None });
+    assert_eq!(r, ReloadResult { ok: false, restart_required: false, error: Some("bad config".into()), code: None, unanswered: false });
 }
 
 #[tokio::test]
@@ -310,7 +310,17 @@ async fn reload_keeps_the_code_of_a_refused_connection() {
     // Act
     let r = client.reload(ReloadRequest::default()).await;
     // Assert
-    assert_eq!(r, ReloadResult { ok: false, restart_required: false, error: Some("fetch failed".into()), code: Some("ECONNREFUSED".into()) });
+    assert_eq!(r, ReloadResult { ok: false, restart_required: false, error: Some("fetch failed".into()), code: Some("ECONNREFUSED".into()), unanswered: true });
+}
+
+#[tokio::test(start_paused = true)]
+async fn reload_that_times_out_says_no_answer_came() {
+    // Arrange
+    let client = SupervisorClient::new(Arc::new(SilentHttp), None, None);
+    // Act
+    let r = client.reload(ReloadRequest::default()).await;
+    // Assert
+    assert_eq!(r, ReloadResult { ok: false, restart_required: false, error: Some("The operation was aborted due to timeout".into()), code: None, unanswered: true });
 }
 
 #[tokio::test]
@@ -325,6 +335,7 @@ async fn reload_reports_a_refused_connection_to_a_closed_local_port_through_the_
     let r = client.reload(ReloadRequest::default()).await;
     // Assert
     assert_eq!(r.code.as_deref(), Some("ECONNREFUSED"));
+    assert!(r.unanswered);
 }
 
 #[tokio::test]
