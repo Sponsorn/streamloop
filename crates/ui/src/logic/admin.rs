@@ -4,7 +4,7 @@ use chrono::{DateTime, Local};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::api::types::{Playing, PlaylistRef, Supervisor, UpdateStatus};
+use crate::api::types::{CacheFile, Playing, PlaylistRef, Supervisor, UpdateStatus};
 use crate::logic::status_view::{
     app_download_text, format_time, update_banner_view, update_offer_text,
 };
@@ -84,6 +84,45 @@ pub fn format_bytes(n: u64) -> String {
         format!("{:.1} KB", n as f64 / 1024.0)
     } else {
         format!("{:.1} MB", n as f64 / 1024.0 / 1024.0)
+    }
+}
+
+const GB: u64 = 1024 * 1024 * 1024;
+
+pub fn format_gb(n: u64) -> String {
+    format!("{:.1} GB", n as f64 / GB as f64)
+}
+
+/// GB from 1 GB up, else as `format_bytes`.
+pub fn format_size(n: u64) -> String {
+    if n >= GB {
+        format_gb(n)
+    } else {
+        format_bytes(n)
+    }
+}
+
+/// Bytes a second: MB with one decimal from 1 MB/s up, else whole KB.
+pub fn format_rate(bps: f64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if bps >= MB {
+        format!("{:.1} MB/s", bps / MB)
+    } else {
+        format!("{:.0} KB/s", bps / 1024.0)
+    }
+}
+
+/// `1080p30 h264`: the height with the frame rate, then the codec, each a `-` when unknown.
+pub fn format_quality(f: &CacheFile) -> String {
+    let resolution = f.height.map_or("-".to_string(), |h| {
+        let fps = f.fps.map_or(String::new(), |fps| format!("{fps:.0}"));
+        format!("{h}p{fps}")
+    });
+    let codec = f.vcodec.as_deref().filter(|c| !c.is_empty()).unwrap_or("-");
+    if resolution == "-" && codec == "-" {
+        "-".to_string()
+    } else {
+        format!("{resolution} {codec}")
     }
 }
 
@@ -443,6 +482,10 @@ pub fn local_hms(ts: &str) -> String {
     local_format(ts, "%H:%M:%S")
 }
 
+pub fn local_hm(ts: &str) -> String {
+    local_format(ts, "%H:%M")
+}
+
 pub fn local_date_time(ts: &str) -> String {
     local_format(ts, "%Y-%m-%d %H:%M")
 }
@@ -544,6 +587,52 @@ mod tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(2048), "2.0 KB");
         assert_eq!(format_bytes(3_145_728), "3.0 MB");
+    }
+
+    #[test]
+    fn gb_has_one_decimal() {
+        assert_eq!(format_gb(15_246_000_000), "14.2 GB");
+        assert_eq!(format_gb(32_212_254_720), "30.0 GB");
+    }
+
+    #[test]
+    fn a_size_reads_in_gb_from_one_gb_and_in_mb_below() {
+        assert_eq!(format_size(15_246_000_000), "14.2 GB");
+        assert_eq!(format_size(314_572_800), "300.0 MB");
+    }
+
+    #[test]
+    fn rate_reads_in_mb_or_kb_per_second() {
+        assert_eq!(format_rate(2_411_725.0), "2.3 MB/s");
+        assert_eq!(format_rate(524_288.0), "512 KB/s");
+    }
+
+    #[test]
+    fn quality_reads_height_fps_and_codec_and_dashes_what_is_unknown() {
+        let file = |height: Option<u32>, fps: Option<f64>, vcodec: Option<&str>| CacheFile {
+            height,
+            fps,
+            vcodec: vcodec.map(str::to_string),
+            ..CacheFile::default()
+        };
+
+        assert_eq!(
+            format_quality(&file(Some(1080), Some(29.97), Some("h264"))),
+            "1080p30 h264"
+        );
+        assert_eq!(
+            format_quality(&file(Some(720), None, Some("vp9"))),
+            "720p vp9"
+        );
+        assert_eq!(
+            format_quality(&file(None, Some(30.0), Some("av1"))),
+            "- av1"
+        );
+        assert_eq!(
+            format_quality(&file(Some(480), Some(25.0), None)),
+            "480p25 -"
+        );
+        assert_eq!(format_quality(&file(None, None, None)), "-");
     }
 
     #[test]

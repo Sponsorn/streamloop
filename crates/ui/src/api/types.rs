@@ -120,6 +120,122 @@ pub struct UpdateStatus {
     pub swap_log: Vec<SwapLine>,
 }
 
+/// `GET /api/cache`: the supervisor's report, or `None` when no supervisor answered it.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheReply {
+    #[serde(deserialize_with = "lenient")]
+    pub cache: Option<CacheReport>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheReport {
+    #[serde(deserialize_with = "lenient")]
+    pub cache_bytes: u64,
+    #[serde(deserialize_with = "lenient")]
+    pub budget_bytes: u64,
+    #[serde(deserialize_with = "lenient")]
+    pub next: Option<CacheNext>,
+    #[serde(deserialize_with = "lenient")]
+    pub videos: Vec<CacheVideo>,
+    #[serde(deserialize_with = "lenient")]
+    pub deletions: Vec<CacheDeletion>,
+}
+
+/// What the downloader does next: `when` says why or when, and the video it names, if any.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheNext {
+    #[serde(deserialize_with = "lenient")]
+    pub when: String,
+    #[serde(deserialize_with = "lenient")]
+    pub at: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub id: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub title: Option<String>,
+}
+
+/// A video from the one on air through the look-ahead. `index` counts within its playlist.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheVideo {
+    #[serde(deserialize_with = "lenient")]
+    pub index: u32,
+    #[serde(deserialize_with = "lenient")]
+    pub playlist_id: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub id: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub title: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub state: String,
+    #[serde(deserialize_with = "lenient")]
+    pub source: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub bytes: Option<u64>,
+    #[serde(deserialize_with = "lenient")]
+    pub looked_up: bool,
+    #[serde(deserialize_with = "lenient")]
+    pub download: Option<CacheDownload>,
+    #[serde(deserialize_with = "lenient")]
+    pub retry_at: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub room_at: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub file: Option<CacheFile>,
+}
+
+/// `part` counts the streams of the download from 1: video, then audio.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheDownload {
+    #[serde(deserialize_with = "lenient")]
+    pub percent: f64,
+    #[serde(deserialize_with = "lenient")]
+    pub speed_bps: Option<f64>,
+    #[serde(deserialize_with = "lenient")]
+    pub eta_s: Option<u64>,
+    #[serde(deserialize_with = "lenient")]
+    pub part: u32,
+    #[serde(deserialize_with = "lenient")]
+    pub parts: u32,
+}
+
+/// What `cache.json` holds about a file on disk.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheFile {
+    #[serde(deserialize_with = "lenient")]
+    pub height: Option<u32>,
+    #[serde(deserialize_with = "lenient")]
+    pub fps: Option<f64>,
+    #[serde(deserialize_with = "lenient")]
+    pub vcodec: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub format: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub client: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CacheDeletion {
+    #[serde(deserialize_with = "lenient")]
+    pub at: String,
+    #[serde(deserialize_with = "lenient")]
+    pub id: String,
+    #[serde(deserialize_with = "lenient")]
+    pub title: Option<String>,
+    #[serde(deserialize_with = "lenient")]
+    pub bytes: u64,
+    #[serde(deserialize_with = "lenient")]
+    pub reason: String,
+}
+
 /// A field of the wrong type reads as its default, so the rest of the answer still reads, as admin.js
 /// tolerates it with `typeof` checks and `|| []`.
 fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>

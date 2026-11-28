@@ -7,6 +7,7 @@ const DEFAULT_PORT: u16 = 7654;
 
 pub mod api;
 pub mod app;
+pub mod cache;
 pub mod dashboard;
 pub mod follow;
 pub mod instance;

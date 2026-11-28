@@ -1,4 +1,4 @@
-//! The dashboard (index.html `#view-dashboard`): the banners, the header and the four tabs.
+//! The dashboard (index.html `#view-dashboard`): the banners, the header and the five tabs.
 
 use gpui::{
     AnyView, App, AppContext, Context, Entity, FontWeight, Hsla, IntoElement, Render, ScrollHandle,
@@ -13,6 +13,7 @@ use gpui_kit::component::{
 use crate::{
     api::types::{Event, Status, UpdateStatus},
     app::{AppHandle, now_ms},
+    cache::CacheView,
     logic::{StreamLine, admin::format_duration, update_running},
     monitor::MonitorView,
     playback::PlaybackView,
@@ -29,17 +30,25 @@ const LOST_TEXT: &str = "Can't reach the server. The dashboard may be out of dat
 pub enum Tab {
     Monitor,
     Playback,
+    Cache,
     Webhooks,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Monitor, Tab::Playback, Tab::Webhooks, Tab::Settings];
+    pub const ALL: [Tab; 5] = [
+        Tab::Monitor,
+        Tab::Playback,
+        Tab::Cache,
+        Tab::Webhooks,
+        Tab::Settings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Monitor => "Monitor",
             Tab::Playback => "Playback",
+            Tab::Cache => "Cache",
             Tab::Webhooks => "Webhooks",
             Tab::Settings => "Settings",
         }
@@ -49,6 +58,7 @@ impl Tab {
         match self {
             Tab::Monitor => "tab-monitor",
             Tab::Playback => "tab-playback",
+            Tab::Cache => "tab-cache",
             Tab::Webhooks => "tab-webhooks",
             Tab::Settings => "tab-settings",
         }
@@ -62,6 +72,9 @@ pub trait TabView: Render {
 
     /// admin.js `switchTab()`: the user picked this tab, also when it was showing already.
     fn on_tab_shown(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    /// The user picked another tab while this one showed.
+    fn on_tab_hidden(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     /// Every poll that answered, whether this tab shows or not. `now_ms` is the poll's time, so
     /// every elapsed time it shows matches the banner's.
@@ -80,11 +93,12 @@ pub trait TabView: Render {
     fn on_playlists_saved(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 }
 
-/// A tab's entity with its type erased, so the dashboard keeps all four in one list.
+/// A tab's entity with its type erased, so the dashboard keeps them all in one list.
 trait AnyTab {
     fn view(&self) -> AnyView;
     fn dashboard_open(&self, window: &mut Window, cx: &mut App);
     fn shown(&self, window: &mut Window, cx: &mut App);
+    fn hidden(&self, window: &mut Window, cx: &mut App);
     fn poll(
         &self,
         status: &Status,
@@ -108,6 +122,10 @@ impl<T: TabView> AnyTab for Entity<T> {
 
     fn shown(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |tab, cx| tab.on_tab_shown(window, cx));
+    }
+
+    fn hidden(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |tab, cx| tab.on_tab_hidden(window, cx));
     }
 
     fn poll(
@@ -141,6 +159,7 @@ fn build_tab(
             Box::new(cx.new(|cx| MonitorView::new(app.clone(), flow.clone(), window, cx)))
         }
         Tab::Playback => Box::new(cx.new(|cx| PlaybackView::new(app.clone(), window, cx))),
+        Tab::Cache => Box::new(cx.new(|_| CacheView::new(app.clone()))),
         Tab::Webhooks => Box::new(cx.new(|cx| WebhooksView::new(app.clone(), window, cx))),
         Tab::Settings => {
             Box::new(cx.new(|cx| SettingsView::new(app.clone(), flow.clone(), window, cx)))
@@ -216,6 +235,11 @@ impl DashboardView {
     }
 
     pub fn select_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if tab != self.selected
+            && let Some((_, view)) = self.tabs.iter().find(|(t, _)| *t == self.selected)
+        {
+            view.hidden(window, cx);
+        }
         self.selected = tab;
         if let Some((_, view)) = self.tabs.iter().find(|(t, _)| *t == tab) {
             view.shown(window, cx);
@@ -414,6 +438,10 @@ mod tests {
             self.log.borrow_mut().push(format!("shown {:?}", self.tab));
         }
 
+        fn on_tab_hidden(&mut self, _: &mut Window, _: &mut Context<Self>) {
+            self.log.borrow_mut().push(format!("hidden {:?}", self.tab));
+        }
+
         fn on_playlists_saved(&mut self, _: &mut Window, _: &mut Context<Self>) {
             self.log.borrow_mut().push(format!("saved {:?}", self.tab));
         }
@@ -477,6 +505,7 @@ mod tests {
             [
                 "open Monitor",
                 "open Playback",
+                "open Cache",
                 "open Webhooks",
                 "open Settings"
             ]
@@ -507,9 +536,11 @@ mod tests {
         assert_eq!(
             *log.borrow(),
             [
+                "hidden Monitor",
                 "shown Settings",
                 "poll Monitor 5000 1 false",
                 "poll Playback 5000 1 false",
+                "poll Cache 5000 1 false",
                 "poll Webhooks 5000 1 false",
                 "poll Settings 5000 1 false",
             ]
@@ -542,8 +573,56 @@ mod tests {
             [
                 "saved Monitor",
                 "saved Playback",
+                "saved Cache",
                 "saved Webhooks",
                 "saved Settings"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_tabs_are_monitor_playback_cache_webhooks_settings() {
+        let labels = Tab::ALL.map(Tab::label);
+
+        assert_eq!(
+            labels,
+            ["Monitor", "Playback", "Cache", "Webhooks", "Settings"]
+        );
+    }
+
+    #[gpui::test]
+    fn switching_tabs_hides_the_old_tab_before_showing_the_new_one(cx: &mut TestAppContext) {
+        let (app, _) = open_app(cx, FakeApi::new());
+        let handle = app.read_with(cx, |app, _| app.handle());
+        let log = Log::default();
+        let (window, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                    cx.new(|cx| {
+                        DashboardView::with_tabs(&handle, recording(log.clone()), window, cx)
+                    })
+                })
+            })
+            .unwrap();
+        log.borrow_mut().clear();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tab-cache", cx);
+            window.click("tab-cache", cx);
+            window.click("tab-monitor", cx);
+        })
+        .unwrap();
+
+        // The second click on the tab already showing hides nothing.
+        assert_eq!(
+            *log.borrow(),
+            [
+                "hidden Monitor",
+                "shown Cache",
+                "shown Cache",
+                "hidden Cache",
+                "shown Monitor"
             ]
         );
     }

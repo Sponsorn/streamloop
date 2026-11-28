@@ -6,8 +6,8 @@ use serde_json::{Map, Value, json};
 use super::{
     Api, ApiError,
     types::{
-        AutostartStatus, DiscordDefaults, Event, LogFile, SaveResult, SetupReport, Status,
-        UpdateStatus, VideoPage, YtdlpUpdate,
+        AutostartStatus, CacheReply, DiscordDefaults, Event, LogFile, SaveResult, SetupReport,
+        Status, UpdateStatus, VideoPage, YtdlpUpdate,
     },
 };
 
@@ -67,6 +67,10 @@ impl Client {
 
     pub fn update_status(&self) -> Result<UpdateStatus, ApiError> {
         self.get("/api/update/status")
+    }
+
+    pub fn cache(&self) -> Result<CacheReply, ApiError> {
+        self.get("/api/cache")
     }
 
     pub fn config(&self) -> Result<Value, ApiError> {
@@ -233,6 +237,33 @@ mod tests {
             fake.requests()[0].path,
             "/api/playlist/videos?playlist=1&page=2&perPage=25"
         );
+    }
+
+    #[test]
+    fn cache_asks_for_api_cache() {
+        let (fake, c) = client();
+        fake.reply(
+            "GET",
+            "/api/cache",
+            Ok(json!({"cache": {"cacheBytes": 5, "videos": [{"id": "a", "state": "cached"}]}})),
+        );
+
+        let reply = c.cache().unwrap();
+
+        assert_eq!(fake.requests()[0].path, "/api/cache");
+        let report = reply.cache.expect("a report");
+        assert_eq!(
+            (report.cache_bytes, report.videos[0].state.as_str()),
+            (5, "cached")
+        );
+    }
+
+    #[test]
+    fn a_null_cache_reads_as_no_report() {
+        let (fake, c) = client();
+        fake.reply("GET", "/api/cache", Ok(json!({"cache": null})));
+
+        assert!(c.cache().unwrap().cache.is_none());
     }
 
     #[test]
