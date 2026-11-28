@@ -5,12 +5,12 @@
 //   install       the full ZIP's START.bat, first run, setup check, key, config, live; the key in no
 //                 install file; a second START.bat window exits 2 and changes nothing.
 //   app           the app as a user starts it, the spec's actions: streamloop.exe started as Explorer does
-//                 starts START.bat hidden and the wizard's calls take it live (A1); a second start brings its
-//                 window forward (A2); START.bat by hand opens one window, none after a crash restart, and an app
-//                 started in its 10 s wait starts no second START.bat (A11); autostart on writes the Run value,
-//                 its command as logon runs it gives the tray only (A9, A10); StreamLoop.vbs moves to the value
-//                 (A18); forged Host and Origin get 403 on 7654 and 4417, /admin 404 (A15, A16); Quit leaves nothing
-//                 (A7); a start after it goes live (A8).
+//                 starts START.bat hidden and the wizard's calls take it live (A1); with the window closed to the
+//                 tray, a second start opens it in front (A2); START.bat by hand opens one window, none after a crash
+//                 restart, and an app started in its 10 s wait starts no second START.bat (A11); autostart on writes
+//                 the Run value, its command as logon runs it gives the tray only (A9, A10); StreamLoop.vbs moves to
+//                 the value (A18); forged Host and Origin get 403 on 7654 and 4417, /admin 404 (A15, A16); Quit leaves
+//                 only the app, which the harness then ends (A7); a start after it goes live (A8).
 //   update        N live; the first check stages N+1 and it lands at the planned break (encoder uptime
 //                 STREAMLOOP_TEST_BREAK_AT_S=300); then, with autoStartStream off, Update Now to N+2 on air;
 //                 then N+3 stopped from the dashboard and N+4 waiting for Start, each landing without starting
@@ -51,8 +51,8 @@ import {
   packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
   allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders, useApiPort,
   VARIANTS, exeName, ASSET_PORT, buildVariants, writeReleaseList, assetHost, TAR,
-  installCensus, windowCensus, closeWindows, windowsOf, fullScreenApp, foregroundGate, runCommandParts, verdictOf, SKIPPED,
-  startApp, explorerEnv, regValue, regKeyExists, realAutostart, rawRequest, token,
+  installCensus, windowCensus, closeWindows, windowsOf, fullScreenApp, foregroundGate, foregroundNow, runCommandParts, verdictOf, SKIPPED,
+  opensItsWindow, cameToTheFront, endsOnTheQuitLine, startApp, explorerEnv, regValue, regKeyExists, realAutostart, rawRequest, token,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -579,16 +579,19 @@ async function closeAppWindow(pids) {
   return x;
 }
 
-/** The app of an update run, started before the landing: with its window when the gate let it (`shown`), else in
- *  the tray; its watch, and the window guard while it has a window. Call after startWatch. */
-async function appBeforeTheLanding(r, label, shown, env) {
+/** The app of an update run, started before the landing: with its window when the gate let it (`gateClear`) and no
+ *  full-screen app is in front now, else in the tray, which makes its window checks SKIPPED. Call after startWatch. */
+async function appBeforeTheLanding(r, label, gateClear, env) {
+  const fgAtStart = await foregroundNow();
+  const shown = opensItsWindow(gateClear, fgAtStart);
+  if (gateClear && !shown) note(`${label}: a full-screen app came to the front during the install, so the app starts in the tray`, fgAtStart);
   const aw = startAppWatch();
   const app = await openApp(label, shown ? [] : ['--tray'], env);
   const seen = await waitFor(`the app of ${label}`, async () => (aliveApps(aw).includes(app.pid) ? true : null), 20_000, 500);
   const guard = shown ? startWindowGuard(aw) : null;
   r.appWatch = aw;
   r.guard = guard;
-  r.appStart = { pid: app.pid, shown, seenMs: seen.ms };
+  r.appStart = { pid: app.pid, gateClear, foregroundAtStart: fgAtStart, shown, seenMs: seen.ms };
   return { aw, shown, guard, pid: app.pid, started: seen.value === true };
 }
 
@@ -767,20 +770,26 @@ async function runApp(r) {
     'A1.windowsOnlyTheApps': onScreen(shown1, appWindows(s1, app1.pid).length > 0 && s1.windows.every((w) => w.pid === app1.pid)),
   });
 
-  // A2: a second start brings the window forward and exits.
+  // A2: with the window closed to the tray, a second start opens it in front and exits. A window already in front
+  // would pass whether or not the show signal works.
   const shown2 = shown1 && await gate(r, 'A2');
   if (shown2) {
+    const closedFirst = appWindows(await installSnapshot(), app1.pid).length > 0 ? await closeAppWindow([app1.pid]) : null;
+    const fgBefore = (await windowCensus()).foreground;
+    const before2 = fgBefore && { pid: fgBefore.pid, name: fgBefore.name, title: fgBefore.title };
     const second = await openApp('A2', [], env);
     const gone = await waitFor('the second app to exit', async () => (!(await underS()).some((p) => p.ProcessId === second.pid) ? true : null), 20_000, 500);
     const front = await waitFor('the app\'s window in front', async () => ((await windowCensus()).foreground?.pid === app1.pid ? true : null), 10_000, 500);
     const s2 = await installSnapshot();
-    a.A2 = { secondPid: second.pid, secondExitMs: gone.ms, inFrontMs: front.ms, snapshot: snapBrief(s2) };
+    a.A2 = { closedToTheTrayFirst: closedFirst, foregroundBefore: before2, secondPid: second.pid, secondExitMs: gone.ms, inFrontMs: front.ms, foregroundAfter: s2.foreground, snapshot: snapBrief(s2) };
     c['A2.oneAppProcess'] = gone.value === true && JSON.stringify(s2.appPids) === JSON.stringify([app1.pid]);
-    c['A2.windowInFront'] = front.value === true;
+    c['A2.windowClosedToTheTrayFirst'] = closedFirst === null || closedFirst.ok;
+    c['A2.windowCameToTheFront'] = front.value === true && cameToTheFront(before2, s2.foreground, app1.pid) && appWindows(s2, app1.pid).length > 0;
   } else {
     a.A2 = { skipped: true };
     c['A2.oneAppProcess'] = SKIPPED;
-    c['A2.windowInFront'] = SKIPPED;
+    c['A2.windowClosedToTheTrayFirst'] = SKIPPED;
+    c['A2.windowCameToTheFront'] = SKIPPED;
   }
 
   // A11: START.bat by hand opens one window at its first start, and none after a crash restart.
@@ -929,18 +938,24 @@ async function runApp(r) {
     'A16.adminIs404': admin.status === 404,
   });
 
-  // A7: Quit, as the app sends it: within 60 s nothing of the install runs; the timeline ends on the quit line.
+  // A7: Quit, as the app sends it: within 60 s nothing of the install but the app runs, and the timeline ends on the
+  // quit line. The app exits after its own Quit, which the harness cannot press, so the harness ends it.
   const tQuit = Date.now();
   const x7 = a.A7 = { quit: await quitAsTheApp() };
   const closed = await waitFor('the port to close after Quit', async () => ((await portOpen(API_PORT)) ? null : true), 60_000, 1000);
   x7.portClosedMs = closed.value ? Date.now() - tQuit : null;
-  // The app's own Quit waits for the port to close, then exits; this quit came from the harness, so the harness
-  // ends the app at that point instead.
+  const appsAtClose = installCensus(await underS()).apps.map((p) => p.ProcessId);
+  x7.appsWhenThePortClosed = appsAtClose;
+  const others = async () => (await underS()).filter((p) => !appsAtClose.includes(p.ProcessId));
+  const othersGone = await waitFor('nothing of the install but the app', async () => ((await others()).length === 0 ? true : null),
+    Math.max(1000, tQuit + 60_000 - Date.now()), 500);
+  x7.allButTheAppGoneMs = othersGone.value ? Date.now() - tQuit : null;
+  x7.othersLeft = (await others()).map((p) => `${p.Name} ${p.ProcessId}`);
   x7.appsEndedByTheHarness = installCensus(await underS()).apps.map((p) => p.ProcessId);
+  const tKill7 = Date.now();
   for (const pid of x7.appsEndedByTheHarness) await run('taskkill', ['/F', '/PID', String(pid)]);
-  const left = await waitFor('no streamloop.exe or cmd.exe of the install', async () => ((await underS()).some((p) => /^(streamloop|cmd)\.exe$/i.test(p.Name ?? '')) ? null : true),
-    Math.max(1000, tQuit + 60_000 - Date.now()), 1000);
-  x7.nothingLeftMs = left.value ? Date.now() - tQuit : null;
+  const left = await waitFor('no process of the install after the harness ended the app', async () => ((await underS()).length === 0 ? true : null), 30_000, 500);
+  x7.nothingLeftAfterTheHarnessEndedTheAppMs = left.value ? Date.now() - tKill7 : null;
   x7.left = (await underS()).map((p) => `${p.Name} ${p.ProcessId}`);
   const tl7 = timelineOnDisk();
   const quitAt = tl7.lastIndexOf(QUIT_LINE);
@@ -949,8 +964,10 @@ async function runApp(r) {
   x7.discord = messagesSince(tQuit - 1000).filter((m) => m.includes('Quitting'));
   Object.assign(c, {
     'A7.quitAnswersOk': x7.quit.status === 200 && x7.quit.json?.ok === true,
-    'A7.nothingLeftWithin60s': left.value === true && x7.nothingLeftMs <= 60_000,
-    'A7.timelineEndsOnTheQuitLine': quitAt >= 0 && x7.timelineFromTheQuitLine.slice(1).every((m) => m === SUPERVISOR_SHUT_DOWN),
+    'A7.appAliveWhenThePortClosed': closed.value === true && appsAtClose.length === 1,
+    'A7.allButTheAppGoneWithin60s': othersGone.value === true && x7.allButTheAppGoneMs <= 60_000,
+    'A7.nothingLeftAfterTheHarnessEndedTheApp': left.value === true && x7.appsEndedByTheHarness.length === 1,
+    'A7.timelineEndsOnTheQuitLine': endsOnTheQuitLine(tl7, QUIT_LINE, SUPERVISOR_SHUT_DOWN),
     'A7.discordGotTheQuitLine': x7.discord.includes(`Recovery action: **${QUIT_LINE}**`),
     'A7.noStoppedMarker': x7.stoppedMarker === false,
   });
@@ -979,7 +996,7 @@ async function runApp(r) {
     A2: a.A2.skipped ? 'skipped' : { secondExitS: a.A2.secondExitMs / 1000, inFrontS: a.A2.inFrontMs / 1000 },
     A11: { crashToApiS: x11.crashToApiMs / 1000, appStartedAfterKillS: x11.inWait.startedAfterKillMs / 1000 },
     A10: x10.skipped ? 'skipped' : { startToLiveS: x10.startToLiveMs / 1000 },
-    A7: { portClosedS: x7.portClosedMs / 1000, nothingLeftS: x7.nothingLeftMs / 1000 },
+    A7: { portClosedS: x7.portClosedMs / 1000, allButTheAppGoneS: x7.allButTheAppGoneMs / 1000, nothingLeftAfterTheHarnessEndedTheAppS: x7.nothingLeftAfterTheHarnessEndedTheAppMs / 1000 },
     A8: { startToLiveS: x8.startToLiveMs / 1000 },
   };
   r.checks = c;

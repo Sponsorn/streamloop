@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   parseProcessCensus, installCensus, parseWindowCensus, windowsOf, fullScreenApp, foregroundGate, runCommandParts, verdictOf, SKIPPED,
+  opensItsWindow, cameToTheFront, endsOnTheQuitLine,
 } from './install-kit.mjs';
 
 const ROOT = 'C:\\Users\\anton\\AppData\\Local\\Temp\\sl3 install Ö\\streamloop';
@@ -277,5 +278,75 @@ describe('verdictOf', () => {
     expect(verdictOf({ a: true }, { stopped: true }).verdict).toBe('FAIL');
     expect(verdictOf({ a: true }, { cleanupOk: false }).verdict).toBe('FAIL');
     expect(verdictOf(undefined).verdict).toBe('FAIL');
+  });
+});
+
+describe('opensItsWindow', () => {
+  const game = { name: 'Wow', fullScreen: true };
+  const desk = { name: 'claude', fullScreen: false };
+
+  test('opens the window when the gate was clear and nothing full-screen is in front now', () => {
+    // Act + Assert
+    expect(opensItsWindow(true, desk)).toBe(true);
+    expect(opensItsWindow(true, null)).toBe(true);
+  });
+
+  test('keeps the window closed when a full-screen app came to the front after the gate', () => {
+    // Act + Assert
+    expect(opensItsWindow(true, game)).toBe(false);
+  });
+
+  test('keeps the window closed when the gate skipped it', () => {
+    // Act + Assert
+    expect(opensItsWindow(false, desk)).toBe(false);
+  });
+});
+
+describe('cameToTheFront', () => {
+  test('passes when the app was not in front before and its window is after', () => {
+    // Act + Assert
+    expect(cameToTheFront({ pid: 7, name: 'claude' }, { pid: 42, name: 'streamloop' }, 42)).toBe(true);
+    expect(cameToTheFront(null, { pid: 42, name: 'streamloop' }, 42)).toBe(true);
+  });
+
+  test('does not count a window that was in front already', () => {
+    // Act + Assert
+    expect(cameToTheFront({ pid: 42 }, { pid: 42 }, 42)).toBe(false);
+  });
+
+  test('fails when another window is in front after', () => {
+    // Act + Assert
+    expect(cameToTheFront({ pid: 7 }, { pid: 7 }, 42)).toBe(false);
+    expect(cameToTheFront({ pid: 7 }, null, 42)).toBe(false);
+  });
+});
+
+describe('endsOnTheQuitLine', () => {
+  const Q = 'Quitting StreamLoop. The stream goes off air.';
+  const S = 'Supervisor shut down';
+
+  test('passes the quit line alone at the end, or followed by one exit report of the supervisor', () => {
+    // Act + Assert
+    expect(endsOnTheQuitLine(['Live', Q], Q, S)).toBe(true);
+    expect(endsOnTheQuitLine(['Live', Q, S], Q, S)).toBe(true);
+  });
+
+  test('fails a second exit report or any other line after the quit line', () => {
+    // Act + Assert
+    expect(endsOnTheQuitLine([Q, S, S], Q, S)).toBe(false);
+    expect(endsOnTheQuitLine([Q, 'Supervisor started'], Q, S)).toBe(false);
+    expect(endsOnTheQuitLine([Q, S, 'Live'], Q, S)).toBe(false);
+  });
+
+  test('reads from the last quit line, so an earlier quit does not count', () => {
+    // Act + Assert
+    expect(endsOnTheQuitLine([Q, S, 'Live', 'Paused'], Q, S)).toBe(false);
+    expect(endsOnTheQuitLine([Q, S, 'Live', Q, S], Q, S)).toBe(true);
+  });
+
+  test('fails a timeline without the quit line', () => {
+    // Act + Assert
+    expect(endsOnTheQuitLine(['Live', S], Q, S)).toBe(false);
+    expect(endsOnTheQuitLine([], Q, S)).toBe(false);
   });
 });

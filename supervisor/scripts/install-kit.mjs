@@ -410,6 +410,21 @@ export function verdictOf(checks, { stopped = false, cleanupOk = true } = {}) {
   return { verdict, failedChecks, skippedChecks };
 }
 
+/** Whether an app may start with its window: its gate was clear and no full-screen app is in front at this moment,
+ *  since a gate taken before an install is half a minute old by the time the app starts. */
+export const opensItsWindow = (gateClear, foregroundNow) => gateClear === true && foregroundNow?.fullScreen !== true;
+
+/** Whether the app's window came to the front: another window (or none) was there before, and the app's is after. */
+export const cameToTheFront = (before, after, pid) => before?.pid !== pid && after?.pid === pid;
+
+/** Whether the timeline ends on the last `quitLine`, followed by at most one `exitReport` (the supervisor's own). */
+export function endsOnTheQuitLine(lines, quitLine, exitReport) {
+  const at = lines.lastIndexOf(quitLine);
+  if (at < 0) return false;
+  const after = lines.slice(at + 1);
+  return after.length === 0 || (after.length === 1 && after[0] === exitReport);
+}
+
 /** The environment Explorer would give the app: no STREAMLOOP_START (which would make it the control process) and
  *  no STREAMLOOP_FROM_APP. */
 export function explorerEnv(extra = {}) {
