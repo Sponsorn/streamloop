@@ -11,7 +11,7 @@ use tokio::sync::watch;
 
 use crate::clock::Clock;
 use crate::runner::{RunSpec, Runner};
-use crate::ytdlp_update::run_checked;
+use crate::ytdlp_update::run_ytdlp;
 
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 /// A failed fetch is not retried for 5 min, so the dashboard cannot hammer YouTube outside the supervisor's gate.
@@ -160,7 +160,7 @@ impl PlaylistCache {
             timeout: YTDLP_TIMEOUT,
             env: Vec::new(),
         };
-        let out = run_checked(self.runner.as_ref(), spec).await?;
+        let out = run_ytdlp(self.runner.as_ref(), &self.ytdlp, spec).await?;
         let videos = parse_videos(&out.stdout_text());
         let fetched_at = self.clock.now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         tracing::info!(playlist_id = id, video_count = videos.len(), "Playlist metadata cached");
@@ -263,6 +263,24 @@ mod tests {
         cache.fetch("PLx").await.unwrap();
         // Assert
         assert_eq!(runner.calls()[0].program, dir.path().join("yt-dlp-2026.11.24.exe").to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn a_fetch_unpacks_yt_dlp_into_its_own_temp_folder_and_leaves_none() {
+        // Arrange
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("yt-dlp.exe"), "").unwrap();
+        let runner = Arc::new(FakeRunner::new());
+        runner.push(Ok(RunOutput::ok("abc123\tVideo One\t120\n")));
+        let clock = Arc::new(TestClock::new(UNIX_EPOCH + Duration::from_secs(1_000_000)));
+        let cache = PlaylistCache::new(runner.clone(), dir.path().join("yt-dlp.exe"), String::new(), clock);
+        // Act
+        cache.fetch("PLx").await.unwrap();
+        // Assert
+        let env = &runner.calls()[0].env;
+        let temp = dir.path().join("temp");
+        assert!(env.iter().any(|(k, v)| k == "TMP" && std::path::Path::new(v).starts_with(&temp)), "{env:?}");
+        assert!(!temp.exists(), "the run's temp folder was left behind");
     }
 
     #[test]
