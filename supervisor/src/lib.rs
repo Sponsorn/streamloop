@@ -2,6 +2,7 @@
 //! the API, downloader, resolves, pumps and encoder progress reach it over one channel.
 
 mod api;
+mod cache_info;
 mod config;
 mod launch;
 pub use launch::retry_without_breakaway;
@@ -286,7 +287,10 @@ pub enum Msg {
     /// `percent`, `speed_bps` and `eta_s` are of the stream coming in, `part` of `parts`.
     DlProgress { index: usize, percent: f64, speed_bps: Option<f64>, eta_s: Option<u64>, part: u32, parts: u32 },
     /// `format`: yt-dlp's format ids, `137+140` for video and audio merged.
-    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String, used_token: bool, format: String },
+    /// `info`: the finished file's streams, read with ffmpeg.
+    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String, used_token: bool, format: String, info: Option<cache_info::FileInfo> },
+    /// The streams of a file adopted at start, read with ffmpeg.
+    Probed { id: String, info: Option<cache_info::FileInfo> },
     /// An ingest probe's answer; `outage` names the encoder outage it was sent for.
     Ingest { outage: u64, up: bool },
 }
@@ -541,6 +545,8 @@ struct Ctl {
     downloading: Option<(usize, f64, Arc<AtomicBool>)>,
     /// The running download's speed, time left and part, from its progress lines.
     dl_track: ytdlp::DownloadTrack,
+    /// What each cached file is (`data\cache.json`).
+    records: cache_info::Records,
     sizing: bool,
     dl_after: Instant,
     token: Arc<Mutex<TokenState>>,
@@ -605,6 +611,7 @@ impl Ctl {
     #[allow(clippy::too_many_arguments)]
     fn new(args: Args, settings: Settings, logs: Logs, tx: Sender<Msg>, shared: Arc<Shared>, yt: Arc<Ytdlp>, cache: PathBuf, jobs_tx: Sender<Job>, token: Arc<Mutex<TokenState>>, snapshot: api::Snapshot) -> Ctl {
         let now = Instant::now();
+        let records = cache_info::Records::load(args.paths.data.join("cache.json"));
         Ctl {
             snapshot,
             deadline: args.dev.hours.map(|h| now + Duration::from_secs_f64(h * 3600.0)),
@@ -648,6 +655,7 @@ impl Ctl {
             jobs: jobs_tx,
             downloading: None,
             dl_track: ytdlp::DownloadTrack::default(),
+            records,
             sizing: false,
             dl_after: now,
             token,
@@ -1656,7 +1664,13 @@ impl Ctl {
                     (self.dl_track.part, self.dl_track.parts) = (part, parts);
                 }
             }
-            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client, used_token, format: _ } => {
+            Msg::Probed { id, info } => {
+                if let Some(info) = info {
+                    self.records.set_info(&id, info);
+                    self.save_records();
+                }
+            }
+            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client, used_token, format, info } => {
                 self.downloading = None;
                 if !cancelled {
                     self.breaker_result(ok, rules::is_bot_check(&reason), false, false, &reason);
@@ -1734,8 +1748,18 @@ impl Ctl {
                         });
                     }
                 }
+                let (format_cell, resolution) = match (result, &info) {
+                    ("done", Some(i)) => (format.clone(), i.width.zip(i.height).map(|(w, h)| format!("{w}x{h}")).unwrap_or_default()),
+                    ("done", None) => (format.clone(), String::new()),
+                    _ => (String::new(), String::new()),
+                };
+                if result == "done" {
+                    let record = cache_info::Record { info, format: Some(format).filter(|f| !f.is_empty()), client: Some(client.clone()), finished_at: Some(iso_now()) };
+                    self.records.set(&id, record);
+                    self.save_records();
+                }
                 let attempt = self.videos[index].dl_attempts;
-                self.logs.csv("downloads", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason, client]);
+                self.logs.csv("downloads", &[iso_now(), self.id(index), result.into(), attempt.to_string(), bytes.to_string(), ms.to_string(), reason, client, format_cell, resolution]);
             }
         }
     }
@@ -2250,6 +2274,27 @@ impl Ctl {
 
 
     /// Build outside the lock, then swap, so the API thread never waits on status building.
+    /// Writes the records of the files still on disk or adopted, and drops the rest.
+    fn save_records(&mut self) {
+        let keep: HashSet<String> = self.videos.iter().filter(|v| v.on_disk).map(|v| v.entry.id.clone()).chain(self.kept.keys().cloned()).collect();
+        self.records.save(|id| keep.contains(id));
+    }
+
+    /// Files adopted at start with no streams on record (a 3.1 download) are read with ffmpeg, off the control loop.
+    fn probe_kept(&self) {
+        let missing: Vec<String> = self.kept.keys().filter(|id| self.records.get(id).is_none_or(|r| r.info.is_none())).cloned().collect();
+        if missing.is_empty() {
+            return;
+        }
+        let (tx, ffmpeg, cache) = (self.tx.clone(), self.args.paths.ffmpeg.clone(), self.cache.clone());
+        std::thread::spawn(move || {
+            for id in missing {
+                let info = cache_info::probe(&ffmpeg, &cache.join(format!("{id}.mp4")));
+                let _ = tx.send(Msg::Probed { id, info });
+            }
+        });
+    }
+
     fn publish_status(&self) {
         let v = self.status();
         *self.snapshot.lock().unwrap() = v;
@@ -2472,7 +2517,7 @@ fn saved_playlist(text: &str, id: &str) -> Option<Vec<Entry>> {
     (!entries.is_empty()).then_some(entries)
 }
 
-fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, cache: PathBuf) {
+fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, cache: PathBuf, ffmpeg: PathBuf) {
     for job in jobs {
         match job {
             Job::Size(index, id) => {
@@ -2504,9 +2549,10 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                     }
                 }
                 let bytes = if ok { std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) } else { 0 };
+                let info = if ok { cache_info::probe(&ffmpeg, &file) } else { None };
                 let reason = if ok || out.cancelled { String::new() } else { ytdlp::describe_error(&out.stderr, None) };
                 let used_token = out.stdout.contains("[pot");
-                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client, used_token, format: track.format });
+                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client, used_token, format: track.format, info });
             }
         }
     }
@@ -2794,12 +2840,13 @@ pub fn run(argv: Vec<String>) -> i32 {
         std::thread::spawn(move || token_watchdog(t, p, port, l));
     }
     {
-        let (yt, l, tx, c) = (yt.clone(), logs.clone(), tx.clone(), cache.clone());
-        std::thread::spawn(move || downloader(jobs_rx, yt, l, tx, c));
+        let (yt, l, tx, c, f) = (yt.clone(), logs.clone(), tx.clone(), cache.clone(), args.paths.ffmpeg.clone());
+        std::thread::spawn(move || downloader(jobs_rx, yt, l, tx, c, f));
     }
 
     let mut ctl = Ctl::new(args, settings, logs, tx, shared, yt, cache, jobs_tx, token, snapshot);
     ctl.kept = kept;
+    ctl.probe_kept();
     if let Some(list) = ctl.start_list() {
         ctl.settings.playlist_id = list;
     }
@@ -3341,7 +3388,7 @@ mod tests {
         let mut ctl = test_ctl("dl-failed", &["a", "b", "c", "d"]);
         let fail = |ctl: &mut Ctl, index: usize, id: &str| {
             for _ in 0..2 {
-                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new(), used_token: false, format: String::new() });
+                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new(), used_token: false, format: String::new(), info: None });
             }
         };
 
@@ -3400,7 +3447,7 @@ mod tests {
         ctl.cache_work();
         assert!(ctl.downloading.as_ref().is_some_and(|d| d.2.load(Ordering::Relaxed)), "the download past it was not cancelled");
         let id = ctl.id(after);
-        ctl.handle(Msg::Downloaded { index: after, id, ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: String::new() });
+        ctl.handle(Msg::Downloaded { index: after, id, ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: String::new(), info: None });
         ctl.last_resolve = None;
         ctl.cache_work();
 
@@ -3438,14 +3485,14 @@ mod tests {
         assert!(ctl.token_cleared_at.is_some(), "two token refusals did not clear the token server's caches");
         assert_eq!(ctl.token_refusals, 1, "round 3's refusal counts toward the next clear");
         let csv = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("downloads-")).unwrap();
-        let clients: Vec<String> = std::fs::read_to_string(csv.path()).unwrap().lines().map(|l| l.rsplit(',').next().unwrap().to_string()).collect();
+        let clients: Vec<String> = std::fs::read_to_string(csv.path()).unwrap().lines().map(|l| l.split(',').nth(7).unwrap().to_string()).collect();
         assert_eq!(clients[..2], ["mweb", "web_embedded"], "each row names the client it tried");
     }
 
     /// One round in which each client answers but offers nothing from 720p up.
     fn no_hd_round(ctl: &mut Ctl, index: usize) {
         for client in ["mweb", "web_embedded"] {
-            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: [youtube] b: Requested format is not available. Use --list-formats for a list of available formats".into(), client: client.into(), used_token: false, format: String::new() });
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: [youtube] b: Requested format is not available. Use --list-formats for a list of available formats".into(), client: client.into(), used_token: false, format: String::new(), info: None });
         }
     }
 
@@ -3476,7 +3523,7 @@ mod tests {
 
         // Act
         let id = ctl.id(ahead);
-        ctl.handle(Msg::Downloaded { index: ahead, id, ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: String::new() });
+        ctl.handle(Msg::Downloaded { index: ahead, id, ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: String::new(), info: None });
 
         // Assert
         assert!(events(&ctl).contains(&("warn".into(), "download-low-quality".into())), "{:?}", events(&ctl));
@@ -3529,7 +3576,7 @@ mod tests {
     fn fail_round(ctl: &mut Ctl, index: usize) {
         for client in ["mweb", "web_embedded"] {
             assert!(ctl.videos[index].dl_attempts < 2);
-            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into(), used_token: client == "mweb", format: String::new() });
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into(), used_token: client == "mweb", format: String::new(), info: None });
         }
     }
 
@@ -4959,6 +5006,52 @@ mod tests {
         assert_eq!(ctl.dl_track.progress.and_then(|p| p.speed_bps), Some(1e6));
         assert_eq!(ctl.dl_track.progress.and_then(|p| p.eta_s), Some(60));
         assert_eq!((ctl.dl_track.part, ctl.dl_track.parts), (1, 2));
+    }
+
+    /// Today's rows of the daily CSV `base`.
+    fn csv_rows(ctl: &Ctl, base: &str) -> Vec<String> {
+        let file = std::fs::read_dir(&ctl.logs.dir).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with(&format!("{base}-")));
+        file.map_or(String::new(), |f| std::fs::read_to_string(f.path()).unwrap()).lines().map(String::from).collect()
+    }
+
+    fn hd_info() -> cache_info::FileInfo {
+        cache_info::FileInfo { width: Some(1920), height: Some(1080), fps: Some(30.0), vcodec: Some("h264".into()), acodec: Some("aac".into()) }
+    }
+
+    #[test]
+    fn a_finished_download_records_its_format_client_and_resolution() {
+        let mut ctl = test_ctl("dl-record", &["a", "b"]);
+
+        ctl.handle(Msg::Downloaded { index: 1, id: "b".into(), ok: true, cancelled: false, bytes: 100, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: "137+140".into(), info: Some(hd_info()) });
+
+        let r = ctl.records.get("b").expect("the download left no record");
+        assert_eq!((r.format.as_deref(), r.client.as_deref(), r.info.as_ref().and_then(|i| i.height)), (Some("137+140"), Some("mweb"), Some(1080)));
+        assert!(r.finished_at.is_some(), "no finish time");
+        let row = csv_rows(&ctl, "downloads").pop().unwrap();
+        assert!(row.ends_with(",done,0,100,10,,mweb,137+140,1920x1080"), "{row}");
+        assert!(cache_info::Records::load(ctl.args.paths.data.join("cache.json")).get("b").is_some(), "the record was not saved");
+    }
+
+    #[test]
+    fn a_failed_download_writes_empty_format_and_resolution_cells() {
+        let mut ctl = test_ctl("dl-record-failed", &["a", "b"]);
+
+        ctl.handle(Msg::Downloaded { index: 1, id: "b".into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: x".into(), client: "mweb".into(), used_token: false, format: "137+140".into(), info: None });
+
+        let row = csv_rows(&ctl, "downloads").pop().unwrap();
+        assert!(row.ends_with(",ERROR: x,mweb,,"), "{row}");
+        assert_eq!(ctl.records.get("b"), None);
+    }
+
+    #[test]
+    fn a_probe_of_an_adopted_file_fills_in_its_record() {
+        let mut ctl = test_ctl("probe-adopted", &["a"]);
+        ctl.kept.insert("zz".into(), 5);
+
+        ctl.handle(Msg::Probed { id: "zz".into(), info: Some(hd_info()) });
+
+        let r = ctl.records.get("zz").expect("the probe left no record");
+        assert_eq!((r.info.as_ref().and_then(|i| i.height), r.client.as_deref()), (Some(1080), None));
     }
 
     /// What the control process would send back after reading `v` through the shared types.
