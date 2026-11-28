@@ -28,6 +28,9 @@ const PORT_TAKEN_WINDOW: Duration = Duration::from_secs(5);
 const DRAIN_LIMIT: Duration = Duration::from_secs(20);
 /// A supervisor that still has the wrong version after a replacement is left alone this long, so a bad install cannot restart the stream in a loop.
 const VERSION_RESTART_PAUSE: Duration = Duration::from_secs(300);
+/// How long the app's Quit waits for a `launch` helper to exit. The helper waits up to 3 s for the supervisor's
+/// port and 0.3 s more for a refused config.json; the rest is for a slow box starting the helper itself.
+pub const LAUNCH_EXIT_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LauncherState {
@@ -189,6 +192,8 @@ struct Inner {
     guard: tokio::sync::Mutex<Option<LaunchGuard>>,
     /// Counts launch outcomes, with the last one.
     outcomes: watch::Sender<(u64, Option<LaunchOutcome>)>,
+    /// `launch` helpers spawned that have not exited yet.
+    helpers: watch::Sender<u32>,
     state: Mutex<State>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -249,6 +254,7 @@ impl Launcher {
             on_event: opts.on_event,
             guard: tokio::sync::Mutex::new(opts.guard),
             outcomes: watch::Sender::new((0, None)),
+            helpers: watch::Sender::new(0),
             state: Mutex::new(State {
                 running: false,
                 polling: false,
@@ -433,6 +439,14 @@ impl Launcher {
         let mut st = self.inner.state.lock().unwrap();
         st.quitting = true;
         st.launch_once = false;
+    }
+
+    /// Waits up to `limit` until every `launch` helper this launcher spawned has exited; false when one still
+    /// runs. A helper exits once its supervisor answers, or after its own 3 s wait for that.
+    pub async fn wait_for_launch_helpers(&self, limit: Duration) -> bool {
+        let mut helpers = self.inner.helpers.subscribe();
+        let ended = matches!(tokio::time::timeout(limit, helpers.wait_for(|running| *running == 0)).await, Ok(Ok(_)));
+        ended
     }
 
     pub fn last_status(&self) -> Option<SupervisorStatus> {
@@ -658,6 +672,10 @@ impl Inner {
                 return;
             }
             let spawned = self.spawner.spawn(&exe, &args);
+            if spawned.is_ok() {
+                // Under the same lock, so a quit's hold either stops this spawn or sees the helper counted.
+                self.helpers.send_modify(|running| *running += 1);
+            }
             st.spawn_seq += 1;
             st.spawns += 1;
             st.launch_once = false;
@@ -671,6 +689,7 @@ impl Inner {
                 tokio::spawn(async move {
                     let code = handle.exit_code().await;
                     inner.exited(seq, code, spawned_at);
+                    inner.helpers.send_modify(|running| *running = running.saturating_sub(1));
                 });
                 self.emit("supervisor-launched", detail(&[("exe", exe.to_string_lossy().into_owned().into())]));
             }

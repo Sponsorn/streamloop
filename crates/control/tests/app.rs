@@ -24,6 +24,7 @@ use streamloop_control::autostart_store::AutostartStore;
 use streamloop_control::leftovers::remove_3_0_leftovers;
 use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::fake::{Call, FakeSupervisor};
+use streamloop_control::supervisor_client::SupervisorApi;
 use support::captured_logs;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, Semaphore};
@@ -929,6 +930,69 @@ async fn a_quit_asked_twice_runs_once() {
     assert_eq!(code, 0);
     assert_eq!(rig.supervisor_shutdowns(), 1);
     assert_eq!(rig.timeline_on_disk().iter().filter(|m| *m == QUIT_LINE).count(), 1);
+}
+
+/// A `launch` helper whose supervisor starts answering `after` the spawn. The helper exits then, as `launch`
+/// exits once the supervisor's port answers.
+struct LateSupervisor {
+    sup: Arc<FakeSupervisor>,
+    after: Duration,
+    spawned: Mutex<Option<Instant>>,
+}
+
+struct HandsOff(tokio::sync::oneshot::Receiver<()>);
+
+#[async_trait]
+impl SpawnHandle for HandsOff {
+    async fn exit_code(self: Box<Self>) -> Option<i32> {
+        let _ = self.0.await;
+        Some(0)
+    }
+}
+
+impl Spawner for LateSupervisor {
+    fn spawn(&self, _exe: &Path, _args: &[String]) -> std::io::Result<Box<dyn SpawnHandle>> {
+        *self.spawned.lock().unwrap() = Some(Instant::now());
+        let (up, handed_off) = tokio::sync::oneshot::channel();
+        let (sup, after) = (self.sup.clone(), self.after);
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            sup.set_status(Some(playing()));
+            let _ = up.send(());
+        });
+        Ok(Box::new(HandsOff(handed_off)))
+    }
+}
+
+async fn sleep_until(at: Instant) {
+    tokio::time::sleep(at.saturating_duration_since(Instant::now())).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quit_right_after_a_launch_stops_the_supervisor_that_launch_brings_up() {
+    // Arrange: nothing answers, so the launcher launches a supervisor that answers 1 s after the spawn
+    let rig = Rig::new("PLrealplaylist001");
+    rig.sup.set_status(None);
+    rig.sup.stop_answering_on_shutdown();
+    rig.launchable();
+    let spawner = Arc::new(LateSupervisor { sup: rig.sup.clone(), after: Duration::from_secs(1), spawned: Mutex::new(None) });
+    let mut wiring = rig.wiring();
+    wiring.spawner = spawner.clone();
+    let app = App::start(wiring).await.unwrap_or_else(|code| panic!("the control process did not start: exit {code}"));
+    rig.wait_for(RELAUNCH_WITHIN, "the launcher spawns a supervisor", || spawner.spawned.lock().unwrap().is_some()).await;
+    let spawned = spawner.spawned.lock().unwrap().expect("spawned");
+    sleep_until(spawned + Duration::from_millis(100)).await;
+
+    // Act
+    let reply = rig.post("/api/quit", json!({})).await;
+    let code = exit_code(app).await;
+    sleep_until(spawned + Duration::from_millis(1500)).await;
+
+    // Assert
+    assert_eq!(reply.status(), 200);
+    assert_eq!(code, 0);
+    assert_eq!(rig.supervisor_shutdowns(), 1);
+    assert!(rig.sup.status().await.is_none(), "the supervisor that came up after the quit began was stopped before the exit");
 }
 
 #[test]
