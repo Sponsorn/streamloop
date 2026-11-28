@@ -16,6 +16,14 @@ pub const QUIT_TITLE: &str = "Quit StreamLoop?";
 pub const QUIT_DETAIL: &str =
     "The stream stops and StreamLoop closes. Start StreamLoop again to go back on air.";
 pub const QUIT_UNREACHABLE: &str = "StreamLoop is not answering, so the stream may still be on air. Close this window anyway?";
+pub const QUITTING_TITLE: &str = "Quitting StreamLoop...";
+pub const QUITTING_DETAIL: &str = "Stopping the stream. StreamLoop closes when it has stopped.";
+
+/// The Quitting screen's count: the whole seconds since the quit's 200.
+pub fn quitting_count(seconds: u64) -> String {
+    format!("{seconds} s")
+}
+
 /// After a quit the app asks `GET /api/status` this often until it stops answering.
 pub const PORT_POLL_EVERY: Duration = Duration::from_secs(1);
 /// The app ends this long after a quit even when the port still answers.
@@ -52,6 +60,16 @@ impl Global for Quitting {}
 
 fn quitting(cx: &App) -> bool {
     cx.try_global::<Quitting>().is_some_and(|q| q.0)
+}
+
+/// The moment `POST /api/quit` answered 200, for a window that opens during the wait.
+#[derive(Default)]
+struct QuitBegan(Option<i64>);
+
+impl Global for QuitBegan {}
+
+pub(crate) fn quit_began_at(cx: &App) -> Option<i64> {
+    cx.try_global::<QuitBegan>().and_then(|began| began.0)
 }
 
 fn set_quitting(cx: &mut App, on: bool) {
@@ -129,9 +147,14 @@ fn ask(message: &str, detail: Option<&str>, ok: &str, cx: &mut App) -> Option<Ta
         .ok()
 }
 
-/// After a 200: polls `GET /api/status` every 1 s until it stops answering, at most 60 s, then quits the app.
+/// After a 200: shows the Quitting screen, polls `GET /api/status` every 1 s until it stops answering, at most 60 s, then quits the app.
 pub fn wait_for_the_port_to_close(shell: &Shell, cx: &mut App) {
-    let until = now_ms(cx) + PORT_WAIT_LIMIT.as_millis() as i64;
+    let began = now_ms(cx);
+    let until = began + PORT_WAIT_LIMIT.as_millis() as i64;
+    cx.set_global(QuitBegan(Some(began)));
+    if let Some(view) = main_view(cx) {
+        view.update(cx, |app, cx| app.show_quitting(began, cx));
+    }
     let shell = shell.clone();
     cx.spawn(async move |cx| {
         loop {
@@ -169,11 +192,11 @@ mod tests {
     use super::*;
     use crate::{
         api::fake::FakeApi,
-        app::POLL_EVERY,
+        app::{POLL_EVERY, Screen},
         begin, on_tray_event,
         test_support::{
-            self, StateDir, UPDATE_RUNNING, answer_polls, count, open_shell, record_tray,
-            saving_to, shows,
+            self, StateDir, UPDATE_RUNNING, answer_polls, app_view, close, count, open_shell,
+            record_tray, saving_to, shows,
         },
         tray::TrayEvent,
         window_state,
@@ -343,6 +366,83 @@ mod tests {
             window_state::load(&dir.file()).width.is_some(),
             "the window state was saved"
         );
+    }
+
+    #[gpui::test]
+    fn after_quits_200_the_window_shows_quitting_with_a_count_in_seconds(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        quit_answers(&fake, Ok(json!({ "ok": true })));
+        let shell = test_support::shell(fake.clone());
+        record_tray(&shell);
+        let (app, window) = open_shell(cx, &shell, None);
+        quit_from_the_tray(cx, &shell);
+
+        // Act
+        answer(cx, "Quit");
+        let at_0 = (
+            shows(cx, window, QUITTING_TITLE),
+            shows(cx, window, QUITTING_DETAIL),
+            shows(cx, window, "0 s"),
+            app.read_with(cx, |app, _| app.screen()),
+        );
+        cx.executor().advance_clock(Duration::from_secs(3));
+        let at_3 = shows(cx, window, "3 s");
+
+        // Assert
+        assert_eq!(at_0, (true, true, true, Screen::Quitting));
+        assert!(at_3, "the count goes up while the port still answers");
+    }
+
+    #[gpui::test]
+    fn a_window_opened_during_the_quit_shows_quitting_counted_from_the_200(cx: &mut TestAppContext) {
+        // Arrange: Quit answered 200, then the window closed to the tray
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        quit_answers(&fake, Ok(json!({ "ok": true })));
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+        let (_, window) = open_shell(cx, &shell, None);
+        quit_from_the_tray(cx, &shell);
+        answer(cx, "Quit");
+        cx.executor().advance_clock(Duration::from_secs(4));
+        close(cx, window);
+        cx.executor().advance_clock(Duration::from_secs(2));
+
+        // Act: the tray's Open
+        cx.update(|cx| on_tray_event(TrayEvent::Open, cx, &shell));
+        cx.run_until_parked();
+        let reopened = cx.windows()[0];
+
+        // Assert
+        assert!(!tray.borrow().dropped, "the app still waits");
+        assert!(shows(cx, reopened, QUITTING_TITLE));
+        assert!(shows(cx, reopened, "6 s"), "counted from the 200, not from the open");
+        assert_eq!(app_view(cx, reopened).read_with(cx, |app, _| app.screen()), Screen::Quitting);
+    }
+
+    #[gpui::test]
+    fn a_refused_quit_and_a_cancelled_one_show_no_quitting_screen(cx: &mut TestAppContext) {
+        // Arrange
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        quit_answers(&fake, Err(ApiError::Server(UPDATE_RUNNING.into())));
+        let shell = test_support::shell(fake.clone());
+        let (app, window) = open_shell(cx, &shell, None);
+
+        // Act
+        quit_from_the_tray(cx, &shell);
+        answer(cx, "Cancel");
+        let after_cancel = shows(cx, window, QUITTING_TITLE);
+        quit_from_the_tray(cx, &shell);
+        answer(cx, "Quit");
+        let after_409 = shows(cx, window, QUITTING_TITLE);
+
+        // Assert
+        assert!(!after_cancel);
+        assert!(!after_409);
+        assert_eq!(app.read_with(cx, |app, _| app.screen()), Screen::Dashboard);
     }
 
     #[gpui::test]

@@ -19,6 +19,7 @@ use crate::{
     dashboard::DashboardView,
     follow,
     logic::status_line,
+    quit::{QUITTING_DETAIL, QUITTING_TITLE, quit_began_at, quitting_count},
     start::{self, Connecting, HINT_AFTER, StartedBat},
     theme::{
         BG, ERROR_TEXT, FONT, GREEN, MUTED, TEXT, TOAST_ERROR_BG, TOAST_ERROR_BORDER,
@@ -58,6 +59,7 @@ pub enum Screen {
     Connecting,
     Wizard,
     Dashboard,
+    Quitting,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +135,10 @@ enum Body {
     Connecting,
     Wizard(Entity<WizardView>),
     Dashboard(Entity<DashboardView>),
+    /// A quit is under way; `since_ms` is the moment of `POST /api/quit`'s 200.
+    Quitting {
+        since_ms: i64,
+    },
 }
 
 struct Toast {
@@ -164,6 +170,8 @@ pub struct AppView {
     _connecting: Option<Task<()>>,
     _polling: Option<Task<()>>,
     _poll_once: Option<Task<()>>,
+    /// Redraws the Quitting screen's seconds count.
+    _quit_tick: Option<Task<()>>,
 }
 
 impl AppView {
@@ -205,8 +213,13 @@ impl AppView {
             _connecting: None,
             _polling: None,
             _poll_once: None,
+            _quit_tick: None,
         };
-        view.connect(cx);
+        // A window opened during a quit shows the quit, counted from its 200.
+        match quit_began_at(cx) {
+            Some(since_ms) => view.show_quitting(since_ms, cx),
+            None => view.connect(cx),
+        }
         view
     }
 
@@ -219,6 +232,7 @@ impl AppView {
             Body::Connecting => Screen::Connecting,
             Body::Wizard(_) => Screen::Wizard,
             Body::Dashboard(_) => Screen::Dashboard,
+            Body::Quitting { .. } => Screen::Quitting,
         }
     }
 
@@ -317,6 +331,22 @@ impl AppView {
         self.set_body(Body::Wizard(wizard), cx);
     }
 
+    /// Replaces whatever shows with the Quitting screen, whose count runs from `since_ms`. Nothing replaces it
+    /// afterwards: the app ends.
+    pub fn show_quitting(&mut self, since_ms: i64, cx: &mut Context<Self>) {
+        self.set_body(Body::Quitting { since_ms }, cx);
+        self._connecting = None;
+        self._hint_due = None;
+        self._quit_tick = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
     /// Shows Connecting and tries `GET /api/status` every 2 s until it answers.
     fn connect(&mut self, cx: &mut Context<Self>) {
         self.set_body(Body::Connecting, cx);
@@ -376,6 +406,9 @@ impl AppView {
 
     /// Replaces the screen and stops the old one's polling.
     fn set_body(&mut self, body: Body, cx: &mut Context<Self>) {
+        if matches!(self.body, Body::Quitting { .. }) {
+            return;
+        }
         self.body = body;
         self._polling = None;
         self._poll_once = None;
@@ -528,12 +561,34 @@ fn connecting(state: &Connecting) -> impl IntoElement {
         )
 }
 
+fn quitting(since_ms: i64, now_ms: i64) -> impl IntoElement {
+    let seconds = (now_ms - since_ms).max(0) as u64 / 1000;
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_4()
+        .p_4()
+        .text_center()
+        .child(
+            Label::new(QUITTING_TITLE)
+                .text_size(px(28.))
+                .line_height(relative(PAGE_LINE_HEIGHT))
+                .font_weight(FontWeight::SEMIBOLD),
+        )
+        .child(Label::new(QUITTING_DETAIL))
+        .child(Label::new(quitting_count(seconds)).text_color(rgb(MUTED)))
+}
+
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match &self.body {
             Body::Connecting => connecting(&self.connecting_state(cx)).into_any_element(),
             Body::Wizard(view) => view.clone().into_any_element(),
             Body::Dashboard(view) => view.clone().into_any_element(),
+            Body::Quitting { since_ms } => quitting(*since_ms, now_ms(cx)).into_any_element(),
         };
         div()
             .track_focus(&self.focus)
