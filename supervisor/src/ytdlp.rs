@@ -7,7 +7,8 @@ use std::net::TcpStream;
 use streamloop_common::paths::{Layout as Paths, TokenServer};
 use streamloop_common::playlist::{parse_playlist, PRINT_TEMPLATE};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
+use streamloop_common::ytdlp_temp::RunTemp;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -125,10 +126,22 @@ impl Ytdlp {
         streamloop_common::paths::ytdlp_to_run(&self.exe)
     }
 
+    /// yt-dlp with its arguments, and the run's own temp folder, which goes when it drops.
+    fn command_for(&self, client: Option<&str>, args: &[String]) -> (Command, Option<RunTemp>) {
+        let temp = RunTemp::new(&self.exe, "supervisor");
+        let mut c = command(self.exe());
+        c.env("PYTHONIOENCODING", "utf-8").args(self.base(client)).args(args);
+        if let Some(temp) = &temp {
+            c.envs(temp.env());
+        }
+        (c, temp)
+    }
+
     /// Run yt-dlp; stdout lines go to `on_line`, `[pot` lines and all stderr to ytdlp.log.
     /// `cancel` or `timeout` kill the whole tree.
     pub fn run(&self, client: Option<&str>, args: &[String], logs: &Logs, cancel: &AtomicBool, timeout: Duration, pid: impl FnOnce(u32), mut on_line: impl FnMut(&str)) -> Output {
-        let mut child = match command(self.exe()).env("PYTHONIOENCODING", "utf-8").args(self.base(client)).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        let (mut c, _temp) = self.command_for(client, args);
+        let mut child = match c.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => return Output { ok: false, stdout: String::new(), stderr: format!("spawn failed: {e}"), cancelled: false },
         };
@@ -557,6 +570,27 @@ mod tests {
 
         // Assert
         assert_eq!(exe, root.join("yt-dlp").join("yt-dlp-2026.11.24.exe"));
+    }
+
+    #[test]
+    fn a_run_unpacks_yt_dlp_into_a_supervisor_folder_of_its_own() {
+        // Arrange
+        let root = tempfile::Builder::new().prefix("sl-ytdlp-temp-").tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("yt-dlp")).unwrap();
+        std::fs::write(root.path().join("yt-dlp").join("yt-dlp.exe"), "").unwrap();
+        let yt = Ytdlp::new(&Paths::new(root.path()), "mweb", None, 4416);
+
+        // Act
+        let (cmd, temp) = yt.command_for(None, &[]);
+
+        // Assert
+        let env = |k: &str| cmd.get_envs().find(|(name, _)| name.to_str() == Some(k)).and_then(|(_, v)| v).map(PathBuf::from);
+        let tmp = env("TMP").expect("yt-dlp gets no TMP of its own");
+        assert_eq!(env("TEMP").as_ref(), Some(&tmp));
+        assert_eq!(tmp.parent(), Some(root.path().join("yt-dlp").join("temp").as_path()));
+        assert!(tmp.is_dir() && tmp.file_name().unwrap().to_string_lossy().starts_with("supervisor-"), "{}", tmp.display());
+        drop(temp);
+        assert!(!tmp.exists(), "{} was left behind", tmp.display());
     }
 
     #[test]

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use streamloop_common::paths;
+use streamloop_common::ytdlp_temp::RunTemp;
 
 use crate::runner::{RunOutput, RunSpec, Runner};
 
@@ -37,6 +38,15 @@ pub(crate) async fn run_checked(runner: &dyn Runner, spec: RunSpec) -> Result<Ru
     }
 }
 
+/// `run_checked` for yt-dlp, which unpacks into a folder of its own beside `base`, gone when the run ends.
+pub(crate) async fn run_ytdlp(runner: &dyn Runner, base: &Path, mut spec: RunSpec) -> Result<RunOutput, String> {
+    let temp = RunTemp::new(base, "control");
+    if let Some(temp) = &temp {
+        spec.env.extend(temp.env());
+    }
+    run_checked(runner, spec).await
+}
+
 /// Copies past the newest two are removed: a run may have picked the second newest just before the newest appeared.
 const COPIES_KEPT: usize = 2;
 
@@ -67,10 +77,10 @@ pub async fn update_ytdlp(runner: &dyn Runner, base: &Path) -> YtdlpUpdate {
 
 async fn update_copy(runner: &dyn Runner, base: &Path, work: &Path) -> YtdlpUpdate {
     let program = work.to_string_lossy();
-    if let Err(e) = run_checked(runner, RunSpec::new(&program, &["-U"], UPDATE_TIMEOUT)).await {
+    if let Err(e) = run_ytdlp(runner, base, RunSpec::new(&program, &["-U"], UPDATE_TIMEOUT)).await {
         return YtdlpUpdate::failed(e);
     }
-    let version = match run_checked(runner, RunSpec::new(&program, &["--version"], VERSION_TIMEOUT)).await {
+    let version = match run_ytdlp(runner, base, RunSpec::new(&program, &["--version"], VERSION_TIMEOUT)).await {
         Ok(out) => out.stdout_text().trim().to_string(),
         Err(e) => return YtdlpUpdate::failed(e),
     };
@@ -285,6 +295,25 @@ mod tests {
         let due: Vec<bool> = ["youtube-breaker-closed", "youtube-probe", "resolve-failed", "download-failed"].iter().map(|k| updates.due(k, at(1_000))).collect();
         // Assert
         assert_eq!(due, [false; 4]);
+    }
+
+    #[tokio::test]
+    async fn each_update_run_unpacks_into_its_own_temp_folder_and_leaves_none() {
+        // Arrange
+        let (dir, base) = install(&["yt-dlp.exe"]);
+        let runner = FakeRunner::new();
+        updated_to(&runner, "2026.11.24");
+        // Act
+        update_ytdlp(&runner, &base).await;
+        // Assert
+        let temp = dir.path().join("temp");
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+        for call in calls {
+            let tmp: Vec<&str> = ["TMP", "TEMP"].iter().filter_map(|k| call.env.iter().find(|(name, _)| name == k).map(|(_, v)| v.as_str())).collect();
+            assert!(tmp.len() == 2 && tmp[0] == tmp[1] && Path::new(tmp[0]).starts_with(&temp), "{:?}", call.env);
+        }
+        assert!(!temp.exists(), "the runs' temp folders were left behind");
     }
 
     #[tokio::test]
