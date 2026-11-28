@@ -30,8 +30,8 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
             // One thread per request: a slow body or a request waiting on the loop must not delay GET /status.
             let (tx, snapshot) = (tx.clone(), snapshot.clone());
             std::thread::spawn(move || {
-                // Refused before this thread reads the body, but dropping the request after the 403 makes tiny_http
-                // read the rest of the body and throw it away, into a buffer the size of what is left of it.
+                // Refused before this thread reads the body. After the 403, the patched vendor/tiny_http discards at
+                // most 64 KiB of it and closes the connection on a larger body unread.
                 let header = |name: &'static str| req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string());
                 if local_only::refused(header("Host").as_deref(), header("Origin").as_deref(), port) {
                     respond(req, 403, json!({"error": local_only::REFUSED}));
@@ -110,7 +110,9 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
     use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
 
     fn get_status(port: u16) -> (String, Duration) {
@@ -288,6 +290,63 @@ mod tests {
 
         // Assert
         assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 403"));
+    }
+
+    /// The largest single allocation this test binary has made, counted from 1 MiB up.
+    static LARGEST_ALLOC: AtomicUsize = AtomicUsize::new(0);
+
+    struct Tracking;
+
+    fn note(size: usize) {
+        if size >= 1 << 20 {
+            LARGEST_ALLOC.fetch_max(size, Ordering::Relaxed);
+        }
+    }
+
+    unsafe impl GlobalAlloc for Tracking {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            note(layout.size());
+            System.alloc(layout)
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            note(layout.size());
+            System.alloc_zeroed(layout)
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            note(new_size);
+            System.realloc(ptr, layout, new_size)
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout)
+        }
+    }
+
+    #[global_allocator]
+    static TRACKING: Tracking = Tracking;
+
+    #[test]
+    fn refuses_a_huge_declared_body_without_reading_or_allocating_it() {
+        // Arrange: a POST with an Origin and one with a foreign Host, each declaring a 256 MiB body it never sends
+        let (port, _tx, _rx) = start();
+        let declared: usize = 256 << 20;
+        let heads = [format!("Host: 127.0.0.1:{port}\r\nOrigin: http://evil.example\r\n"), "Host: evil.example\r\n".to_string()];
+
+        for head in heads {
+            let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            conn.write_all(format!("POST /control HTTP/1.1\r\n{head}Content-Length: {declared}\r\n\r\n").as_bytes()).unwrap();
+
+            // Act: read until the supervisor closes the connection, or for 3 s
+            let mut reply = Vec::new();
+            let closed = conn.read_to_end(&mut reply).is_ok();
+
+            // Assert
+            let reply = String::from_utf8_lossy(&reply);
+            assert!(reply.starts_with("HTTP/1.1 403") && reply.ends_with(REFUSAL), "{head}: {reply}");
+            let largest = LARGEST_ALLOC.load(Ordering::Relaxed);
+            assert!(largest < declared / 2, "{head}: the supervisor allocated {largest} bytes for a body it refused");
+            assert!(closed, "{head}: the connection was still open 3 s after the 403, waiting for the body");
+        }
     }
 
     #[test]

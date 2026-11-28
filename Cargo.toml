@@ -1,12 +1,17 @@
 [workspace]
 resolver = "2"
 members = ["supervisor", "crates/common", "crates/control", "crates/ui", "crates/streamloop"]
-exclude = ["spikes/gpui-ui", "spikes/supervisor", "shell/src-tauri", "tokenserver"]
+exclude = ["spikes/gpui-ui", "spikes/supervisor", "shell/src-tauri", "tokenserver", "vendor/tiny_http"]
 
 [workspace.package]
 version = "3.1.2"
 edition = "2021"
 publish = false
+
+# tiny_http 0.12.0 as published, except that a request dropped with over 64 KiB of its body unread closes its connection
+# instead of reading the rest into a buffer that size, which a browser's refused POST to 4417 could make huge.
+[patch.crates-io]
+tiny_http = { path = "vendor/tiny_http" }
 
 [profile.release]
 lto = "thin"
