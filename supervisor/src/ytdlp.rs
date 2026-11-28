@@ -256,23 +256,81 @@ impl Ytdlp {
         args
     }
 
-    pub fn download(&self, client: &str, id: &str, file: &Path, hd: bool, logs: &Logs, cancel: &AtomicBool, pid: impl FnOnce(u32), mut progress: impl FnMut(f64)) -> Output {
+    /// `on_line` gets every stdout line, for a `DownloadTrack`.
+    pub fn download(&self, client: &str, id: &str, file: &Path, hd: bool, logs: &Logs, cancel: &AtomicBool, pid: impl FnOnce(u32), on_line: impl FnMut(&str)) -> Output {
         let args = self.download_args(id, file, hd);
-        self.run(Some(client), &args, logs, cancel, Duration::from_secs(6 * 3600), pid, |line| {
-            if let Some(p) = parse_download_progress(line) {
-                progress(p);
-            }
-        })
+        self.run(Some(client), &args, logs, cancel, Duration::from_secs(6 * 3600), pid, on_line)
     }
 }
 
-pub fn parse_download_progress(line: &str) -> Option<f64> {
+/// One `--newline` progress line: percent of the stream being fetched, its speed and time left.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Progress {
+    pub percent: f64,
+    pub speed_bps: Option<f64>,
+    pub eta_s: Option<u64>,
+}
+
+/// `[download]  45.3% of ~ 123.45MiB at 2.34MiB/s ETA 00:31 (frag 3/20)`; yt-dlp prints `Unknown`
+/// for a speed or time left it cannot tell, and the finished line has `in 00:00:52` and no ETA.
+pub fn parse_progress(line: &str) -> Option<Progress> {
     let rest = line.strip_prefix("[download]")?.trim_start();
-    let num = rest.split('%').next()?;
-    if num.len() == rest.len() {
-        return None;
+    let (num, after) = rest.split_once('%')?;
+    let percent = num.trim().parse().ok()?;
+    let speed_bps = after.split_once(" at ").and_then(|(_, s)| parse_speed(s.split_whitespace().next()?));
+    let eta_s = after.split_once("ETA ").and_then(|(_, s)| parse_clock(s.split_whitespace().next()?));
+    Some(Progress { percent, speed_bps, eta_s })
+}
+
+fn parse_speed(token: &str) -> Option<f64> {
+    let (num, unit) = token.split_at(token.find(|c: char| c.is_ascii_alphabetic())?);
+    let scale = match unit {
+        "B/s" => 1.0,
+        "KiB/s" => 1024.0,
+        "MiB/s" => 1_048_576.0,
+        "GiB/s" => 1_073_741_824.0,
+        _ => return None,
+    };
+    num.parse::<f64>().ok().map(|n| n * scale)
+}
+
+/// `MM:SS` or `HH:MM:SS` in seconds.
+fn parse_clock(token: &str) -> Option<u64> {
+    token.split(':').try_fold(0, |total, part| part.parse::<u64>().ok().map(|n| total * 60 + n))
+}
+
+/// What one download's stdout says so far: the formats it fetches and which of them is coming in.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct DownloadTrack {
+    /// yt-dlp's format ids, `137+140` for video and audio merged.
+    pub format: String,
+    /// Which stream is coming in, counted from 1; 0 before the first.
+    pub part: u32,
+    pub parts: u32,
+    pub progress: Option<Progress>,
+}
+
+impl DownloadTrack {
+    /// Takes one stdout line; true when the part or the progress changed.
+    pub fn line(&mut self, line: &str) -> bool {
+        if let Some((_, formats)) = line.split_once(": Downloading 1 format(s): ").filter(|_| line.starts_with("[info]")) {
+            self.format = formats.trim().to_string();
+            self.parts = self.format.split('+').count() as u32;
+            return false;
+        }
+        if line.starts_with("[download] Destination: ") {
+            self.part += 1;
+            self.progress = None;
+            return true;
+        }
+        match parse_progress(line) {
+            Some(p) => {
+                self.progress = Some(p);
+                true
+            }
+            None => false,
+        }
     }
-    num.trim().parse().ok()
 }
 
 pub fn parse_resolved(json: &str) -> Result<Resolved, String> {
@@ -679,10 +737,79 @@ mod tests {
 
     #[test]
     fn progress_and_errors() {
-        assert_eq!(parse_download_progress("[download]  42.5% of 10MiB"), Some(42.5));
-        assert_eq!(parse_download_progress("[download] Destination: x"), None);
+        assert_eq!(parse_progress("[download]  42.5% of 10MiB").map(|p| p.percent), Some(42.5));
+        assert_eq!(parse_progress("[download] Destination: x"), None);
         assert_eq!(describe_error("x\nERROR: [youtube] abc: Video unavailable\n", Some(1)), "ERROR: [youtube] abc: Video unavailable");
         assert!(describe_error("ERROR: Sign in to confirm you’re not a bot", None).starts_with("YouTube bot check"));
+    }
+
+    fn close(a: Option<f64>, b: f64) -> bool {
+        a.is_some_and(|a| (a - b).abs() < 1.0)
+    }
+
+    #[test]
+    fn progress_reads_percent_speed_and_time_left() {
+        let p = parse_progress("[download]  45.3% of  123.45MiB at    2.34MiB/s ETA 00:31").unwrap();
+
+        assert_eq!((p.percent, p.eta_s), (45.3, Some(31)));
+        assert!(close(p.speed_bps, 2.34 * 1048576.0), "{p:?}");
+    }
+
+    #[test]
+    fn progress_reads_unknown_speed_and_time_left_as_none() {
+        let p = parse_progress("[download]   0.0% of  123.45MiB at  Unknown B/s ETA Unknown").unwrap();
+
+        assert_eq!(p, Progress { percent: 0.0, speed_bps: None, eta_s: None });
+    }
+
+    #[test]
+    fn progress_reads_an_approximate_size_with_fragments_and_an_hours_eta() {
+        let p = parse_progress("[download]  12.3% of ~ 300.00MiB at    1.00KiB/s ETA 01:04:10 (frag 12/98)").unwrap();
+
+        assert_eq!((p.percent, p.eta_s), (12.3, Some(3850)));
+        assert!(close(p.speed_bps, 1024.0), "{p:?}");
+    }
+
+    #[test]
+    fn progress_reads_the_finished_line_with_no_time_left() {
+        let p = parse_progress("[download] 100% of  123.45MiB in 00:00:52 at 2.36MiB/s").unwrap();
+
+        assert_eq!((p.percent, p.eta_s), (100.0, None));
+        assert!(close(p.speed_bps, 2.36 * 1048576.0), "{p:?}");
+    }
+
+    #[test]
+    fn track_counts_the_parts_of_a_merged_download() {
+        let mut t = DownloadTrack::default();
+
+        for line in [
+            "[info] x: Downloading 1 format(s): 137+140",
+            r"[download] Destination: C:\c\x.f137.mp4",
+            "[download]  45.3% of  123.45MiB at    2.34MiB/s ETA 00:31",
+            r"[download] Destination: C:\c\x.f140.m4a",
+        ] {
+            t.line(line);
+        }
+
+        assert_eq!((t.format.as_str(), t.parts, t.part), ("137+140", 2, 2));
+    }
+
+    #[test]
+    fn track_counts_one_part_for_a_single_format() {
+        let mut t = DownloadTrack::default();
+
+        t.line("[info] x: Downloading 1 format(s): 18");
+
+        assert_eq!((t.format.as_str(), t.parts), ("18", 1));
+    }
+
+    #[test]
+    fn track_says_when_its_progress_changed() {
+        let mut t = DownloadTrack::default();
+
+        let changed = [t.line("[info] x: Downloading 1 format(s): 18"), t.line("[download]  1.0% of 10MiB at 1.00MiB/s ETA 00:09")];
+
+        assert_eq!(changed, [false, true]);
     }
 
     #[test]

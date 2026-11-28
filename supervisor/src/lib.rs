@@ -283,8 +283,10 @@ pub enum Msg {
     FeederExit { seq: u64, code: Option<i32>, frames: u64 },
     EncProgress { generation: u64, media: f64, speed: Option<f64> },
     Detect { generation: u64, d: Detect },
-    DlProgress { index: usize, percent: f64 },
-    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String, used_token: bool },
+    /// `percent`, `speed_bps` and `eta_s` are of the stream coming in, `part` of `parts`.
+    DlProgress { index: usize, percent: f64, speed_bps: Option<f64>, eta_s: Option<u64>, part: u32, parts: u32 },
+    /// `format`: yt-dlp's format ids, `137+140` for video and audio merged.
+    Downloaded { index: usize, id: String, ok: bool, cancelled: bool, bytes: u64, ms: u128, reason: String, client: String, used_token: bool, format: String },
     /// An ingest probe's answer; `outage` names the encoder outage it was sent for.
     Ingest { outage: u64, up: bool },
 }
@@ -537,6 +539,8 @@ struct Ctl {
     break_url: Option<(usize, Option<u32>)>,
     jobs: Sender<Job>,
     downloading: Option<(usize, f64, Arc<AtomicBool>)>,
+    /// The running download's speed, time left and part, from its progress lines.
+    dl_track: ytdlp::DownloadTrack,
     sizing: bool,
     dl_after: Instant,
     token: Arc<Mutex<TokenState>>,
@@ -643,6 +647,7 @@ impl Ctl {
             break_url: None,
             jobs: jobs_tx,
             downloading: None,
+            dl_track: ytdlp::DownloadTrack::default(),
             sizing: false,
             dl_after: now,
             token,
@@ -1554,6 +1559,7 @@ impl Ctl {
         } else {
             let cancel = Arc::new(AtomicBool::new(false));
             self.downloading = Some((i, 0.0, cancel.clone()));
+            self.dl_track = ytdlp::DownloadTrack::default();
             let clients = rules::download_clients(&self.settings.player_client);
             let client = clients[(self.videos[i].dl_attempts as usize).min(clients.len() - 1)].clone();
             let _ = self.jobs.send(Job::Download(i, self.id(i), cancel, client, !self.videos[i].below_720p));
@@ -1643,12 +1649,14 @@ impl Ctl {
                     Detect::Rebuilt { video: false } => self.watch.silence = None,
                 }
             }
-            Msg::DlProgress { index, percent } => {
+            Msg::DlProgress { index, percent, speed_bps, eta_s, part, parts } => {
                 if let Some(d) = self.downloading.as_mut().filter(|d| d.0 == index) {
                     d.1 = percent;
+                    self.dl_track.progress = Some(ytdlp::Progress { percent, speed_bps, eta_s });
+                    (self.dl_track.part, self.dl_track.parts) = (part, parts);
                 }
             }
-            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client, used_token } => {
+            Msg::Downloaded { mut index, id, ok, cancelled, bytes, ms, reason, client, used_token, format: _ } => {
                 self.downloading = None;
                 if !cancelled {
                     self.breaker_result(ok, rules::is_bot_check(&reason), false, false, &reason);
@@ -2474,11 +2482,17 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
             Job::Download(index, id, cancel, client, hd) => {
                 let started = Instant::now();
                 let file = cache.join(format!("{id}.mp4"));
-                let mut last = -1.0;
-                let out = yt.download(&client, &id, &file, hd, &logs, &cancel, |_| {}, |p| {
-                    if p - last >= 1.0 || p >= 100.0 {
-                        last = p;
-                        let _ = tx.send(Msg::DlProgress { index, percent: p });
+                let mut track = ytdlp::DownloadTrack::default();
+                // At most one message per percent point of each part, and one when a part starts.
+                let mut sent = (-1.0, 0);
+                let out = yt.download(&client, &id, &file, hd, &logs, &cancel, |_| {}, |line| {
+                    if !track.line(line) {
+                        return;
+                    }
+                    let p = track.progress.unwrap_or_default();
+                    if track.part != sent.1 || p.percent - sent.0 >= 1.0 || p.percent >= 100.0 {
+                        sent = (p.percent, track.part);
+                        let _ = tx.send(Msg::DlProgress { index, percent: p.percent, speed_bps: p.speed_bps, eta_s: p.eta_s, part: track.part, parts: track.parts });
                     }
                 });
                 let ok = out.ok && !out.cancelled && file.exists();
@@ -2492,7 +2506,7 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 let bytes = if ok { std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) } else { 0 };
                 let reason = if ok || out.cancelled { String::new() } else { ytdlp::describe_error(&out.stderr, None) };
                 let used_token = out.stdout.contains("[pot");
-                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client, used_token });
+                let _ = tx.send(Msg::Downloaded { index, id, ok, cancelled: out.cancelled, bytes, ms: started.elapsed().as_millis(), reason, client, used_token, format: track.format });
             }
         }
     }
@@ -3327,7 +3341,7 @@ mod tests {
         let mut ctl = test_ctl("dl-failed", &["a", "b", "c", "d"]);
         let fail = |ctl: &mut Ctl, index: usize, id: &str| {
             for _ in 0..2 {
-                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new(), used_token: false });
+                ctl.handle(Msg::Downloaded { index, id: id.into(), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: Postprocessing: ffmpeg not found".into(), client: String::new(), used_token: false, format: String::new() });
             }
         };
 
@@ -3386,7 +3400,7 @@ mod tests {
         ctl.cache_work();
         assert!(ctl.downloading.as_ref().is_some_and(|d| d.2.load(Ordering::Relaxed)), "the download past it was not cancelled");
         let id = ctl.id(after);
-        ctl.handle(Msg::Downloaded { index: after, id, ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
+        ctl.handle(Msg::Downloaded { index: after, id, ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: String::new() });
         ctl.last_resolve = None;
         ctl.cache_work();
 
@@ -3431,7 +3445,7 @@ mod tests {
     /// One round in which each client answers but offers nothing from 720p up.
     fn no_hd_round(ctl: &mut Ctl, index: usize) {
         for client in ["mweb", "web_embedded"] {
-            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: [youtube] b: Requested format is not available. Use --list-formats for a list of available formats".into(), client: client.into(), used_token: false });
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: [youtube] b: Requested format is not available. Use --list-formats for a list of available formats".into(), client: client.into(), used_token: false, format: String::new() });
         }
     }
 
@@ -3462,7 +3476,7 @@ mod tests {
 
         // Act
         let id = ctl.id(ahead);
-        ctl.handle(Msg::Downloaded { index: ahead, id, ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
+        ctl.handle(Msg::Downloaded { index: ahead, id, ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false, format: String::new() });
 
         // Assert
         assert!(events(&ctl).contains(&("warn".into(), "download-low-quality".into())), "{:?}", events(&ctl));
@@ -3515,7 +3529,7 @@ mod tests {
     fn fail_round(ctl: &mut Ctl, index: usize) {
         for client in ["mweb", "web_embedded"] {
             assert!(ctl.videos[index].dl_attempts < 2);
-            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into(), used_token: client == "mweb" });
+            ctl.handle(Msg::Downloaded { index, id: ctl.id(index), ok: false, cancelled: false, bytes: 0, ms: 10, reason: "ERROR: unable to download video data: HTTP Error 403: Forbidden".into(), client: client.into(), used_token: client == "mweb", format: String::new() });
         }
     }
 
@@ -4932,6 +4946,19 @@ mod tests {
         ctl.downloading = Some((3, 10.0, Arc::new(AtomicBool::new(false))));
 
         assert_eq!(ctl.status()["downloading"]["index"], 1);
+    }
+
+    #[test]
+    fn download_progress_keeps_speed_time_left_and_part_for_the_download_running() {
+        let mut ctl = test_ctl("dl-progress", &["a", "b"]);
+        ctl.downloading = Some((1, 0.0, Arc::new(AtomicBool::new(false))));
+
+        ctl.handle(Msg::DlProgress { index: 1, percent: 40.0, speed_bps: Some(1e6), eta_s: Some(60), part: 1, parts: 2 });
+
+        assert_eq!(ctl.downloading.as_ref().map(|d| d.1), Some(40.0));
+        assert_eq!(ctl.dl_track.progress.and_then(|p| p.speed_bps), Some(1e6));
+        assert_eq!(ctl.dl_track.progress.and_then(|p| p.eta_s), Some(60));
+        assert_eq!((ctl.dl_track.part, ctl.dl_track.parts), (1, 2));
     }
 
     /// What the control process would send back after reading `v` through the shared types.
