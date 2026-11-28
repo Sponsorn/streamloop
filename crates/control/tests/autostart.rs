@@ -270,6 +270,69 @@ fn migration_keeps_the_vbs_when_writing_the_value_fails() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Task Manager's disable: 3 in the first byte, then from the fifth on the FILETIME of the disable.
+const TASK_MANAGER_OFF: [u8; 12] = [0x03, 0, 0, 0, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0x01];
+
+/// 100 ns intervals since 1601-01-01, as a FILETIME counts.
+fn filetime(t: std::time::SystemTime) -> u64 {
+    let since_1970 = t.duration_since(std::time::UNIX_EPOCH).unwrap();
+    (since_1970.as_nanos() / 100) as u64 + 116_444_736_000_000_000
+}
+
+#[tokio::test]
+async fn migration_carries_a_task_manager_disable_of_the_vbs_over_to_the_run_value() {
+    // Arrange: 3.1's StreamLoop.vbs, disabled in Task Manager
+    let rig = Rig::new();
+    write_vbs(&startup(&rig), &format!("{MINE}\\START.bat"));
+    let store = Arc::new(FakeAutostart::new());
+    store.set_vbs_approved(&TASK_MANAGER_OFF);
+    // Act
+    let migrated = migrate_vbs(store.as_ref(), &startup(&rig), &layout()).unwrap();
+    let g = get(&app(&rig, &store), "/autostart").await.json();
+    // Assert
+    assert!(migrated);
+    assert_eq!(store.run_value().unwrap().as_deref(), Some(MINE_COMMAND));
+    assert_eq!(store.approved().unwrap().as_deref(), Some(&TASK_MANAGER_OFF[..]));
+    assert_eq!(g, json!({ "enabled": false, "target": format!("{MINE}\\streamloop.exe"), "thisInstall": true }));
+}
+
+#[test]
+fn a_disable_of_another_shape_is_written_as_task_manager_writes_one() {
+    // Arrange
+    let dir = tempfile::tempdir().unwrap().keep();
+    let startup = dir.join("sl4 Ö (x)");
+    write_vbs(&startup, &format!("{MINE}\\START.bat"));
+    let store = FakeAutostart::new();
+    store.set_vbs_approved(&[0x03, 0, 0]);
+    let before = filetime(std::time::SystemTime::now());
+    // Act
+    migrate_vbs(&store, &startup, &layout()).unwrap();
+    let after = filetime(std::time::SystemTime::now());
+    // Assert
+    let written = store.approved().unwrap().expect("a disable is written");
+    assert_eq!(written.len(), 12);
+    assert_eq!(written[..4], [0x03, 0, 0, 0]);
+    let at = u64::from_le_bytes(written[4..].try_into().unwrap());
+    assert!((before..=after).contains(&at), "{before} <= {at} <= {after}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn migration_of_a_vbs_that_task_manager_left_on_writes_no_disable() {
+    // Arrange
+    let dir = tempfile::tempdir().unwrap().keep();
+    let startup = dir.join("sl4 Ö (x)");
+    write_vbs(&startup, &format!("{MINE}\\START.bat"));
+    let store = FakeAutostart::new();
+    store.set_vbs_approved(&[0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // Act
+    migrate_vbs(&store, &startup, &layout()).unwrap();
+    // Assert
+    assert_eq!(store.run_value().unwrap().as_deref(), Some(MINE_COMMAND));
+    assert_eq!(store.approved().unwrap(), None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `HKCU\Software\StreamLoopTest-<random>`, deleted with everything under it when the guard drops.
 struct TestKey(String);
 
@@ -300,7 +363,7 @@ fn the_registry_sets_reads_disables_and_clears_the_run_value_under_a_test_key() 
     let missing = (registry.run_value().unwrap(), registry.approved().unwrap());
     registry.set_run_value(&command).unwrap();
     let set = registry.run_value().unwrap();
-    registry.set_approved(&[0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    registry.write_approved(&[0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
     let off = registry.approved().unwrap();
     registry.clear_approved().unwrap();
     registry.delete_run_value().unwrap();
@@ -312,4 +375,30 @@ fn the_registry_sets_reads_disables_and_clears_the_run_value_under_a_test_key() 
     assert!(disabled(off.as_deref()));
     assert_eq!(gone, (None, None));
     assert_eq!(twice, (true, true));
+}
+
+/// Writes a REG_BINARY `name` under `HKCU\<key>\<sub>`, as Task Manager writes its flags.
+fn write_binary(key: &TestKey, sub: &str, name: &str, bytes: &[u8]) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_BINARY};
+    let wide = |s: &str| -> Vec<u16> { std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect() };
+    let (path, name) = (wide(&format!("{}\\{sub}", key.0)), wide(name));
+    // SAFETY: both names are NUL-terminated and `bytes` is `len` readable bytes.
+    let code = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, path.as_ptr(), name.as_ptr(), REG_BINARY, bytes.as_ptr().cast(), bytes.len() as u32) };
+    assert_eq!(code, 0, "RegSetKeyValueW");
+}
+
+#[test]
+fn the_registry_reads_the_vbs_flag_beside_the_test_keys_startup_approved_run() {
+    // Arrange: Task Manager's flag for StreamLoop.vbs, where a test key keeps its StartupFolder
+    let key = TestKey::new();
+    let registry = Registry::real(Some(&key.0));
+    let missing = registry.vbs_approved().unwrap();
+    write_binary(&key, r"StartupApproved\StartupFolder", "StreamLoop.vbs", &TASK_MANAGER_OFF);
+    // Act
+    let read = registry.vbs_approved().unwrap();
+    // Assert
+    assert_eq!(missing, None);
+    assert_eq!(read.as_deref(), Some(&TASK_MANAGER_OFF[..]));
+    assert_eq!(registry.approved().unwrap(), None, "StartupApproved\\Run holds no StreamLoop.vbs value");
 }
