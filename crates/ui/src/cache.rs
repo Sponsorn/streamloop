@@ -28,7 +28,6 @@ const NOT_RUNNING: &str = "The supervisor is not running, so there is nothing to
 const NOTHING_NEXT: &str = "Every video the cache can hold is downloaded.";
 const NOTHING_DELETED: &str = "Nothing deleted since the supervisor started.";
 
-/// Files below this height show their quality as a warning.
 const HD_HEIGHT: u32 = 720;
 
 enum Shown {

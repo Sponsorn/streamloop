@@ -2352,10 +2352,8 @@ impl Ctl {
     }
 
 
-    /// Build outside the lock, then swap, so the API thread never waits on status building.
-    /// GET /cache: the cache against its budget, what the downloader does next, every video from the
-    /// one on air through the look-ahead, and the last deletions. Read from the rules `cache_work`
-    /// follows, so it cannot tell a different story.
+    /// GET /cache: the cache against its budget, the next download, every video from the one on air
+    /// through the look-ahead and the last deletions, read from the rules `cache_work` follows.
     fn cache_report(&self) -> Value {
         let deletions: Vec<Value> = self.deletions.iter().map(|d| json!({"at": d.at, "id": d.id, "title": d.title, "bytes": d.bytes, "reason": d.reason})).collect();
         let (sizes, stepped, budget) = self.look_ahead_inputs();
@@ -2483,6 +2481,7 @@ impl Ctl {
         });
     }
 
+    /// Build outside the lock, then swap, so the API thread never waits on status building.
     fn publish_status(&self) {
         let v = self.status();
         *self.snapshot.lock().unwrap() = v;
