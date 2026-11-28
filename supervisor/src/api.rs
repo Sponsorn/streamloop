@@ -30,7 +30,8 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
             // One thread per request: a slow body or a request waiting on the loop must not delay GET /status.
             let (tx, snapshot) = (tx.clone(), snapshot.clone());
             std::thread::spawn(move || {
-                // Refused before the body is read, so a browser's huge or stalled body holds nothing.
+                // Refused before this thread reads the body. tiny_http has already read a body of up to 1 KiB with
+                // the head; a larger one is never read, so a browser's huge or stalled body holds nothing here.
                 let header = |name: &'static str| req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string());
                 if local_only::refused(header("Host").as_deref(), header("Origin").as_deref(), port) {
                     respond(req, 403, json!({"error": local_only::REFUSED}));
