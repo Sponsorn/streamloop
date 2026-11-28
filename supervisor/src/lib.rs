@@ -2871,10 +2871,29 @@ mod tests {
         assert_eq!(server.as_deref(), Some("streamloop-pot 2.0.0"));
     }
 
+    /// A `Ctl` whose temp folder is removed when this drops.
+    struct TestCtl {
+        ctl: Ctl,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestCtl {
+        type Target = Ctl;
+        fn deref(&self) -> &Ctl {
+            &self.ctl
+        }
+    }
+
+    impl std::ops::DerefMut for TestCtl {
+        fn deref_mut(&mut self) -> &mut Ctl {
+            &mut self.ctl
+        }
+    }
+
     /// A control loop over `ids` with no encoder, feeder or yt-dlp behind it; logs go to a temp folder.
-    fn test_ctl(name: &str, ids: &[&str]) -> Ctl {
-        let dir = std::env::temp_dir().join(format!("sl-ctl-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn test_ctl(name: &str, ids: &[&str]) -> TestCtl {
+        let tmp = tempfile::Builder::new().prefix(&format!("sl-ctl-{name}-")).tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         let d = dir.to_string_lossy().into_owned();
         let args = parse_args(&["--root".into(), d.clone(), "--data".into(), d]).unwrap();
@@ -2887,7 +2906,18 @@ mod tests {
         let mut ctl = Ctl::new(args, Settings::default(), logs, tx, shared, yt, dir.join("cache"), jobs, token, Arc::default());
         ctl.playlist_wanted = false;
         ctl.videos = ids.iter().map(|id| Video { entry: Entry { id: id.to_string(), title: id.to_string(), duration: Some(100.0) }, bytes: None, looked_up: false, on_disk: false, disk_bytes: 0, dl_attempts: 0, dl_failed: false, dl_retry_at: None, dl_counted: false, hd_missing: false, below_720p: false, skipped: false, retries: 0 }).collect();
-        ctl
+        TestCtl { ctl, _dir: tmp }
+    }
+
+    #[test]
+    fn a_test_ctl_folder_is_removed_when_its_test_ends() {
+        let root = {
+            let ctl = test_ctl("ends", &["a"]);
+            assert!(ctl.logs.dir.is_dir());
+            ctl.args.paths.root.clone()
+        };
+
+        assert!(!root.exists(), "{} was left behind", root.display());
     }
 
     /// Keeping the previous video's URL fresh asked YouTube every 10 minutes for the whole of a
@@ -2973,7 +3003,7 @@ mod tests {
     }
 
     /// A control loop playing PLa whose config.json now names `next`; the fetch of `next` has not landed.
-    fn reload_ctl(name: &str, next: &str) -> Ctl {
+    fn reload_ctl(name: &str, next: &str) -> TestCtl {
         let mut ctl = test_ctl(name, &["a", "b"]);
         (ctl.playlist, ctl.settings.playlist_id) = ("PLa".into(), "PLa".into());
         std::fs::create_dir_all(ctl.args.config.parent().unwrap()).unwrap();
@@ -3119,7 +3149,7 @@ mod tests {
     }
 
     /// The encoder went down for the 5th time in a row, so the restart waits out the 60 s step.
-    fn ingest_ctl(name: &str) -> Ctl {
+    fn ingest_ctl(name: &str) -> TestCtl {
         let mut ctl = test_ctl(name, &["a", "b"]);
         ctl.seams.push(Seam { offset: BASE, index: 0, source: Source::File, start_pos: 3.0 });
         (ctl.enc.child, ctl.enc.failures) = (Some(exited_child()), 4);
@@ -3195,7 +3225,7 @@ mod tests {
     }
 
     /// Video 1 on air from timeline 0 at position 0; the stretch began at 5 s, the encoder is at `media`.
-    fn watchdog_ctl(name: &str, freeze: bool, media: f64) -> Ctl {
+    fn watchdog_ctl(name: &str, freeze: bool, media: f64) -> TestCtl {
         let mut ctl = test_ctl(name, &["a", "b", "c"]);
         ctl.seams.push(Seam { offset: BASE, index: 1, source: Source::File, start_pos: 0.0 });
         ctl.enc.media = media;
@@ -3343,7 +3373,8 @@ mod tests {
 
         let after = (ahead + 1) % 4;
 
-        ctl.handle(Msg::Resolved { index: ahead, id: ctl.id(ahead), purpose: Purpose::Size, result: Err(reason.into()) });
+        let id = ctl.id(ahead);
+        ctl.handle(Msg::Resolved { index: ahead, id, purpose: Purpose::Size, result: Err(reason.into()) });
         ctl.cache_work();
 
         assert!(!ctl.sizing, "a failed size lookup was asked for again at once");
@@ -3354,7 +3385,8 @@ mod tests {
         ctl.videos[ahead].dl_retry_at = Some(Instant::now() - Duration::from_secs(1));
         ctl.cache_work();
         assert!(ctl.downloading.as_ref().is_some_and(|d| d.2.load(Ordering::Relaxed)), "the download past it was not cancelled");
-        ctl.handle(Msg::Downloaded { index: after, id: ctl.id(after), ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
+        let id = ctl.id(after);
+        ctl.handle(Msg::Downloaded { index: after, id, ok: false, cancelled: true, bytes: 0, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
         ctl.last_resolve = None;
         ctl.cache_work();
 
@@ -3367,7 +3399,8 @@ mod tests {
         ctl.videos[ahead].bytes = None;
         let r = Resolved { video: "v".into(), audio: "a".into(), headers: String::new(), duration: Some(100.0), bytes: None, expire: None, available_at: None };
 
-        ctl.handle(Msg::Resolved { index: ahead, id: ctl.id(ahead), purpose: Purpose::Size, result: Ok(r) });
+        let id = ctl.id(ahead);
+        ctl.handle(Msg::Resolved { index: ahead, id, purpose: Purpose::Size, result: Ok(r) });
         ctl.last_resolve = None;
         ctl.cache_work();
 
@@ -3428,7 +3461,8 @@ mod tests {
         no_hd_round(&mut ctl, ahead);
 
         // Act
-        ctl.handle(Msg::Downloaded { index: ahead, id: ctl.id(ahead), ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
+        let id = ctl.id(ahead);
+        ctl.handle(Msg::Downloaded { index: ahead, id, ok: true, cancelled: false, bytes: 1_000, ms: 10, reason: String::new(), client: "mweb".into(), used_token: false });
 
         // Assert
         assert!(events(&ctl).contains(&("warn".into(), "download-low-quality".into())), "{:?}", events(&ctl));
@@ -3465,7 +3499,7 @@ mod tests {
     }
 
     /// Four 100 s videos, sizes known, the one on air on disk, both clients configured; returns the video after it.
-    fn forbidden_ctl(name: &str) -> (Ctl, usize) {
+    fn forbidden_ctl(name: &str) -> (TestCtl, usize) {
         let mut ctl = test_ctl(name, &["a", "b", "c", "d"]);
         ctl.settings.cache_budget_mb = 50;
         ctl.settings.player_client = "mweb,web_embedded".into();
@@ -3679,9 +3713,8 @@ mod tests {
 
     #[test]
     fn finished_downloads_are_kept_at_start_and_partials_removed() {
-        let dir = std::env::temp_dir().join(format!("sl-adopt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::Builder::new().prefix("sl-adopt-").tempdir().unwrap();
+        let dir = tmp.path();
         for (name, bytes) in [("dQw4w9WgXcQ.mp4", 7), ("a-b_c.mp4", 3), ("x1.mp4.part", 5), ("x1.f137.mp4", 5), ("x1.f140.m4a", 5), ("x1.temp.mp4", 5), ("x1.mp4.ytdl", 5), ("x1.f137.mp4.part-Frag3", 5), ("empty.mp4", 0)] {
             std::fs::write(dir.join(name), vec![0u8; bytes]).unwrap();
         }
@@ -3880,15 +3913,40 @@ mod tests {
         assert_eq!(r["restartRequired"], false);
     }
 
-    /// Args for a root in a fresh temp folder whose config.json is `config`.
-    fn startup_args(name: &str, config: &Value) -> Args {
-        let dir = std::env::temp_dir().join(format!("sl-startup-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let d = dir.to_string_lossy().into_owned();
+    /// Args for a root in a fresh temp folder whose config.json is `config`. The folder goes when
+    /// the `TempDir` drops: bind it as `_dir`, since `_` drops it at once.
+    fn startup_args(name: &str, config: &Value) -> (tempfile::TempDir, Args) {
+        let dir = tempfile::Builder::new().prefix(&format!("sl-startup-{name}-")).tempdir().unwrap();
+        let d = dir.path().to_string_lossy().into_owned();
         let args = parse_args(&["--root".into(), d.clone(), "--data".into(), d]).unwrap();
         std::fs::create_dir_all(args.config.parent().unwrap()).unwrap();
         std::fs::write(&args.config, config.to_string()).unwrap();
-        args
+        (dir, args)
+    }
+
+    #[test]
+    fn a_startup_root_is_removed_when_its_test_ends() {
+        let root = {
+            let (_dir, args) = startup_args("ends", &json!({"playlists": []}));
+            assert!(args.config.is_file());
+            args.paths.root.clone()
+        };
+
+        assert!(!root.exists(), "{} was left behind", root.display());
+    }
+
+    #[test]
+    fn a_startup_root_is_removed_when_its_test_panics() {
+        let mut root = std::path::PathBuf::new();
+
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (_dir, args) = startup_args("panics", &json!({"playlists": []}));
+            root = args.paths.root.clone();
+            panic!("the test failed");
+        }));
+
+        assert!(r.is_err());
+        assert!(!root.as_os_str().is_empty() && !root.exists(), "{} was left behind", root.display());
     }
 
     fn refused_events(args: &Args) -> Vec<Value> {
@@ -3903,7 +3961,7 @@ mod tests {
 
     #[test]
     fn a_refused_config_is_logged_and_exits_3_never_2() {
-        let args = startup_args("refused", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "x".repeat(201)}));
+        let (_dir, args) = startup_args("refused", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "x".repeat(201)}));
         let (tx, _rx) = channel();
 
         let r = bind_then_settings(&args, free_port(), tx, Arc::default());
@@ -3918,7 +3976,7 @@ mod tests {
 
     #[test]
     fn unknown_encoder_is_still_refused() {
-        let args = startup_args("unknown-encoder", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "h265"}}));
+        let (_dir, args) = startup_args("unknown-encoder", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "h265"}}));
         let (tx, _rx) = channel();
 
         let r = bind_then_settings(&args, free_port(), tx, Arc::default());
@@ -3931,7 +3989,7 @@ mod tests {
 
     #[test]
     fn bad_cookie_value_is_still_refused() {
-        let args = startup_args("bad-cookies", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "fire\u{7}fox"}));
+        let (_dir, args) = startup_args("bad-cookies", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "fire\u{7}fox"}));
         let (tx, _rx) = channel();
 
         let r = bind_then_settings(&args, free_port(), tx, Arc::default());
@@ -3944,7 +4002,7 @@ mod tests {
 
     #[test]
     fn a_taken_port_exits_2_even_with_a_bad_config() {
-        let args = startup_args("taken", &json!({"playlists": []}));
+        let (_dir, args) = startup_args("taken", &json!({"playlists": []}));
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let (tx, _rx) = channel();
 
@@ -3956,7 +4014,7 @@ mod tests {
 
     #[test]
     fn a_good_config_binds_and_loads() {
-        let args = startup_args("good", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+        let (_dir, args) = startup_args("good", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
         let (tx, _rx) = channel();
 
         let s = bind_then_settings(&args, free_port(), tx, Arc::default()).unwrap();
@@ -4084,7 +4142,7 @@ mod tests {
     }
 
     /// A control loop with `ids` configured and `first` loaded, nothing fed yet.
-    fn list_ctl(name: &str, ids: &[&str], first: &str, videos: &[&str]) -> Ctl {
+    fn list_ctl(name: &str, ids: &[&str], first: &str, videos: &[&str]) -> TestCtl {
         let mut ctl = test_ctl(name, &[]);
         write_config(&ctl, ids);
         ctl.settings.playlist_id = first.into();
@@ -4094,7 +4152,7 @@ mod tests {
     }
 
     /// PLa (a, b) loaded first, PLb (p, q, r) after it, config.json naming both.
-    fn ring_ctl(name: &str) -> Ctl {
+    fn ring_ctl(name: &str) -> TestCtl {
         let mut ctl = list_ctl(name, &["PLa", "PLb"], "PLa", &["a", "b"]);
         ctl.on_extra_list("PLb".into(), entries(&["p", "q", "r"]));
         ctl.target = None;
@@ -4522,7 +4580,7 @@ mod tests {
     }
 
     /// PLa on air and PLb not in the ring yet.
-    fn fetch_ctl(name: &str) -> Ctl {
+    fn fetch_ctl(name: &str) -> TestCtl {
         let mut ctl = list_ctl(name, &["PLa", "PLb"], "PLa", &["a"]);
         ctl.target = None;
         ctl.ever_played = true;
@@ -4981,7 +5039,7 @@ mod tests {
 
     #[test]
     fn check_names_the_first_missing_install_file() {
-        let args = startup_args("check-missing", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+        let (_dir, args) = startup_args("check-missing", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
 
         let r = self_check(&args);
 
@@ -4991,7 +5049,7 @@ mod tests {
 
     #[test]
     fn check_refuses_a_config_the_supervisor_would_refuse() {
-        let args = startup_args("check-refused", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "no-such-encoder"}}));
+        let (_dir, args) = startup_args("check-refused", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "no-such-encoder"}}));
         let reason = read_settings(&args).err().unwrap();
 
         let r = self_check(&args);

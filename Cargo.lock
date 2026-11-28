@@ -7004,6 +7004,7 @@ version = "3.1.2"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys 0.59.0",
 ]
 
@@ -7035,6 +7036,7 @@ dependencies = [
  "serde",
  "serde_json",
  "streamloop-common",
+ "tempfile",
  "tiny_http",
  "windows-sys 0.59.0",
 ]
