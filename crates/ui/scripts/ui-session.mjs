@@ -1,5 +1,5 @@
 // R3's click-through session: a real StreamLoop install, local MediaMTX and a Discord catcher, for
-// driving the app (streamloop.exe ui) by hand (or by computer use) through every dashboard action.
+// driving the app (streamloop.exe ui) by hand (or by computer use) through every action.
 //   node crates/ui/scripts/ui-session.mjs dev|update|update-fail [--no-app]
 // dev:         release N (dist\'s build) with nothing newer listed, so it is up to date.
 // update:      N with N+1 (N's patch number plus one) listed: Update Now lands it at once; left alone, the first check stages it

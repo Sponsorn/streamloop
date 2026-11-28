@@ -5,9 +5,10 @@
 /// attached. No-op off Windows.
 ///
 /// So the control process under a visible START.bat (cmd passes it no handles) and under a hidden one (cmd
-/// passes it NUL) both end up on START.bat's console. Only the console modes call this, never `launch` or
-/// `supervisor`, so the supervisor started by `launch` can never be on it. A handle still absent after the
-/// attach is opened on the console (`CONOUT$`, `CONIN$`).
+/// passes it NUL) both end up on START.bat's console. A NUL output stays NUL, so under a hidden START.bat its
+/// lines go nowhere while Ctrl+C and the console closing still reach it. Only the console modes call this,
+/// never `launch` or `supervisor`, so the supervisor started by `launch` can never be on it. A handle still
+/// absent after the attach is opened on the console (`CONOUT$`, `CONIN$`).
 #[cfg(windows)]
 pub fn attach_parent() -> bool {
     use windows_sys::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};

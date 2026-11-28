@@ -1,4 +1,4 @@
-//! Control mode, `streamloop.exe control [--root DIR]`: the dashboard, alerts, checks and updater that replace the
+//! Control mode, `streamloop.exe control [--root DIR]`: the REST API, alerts, checks and updater that replace the
 //! Node backend. This is `src/server/index.ts`: the wiring, the start order, a config save, the shutdown and
 //! the exit codes.
 
@@ -110,7 +110,7 @@ pub struct Wiring {
     pub runner: Arc<dyn Runner>,
     pub spawner: Arc<dyn Spawner>,
     pub clock: Arc<dyn Clock>,
-    /// The Startup folder, where R3's `StreamLoop.vbs` may still be.
+    /// The Startup folder, where the `StreamLoop.vbs` 3.1 wrote may still be.
     pub startup_dir: PathBuf,
     /// The Run value that starts the app at logon.
     pub autostart: Arc<dyn AutostartStore>,

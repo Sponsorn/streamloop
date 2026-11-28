@@ -1,4 +1,4 @@
-//! StreamLoop's dashboard as a native GPUI window, on gpui-kit.
+//! The StreamLoop app: the native GPUI window on gpui-kit, and its tray icon.
 
 // GPUI's macros expand to `gpui::` paths; this resolves them through the Kit.
 extern crate gpui_kit as gpui;

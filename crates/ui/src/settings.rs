@@ -1,5 +1,5 @@
 //! The Settings tab (index.html `#panel-settings`): playlists, the stream, the Twitch check,
-//! startup, updates and the dashboard server.
+//! startup, updates and Quit StreamLoop.
 
 use std::time::Duration;
 
@@ -834,7 +834,7 @@ impl SettingsView {
             .child(hint(YTDLP_HINT))
     }
 
-    fn render_server(&self) -> Div {
+    fn render_quit(&self) -> Div {
         let quit = btn(Button::new("quit-btn").danger().label(QUIT_LABEL)).on_click(|_, _, cx| {
             // The dialog opens in this window, which this click is still updating.
             cx.defer(|cx| {
@@ -843,7 +843,7 @@ impl SettingsView {
                 }
             });
         });
-        section("Dashboard Server").child(action_row([quit], SharedString::default()))
+        section("Quit").child(action_row([quit], SharedString::default()))
     }
 }
 
@@ -904,7 +904,7 @@ impl Render for SettingsView {
             .children(NOTE.render(&self.app, &self.busy, cx))
             .child(self.render_startup(cx))
             .child(self.render_updates(cx))
-            .child(self.render_server())
+            .child(self.render_quit())
     }
 }
 

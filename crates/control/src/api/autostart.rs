@@ -1,6 +1,6 @@
 //! `/autostart`: the `StreamLoop` value under the registry's Run key, which starts one install's
 //! `streamloop.exe ui --tray` at logon (see `autostart_store`). Turning it on in one install moves it there;
-//! turning it off leaves another install's alone. R3's `StreamLoop.vbs` in the Startup folder is read only to
+//! turning it off leaves another install's alone. The `StreamLoop.vbs` 3.1 wrote in the Startup folder is read only to
 //! recognise one StreamLoop wrote, so turning autostart on removes it and the start-up migration replaces it.
 
 use std::path::{Path, PathBuf};

@@ -1,4 +1,4 @@
-//! The dashboard's REST API on 127.0.0.1:7654: what Express did around the routes in `src/server/index.ts`
+//! The app's REST API on 127.0.0.1:7654: what Express did around the routes in `src/server/index.ts`
 //! (JSON body parsing, the API token check and Express's own 404 page) and the
 //! routes of `api.ts`, one file per group.
 
@@ -110,7 +110,7 @@ pub struct AppDeps {
     pub notifier: GetNotifier,
     pub twitch: GetTwitchStatus,
     pub uptime_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
-    /// The Windows Startup folder that holds R3's `StreamLoop.vbs`; tests point it at a temp folder.
+    /// The Windows Startup folder that may hold the `StreamLoop.vbs` 3.1 wrote; tests point it at a temp folder.
     pub startup_dir: PathBuf,
     /// The Run value that starts the app at logon.
     pub autostart: Arc<dyn AutostartStore>,

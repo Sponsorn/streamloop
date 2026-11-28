@@ -1,4 +1,4 @@
-//! Autostart as a Run value: the route against a fake store and a temp Startup folder, the migration of R3's
+//! Autostart as a Run value: the route against a fake store and a temp Startup folder, the migration of 3.1's
 //! `StreamLoop.vbs`, and one run on the real registry under a test key.
 
 mod support;

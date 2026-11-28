@@ -828,7 +828,7 @@ async function runApp(r) {
       && s11b.counts.controls === 1 && s11b.roles.controls[0].ProcessId !== ctl1 && bat.exitCode === null,
   });
 
-  // Review focus 3: the app started inside START.bat's 10 s wait after a crash starts no second START.bat.
+  // The app started inside START.bat's 10 s wait after a crash starts no second START.bat.
   const shownRf = await gate(r, 'A11 app in START.bat\'s wait');
   if (app11) await run('taskkill', ['/F', '/PID', String(app11.ProcessId)]);
   const ctl2 = s11b.roles.controls[0]?.ProcessId ?? null;
