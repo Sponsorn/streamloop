@@ -2,12 +2,20 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use streamloop_pot::http::{serve, serve_with, Service, MINT_QUEUE, MINT_WORKERS};
 use streamloop_pot::session::{PotAnswer, PotRequest};
+
+fn answer(r: &PotRequest) -> PotAnswer {
+    PotAnswer {
+        content_binding: r.content_binding.clone(),
+        po_token: "tok".into(),
+        expires_at: UNIX_EPOCH + Duration::from_secs(1_794_139_200),
+    }
+}
 
 struct Slow {
     delay: Duration,
@@ -24,11 +32,41 @@ impl Service for Slow {
     fn get_pot(&self, r: &PotRequest) -> Result<PotAnswer, String> {
         self.started.fetch_add(1, Ordering::SeqCst);
         thread::sleep(self.delay);
-        Ok(PotAnswer {
-            content_binding: r.content_binding.clone(),
-            po_token: "tok".into(),
-            expires_at: UNIX_EPOCH + Duration::from_secs(1_794_139_200),
-        })
+        Ok(answer(r))
+    }
+    fn invalidate_caches(&self) {}
+    fn invalidate_it(&self) {}
+    fn minter_keys(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+/// Holds every mint until `release`, so a worker frees nothing however slowly the requests arrive.
+struct Held {
+    released: Mutex<bool>,
+    release: Condvar,
+    started: AtomicUsize,
+}
+
+impl Held {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { released: Mutex::new(false), release: Condvar::new(), started: AtomicUsize::new(0) })
+    }
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.release.notify_all();
+    }
+}
+
+impl Service for Held {
+    fn get_pot(&self, r: &PotRequest) -> Result<PotAnswer, String> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.release.wait(released).unwrap();
+        }
+        Ok(answer(r))
     }
     fn invalidate_caches(&self) {}
     fn invalidate_it(&self) {}
@@ -50,7 +88,7 @@ impl Service for Panics {
     }
 }
 
-fn start(svc: Arc<Slow>) -> (streamloop_pot::http::Running, SocketAddr) {
+fn start(svc: Arc<dyn Service>) -> (streamloop_pot::http::Running, SocketAddr) {
     let running = serve("127.0.0.1:0".parse().unwrap(), svc).expect("bind a free loopback port");
     let addr = running.addr();
     (running, addr)
@@ -258,21 +296,37 @@ fn a_chunked_body_over_the_limit_is_413() {
 
 #[test]
 fn a_full_mint_queue_answers_503_and_ping_still_answers() {
-    let svc = Slow::new(Duration::from_secs(1));
+    // Arrange: a held mint on every worker, so only the queue has room left
+    let svc = Held::new();
     let (_running, addr) = start(svc.clone());
-    let n = MINT_WORKERS + MINT_QUEUE + 4;
-    let all: Vec<_> = (0..n).map(|_| thread::spawn(move || request(addr, &get_pot_request()))).collect();
+    let (reply_tx, replies) = mpsc::channel();
+    let mint = |count: usize| {
+        for _ in 0..count {
+            let tx = reply_tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send(request(addr, &get_pot_request()));
+            });
+        }
+    };
+    mint(MINT_WORKERS);
     while svc.started.load(Ordering::SeqCst) < MINT_WORKERS {
         thread::sleep(Duration::from_millis(10));
     }
-    let t = Instant::now();
+    let past_the_queue = 4;
+    let next_reply = || replies.recv_timeout(Duration::from_secs(15)).expect("a reply within 15 s");
+
+    // Act: no mint ends while they are held, so only refusals come back, and once the 4th has,
+    // every request has been queued or refused
+    mint(MINT_QUEUE + past_the_queue);
+    let refused: Vec<String> = (0..past_the_queue).map(|_| next_reply()).collect();
     let ping = request(addr, "GET /ping HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
-    assert!(ping.starts_with("HTTP/1."), "{ping}");
-    assert!(t.elapsed() < Duration::from_secs(1), "ping took {:?}", t.elapsed());
-    let replies: Vec<String> = all.into_iter().map(|h| h.join().unwrap()).collect();
-    let ok = replies.iter().filter(|r| r.starts_with("HTTP/1.1 200")).count();
-    let refused = replies.iter().filter(|r| r.starts_with("HTTP/1.1 503")).count();
-    assert_eq!((ok, refused), (MINT_WORKERS + MINT_QUEUE, 4), "{replies:?}");
+    svc.release();
+    let minted: Vec<String> = (0..MINT_WORKERS + MINT_QUEUE).map(|_| next_reply()).collect();
+
+    // Assert
+    assert!(refused.iter().all(|r| r.starts_with("HTTP/1.1 503")), "{refused:?}");
+    assert!(ping.starts_with("HTTP/1.") && ping.get(9..12) == Some("200"), "{ping}");
+    assert!(minted.iter().all(|r| r.starts_with("HTTP/1.1 200")), "{minted:?}");
 }
 
 #[test]
