@@ -28,8 +28,8 @@ const PORT_TAKEN_WINDOW: Duration = Duration::from_secs(5);
 const DRAIN_LIMIT: Duration = Duration::from_secs(20);
 /// A supervisor that still has the wrong version after a replacement is left alone this long, so a bad install cannot restart the stream in a loop.
 const VERSION_RESTART_PAUSE: Duration = Duration::from_secs(300);
-/// How long the app's Quit waits for a `launch` helper to exit. The helper waits up to 3 s for the supervisor's
-/// port and 0.3 s more for a refused config.json; the rest is for a slow box starting the helper itself.
+/// How long a stop of the supervisor waits for a `launch` helper to exit. The helper waits up to 3 s for the
+/// supervisor's port and 0.3 s more for a refused config.json; the rest is for a slow box starting it.
 pub const LAUNCH_EXIT_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

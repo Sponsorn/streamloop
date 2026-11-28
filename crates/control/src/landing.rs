@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use crate::clock::Clock;
 use crate::discord::{Level, Notifier};
 use crate::events::{Alert, DiscordKind};
-use crate::launcher::{LaunchOutcome, Launcher};
+use crate::launcher::{LaunchOutcome, Launcher, LAUNCH_EXIT_WAIT};
 use crate::runner::{RunErrorKind, RunSpec, Runner};
 use crate::supervisor_client::SupervisorApi;
 use crate::timeline::EventLog;
@@ -37,8 +37,10 @@ const GONE_POLL: Duration = Duration::from_millis(500);
 const CONFIRM_POLL: Duration = Duration::from_secs(2);
 /// The guard's test encode and the `launch` helper's port wait both fit well inside this.
 const LAUNCH_WAIT: Duration = Duration::from_secs(60);
-/// How long an exit waits for a landing under way: the supervisor's stop, the swap and the launch.
-pub const FINISH_BEFORE_EXIT: Duration = Duration::from_secs(SHUTDOWN_WAIT.as_secs() + AFTER_KILL_WAIT.as_secs() + LAUNCH_WAIT.as_secs() + 5);
+/// How long an exit waits for a landing under way: the supervisor's stop, with its wait for a launch helper,
+/// the swap and the launch.
+pub const FINISH_BEFORE_EXIT: Duration =
+    Duration::from_secs(LAUNCH_EXIT_WAIT.as_secs() + SHUTDOWN_WAIT.as_secs() + AFTER_KILL_WAIT.as_secs() + LAUNCH_WAIT.as_secs() + 5);
 /// Master's bound on one run of the check, well above its own worst case.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 /// The wait before a failed check of a held landing runs again, until the confirmation window ends.
@@ -629,9 +631,13 @@ impl<'a> Landing<'a> {
     }
 }
 
-/// Asks the supervisor to shut down and gives it 20 s to stop answering and let go of port 4417,
-/// then ends its tree.
+/// Waits up to 10 s for a `launch` helper that is still running, then asks the supervisor to shut down and gives
+/// it 20 s to stop answering and let go of port 4417, then ends its tree. The caller holds the launcher first.
 pub(crate) async fn stop_supervisor(deps: &LandingDeps) {
+    // A supervisor launched just before the hold may not hold its port yet, and the stop would miss it.
+    if !deps.launcher.wait_for_launch_helpers(LAUNCH_EXIT_WAIT).await {
+        tracing::warn!(limit_s = LAUNCH_EXIT_WAIT.as_secs(), "A supervisor launch was still running; stopping the supervisor anyway");
+    }
     let first_pid = (deps.pid_on_port)(SUPERVISOR_PORT);
     deps.client.shutdown().await;
     if wait_until_gone(deps, SHUTDOWN_WAIT).await {

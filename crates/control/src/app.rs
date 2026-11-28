@@ -27,7 +27,7 @@ use crate::discord::{CurrentNotifier, DiscordNotifier, Notifier};
 use crate::events::{launcher_event, with_playlist_names, Alert, AlertGate, SupervisorEvent, SupervisorEvents};
 use crate::http::{Http, ReqwestHttp};
 use crate::landing::{self, Confirmation, KillTree, LandedRecord, LandingDeps, LandingGate, PidOnPort, CONFIRM_WITHIN, FINISH_BEFORE_EXIT};
-use crate::launcher::{should_hold, Launcher, LauncherOptions, ProcessSpawner, Spawner, StartKind, LAUNCH_EXIT_WAIT};
+use crate::launcher::{should_hold, Launcher, LauncherOptions, ProcessSpawner, Spawner, StartKind};
 use crate::leftovers::{remove_3_0_leftovers, remove_stale_old_exe};
 use crate::logging;
 use crate::playlists::PlaylistCache;
@@ -500,10 +500,6 @@ impl Control {
         tracing::info!("Quitting StreamLoop");
         self.timeline.add(QUIT_LINE);
         self.notifier.notify_event(landing::recovery(QUIT_LINE)).await;
-        // A supervisor launched just before the hold may not hold its port yet, and the stop would miss it.
-        if !self.launcher.wait_for_launch_helpers(LAUNCH_EXIT_WAIT).await {
-            tracing::warn!(limit_s = LAUNCH_EXIT_WAIT.as_secs(), "A supervisor launch was still running; stopping the supervisor anyway");
-        }
         landing::stop_supervisor(&self.landing).await;
         // The alert waits out Discord's 5 s batch otherwise, which the exit would cut off.
         self.notifier.flush().await;

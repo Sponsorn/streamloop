@@ -103,6 +103,10 @@ type Spawn = (PathBuf, Vec<String>, Vec<u8>);
 struct Spawns {
     sup: Arc<Sup>,
     calls: Mutex<Vec<Spawn>>,
+    /// For the next launch only: its supervisor answers this long after the spawn, and its helper exits then.
+    late: Mutex<Option<Duration>>,
+    /// When that late launch's helper exited.
+    late_handed_off: Arc<Mutex<Option<Instant>>>,
 }
 
 /// The `launch` helper, which exits 0 once the supervisor holds its port.
@@ -118,6 +122,17 @@ impl SpawnHandle for HandedOff {
     }
 }
 
+/// A late launch's helper, which exits once its supervisor answers.
+struct HandsOffLate(tokio::sync::oneshot::Receiver<()>);
+
+#[async_trait]
+impl SpawnHandle for HandsOffLate {
+    async fn exit_code(self: Box<Self>) -> Option<i32> {
+        let _ = self.0.await;
+        Some(0)
+    }
+}
+
 impl Spawner for Spawns {
     fn spawn(&self, exe: &Path, args: &[String]) -> std::io::Result<Box<dyn SpawnHandle>> {
         let bytes = std::fs::read(exe)?;
@@ -126,15 +141,39 @@ impl Spawner for Spawns {
             b if b == NEWER_EXE => NEWER,
             _ => OLD,
         };
-        self.sup.answer(Some(status(version, true)));
         self.calls.lock().unwrap().push((exe.to_path_buf(), args.to_vec(), bytes));
-        Ok(Box::new(HandedOff))
+        let Some(after) = self.late.lock().unwrap().take() else {
+            self.sup.answer(Some(status(version, true)));
+            return Ok(Box::new(HandedOff));
+        };
+        let (up, handed_off) = tokio::sync::oneshot::channel();
+        let (sup, at) = (self.sup.clone(), self.late_handed_off.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            sup.answer(Some(status(version, true)));
+            *at.lock().unwrap() = Some(Instant::now());
+            let _ = up.send(());
+        });
+        Ok(Box::new(HandsOffLate(handed_off)))
     }
 }
 
 impl Spawns {
     fn all(&self) -> Vec<Spawn> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// Until the launcher has spawned `n` launches in all.
+    async fn wait_for(&self, n: usize) {
+        let until = Instant::now() + Duration::from_secs(30);
+        while self.all().len() < n {
+            assert!(Instant::now() < until, "the launcher did not spawn {n} launches");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn late_handed_off(&self) -> Instant {
+        self.late_handed_off.lock().unwrap().expect("the late launch's helper exited")
     }
 }
 
@@ -236,7 +275,7 @@ fn rig(version: &str, exe_bytes: &[u8], runner: Arc<FakeRunner>, hold_for_start:
     let http = Arc::new(SlowHttp::default());
     offer(&http, NEW, NEW_EXE);
     let sup = Arc::new(Sup::default());
-    let spawns = Arc::new(Spawns { sup: sup.clone(), calls: Mutex::new(Vec::new()) });
+    let spawns = Arc::new(Spawns { sup: sup.clone(), calls: Mutex::new(Vec::new()), late: Mutex::new(None), late_handed_off: Arc::default() });
     let posts = Arc::new(Posts::default());
     let kills: Kills = Arc::new(Mutex::new(Vec::new()));
     let updater = Updater::new(UpdaterOptions {
@@ -393,6 +432,21 @@ impl Rig {
         let staged = self.layout.staged_exe.clone();
         *self.sup.on_shutdown.lock().unwrap() = Some(Box::new(move || std::fs::remove_file(&staged).unwrap()));
     }
+
+    /// When `/shutdown` arrives, and whether a supervisor answered at that moment.
+    fn watch_shutdown(&self) -> Arc<Mutex<Option<(Instant, bool)>>> {
+        let seen = Arc::new(Mutex::new(None));
+        let (slot, sup) = (seen.clone(), Arc::downgrade(&self.sup));
+        *self.sup.on_shutdown.lock().unwrap() = Some(Box::new(move || {
+            let answering = sup.upgrade().is_some_and(|s| s.answering());
+            *slot.lock().unwrap() = Some((Instant::now(), answering));
+        }));
+        seen
+    }
+}
+
+fn shutdown_seen(seen: &Mutex<Option<(Instant, bool)>>) -> (Instant, bool) {
+    seen.lock().unwrap().expect("the supervisor was asked to shut down")
 }
 
 // land
@@ -576,6 +630,40 @@ async fn ends_a_supervisor_that_ignores_shutdown_after_20_s() {
     let at = kills[0].1.duration_since(started);
     assert!(at >= Duration::from_secs(20) && at < Duration::from_secs(21), "killed at {at:?}");
     assert_eq!(result, Ok(()));
+    assert_eq!(r.read(&r.layout.exe), NEW_EXE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_stops_the_supervisor_only_once_a_launch_under_way_has_handed_off() {
+    // Arrange: nothing answers, so the launcher relaunches; that supervisor answers 1 s after the spawn, when its helper exits
+    let r = landing_rig_with(false, false).await;
+    *r.spawns.late.lock().unwrap() = Some(Duration::from_secs(1));
+    r.spawns.wait_for(1).await;
+    let shutdown = r.watch_shutdown();
+    // Act
+    let result = land(&r.deps).await;
+    // Assert
+    assert_eq!(result, Ok(()));
+    let (asked_at, answering) = shutdown_seen(&shutdown);
+    let handed_off = r.spawns.late_handed_off();
+    assert!(asked_at >= handed_off, "asked {:?} before the helper exited", handed_off.duration_since(asked_at));
+    assert!(answering, "the shutdown reached the supervisor that launch brought up");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_landing_stops_the_supervisor_after_10_s_when_a_launch_under_way_never_hands_off() {
+    // Arrange: a relaunch whose helper outlives the landing
+    let r = landing_rig_with(false, false).await;
+    *r.spawns.late.lock().unwrap() = Some(Duration::from_secs(3600));
+    r.spawns.wait_for(1).await;
+    let shutdown = r.watch_shutdown();
+    let started = Instant::now();
+    // Act
+    let result = land(&r.deps).await;
+    // Assert
+    assert_eq!(result, Ok(()));
+    let waited = shutdown_seen(&shutdown).0.duration_since(started);
+    assert!(waited >= Duration::from_secs(10) && waited < Duration::from_secs(11), "asked after {waited:?}");
     assert_eq!(r.read(&r.layout.exe), NEW_EXE);
 }
 
@@ -997,6 +1085,26 @@ async fn rolls_back_when_the_new_supervisor_never_answers() {
     assert_eq!(spawns[0].2.as_slice(), OLD_EXE);
     let s = r.update_state();
     assert_eq!((s["step"].as_str(), s["result"].as_str()), (Some("check"), Some("rolled-back")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rollback_stops_the_supervisor_only_once_a_launch_under_way_has_handed_off() {
+    // Arrange: a launch of the new exe whose supervisor answers 3 s after the spawn, after the 1 s window
+    let r = confirming_rig(record(true, false), false);
+    r.deps.launcher.start();
+    *r.spawns.late.lock().unwrap() = Some(Duration::from_secs(3));
+    r.deps.launcher.launch_now();
+    r.spawns.wait_for(1).await;
+    let shutdown = r.watch_shutdown();
+    // Act
+    let outcome = confirm_or_roll_back(&r.deps, record(true, false), Duration::from_secs(1)).await;
+    // Assert
+    assert_eq!(outcome, Confirmation::RolledBack);
+    let (asked_at, answering) = shutdown_seen(&shutdown);
+    let handed_off = r.spawns.late_handed_off();
+    assert!(asked_at >= handed_off, "asked {:?} before the helper exited", handed_off.duration_since(asked_at));
+    assert!(answering, "the shutdown reached the supervisor that launch brought up");
+    assert_eq!(r.spawns.all().last().map(|s| s.2.clone()), Some(OLD_EXE.to_vec()));
 }
 
 #[tokio::test(start_paused = true)]
