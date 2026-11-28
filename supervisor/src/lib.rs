@@ -1516,16 +1516,17 @@ impl Ctl {
     }
 
     /// What the look-ahead walks over: each video's size (on disk, else as looked up), whether it is
-    /// stepped over (skipped or failed), and the budget in bytes.
-    fn look_ahead_inputs(&self) -> (Vec<Option<u64>>, Vec<bool>, u64) {
+    /// on disk, whether it is stepped over (skipped or failed), and the budget in bytes.
+    fn look_ahead_inputs(&self) -> (Vec<Option<u64>>, Vec<bool>, Vec<bool>, u64) {
         let sizes = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
+        let on_disk = self.videos.iter().map(|v| v.on_disk).collect();
         let stepped = self.videos.iter().map(|v| v.skipped || v.dl_failed).collect();
-        (sizes, stepped, self.settings.cache_budget_mb * 1_048_576)
+        (sizes, on_disk, stepped, self.settings.cache_budget_mb * 1_048_576)
     }
 
     fn window(&self) -> Vec<usize> {
-        let (sizes, stepped, budget) = self.look_ahead_inputs();
-        rules::window(self.view().0, &sizes, &stepped, budget)
+        let (sizes, on_disk, stepped, budget) = self.look_ahead_inputs();
+        rules::window(self.view().0, &sizes, &on_disk, &stepped, budget)
     }
 
     /// The video on air from its URL, or about to be: downloaded first and never deleted.
@@ -1587,9 +1588,9 @@ impl Ctl {
         // A failed download is asked for again on the next lap, once the viewer has passed it. The
         // window leaves failed videos out, so "outside the window" alone would retry it at once.
         let reach = {
-            let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
+            let (sizes, on_disk, _, budget) = self.look_ahead_inputs();
             let skipped: Vec<bool> = self.videos.iter().map(|v| v.skipped).collect();
-            rules::window(view, &sizes, &skipped, self.settings.cache_budget_mb * 1_048_576)
+            rules::window(view, &sizes, &on_disk, &skipped, budget)
         };
         // Deletion by playout: anything outside the window that no feeder reads.
         for i in 0..self.n() {
@@ -2361,13 +2362,13 @@ impl Ctl {
     /// through the look-ahead and the last deletions, read from the rules `cache_work` follows.
     fn cache_report(&self) -> Value {
         let deletions: Vec<Value> = self.deletions.iter().map(|d| json!({"at": d.at, "id": d.id, "title": d.title, "bytes": d.bytes, "reason": d.reason})).collect();
-        let (sizes, stepped, budget) = self.look_ahead_inputs();
+        let (sizes, on_disk, stepped, budget) = self.look_ahead_inputs();
         let mut report = json!({"cacheBytes": self.cache_bytes, "budgetBytes": budget, "next": self.named_next("nothing", None, None), "videos": [], "deletions": deletions});
         if self.videos.is_empty() {
             return report;
         }
         let (view, pos, source) = self.view();
-        let rows = rules::look_ahead(view, &sizes, &stepped, budget);
+        let rows = rules::look_ahead(view, &sizes, &on_disk, &stepped, budget);
         let durations: Vec<Option<f64>> = self.videos.iter().map(|v| v.entry.duration).collect();
         let downloading = self.downloading.as_ref().map(|d| d.0);
         let row = |&(i, ahead): &(usize, rules::Ahead)| {
@@ -2394,7 +2395,7 @@ impl Ctl {
                 let p = self.dl_track.progress.unwrap_or_default();
                 json!({"percent": self.downloading.as_ref().map_or(0.0, |d| d.1), "speedBps": p.speed_bps, "etaS": p.eta_s, "part": self.dl_track.part, "parts": self.dl_track.parts})
             });
-            let room_at = (ahead == rules::Ahead::NoRoom).then(|| rules::room_in_s(view, pos, i, &sizes, &stepped, budget, &durations)).flatten().map(|s| iso(unix_ms() + (s * 1000.0) as u64));
+            let room_at = (ahead == rules::Ahead::NoRoom).then(|| rules::room_in_s(view, pos, i, &sizes, &on_disk, &stepped, budget, &durations)).flatten().map(|s| iso(unix_ms() + (s * 1000.0) as u64));
             let file = v.on_disk.then(|| {
                 let r = self.records.get(&v.entry.id);
                 let info = r.and_then(|r| r.info.clone()).unwrap_or_default();
@@ -5291,6 +5292,24 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_file_past_a_video_whose_size_is_unknown_is_not_deleted() {
+        // b's size lookup has not answered yet; c and d fit the budget behind it.
+        let mut ctl = test_ctl("keep-past-unknown", &["a", "b", "c", "d", "e"]);
+        ctl.settings.cache_budget_mb = 45;
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        for i in [0, 2, 3] {
+            std::fs::write(ctl.file_of(i), [0u8; 8]).unwrap();
+            (ctl.videos[i].on_disk, ctl.videos[i].disk_bytes) = (true, MB10);
+        }
+        on_air(&mut ctl, 0, 0.0);
+
+        ctl.cache_work();
+
+        assert!(ctl.file_of(2).exists() && ctl.file_of(3).exists());
+        assert!(ctl.deletions.is_empty(), "{:?}", ctl.deletions.iter().map(|d| (&d.id, d.reason)).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn a_file_a_switch_drops_is_deleted_as_no_longer_in_a_playlist() {
         let mut ctl = test_ctl("del-switch", &[]);
         ctl.settings.playlist_id = "PLa".into();
@@ -5456,6 +5475,22 @@ mod tests {
         let report = ctl.cache_report();
 
         assert_eq!((report["next"]["when"].as_str(), report["next"]["id"].as_str()), (Some("youtube-paused"), Some("c")));
+    }
+
+    #[test]
+    fn cache_report_lists_the_files_kept_past_a_size_still_to_look_up_and_looks_it_up_next() {
+        let mut ctl = test_ctl("report-past-unknown", &["a", "b", "c", "d", "e"]);
+        ctl.settings.cache_budget_mb = 45;
+        for i in [0, 2, 3] {
+            (ctl.videos[i].on_disk, ctl.videos[i].disk_bytes) = (true, MB10);
+        }
+        on_air(&mut ctl, 0, 0.0);
+
+        let report = ctl.cache_report();
+
+        let want = [("a", "on-air"), ("b", "size-unknown"), ("c", "cached"), ("d", "cached")];
+        assert_eq!(states(&report), want.map(|(i, s)| (i.to_string(), s.to_string())));
+        assert_eq!((report["next"]["when"].as_str(), report["next"]["id"].as_str()), (Some("now"), Some("b")));
     }
 
     #[test]

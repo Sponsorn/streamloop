@@ -485,23 +485,29 @@ pub enum Ahead {
 }
 
 /// The walk from the viewer within the budget. The viewer's own video always counts; the one just
-/// behind never does; an unknown size ends the walk inside the window.
-pub fn look_ahead(view: usize, sizes: &[Option<u64>], stepped: &[bool], budget: u64) -> Vec<(usize, Ahead)> {
+/// behind never does. An unknown size counts as nothing, and past it only files already on disk join,
+/// up to the first that is not, so a size still to be looked up deletes no file that fits.
+pub fn look_ahead(view: usize, sizes: &[Option<u64>], on_disk: &[bool], stepped: &[bool], budget: u64) -> Vec<(usize, Ahead)> {
     let n = sizes.len();
     let mut out = vec![];
     if n == 0 {
         return out;
     }
     let mut total = 0;
+    let mut past_unknown = false;
     for d in 0..n.saturating_sub(1).max(1) {
         let i = (view + d) % n;
         if d > 0 && stepped[i] {
             out.push((i, Ahead::SteppedOver));
             continue;
         }
+        if past_unknown && !on_disk[i] {
+            break;
+        }
         let Some(size) = sizes[i] else {
             out.push((i, Ahead::Window));
-            break;
+            past_unknown = true;
+            continue;
         };
         if d > 0 && total + size > budget {
             out.push((i, Ahead::NoRoom));
@@ -514,15 +520,16 @@ pub fn look_ahead(view: usize, sizes: &[Option<u64>], stepped: &[bool], budget: 
 }
 
 /// Videos worth having on disk: the look-ahead's `Window` entries.
-pub fn window(view: usize, sizes: &[Option<u64>], skipped: &[bool], budget: u64) -> Vec<usize> {
-    look_ahead(view, sizes, skipped, budget).into_iter().filter(|r| r.1 == Ahead::Window).map(|r| r.0).collect()
+pub fn window(view: usize, sizes: &[Option<u64>], on_disk: &[bool], skipped: &[bool], budget: u64) -> Vec<usize> {
+    look_ahead(view, sizes, on_disk, skipped, budget).into_iter().filter(|r| r.1 == Ahead::Window).map(|r| r.0).collect()
 }
 
 /// Seconds until the viewer reaches the first position from which `waiting` fits in the window,
 /// with the sizes known now. None when a duration on the way is unknown.
-pub fn room_in_s(view: usize, pos: f64, waiting: usize, sizes: &[Option<u64>], stepped: &[bool], budget: u64, durations: &[Option<f64>]) -> Option<f64> {
+#[allow(clippy::too_many_arguments)]
+pub fn room_in_s(view: usize, pos: f64, waiting: usize, sizes: &[Option<u64>], on_disk: &[bool], stepped: &[bool], budget: u64, durations: &[Option<f64>]) -> Option<f64> {
     let n = sizes.len();
-    (1..n).map(|k| (view + k) % n).find(|&v| window(v, sizes, stepped, budget).contains(&waiting)).and_then(|v| until_needed_s(view, pos, v, durations))
+    (1..n).map(|k| (view + k) % n).find(|&v| window(v, sizes, on_disk, stepped, budget).contains(&waiting)).and_then(|v| until_needed_s(view, pos, v, durations))
 }
 
 /// Why no download or size lookup may start now.
@@ -1066,14 +1073,14 @@ mod tests {
     fn window_walks_forward_within_budget() {
         let sizes = [Some(100), Some(100), Some(100), Some(100), Some(100)];
         let none = [false; 5];
-        assert_eq!(window(3, &sizes, &none, 250), [3, 4]);
+        assert_eq!(window(3, &sizes, &none, &none, 250), [3, 4]);
         // the current video always counts, even over budget
-        assert_eq!(window(1, &[Some(10), Some(900), Some(10)], &[false; 3], 100), [1]);
+        assert_eq!(window(1, &[Some(10), Some(900), Some(10)], &[false; 3], &[false; 3], 100), [1]);
         // never the video just behind the viewer, even when everything fits
-        assert_eq!(window(2, &sizes, &none, 10_000), [2, 3, 4, 0]);
-        // unknown size ends the walk; skipped entries are stepped over
-        assert_eq!(window(0, &[Some(10), None, Some(10)], &[false; 3], 100), [0, 1]);
-        assert_eq!(window(0, &sizes, &[false, true, false, false, false], 250), [0, 2]);
+        assert_eq!(window(2, &sizes, &none, &none, 10_000), [2, 3, 4, 0]);
+        // past an unknown size only files on disk join; skipped entries are stepped over
+        assert_eq!(window(0, &[Some(10), None, Some(10)], &[false; 3], &[false; 3], 100), [0, 1]);
+        assert_eq!(window(0, &sizes, &none, &[false, true, false, false, false], 250), [0, 2]);
     }
 
     #[test]
@@ -1081,14 +1088,14 @@ mod tests {
         let sizes = [Some(100); 5];
         let none = [false; 5];
         // viewer moved from 1 to 2 by playout: 1 is behind and goes
-        let win = window(2, &sizes, &none, 250);
+        let win = window(2, &sizes, &none, &none, 250);
         assert!(deletable(1, &win, 2, Some(3)));
         assert!(!deletable(2, &win, 2, Some(3)));
         assert!(!deletable(3, &win, 2, Some(3)));
         // jump from 1 to 4: 2 is no longer ahead; restart keeps the current file
-        let win = window(4, &sizes, &none, 250);
+        let win = window(4, &sizes, &none, &none, 250);
         assert!(deletable(2, &win, 4, Some(4)));
-        assert!(!deletable(1, &window(1, &sizes, &none, 250), 1, Some(1)));
+        assert!(!deletable(1, &window(1, &sizes, &none, &none, 250), 1, Some(1)));
         // a file a live feeder reads is never deleted
         assert!(!deletable(2, &win, 4, Some(2)));
     }
@@ -1168,28 +1175,48 @@ mod tests {
     fn look_ahead_marks_stepped_over_videos_and_ends_at_the_first_that_does_not_fit() {
         let stepped = [false, false, true, false, false];
 
-        let rows = look_ahead(0, &tens(5), &stepped, 25);
+        let rows = look_ahead(0, &tens(5), &[false; 5], &stepped, 25);
 
         assert_eq!(rows, [(0, Ahead::Window), (1, Ahead::Window), (2, Ahead::SteppedOver), (3, Ahead::NoRoom)]);
     }
 
     #[test]
-    fn look_ahead_ends_at_an_unknown_size_and_keeps_it_in_the_window() {
-        let rows = look_ahead(0, &[Some(10), None, Some(10)], &[false; 3], 100);
+    fn look_ahead_past_an_unknown_size_keeps_files_on_disk_up_to_the_first_video_that_is_not() {
+        let sizes = [Some(10), None, Some(10), Some(10), Some(10)];
+        let on_disk = [true, false, true, false, true];
+
+        let rows = look_ahead(0, &sizes, &on_disk, &[false; 5], 100);
+
+        assert_eq!(rows, [(0, Ahead::Window), (1, Ahead::Window), (2, Ahead::Window)]);
+    }
+
+    #[test]
+    fn look_ahead_counts_an_unknown_size_as_nothing_and_holds_files_on_disk_to_the_budget() {
+        let sizes = [Some(10), None, Some(10), Some(10), Some(10)];
+        let on_disk = [true, false, true, true, true];
+
+        let rows = look_ahead(0, &sizes, &on_disk, &[false; 5], 25);
+
+        assert_eq!(rows, [(0, Ahead::Window), (1, Ahead::Window), (2, Ahead::Window), (3, Ahead::NoRoom)]);
+    }
+
+    #[test]
+    fn look_ahead_keeps_files_on_disk_past_an_on_air_video_of_unknown_size() {
+        let rows = look_ahead(0, &[None, Some(10), Some(10)], &[false, true, true], &[false; 3], 100);
 
         assert_eq!(rows, [(0, Ahead::Window), (1, Ahead::Window)]);
     }
 
     #[test]
     fn look_ahead_lists_a_one_video_ring_once() {
-        let rows = look_ahead(0, &[Some(10)], &[false], 0);
+        let rows = look_ahead(0, &[Some(10)], &[false], &[false], 0);
 
         assert_eq!(rows, [(0, Ahead::Window)]);
     }
 
     #[test]
     fn look_ahead_never_lists_a_video_twice_when_the_whole_ring_fits() {
-        let rows = look_ahead(0, &tens(4), &[false; 4], 1000);
+        let rows = look_ahead(0, &tens(4), &[false; 4], &[false; 4], 1000);
 
         let indexes: Vec<usize> = rows.iter().map(|r| r.0).collect();
         assert_eq!(indexes, [0, 1, 2], "the video behind the viewer never counts");
@@ -1197,17 +1224,18 @@ mod tests {
 
     #[test]
     fn window_is_the_look_ahead_without_stepped_over_and_no_room_videos() {
-        let cases: [(Vec<Option<u64>>, Vec<bool>, u64); 4] = [
-            (tens(5), vec![false, false, true, false, false], 25),
-            (vec![Some(10), None, Some(10)], vec![false; 3], 100),
-            (vec![Some(10)], vec![false], 0),
-            (tens(4), vec![false; 4], 1000),
+        let cases: [(Vec<Option<u64>>, Vec<bool>, Vec<bool>, u64); 5] = [
+            (tens(5), vec![false; 5], vec![false, false, true, false, false], 25),
+            (vec![Some(10), None, Some(10)], vec![false; 3], vec![false; 3], 100),
+            (vec![Some(10), None, Some(10), Some(10), Some(10)], vec![true, false, true, true, true], vec![false; 5], 25),
+            (vec![Some(10)], vec![false], vec![false], 0),
+            (tens(4), vec![false; 4], vec![false; 4], 1000),
         ];
 
-        for (sizes, stepped, budget) in cases {
-            let only_window: Vec<usize> = look_ahead(0, &sizes, &stepped, budget).into_iter().filter(|r| r.1 == Ahead::Window).map(|r| r.0).collect();
+        for (sizes, on_disk, stepped, budget) in cases {
+            let only_window: Vec<usize> = look_ahead(0, &sizes, &on_disk, &stepped, budget).into_iter().filter(|r| r.1 == Ahead::Window).map(|r| r.0).collect();
 
-            assert_eq!(window(0, &sizes, &stepped, budget), only_window, "{sizes:?} {stepped:?} {budget}");
+            assert_eq!(window(0, &sizes, &on_disk, &stepped, budget), only_window, "{sizes:?} {on_disk:?} {stepped:?} {budget}");
         }
     }
 
@@ -1215,7 +1243,7 @@ mod tests {
     fn room_comes_at_the_next_video_change_when_that_frees_enough() {
         let durations = [Some(100.0); 5];
 
-        let room = room_in_s(0, 30.0, 2, &tens(5), &[false; 5], 25, &durations);
+        let room = room_in_s(0, 30.0, 2, &tens(5), &[false; 5], &[false; 5], 25, &durations);
 
         assert_eq!(room, Some(70.0));
     }
@@ -1224,7 +1252,7 @@ mod tests {
     fn room_can_take_more_than_one_video_change() {
         let sizes = [Some(10), Some(10), Some(20), Some(10), Some(10)];
 
-        let room = room_in_s(0, 30.0, 2, &sizes, &[false; 5], 25, &[Some(100.0); 5]);
+        let room = room_in_s(0, 30.0, 2, &sizes, &[false; 5], &[false; 5], 25, &[Some(100.0); 5]);
 
         assert_eq!(room, Some(170.0));
     }
@@ -1233,14 +1261,14 @@ mod tests {
     fn room_is_unknown_when_a_duration_on_the_way_is_unknown() {
         let durations = [None, Some(100.0), Some(100.0), Some(100.0), Some(100.0)];
 
-        let room = room_in_s(0, 30.0, 2, &tens(5), &[false; 5], 25, &durations);
+        let room = room_in_s(0, 30.0, 2, &tens(5), &[false; 5], &[false; 5], 25, &durations);
 
         assert_eq!(room, None);
     }
 
     #[test]
     fn room_never_loops_on_a_one_video_ring() {
-        let room = room_in_s(0, 0.0, 0, &[Some(10)], &[false], 0, &[Some(100.0)]);
+        let room = room_in_s(0, 0.0, 0, &[Some(10)], &[false], &[false], 0, &[Some(100.0)]);
 
         assert_eq!(room, None, "a one-video ring has no other viewer position to wait for");
     }
