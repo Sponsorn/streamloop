@@ -1,3 +1,21 @@
+## v3.2.0
+
+A prerelease for trial, not marked latest. 3.1.x installs get it through the dashboard's update, at the next planned break or with Update Now. `START.bat` has not changed, so no full ZIP is needed. 3.0 installs move to it with the full ZIP by hand, as described for 3.1.0.
+
+- **StreamLoop is now one Windows app.** Double-click `streamloop.exe` to start it. The StreamLoop window opens and, when StreamLoop is not running yet, starts it in the background, so no console window opens. The window is built into `streamloop.exe`, so updates bring it along. While it waits it says "Starting StreamLoop...", and after 30 seconds with no answer it says to double-click `START.bat`, whose window shows why StreamLoop did not start.
+- **A tray icon shows the stream.** It is green when live, amber while the stream starts, recovers or updates, red when it is off air or StreamLoop does not answer, and grey when it is stopped. Pointing at it shows the state and the reason. A click opens the window, and a right-click offers Open StreamLoop and Quit StreamLoop.
+- **Closing the window keeps the stream on air.** StreamLoop stays in the tray, and the first time a notification says so. Double-clicking `streamloop.exe` again brings the window back instead of starting a second StreamLoop.
+- **Quit StreamLoop stops the stream and closes StreamLoop.** It is in the tray icon's menu and under Settings, where it replaces "Shut down the dashboard", and it asks first. Start StreamLoop again to go back on air. A stream you stopped with Stop before quitting stays stopped until you press Start.
+- **The window follows updates.** After an update or a rollback it restarts into the version that now runs, where it was.
+- **Autostart starts StreamLoop in the tray at logon.** "Run on Windows startup" now writes a `StreamLoop` entry under Windows' Run key instead of `StreamLoop.vbs` in the Startup folder, and the entry shows in Task Manager's Startup tab.
+- **The web dashboard is gone.** `http://localhost:7654/admin` no longer answers, the "Open the web dashboard when StreamLoop starts" setting is gone, and Discord alerts no longer link to it. The window does everything the dashboard did.
+- **Web pages can no longer reach StreamLoop.** Its two local ports, 7654 and 4417, now refuse every request from a browser, so a web page open on the PC cannot stop or steer the stream, or read the API token.
+- **After the update, the console window stays until StreamLoop next starts from `streamloop.exe`, or until the next logon with autostart on.** StreamLoop goes on running in the `START.bat` window it was started in. To close that window now: double-click `streamloop.exe`, which opens the StreamLoop window beside the running StreamLoop, choose Quit StreamLoop from the tray icon, close the `START.bat` window once it says "StreamLoop stopped.", then double-click `streamloop.exe` again. The stream is off air in between.
+- **An existing `StreamLoop.vbs` becomes the Run entry by itself.** At its first start after the update, StreamLoop replaces a `StreamLoop.vbs` it wrote for this install with the Run entry, so the next logon starts StreamLoop in the tray. A `StreamLoop.vbs` of a 2.x install, or one StreamLoop did not write, is left alone.
+- **Close and delete the trial copy of the window in `C:\StreamLoop-ui`.** That is the earlier `streamloop-ui.exe`. Left running, it would show as a second window beside the one in `streamloop.exe`.
+
+---
+
 ## v3.1.2
 
 A prerelease for trial, not marked latest. 3.1.0 and 3.1.1 installs get it through the dashboard's update, at the next planned break or with Update Now. 3.0 installs move to it with the full ZIP by hand, as described for 3.1.0.
