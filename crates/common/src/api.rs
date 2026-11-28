@@ -216,6 +216,131 @@ pub struct ReloadReply {
     pub stream_key_problem: Field<String>,
 }
 
+/// `GET /cache`: the cache in use, the next download, every video from the one on air through the
+/// look-ahead, and the last deletions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CacheReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<CacheNext>,
+    pub videos: Vec<CacheVideo>,
+    pub deletions: Vec<CacheDeletion>,
+}
+
+/// `when`: `downloading`, `now`, `size-lookup`, `after-failure`, `cookies`, `youtube-paused`,
+/// `retry`, `room` or `nothing`; `at` is when it starts, where there is a time.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CacheNext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub at: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub index: Field<usize>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub id: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub title: Field<String>,
+}
+
+/// `state`: `on-air` (with `source`), `downloading` (with `download`), `cached`, `queued`,
+/// `size-unknown` (with `lookedUp`), `failed` (with `retryAt`), `skipped` or `waiting-for-room`
+/// (with `roomAt`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CacheVideo {
+    /// Counts within the video's list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Field<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub duration: Field<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub source: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub bytes: Field<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub looked_up: Option<bool>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub download: Field<CacheDownload>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub retry_at: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub room_at: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub file: Field<CacheFile>,
+}
+
+/// The stream coming in: `part` of `parts` (video, then audio, for a merged download).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CacheDownload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<f64>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub speed_bps: Field<f64>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub eta_s: Field<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parts: Option<u32>,
+}
+
+/// A file on disk: its streams, its bitrate and the download that wrote it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CacheFile {
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub width: Field<u32>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub height: Field<u32>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub fps: Field<f64>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub vcodec: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub acodec: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub kbps: Field<u64>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub format: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub client: Field<String>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub finished_at: Field<String>,
+}
+
+/// `reason`: `played`, `outside-look-ahead`, `not-in-playlist` or `unreadable`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CacheDeletion {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +392,23 @@ mod tests {
         assert_eq!(absent.playing.unwrap().playlist_id, None);
         assert_eq!(null.playing.unwrap().playlist_id, Some(None));
         assert_eq!(named.playing.unwrap().playlist_id, Some(Some("PLa".to_string())));
+    }
+
+    #[test]
+    fn cache_report_ignores_unknown_fields() {
+        let r: CacheReport = serde_json::from_value(json!({"cacheBytes": 5, "newer": 1, "videos": [{"id": "a", "later": true}]})).unwrap();
+
+        assert_eq!((r.cache_bytes, r.videos[0].id.as_deref()), (Some(5), Some("a")));
+    }
+
+    #[test]
+    fn cache_report_keeps_null_and_absent_apart() {
+        let r: CacheReport = serde_json::from_value(json!({"videos": [{"id": "a", "roomAt": null}]})).unwrap();
+
+        let back = serde_json::to_value(&r).unwrap();
+
+        assert_eq!(back["videos"][0].get("roomAt"), Some(&Value::Null));
+        assert!(back["videos"][0].get("file").is_none(), "{back}");
     }
 
     #[test]

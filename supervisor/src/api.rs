@@ -1,5 +1,5 @@
-//! HTTP API on 127.0.0.1. Requests become messages to the control loop, except GET /status,
-//! which reads a snapshot the loop refreshes so 2.x's 1 s check never waits on a busy loop.
+//! HTTP API on 127.0.0.1. Requests become messages to the control loop, except GET /status and
+//! GET /cache, which read snapshots the loop refreshes so 2.x's 1 s check never waits on a busy loop.
 
 use crate::Msg;
 use serde_json::{json, Value};
@@ -23,12 +23,13 @@ fn ask<T>(tx: &Sender<Msg>, make: impl FnOnce(Sender<T>) -> Msg) -> Option<T> {
     rx.recv_timeout(Duration::from_secs(10)).ok()
 }
 
-pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot) -> Result<(), String> {
+/// `cache` is the report GET /cache answers, refreshed about once a second.
+pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot, cache: Snapshot) -> Result<(), String> {
     let server = Server::http(("127.0.0.1", port)).map_err(|e| format!("bind 127.0.0.1:{port}: {e}"))?;
     std::thread::spawn(move || {
         for mut req in server.incoming_requests() {
             // One thread per request: a slow body or a request waiting on the loop must not delay GET /status.
-            let (tx, snapshot) = (tx.clone(), snapshot.clone());
+            let (tx, snapshot, cache) = (tx.clone(), snapshot.clone(), cache.clone());
             std::thread::spawn(move || {
                 // Refused before this thread reads the body. After the 403, the patched vendor/tiny_http discards at
                 // most 64 KiB of it and closes the connection on a larger body unread.
@@ -43,6 +44,7 @@ pub fn serve(port: u16, debug_faults: bool, tx: Sender<Msg>, snapshot: Snapshot)
                 let (method, url) = (req.method().clone(), req.url().to_string());
                 let result: Option<Result<Value, String>> = match (method, url.as_str()) {
                     (Method::Get, "/status") => Some(Ok(snapshot.lock().unwrap().clone())),
+                    (Method::Get, "/cache") => Some(Ok(cache.lock().unwrap().clone())),
                     (Method::Post, "/control") => match parsed {
                         Err(e) => Some(Err(format!("bad JSON: {e}"))),
                         Ok(v) => {
@@ -136,7 +138,7 @@ mod tests {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let (tx, rx) = channel::<Msg>();
         let snapshot: Snapshot = Arc::new(Mutex::new(json!({"state": "starting", "encoder": {"alive": false}})));
-        serve(port, false, tx.clone(), snapshot).unwrap();
+        serve(port, false, tx.clone(), snapshot, Arc::default()).unwrap();
         (port, tx, rx)
     }
 
@@ -263,6 +265,23 @@ mod tests {
     const REFUSAL: &str = r#"{"error":"Forbidden: requests from a browser are refused"}"#;
 
     #[test]
+    fn cache_answers_the_snapshot_and_refuses_a_browser() {
+        // Arrange
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (tx, _rx) = channel::<Msg>();
+        let cache: Snapshot = Arc::new(Mutex::new(json!({"cacheBytes": 7, "videos": []})));
+        serve(port, false, tx, Arc::default(), cache).unwrap();
+
+        // Act
+        let ok = raw(port, "GET /cache", &format!("Host: 127.0.0.1:{port}\r\n"));
+        let refused = raw(port, "GET /cache", &format!("Host: 127.0.0.1:{port}\r\nOrigin: http://evil.example\r\n"));
+
+        // Assert
+        assert!(ok.starts_with("HTTP/1.1 200") && ok.ends_with(r#"{"cacheBytes":7,"videos":[]}"#), "{ok}");
+        assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    }
+
+    #[test]
     fn refuses_shutdown_with_an_origin_and_keeps_running() {
         // Arrange
         let (port, _tx, rx) = start();
@@ -368,7 +387,7 @@ mod tests {
         // Arrange: the port moved off 4417, as --api-port does
         let (tx, _rx) = channel::<Msg>();
         let snapshot: Snapshot = Arc::new(Mutex::new(json!({"state": "starting"})));
-        serve(4427, false, tx, snapshot).unwrap();
+        serve(4427, false, tx, snapshot, Arc::default()).unwrap();
 
         // Act
         let own = raw(4427, "GET /status", "Host: localhost:4427\r\n");

@@ -489,6 +489,9 @@ pub enum Ahead {
 pub fn look_ahead(view: usize, sizes: &[Option<u64>], stepped: &[bool], budget: u64) -> Vec<(usize, Ahead)> {
     let n = sizes.len();
     let mut out = vec![];
+    if n == 0 {
+        return out;
+    }
     let mut total = 0;
     for d in 0..n.saturating_sub(1).max(1) {
         let i = (view + d) % n;

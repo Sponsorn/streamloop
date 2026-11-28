@@ -33,6 +33,13 @@ use watchdog::{Detect, Heal, Verdict};
 use ytdlp::{Entry, Resolved, Ytdlp};
 
 
+/// The wall-clock time of a monotonic instant, as an ISO string.
+fn iso_at(t: Instant) -> String {
+    let now = Instant::now();
+    let ms = if t >= now { unix_ms() + (t - now).as_millis() as u64 } else { unix_ms().saturating_sub((now - t).as_millis() as u64) };
+    iso(ms)
+}
+
 fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
@@ -116,8 +123,8 @@ const CONFIG_REFUSED_EXIT: i32 = 3;
 /// Bind before anything else: a duplicate launch must exit 2 before it reads config.json, prunes
 /// logs, touches the cache or starts a thread or child, all of which the live instance owns.
 /// A refused config.json is a critical `config-refused` event (Node tails it) and exit 3.
-fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Snapshot) -> Result<Settings, i32> {
-    if let Err(e) = api::serve(port, args.debug_faults, tx, snapshot) {
+fn bind_then_settings(args: &Args, port: u16, tx: Sender<Msg>, snapshot: api::Snapshot, cache: api::Snapshot) -> Result<Settings, i32> {
+    if let Err(e) = api::serve(port, args.debug_faults, tx, snapshot, cache) {
         logs::echo(&mut std::io::stderr().lock(), &format!("streamloop supervisor: {e}"));
         return Err(2);
     }
@@ -491,6 +498,8 @@ pub struct TokenState {
 
 struct Ctl {
     snapshot: api::Snapshot,
+    /// What GET /cache answers, refreshed with the cache scan.
+    cache_snapshot: api::Snapshot,
     args: Args,
     /// What runs: a reload changes the live fields; ingest, key and encoder wait for a restart.
     settings: Settings,
@@ -634,6 +643,7 @@ impl Ctl {
         let records = cache_info::Records::load(args.paths.data.join("cache.json"));
         Ctl {
             snapshot,
+            cache_snapshot: Arc::default(),
             deadline: args.dev.hours.map(|h| now + Duration::from_secs_f64(h * 3600.0)),
             args,
             playlist: String::new(),
@@ -1504,10 +1514,36 @@ impl Ctl {
         wait
     }
 
+    /// What the look-ahead walks over: each video's size (on disk, else as looked up), whether it is
+    /// stepped over (skipped or failed), and the budget in bytes.
+    fn look_ahead_inputs(&self) -> (Vec<Option<u64>>, Vec<bool>, u64) {
+        let sizes = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
+        let stepped = self.videos.iter().map(|v| v.skipped || v.dl_failed).collect();
+        (sizes, stepped, self.settings.cache_budget_mb * 1_048_576)
+    }
+
     fn window(&self) -> Vec<usize> {
-        let sizes: Vec<Option<u64>> = self.videos.iter().map(|v| if v.on_disk { Some(v.disk_bytes) } else { v.bytes }).collect();
-        let skipped: Vec<bool> = self.videos.iter().map(|v| v.skipped || v.dl_failed).collect();
-        rules::window(self.view().0, &sizes, &skipped, self.settings.cache_budget_mb * 1_048_576)
+        let (sizes, stepped, budget) = self.look_ahead_inputs();
+        rules::window(self.view().0, &sizes, &stepped, budget)
+    }
+
+    /// The video on air from its URL, or about to be: downloaded first and never deleted.
+    fn first_download(&self) -> Option<usize> {
+        let url_fed = self.live.as_ref().filter(|f| f.source == Source::Url && !f.filler).map(|f| f.index);
+        url_fed.or(self.target.as_ref().map(|t| t.index)).filter(|&i| !self.videos[i].on_disk && !self.videos[i].dl_failed)
+    }
+
+    /// The video the downloader takes next, once it may: the first download, else the first window
+    /// entry not on disk and not given up on.
+    fn next_pick(&self, win: &[usize], first: Option<usize>) -> Option<usize> {
+        let on_disk: Vec<bool> = self.videos.iter().map(|v| v.on_disk).collect();
+        let failed: Vec<bool> = self.videos.iter().map(|v| v.dl_failed || v.skipped).collect();
+        first.filter(|&u| !failed[u]).or_else(|| rules::next_download(win, &on_disk, &failed))
+    }
+
+    /// The pick asks YouTube for its size first.
+    fn needs_size(&self, i: usize, view: usize, first: Option<usize>) -> bool {
+        self.videos[i].bytes.is_none() && !self.videos[i].looked_up && i != view && Some(i) != first
     }
 
     fn cache_work(&mut self) {
@@ -1535,8 +1571,7 @@ impl Ctl {
         let fed = self.live.as_ref().filter(|f| !f.filler).map(|f| f.index);
         let url_fed = self.live.as_ref().filter(|f| f.source == Source::Url && !f.filler).map(|f| f.index);
         let target = self.target.as_ref().map(|t| t.index);
-        // The video on air from its URL, or about to be, is downloaded first and never deleted.
-        let first = url_fed.or(target).filter(|&i| !self.videos[i].on_disk && !self.videos[i].dl_failed);
+        let first = self.first_download();
 
         // Cancel a download that no longer belongs to the look-ahead, or that blocks the first one.
         if let Some((i, _, cancel)) = &self.downloading {
@@ -1585,11 +1620,8 @@ impl Ctl {
         if rules::download_wait(self.downloading.is_some(), self.sizing, Instant::now(), self.dl_after, self.cookie_after, self.breaker.open).is_some() {
             return;
         }
-        let on_disk: Vec<bool> = self.videos.iter().map(|v| v.on_disk).collect();
-        let failed: Vec<bool> = self.videos.iter().map(|v| v.dl_failed || v.skipped).collect();
-        let pick = first.filter(|&u| !failed[u]).or_else(|| rules::next_download(&win, &on_disk, &failed));
-        let Some(i) = pick else { return };
-        if self.videos[i].bytes.is_none() && !self.videos[i].looked_up && i != view && Some(i) != first {
+        let Some(i) = self.next_pick(&win, first) else { return };
+        if self.needs_size(i, view, first) {
             if self.youtube_slot().is_none() {
                 return;
             }
@@ -1611,6 +1643,8 @@ impl Ctl {
             self.last_scan = Instant::now();
             self.cache_bytes = std::fs::read_dir(&self.cache).map(|d| d.filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0);
             self.max_cache = self.max_cache.max(self.cache_bytes);
+            let report = self.cache_report();
+            *self.cache_snapshot.lock().unwrap() = report;
         }
         let (index, pos, source) = self.view();
         self.note_list_change(index, &source);
@@ -2319,6 +2353,107 @@ impl Ctl {
 
 
     /// Build outside the lock, then swap, so the API thread never waits on status building.
+    /// GET /cache: the cache against its budget, what the downloader does next, every video from the
+    /// one on air through the look-ahead, and the last deletions. Read from the rules `cache_work`
+    /// follows, so it cannot tell a different story.
+    fn cache_report(&self) -> Value {
+        let deletions: Vec<Value> = self.deletions.iter().map(|d| json!({"at": d.at, "id": d.id, "title": d.title, "bytes": d.bytes, "reason": d.reason})).collect();
+        let (sizes, stepped, budget) = self.look_ahead_inputs();
+        let mut report = json!({"cacheBytes": self.cache_bytes, "budgetBytes": budget, "next": self.named_next("nothing", None, None), "videos": [], "deletions": deletions});
+        if self.videos.is_empty() {
+            return report;
+        }
+        let (view, pos, source) = self.view();
+        let rows = rules::look_ahead(view, &sizes, &stepped, budget);
+        let durations: Vec<Option<f64>> = self.videos.iter().map(|v| v.entry.duration).collect();
+        let downloading = self.downloading.as_ref().map(|d| d.0);
+        let row = |&(i, ahead): &(usize, rules::Ahead)| {
+            let v = &self.videos[i];
+            let list = self.list_of(i);
+            let state = if i == view {
+                "on-air"
+            } else if ahead == rules::Ahead::NoRoom {
+                "waiting-for-room"
+            } else if downloading == Some(i) {
+                "downloading"
+            } else if v.on_disk {
+                "cached"
+            } else if v.skipped {
+                "skipped"
+            } else if v.dl_failed {
+                "failed"
+            } else if v.bytes.is_none() {
+                "size-unknown"
+            } else {
+                "queued"
+            };
+            let download = (downloading == Some(i)).then(|| {
+                let p = self.dl_track.progress.unwrap_or_default();
+                json!({"percent": self.downloading.as_ref().map_or(0.0, |d| d.1), "speedBps": p.speed_bps, "etaS": p.eta_s, "part": self.dl_track.part, "parts": self.dl_track.parts})
+            });
+            let room_at = (ahead == rules::Ahead::NoRoom).then(|| rules::room_in_s(view, pos, i, &sizes, &stepped, budget, &durations)).flatten().map(|s| iso(unix_ms() + (s * 1000.0) as u64));
+            let file = v.on_disk.then(|| {
+                let r = self.records.get(&v.entry.id);
+                let info = r.and_then(|r| r.info.clone()).unwrap_or_default();
+                let kbps = v.entry.duration.filter(|d| *d > 0.0).map(|d| (v.disk_bytes as f64 * 8.0 / d / 1000.0).round() as u64);
+                json!({"width": info.width, "height": info.height, "fps": info.fps, "vcodec": info.vcodec, "acodec": info.acodec, "kbps": kbps, "format": r.and_then(|r| r.format.clone()), "client": r.and_then(|r| r.client.clone()), "finishedAt": r.and_then(|r| r.finished_at.clone())})
+            });
+            json!({
+                "index": i - list.start, "playlistId": (!list.id.is_empty()).then_some(list.id), "id": v.entry.id, "title": v.entry.title, "duration": v.entry.duration,
+                "state": state, "source": (i == view).then(|| source.name()), "bytes": if v.on_disk { Some(v.disk_bytes) } else { v.bytes }, "lookedUp": v.looked_up,
+                "download": download, "retryAt": v.dl_retry_at.filter(|_| v.dl_failed).map(iso_at), "roomAt": room_at, "file": file,
+            })
+        };
+        let videos: Vec<Value> = rows.iter().map(row).collect();
+        report["next"] = self.next_download(&rows, &videos, view);
+        report["videos"] = Value::Array(videos);
+        report
+    }
+
+    /// `next` in GET /cache: why the downloader waits, or which video it takes and when. `videos` are
+    /// the report's rows for `rows`, whose times it reuses.
+    fn next_download(&self, rows: &[(usize, rules::Ahead)], videos: &[Value], view: usize) -> Value {
+        let win: Vec<usize> = rows.iter().filter(|r| r.1 == rules::Ahead::Window).map(|r| r.0).collect();
+        let first = self.first_download();
+        let pick = self.next_pick(&win, first);
+        let now = Instant::now();
+        if let Some(wait) = rules::download_wait(self.downloading.is_some(), self.sizing, now, self.dl_after, self.cookie_after, self.breaker.open) {
+            return match wait {
+                rules::DownloadWait::Downloading => self.named_next("downloading", None, self.downloading.as_ref().map(|d| d.0)),
+                rules::DownloadWait::SizeLookup => self.named_next("size-lookup", None, pick),
+                rules::DownloadWait::AfterFailure => self.named_next("after-failure", Some(iso_at(self.dl_after)), pick),
+                rules::DownloadWait::Cookies => self.named_next("cookies", Some(iso_at(self.cookie_after)), pick),
+                rules::DownloadWait::YoutubePaused => self.named_next("youtube-paused", self.breaker_retry_iso(), pick),
+            };
+        }
+        if let Some(i) = pick {
+            // A size lookup is a YouTube call, so it also waits out the spacing between calls.
+            let spaced = self.last_resolve.map(|t| t + Duration::from_secs_f64(rules::RESOLVE_SPACING_S)).filter(|&t| t > now && self.needs_size(i, view, first));
+            return match spaced {
+                Some(t) => self.named_next("size-lookup", Some(iso_at(t)), Some(i)),
+                None => self.named_next("now", None, Some(i)),
+            };
+        }
+        let at_of = |k: usize, key: &str| videos[k][key].as_str().map(String::from);
+        let retry = rows.iter().enumerate().filter_map(|(k, &(i, _))| Some((self.videos[i].dl_retry_at.filter(|_| self.videos[i].dl_failed)?, k, i))).min();
+        if let Some((_, k, i)) = retry {
+            return self.named_next("retry", at_of(k, "retryAt"), Some(i));
+        }
+        match rows.iter().position(|r| r.1 == rules::Ahead::NoRoom) {
+            Some(k) => self.named_next("room", at_of(k, "roomAt"), Some(rows[k].0)),
+            None => self.named_next("nothing", None, None),
+        }
+    }
+
+    fn named_next(&self, when: &str, at: Option<String>, video: Option<usize>) -> Value {
+        let list = video.map(|i| self.list_of(i));
+        let v = video.map(|i| &self.videos[i]);
+        json!({
+            "when": when, "at": at, "index": video.zip(list.as_ref()).map(|(i, l)| i - l.start), "playlistId": list.filter(|l| !l.id.is_empty()).map(|l| l.id),
+            "id": v.map(|v| v.entry.id.clone()), "title": v.map(|v| v.entry.title.clone()),
+        })
+    }
+
     /// A file the cache removed: a row of the deletes CSV (`end`: where its last airing ended on the
     /// timeline, if it aired this encoder generation) and the newest of the deletions kept for /cache.
     fn note_deletion(&mut self, id: &str, title: &str, bytes: u64, end: String, reason: &'static str) {
@@ -2863,7 +2998,8 @@ pub fn run(argv: Vec<String>) -> i32 {
     };
     let (tx, rx) = channel::<Msg>();
     let snapshot: api::Snapshot = Arc::new(Mutex::new(placeholder_status()));
-    let settings = match bind_then_settings(&args, args.api_port, tx.clone(), snapshot.clone()) {
+    let cache_snapshot: api::Snapshot = Arc::new(Mutex::new(json!({"videos": [], "deletions": []})));
+    let settings = match bind_then_settings(&args, args.api_port, tx.clone(), snapshot.clone(), cache_snapshot.clone()) {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -2899,6 +3035,7 @@ pub fn run(argv: Vec<String>) -> i32 {
 
     let mut ctl = Ctl::new(args, settings, logs, tx, shared, yt, cache, jobs_tx, token, snapshot);
     ctl.kept = kept;
+    ctl.cache_snapshot = cache_snapshot;
     ctl.probe_kept();
     if let Some(list) = ctl.start_list() {
         ctl.settings.playlist_id = list;
@@ -4078,7 +4215,7 @@ mod tests {
         let (_dir, args) = startup_args("refused", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "x".repeat(201)}));
         let (tx, _rx) = channel();
 
-        let r = bind_then_settings(&args, free_port(), tx, Arc::default());
+        let r = bind_then_settings(&args, free_port(), tx, Arc::default(), Arc::default());
 
         assert_eq!(r.err(), Some(CONFIG_REFUSED_EXIT));
         assert_eq!(CONFIG_REFUSED_EXIT, 3);
@@ -4093,7 +4230,7 @@ mod tests {
         let (_dir, args) = startup_args("unknown-encoder", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "h265"}}));
         let (tx, _rx) = channel();
 
-        let r = bind_then_settings(&args, free_port(), tx, Arc::default());
+        let r = bind_then_settings(&args, free_port(), tx, Arc::default(), Arc::default());
 
         assert_eq!(r.err(), Some(CONFIG_REFUSED_EXIT));
         let ev = refused_events(&args);
@@ -4106,7 +4243,7 @@ mod tests {
         let (_dir, args) = startup_args("bad-cookies", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "fire\u{7}fox"}));
         let (tx, _rx) = channel();
 
-        let r = bind_then_settings(&args, free_port(), tx, Arc::default());
+        let r = bind_then_settings(&args, free_port(), tx, Arc::default(), Arc::default());
 
         assert_eq!(r.err(), Some(CONFIG_REFUSED_EXIT));
         let ev = refused_events(&args);
@@ -4120,7 +4257,7 @@ mod tests {
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let (tx, _rx) = channel();
 
-        let r = bind_then_settings(&args, held.local_addr().unwrap().port(), tx, Arc::default());
+        let r = bind_then_settings(&args, held.local_addr().unwrap().port(), tx, Arc::default(), Arc::default());
 
         assert_eq!(r.err(), Some(2));
         assert!(refused_events(&args).is_empty(), "a duplicate launch wrote the live one's logs");
@@ -4131,7 +4268,7 @@ mod tests {
         let (_dir, args) = startup_args("good", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
         let (tx, _rx) = channel();
 
-        let s = bind_then_settings(&args, free_port(), tx, Arc::default()).unwrap();
+        let s = bind_then_settings(&args, free_port(), tx, Arc::default(), Arc::default()).unwrap();
 
         assert_eq!(s.playlist_id, "P");
     }
@@ -5202,6 +5339,111 @@ mod tests {
         assert_eq!(ctl.deletions.len(), 20);
         assert_eq!(ctl.deletions[0].id, "v24");
         assert_eq!(csv_rows(&ctl, "deletes").len(), 25, "the CSV keeps every deletion");
+    }
+
+    const MB10: u64 = 10 * 1_048_576;
+
+    /// Seven 10 MiB videos and a 45 MB budget, on air at 0 from its file: b cached, c downloading at
+    /// 40 %, d failed, e not on disk yet and f past the budget.
+    fn look_ahead_ctl(name: &str) -> TestCtl {
+        let mut ctl = test_ctl(name, &["a", "b", "c", "d", "e", "f", "g"]);
+        ctl.settings.cache_budget_mb = 45;
+        for v in &mut ctl.ctl.videos {
+            v.bytes = Some(MB10);
+        }
+        for i in [0, 1] {
+            (ctl.videos[i].on_disk, ctl.videos[i].disk_bytes) = (true, MB10);
+        }
+        ctl.downloading = Some((2, 40.0, Arc::new(AtomicBool::new(false))));
+        ctl.dl_track.progress = Some(ytdlp::Progress { percent: 40.0, speed_bps: Some(1e6), eta_s: Some(60) });
+        (ctl.videos[3].dl_failed, ctl.videos[3].dl_retry_at) = (true, Some(Instant::now() + Duration::from_secs(120)));
+        ctl.records.set("b", cache_info::Record { info: Some(hd_info()), format: Some("137+140".into()), client: Some("mweb".into()), finished_at: Some("2026-11-28T09:14:02.000Z".into()) });
+        on_air(&mut ctl, 0, 0.0);
+        ctl
+    }
+
+    fn states(report: &Value) -> Vec<(String, String)> {
+        report["videos"].as_array().unwrap().iter().map(|v| (v["id"].as_str().unwrap().to_string(), v["state"].as_str().unwrap().to_string())).collect()
+    }
+
+    #[test]
+    fn cache_report_lists_the_look_ahead_with_each_videos_state() {
+        let ctl = look_ahead_ctl("report-rows");
+
+        let report = ctl.cache_report();
+
+        let want = [("a", "on-air"), ("b", "cached"), ("c", "downloading"), ("d", "failed"), ("e", "queued"), ("f", "waiting-for-room")];
+        assert_eq!(states(&report), want.map(|(i, s)| (i.to_string(), s.to_string())));
+        let rows = report["videos"].as_array().unwrap();
+        assert_eq!((rows[0]["source"].as_str(), rows[2]["download"]["percent"].as_f64(), rows[2]["download"]["speedBps"].as_f64()), (Some("file"), Some(40.0), Some(1e6)));
+        assert!(rows[3]["retryAt"].is_string() && rows[5]["roomAt"].is_string(), "{report}");
+        assert_eq!((rows[1]["file"]["height"].as_u64(), rows[1]["file"]["client"].as_str(), rows[1]["file"]["format"].as_str()), (Some(1080), Some("mweb"), Some("137+140")));
+        assert_eq!((report["cacheBytes"].as_u64(), report["budgetBytes"].as_u64()), (Some(0), Some(45 * 1_048_576)));
+    }
+
+    #[test]
+    fn cache_report_names_the_next_download_and_when() {
+        let downloading = look_ahead_ctl("report-next-downloading");
+        let mut idle = look_ahead_ctl("report-next-now");
+        idle.downloading = None;
+        let mut paused = look_ahead_ctl("report-next-paused");
+        paused.downloading = None;
+        (paused.breaker.open, paused.breaker.retry_at) = (true, paused.now_s() + 600.0);
+        let mut done = test_ctl("report-next-nothing", &["a", "b", "c"]);
+        done.settings.cache_budget_mb = 1000;
+        for v in &mut done.ctl.videos {
+            (v.on_disk, v.disk_bytes, v.bytes) = (true, MB10, Some(MB10));
+        }
+        on_air(&mut done, 0, 0.0);
+
+        let next = |ctl: &Ctl| ctl.cache_report()["next"].clone();
+
+        assert_eq!((next(&downloading)["when"].as_str(), next(&downloading)["id"].as_str()), (Some("downloading"), Some("c")));
+        assert_eq!((next(&idle)["when"].as_str(), next(&idle)["id"].as_str()), (Some("now"), Some("c")));
+        assert_eq!(next(&paused)["when"].as_str(), Some("youtube-paused"));
+        // The breaker's retry time, 10 min from now; ISO strings of one shape sort as times do.
+        let at = next(&paused)["at"].as_str().unwrap().to_string();
+        assert!(at > iso(unix_ms() + 590_000) && at < iso(unix_ms() + 610_000), "{at}");
+        assert_eq!(next(&done)["when"].as_str(), Some("nothing"));
+    }
+
+    #[test]
+    fn cache_report_says_retry_when_only_failed_videos_are_left_to_fetch() {
+        let mut ctl = test_ctl("report-next-retry", &["a", "b", "c", "d"]);
+        ctl.settings.cache_budget_mb = 1000;
+        for v in &mut ctl.ctl.videos {
+            (v.on_disk, v.disk_bytes, v.bytes) = (true, MB10, Some(MB10));
+        }
+        (ctl.videos[2].on_disk, ctl.videos[2].dl_failed, ctl.videos[2].dl_retry_at) = (false, true, Some(Instant::now() + Duration::from_secs(120)));
+        on_air(&mut ctl, 0, 0.0);
+
+        let report = ctl.cache_report();
+
+        assert_eq!((report["next"]["when"].as_str(), report["next"]["id"].as_str()), (Some("retry"), Some("c")));
+        assert_eq!(report["next"]["at"], report["videos"][2]["retryAt"]);
+    }
+
+    #[test]
+    fn cache_report_of_an_empty_ring_has_no_rows() {
+        let ctl = test_ctl("report-empty", &[]);
+
+        let report = ctl.cache_report();
+
+        assert_eq!(report["videos"], json!([]));
+        assert_eq!(report["next"]["when"], "nothing");
+    }
+
+    #[test]
+    fn cache_report_round_trips_through_the_common_types() {
+        let mut full = look_ahead_ctl("report-round-trip");
+        full.note_deletion("z", "Zed", 5, String::new(), "played");
+        let empty = test_ctl("report-round-trip-empty", &[]);
+
+        for ctl in [&full, &empty] {
+            let report = ctl.cache_report();
+
+            assert_eq!(through_common::<streamloop_common::api::CacheReport>(&report), report);
+        }
     }
 
     /// What the control process would send back after reading `v` through the shared types.
