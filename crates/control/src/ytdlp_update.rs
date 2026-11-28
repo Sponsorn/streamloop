@@ -40,6 +40,8 @@ pub(crate) async fn run_checked(runner: &dyn Runner, spec: RunSpec) -> Result<Ru
 
 /// `run_checked` for yt-dlp, which unpacks into a folder of its own beside `base`, gone when the run ends.
 pub(crate) async fn run_ytdlp(runner: &dyn Runner, base: &Path, mut spec: RunSpec) -> Result<RunOutput, String> {
+    // Read as UTF-8; without this yt-dlp prints in the Windows code page, so a title's "–" arrives as U+FFFD.
+    spec.args.splice(0..0, ["--encoding".to_string(), "utf-8".to_string()]);
     let temp = RunTemp::new(base, "control");
     if let Some(temp) = &temp {
         spec.env.extend(temp.env());
@@ -171,11 +173,24 @@ mod tests {
         assert_eq!(result, YtdlpUpdate { ok: true, version: Some("2026.11.24.232653".into()), error: None });
         let calls = runner.calls();
         let work = dir.path().join("yt-dlp-update.exe").to_string_lossy().into_owned();
-        assert_eq!((calls[0].program.as_str(), calls[0].args.as_slice()), (work.as_str(), ["-U".to_string()].as_slice()));
-        assert_eq!((calls[1].program.as_str(), calls[1].args.as_slice()), (work.as_str(), ["--version".to_string()].as_slice()));
+        assert_eq!((calls[0].program.as_str(), calls[0].args.last().map(String::as_str)), (work.as_str(), Some("-U")));
+        assert_eq!((calls[1].program.as_str(), calls[1].args.last().map(String::as_str)), (work.as_str(), Some("--version")));
         assert_eq!((calls[0].timeout, calls[1].timeout), (Duration::from_secs(120), Duration::from_secs(10)));
         assert_eq!(names(&dir), ["deno.exe", "yt-dlp-2026.11.24.232653.exe", "yt-dlp.exe"]);
         assert_eq!(std::fs::read_to_string(&base).unwrap(), "yt-dlp.exe", "the shipped exe is never changed");
+    }
+
+    #[tokio::test]
+    async fn the_update_asks_yt_dlp_to_print_utf_8_since_its_errors_are_read() {
+        // Arrange
+        let (_dir, base) = install(&["yt-dlp.exe"]);
+        let runner = FakeRunner::new();
+        updated_to(&runner, "2026.11.24");
+        // Act
+        update_ytdlp(&runner, &base).await;
+        // Assert
+        let args = &runner.calls()[0].args;
+        assert!(args.windows(2).any(|w| w == ["--encoding", "utf-8"]), "{args:?}");
     }
 
     #[tokio::test]

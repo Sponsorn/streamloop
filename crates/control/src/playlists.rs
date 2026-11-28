@@ -283,6 +283,19 @@ mod tests {
         assert!(!temp.exists(), "the run's temp folder was left behind");
     }
 
+    #[tokio::test]
+    async fn a_fetch_asks_yt_dlp_to_print_utf_8() {
+        // Arrange
+        let runner = Arc::new(FakeRunner::new());
+        runner.push(Ok(RunOutput::ok("abc123\tHERO \u{2013} Blender Grease Pencil Showcase\t120\n")));
+        let (cache, _clock) = cache_with(&runner, "");
+        // Act
+        cache.fetch("PLx").await.unwrap();
+        // Assert
+        let args = &runner.calls()[0].args;
+        assert!(args.windows(2).any(|w| w == ["--encoding", "utf-8"]), "{args:?}");
+    }
+
     #[test]
     fn argv_omits_the_cookies_flag_when_not_configured() {
         // Act

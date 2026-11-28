@@ -723,7 +723,7 @@ async fn a_youtube_pause_updates_yt_dlp() {
     for out in ["", "2026.11.22.232654\n", "", "2026.11.23.223556\n"] {
         rig.runner.push(Ok(RunOutput::ok(out)));
     }
-    let updates = || rig.runner.calls().iter().filter(|c| c.args == ["-U"]).count();
+    let updates = || rig.runner.calls().iter().filter(|c| c.args.last().is_some_and(|a| a == "-U")).count();
     let app = rig.start().await;
     rig.wait_until("the update at start", || updates() == 1).await;
     let pause = json!({

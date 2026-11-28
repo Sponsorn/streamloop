@@ -100,6 +100,9 @@ impl Ytdlp {
     fn base(&self, client: Option<&str>) -> Vec<String> {
         let mut a = vec![
             "--no-update".into(),
+            // Read as UTF-8; without this yt-dlp prints in the Windows code page whatever PYTHONIOENCODING says.
+            "--encoding".into(),
+            "utf-8".into(),
             // only the install's plugin, never one from the user's yt-dlp folders
             "--no-plugin-dirs".into(),
             "--plugin-dirs".into(),
@@ -668,6 +671,22 @@ mod tests {
         assert!(b.windows(2).any(|w| w[0] == "--extractor-args" && w[1] == "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416"));
         let b = yt.base(Some("web_embedded"));
         assert_eq!(b[b.iter().position(|x| x == "--extractor-args").unwrap() + 1], "youtube:player_client=web_embedded");
+    }
+
+    #[test]
+    fn the_listing_the_lookup_and_the_download_each_ask_yt_dlp_to_print_utf_8() {
+        // Arrange
+        let yt = Ytdlp::new(&Paths::new(&std::env::temp_dir().join("sl-root")), "mweb", None, 4416);
+        let listing: Vec<String> = ["--flat-playlist", "--print", PRINT_TEMPLATE, "https://www.youtube.com/playlist?list=PLx"].map(String::from).to_vec();
+        let runs = [(None, listing), (None, yt.resolve_args("a")), (Some("mweb"), yt.download_args("a", Path::new("a.mp4"), true))];
+
+        // Act
+        let commands: Vec<Vec<String>> = runs.iter().map(|(client, args)| yt.command_for(*client, args).0.get_args().map(|a| a.to_string_lossy().into_owned()).collect()).collect();
+
+        // Assert
+        for args in commands {
+            assert!(args.windows(2).any(|w| w == ["--encoding", "utf-8"]), "{args:?}");
+        }
     }
 
     #[test]
