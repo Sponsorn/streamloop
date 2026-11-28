@@ -4,7 +4,7 @@ members = ["supervisor", "crates/common", "crates/control", "crates/ui", "crates
 exclude = ["spikes/gpui-ui", "spikes/supervisor", "shell/src-tauri", "tokenserver", "vendor/tiny_http"]
 
 [workspace.package]
-version = "3.1.2"
+version = "3.2.0"
 edition = "2021"
 publish = false
 

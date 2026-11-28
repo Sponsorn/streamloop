@@ -6988,7 +6988,7 @@ checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 
 [[package]]
 name = "streamloop"
-version = "3.1.2"
+version = "3.2.0"
 dependencies = [
  "serde_json",
  "streamloop-common",
@@ -7000,7 +7000,7 @@ dependencies = [
 
 [[package]]
 name = "streamloop-common"
-version = "3.1.2"
+version = "3.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -7010,7 +7010,7 @@ dependencies = [
 
 [[package]]
 name = "streamloop-control"
-version = "3.1.2"
+version = "3.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7031,7 +7031,7 @@ dependencies = [
 
 [[package]]
 name = "streamloop-supervisor"
-version = "3.1.2"
+version = "3.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -7043,7 +7043,7 @@ dependencies = [
 
 [[package]]
 name = "streamloop-ui"
-version = "3.1.2"
+version = "3.2.0"
 dependencies = [
  "anyhow",
  "async-channel",
