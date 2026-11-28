@@ -7035,6 +7035,7 @@ dependencies = [
  "serde",
  "serde_json",
  "streamloop-common",
+ "tempfile",
  "tiny_http",
  "windows-sys 0.59.0",
 ]

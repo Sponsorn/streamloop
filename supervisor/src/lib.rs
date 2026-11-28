@@ -3880,15 +3880,40 @@ mod tests {
         assert_eq!(r["restartRequired"], false);
     }
 
-    /// Args for a root in a fresh temp folder whose config.json is `config`.
-    fn startup_args(name: &str, config: &Value) -> Args {
-        let dir = std::env::temp_dir().join(format!("sl-startup-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let d = dir.to_string_lossy().into_owned();
+    /// Args for a root in a fresh temp folder whose config.json is `config`. The folder goes when
+    /// the `TempDir` drops: bind it as `_dir`, since `_` drops it at once.
+    fn startup_args(name: &str, config: &Value) -> (tempfile::TempDir, Args) {
+        let dir = tempfile::Builder::new().prefix(&format!("sl-startup-{name}-")).tempdir().unwrap();
+        let d = dir.path().to_string_lossy().into_owned();
         let args = parse_args(&["--root".into(), d.clone(), "--data".into(), d]).unwrap();
         std::fs::create_dir_all(args.config.parent().unwrap()).unwrap();
         std::fs::write(&args.config, config.to_string()).unwrap();
-        args
+        (dir, args)
+    }
+
+    #[test]
+    fn a_startup_root_is_removed_when_its_test_ends() {
+        let root = {
+            let (_dir, args) = startup_args("ends", &json!({"playlists": []}));
+            assert!(args.config.is_file());
+            args.paths.root.clone()
+        };
+
+        assert!(!root.exists(), "{} was left behind", root.display());
+    }
+
+    #[test]
+    fn a_startup_root_is_removed_when_its_test_panics() {
+        let mut root = std::path::PathBuf::new();
+
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (_dir, args) = startup_args("panics", &json!({"playlists": []}));
+            root = args.paths.root.clone();
+            panic!("the test failed");
+        }));
+
+        assert!(r.is_err());
+        assert!(!root.as_os_str().is_empty() && !root.exists(), "{} was left behind", root.display());
     }
 
     fn refused_events(args: &Args) -> Vec<Value> {
@@ -3903,7 +3928,7 @@ mod tests {
 
     #[test]
     fn a_refused_config_is_logged_and_exits_3_never_2() {
-        let args = startup_args("refused", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "x".repeat(201)}));
+        let (_dir, args) = startup_args("refused", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "x".repeat(201)}));
         let (tx, _rx) = channel();
 
         let r = bind_then_settings(&args, free_port(), tx, Arc::default());
@@ -3918,7 +3943,7 @@ mod tests {
 
     #[test]
     fn unknown_encoder_is_still_refused() {
-        let args = startup_args("unknown-encoder", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "h265"}}));
+        let (_dir, args) = startup_args("unknown-encoder", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "h265"}}));
         let (tx, _rx) = channel();
 
         let r = bind_then_settings(&args, free_port(), tx, Arc::default());
@@ -3931,7 +3956,7 @@ mod tests {
 
     #[test]
     fn bad_cookie_value_is_still_refused() {
-        let args = startup_args("bad-cookies", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "fire\u{7}fox"}));
+        let (_dir, args) = startup_args("bad-cookies", &json!({"playlists": [{"id": "P"}], "supervisor": {}, "ytdlCookiesFromBrowser": "fire\u{7}fox"}));
         let (tx, _rx) = channel();
 
         let r = bind_then_settings(&args, free_port(), tx, Arc::default());
@@ -3944,7 +3969,7 @@ mod tests {
 
     #[test]
     fn a_taken_port_exits_2_even_with_a_bad_config() {
-        let args = startup_args("taken", &json!({"playlists": []}));
+        let (_dir, args) = startup_args("taken", &json!({"playlists": []}));
         let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let (tx, _rx) = channel();
 
@@ -3956,7 +3981,7 @@ mod tests {
 
     #[test]
     fn a_good_config_binds_and_loads() {
-        let args = startup_args("good", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+        let (_dir, args) = startup_args("good", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
         let (tx, _rx) = channel();
 
         let s = bind_then_settings(&args, free_port(), tx, Arc::default()).unwrap();
@@ -4981,7 +5006,7 @@ mod tests {
 
     #[test]
     fn check_names_the_first_missing_install_file() {
-        let args = startup_args("check-missing", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
+        let (_dir, args) = startup_args("check-missing", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "libx264"}}));
 
         let r = self_check(&args);
 
@@ -4991,7 +5016,7 @@ mod tests {
 
     #[test]
     fn check_refuses_a_config_the_supervisor_would_refuse() {
-        let args = startup_args("check-refused", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "no-such-encoder"}}));
+        let (_dir, args) = startup_args("check-refused", &json!({"playlists": [{"id": "P"}], "supervisor": {"encoder": "no-such-encoder"}}));
         let reason = read_settings(&args).err().unwrap();
 
         let r = self_check(&args);
