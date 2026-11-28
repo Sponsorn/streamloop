@@ -1,3 +1,4 @@
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -71,6 +72,24 @@ fn get_pot_request() -> String {
         "POST /get_pot HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+/// One reply read off a kept-alive connection: its head and the body its Content-Length gives.
+fn read_reply(s: &mut TcpStream) -> String {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        s.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    let length = head
+        .lines()
+        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+        .unwrap_or(0);
+    let mut body = vec![0; length];
+    s.read_exact(&mut body).unwrap();
+    head + &String::from_utf8_lossy(&body)
 }
 
 #[test]
@@ -162,6 +181,66 @@ fn a_declared_length_over_the_limit_is_413_before_the_body_is_read() {
     assert!(r.starts_with("HTTP/1.1 413"), "{r}");
 }
 
+/// The largest single allocation this test binary has made, counted from 1 MiB up.
+static LARGEST_ALLOC: AtomicUsize = AtomicUsize::new(0);
+
+struct Tracking;
+
+fn note(size: usize) {
+    if size >= 1 << 20 {
+        LARGEST_ALLOC.fetch_max(size, Ordering::Relaxed);
+    }
+}
+
+unsafe impl GlobalAlloc for Tracking {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note(layout.size());
+        System.alloc(layout)
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        note(layout.size());
+        System.alloc_zeroed(layout)
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        note(new_size);
+        System.realloc(ptr, layout, new_size)
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        System.dealloc(ptr, layout)
+    }
+}
+
+#[global_allocator]
+static TRACKING: Tracking = Tracking;
+
+#[test]
+fn refuses_a_huge_declared_body_without_reading_or_allocating_it() {
+    // Arrange: a /get_pot with an Origin, one cross-site and one over the limit, each declaring 256 MiB it never sends
+    let (_running, addr) = start(Slow::new(Duration::ZERO));
+    let declared: usize = 256 << 20;
+    let cases = [("Origin: http://evil.example\r\n", "403"), ("Sec-Fetch-Site: cross-site\r\n", "403"), ("", "413")];
+
+    for (extra, status) in cases {
+        let mut conn = TcpStream::connect(addr).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let head = format!(
+            "POST /get_pot HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra}Content-Type: application/json\r\nContent-Length: {declared}\r\n\r\n"
+        );
+        conn.write_all(head.as_bytes()).unwrap();
+
+        // Act: read until the token server closes the connection, or for 3 s
+        let mut reply = Vec::new();
+        let closed = conn.read_to_end(&mut reply).is_ok();
+
+        // Assert
+        let reply = String::from_utf8_lossy(&reply);
+        assert!(reply.starts_with(&format!("HTTP/1.1 {status}")), "{extra:?}: {reply}");
+        let largest = LARGEST_ALLOC.load(Ordering::Relaxed);
+        assert!(largest < declared / 2, "{extra:?}: the token server allocated {largest} bytes for a body it refused");
+        assert!(closed, "{extra:?}: the connection was still open 3 s after the {status}, waiting for the body");
+    }
+}
+
 #[test]
 fn a_chunked_body_over_the_limit_is_413() {
     let (_running, addr) = start(Slow::new(Duration::ZERO));
@@ -194,6 +273,32 @@ fn a_full_mint_queue_answers_503_and_ping_still_answers() {
     let ok = replies.iter().filter(|r| r.starts_with("HTTP/1.1 200")).count();
     let refused = replies.iter().filter(|r| r.starts_with("HTTP/1.1 503")).count();
     assert_eq!((ok, refused), (MINT_WORKERS + MINT_QUEUE, 4), "{replies:?}");
+}
+
+#[test]
+fn answers_mints_and_a_ping_one_after_another_on_a_kept_alive_connection() {
+    // Arrange: a body over 1 KiB, which tiny_http reads as the server asks for it rather than with the head
+    let (_running, addr) = start(Slow::new(Duration::ZERO));
+    let body = format!(r#"{{"content_binding":"vd","innertube_context":{{"client":{{"pad":"{}"}}}}}}"#, "a".repeat(4096));
+    let mint = format!(
+        "POST /get_pot HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut conn = TcpStream::connect(addr).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+
+    // Act
+    let mut replies = Vec::new();
+    for raw in [mint.as_str(), mint.as_str(), "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"] {
+        conn.write_all(raw.as_bytes()).unwrap();
+        replies.push(read_reply(&mut conn));
+    }
+
+    // Assert
+    for mint in &replies[..2] {
+        assert!(mint.starts_with("HTTP/1.1 200") && mint.contains(r#""poToken":"tok""#), "{mint}");
+    }
+    assert!(replies[2].starts_with("HTTP/1.1 200") && replies[2].contains(r#""version":"2.0.0""#), "{}", replies[2]);
 }
 
 #[test]

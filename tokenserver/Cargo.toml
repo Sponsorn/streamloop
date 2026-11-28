@@ -12,6 +12,11 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 tokio = { version = "1", features = ["rt", "time"] }
 tiny_http = "0.12"
 
+# The root's patched tiny_http: a request dropped with over 64 KiB of its body unread closes its connection instead
+# of reading the rest into a buffer that size. The root's [patch.crates-io] does not reach this project.
+[patch.crates-io]
+tiny_http = { path = "../vendor/tiny_http" }
+
 # Its own workspace root, as ui/ is: cargo stops here instead of reaching a workspace above.
 # vendor/ stays a plain dependency, so its dev-dependencies stay out of Cargo.lock.
 [workspace]
