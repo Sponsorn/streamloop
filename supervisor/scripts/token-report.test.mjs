@@ -53,6 +53,28 @@ describe('tokenReport', () => {
     expect(row.client).toBe('mweb,web_embedded');
   });
 
+  it('reads the client, format and resolution of a finished row in the ten-cell layout', () => {
+    // Arrange
+    const csv = '2026-11-28T09:00:00.000Z,v1,done,0,1000,5000,,web_embedded,137+140,1920x1080\n';
+
+    // Act
+    const [row] = tokenReport({ downloadsCsv: [csv], ytdlpLog: [], events: [] }).rows;
+
+    // Assert
+    expect(row).toMatchObject({ reason: '', client: 'web_embedded', format: '137+140', resolution: '1920x1080' });
+  });
+
+  it('reads a failed row of the ten-cell layout, whose format and resolution are empty', () => {
+    // Arrange
+    const csv = `2026-11-28T09:00:00.000Z,v1,retry,1,0,5000,${R403},mweb,,\n`;
+
+    // Act
+    const [row] = tokenReport({ downloadsCsv: [csv], ytdlpLog: [], events: [] }).rows;
+
+    // Assert
+    expect(row).toMatchObject({ reason: R403, client: 'mweb', format: '', resolution: '' });
+  });
+
   it('reads seven-field rows with no client', () => {
     // Arrange
     const csv = `2026-11-01T08:00:00.000Z,v1,retry,1,0,5000,${R403}\n2026-11-01T08:10:00.000Z,v1,done,0,99,5000,\n`;

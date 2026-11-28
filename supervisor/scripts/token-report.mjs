@@ -21,10 +21,21 @@ const lines = (text) => text.split(/\r?\n/).filter(Boolean);
 const NOT_TRIES = new Set(['cancel', 'cookies']);
 const isRefused = (row) => row.reason.includes('HTTP Error 403');
 
+/** Rows from 3.2 end in the client, the format ids and the resolution (both empty unless done), and no
+ *  cell holds a comma. */
+const tenCells = (f) => f.length >= 10 && /^(\d+x\d+)?$/.test(f[f.length - 1]) && /^([0-9][\w+-]*)?$/.test(f[f.length - 2]);
+
 /** Fields 0 to 5 are ts, id, result, attempt, bytes, ms; trailing lower-case words are the client list,
  *  the fields between are the reason (commas kept). Rows before 3.0.5 have seven fields and no client. */
 function parseRow(line) {
   const f = line.split(',');
+  if (tenCells(f)) {
+    const n = f.length;
+    return {
+      ts: f[0], id: f[1], result: f[2], attempt: Number(f[3]), ms: Number(f[5]),
+      reason: f.slice(6, n - 3).join(','), client: f[n - 3], format: f[n - 2], resolution: f[n - 1],
+    };
+  }
   let end = f.length;
   while (end > 7 && /^[a-z_]+$/.test(f[end - 1])) end--;
   const client = f.slice(end).join(',');

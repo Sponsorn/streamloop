@@ -148,6 +148,16 @@ describe('deletionOk', () => {
     expect(deletionOk({ id: 'a', pView: '50', fileEndTimeline: '' }, 'b')).toBe(true);
     expect(deletionOk({ id: 'a', pView: '50', fileEndTimeline: '' }, 'a')).toBe(false);
   });
+
+  it('passes a deletion that is not playout, even of the video on air', () => {
+    expect(deletionOk({ id: 'a', pView: '50', fileEndTimeline: '', reason: 'unreadable' }, 'a')).toBe(true);
+    expect(deletionOk({ id: 'a', pView: '50', fileEndTimeline: '', reason: 'not-in-playlist' }, 'a')).toBe(true);
+  });
+
+  it('still judges a deletion by playout against the end of the file', () => {
+    expect(deletionOk({ id: 'a', pView: '100', fileEndTimeline: '118', reason: 'played' })).toBe(false);
+    expect(deletionOk({ id: 'a', pView: '50', fileEndTimeline: '', reason: 'outside-look-ahead' }, 'a')).toBe(false);
+  });
 });
 
 describe('firstEventAfter', () => {

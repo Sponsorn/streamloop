@@ -592,8 +592,28 @@ struct Ctl {
     /// yt-dlp went on without the cookies, warned once per streak.
     cookies_skipped: bool,
     /// Files of videos a switch dropped that a feeder was still reading; removed by a later pass.
-    strays: Vec<PathBuf>,
+    strays: Vec<Stray>,
+    /// The last `DELETIONS_KEPT` cache deletions, newest first.
+    deletions: std::collections::VecDeque<Deletion>,
 }
+
+struct Stray {
+    path: PathBuf,
+    id: String,
+    title: String,
+    bytes: u64,
+}
+
+/// One file the cache removed, and why: `played`, `outside-look-ahead`, `not-in-playlist` or `unreadable`.
+struct Deletion {
+    at: String,
+    id: String,
+    title: String,
+    bytes: u64,
+    reason: &'static str,
+}
+
+const DELETIONS_KEPT: usize = 20;
 
 const STALL: Duration = Duration::from_secs(10);
 /// While the encoder is down, how often the ingest is tried, and how long one try may take to connect.
@@ -690,6 +710,7 @@ impl Ctl {
             cookie_after: now,
             cookies_skipped: false,
             strays: vec![],
+            deletions: std::collections::VecDeque::new(),
         }
     }
 
@@ -1500,7 +1521,15 @@ impl Ctl {
             }
         }
         let reading = self.live.as_ref().filter(|f| f.source == Source::File).map(|f| self.file_of(f.index));
-        self.strays.retain(|p| Some(p) == reading.as_ref() || (std::fs::remove_file(p).is_err() && p.exists()));
+        for stray in std::mem::take(&mut self.strays) {
+            if Some(&stray.path) == reading.as_ref() {
+                self.strays.push(stray);
+            } else if std::fs::remove_file(&stray.path).is_ok() {
+                self.note_deletion(&stray.id, &stray.title, stray.bytes, String::new(), "not-in-playlist");
+            } else if stray.path.exists() {
+                self.strays.push(stray);
+            }
+        }
         let win = self.window();
         let view = self.view().0;
         let fed = self.live.as_ref().filter(|f| !f.filler).map(|f| f.index);
@@ -1545,7 +1574,10 @@ impl Ctl {
                 self.videos[i].disk_bytes = 0;
                 // Where this video's last airing ended on the timeline, if it aired this encoder generation.
                 let end = self.seams.iter().rposition(|s| s.index == i && s.source != Source::Slate).and_then(|k| self.seams.get(k + 1)).map(|s| format!("{:.6}", secs(s.offset))).unwrap_or_default();
-                self.logs.csv("deletes", &[iso_now(), self.id(i), bytes.to_string(), format!("{:.6}", secs(self.view_timeline())), end]);
+                // The video just behind the viewer played, also when it aired before the encoder last restarted.
+                let played = !end.is_empty() || (view + self.n() - 1) % self.n() == i;
+                let (id, title) = (self.id(i), self.videos[i].entry.title.clone());
+                self.note_deletion(&id, &title, bytes, end, if played { "played" } else { "outside-look-ahead" });
             }
         }
 
@@ -1680,7 +1712,9 @@ impl Ctl {
                     match self.videos.iter().position(|v| v.entry.id == id) {
                         Some(j) => index = j,
                         None => {
-                            let _ = std::fs::remove_file(self.cache.join(format!("{id}.mp4")));
+                            if std::fs::remove_file(self.cache.join(format!("{id}.mp4"))).is_ok() {
+                                self.note_deletion(&id, "", bytes, String::new(), "not-in-playlist");
+                            }
                             return;
                         }
                     }
@@ -1900,8 +1934,10 @@ impl Ctl {
         }
         let waiting = self.settings.playlist_ids.iter().any(|id| !self.spans.iter().any(|s| s.id == *id) && !self.list_retry.contains_key(id));
         if !waiting {
-            for stray in std::mem::take(&mut self.kept).into_keys() {
-                let _ = std::fs::remove_file(self.cache.join(format!("{stray}.mp4")));
+            for (stray, bytes) in std::mem::take(&mut self.kept) {
+                if std::fs::remove_file(self.cache.join(format!("{stray}.mp4"))).is_ok() {
+                    self.note_deletion(&stray, "", bytes, String::new(), "not-in-playlist");
+                }
             }
         }
     }
@@ -1913,12 +1949,18 @@ impl Ctl {
             // A switch: indexes now mean other videos. Keep files the new list has, drop the rest.
             let reading = self.live.as_ref().filter(|f| f.source == Source::File && !f.filler).map(|f| f.index);
             for (i, v) in old.iter().enumerate().filter(|(_, v)| v.on_disk) {
-                match self.videos.iter_mut().find(|n| n.entry.id == v.entry.id) {
-                    Some(n) => (n.on_disk, n.disk_bytes, n.bytes) = (true, v.disk_bytes, Some(v.disk_bytes)),
+                let path = self.cache.join(format!("{}.mp4", v.entry.id));
+                match self.videos.iter().position(|n| n.entry.id == v.entry.id) {
+                    Some(j) => {
+                        let n = &mut self.videos[j];
+                        (n.on_disk, n.disk_bytes, n.bytes) = (true, v.disk_bytes, Some(v.disk_bytes));
+                    }
                     // A feeder still reads it: the next cache pass removes it.
-                    None if reading == Some(i) => self.strays.push(self.cache.join(format!("{}.mp4", v.entry.id))),
+                    None if reading == Some(i) => self.strays.push(Stray { path, id: v.entry.id.clone(), title: v.entry.title.clone(), bytes: v.disk_bytes }),
                     None => {
-                        let _ = std::fs::remove_file(self.cache.join(format!("{}.mp4", v.entry.id)));
+                        if std::fs::remove_file(&path).is_ok() {
+                            self.note_deletion(&v.entry.id, &v.entry.title, v.disk_bytes, String::new(), "not-in-playlist");
+                        }
                     }
                 }
             }
@@ -2256,7 +2298,10 @@ impl Ctl {
                 // A zero-filled or truncated file (a power cut) fails before its first frame: the retry plays the URL.
                 // A failure after frames keeps the file, so a crash mid-video never re-downloads it.
                 let file = self.file_of(index);
-                let _ = std::fs::remove_file(&file);
+                if std::fs::remove_file(&file).is_ok() {
+                    let (id, title, bytes) = (self.id(index), self.videos[index].entry.title.clone(), self.videos[index].disk_bytes);
+                    self.note_deletion(&id, &title, bytes, String::new(), "unreadable");
+                }
                 (self.videos[index].on_disk, self.videos[index].disk_bytes) = (false, 0);
                 self.logs.event("warn", "cache-file-dropped", json!({"index": self.number(index), "id": self.id(index), "removed": !file.exists()}));
             }
@@ -2274,6 +2319,14 @@ impl Ctl {
 
 
     /// Build outside the lock, then swap, so the API thread never waits on status building.
+    /// A file the cache removed: a row of the deletes CSV (`end`: where its last airing ended on the
+    /// timeline, if it aired this encoder generation) and the newest of the deletions kept for /cache.
+    fn note_deletion(&mut self, id: &str, title: &str, bytes: u64, end: String, reason: &'static str) {
+        self.logs.csv("deletes", &[iso_now(), id.to_string(), bytes.to_string(), format!("{:.6}", secs(self.view_timeline())), end, reason.to_string()]);
+        self.deletions.push_front(Deletion { at: iso_now(), id: id.to_string(), title: title.to_string(), bytes, reason });
+        self.deletions.truncate(DELETIONS_KEPT);
+    }
+
     /// Writes the records of the files still on disk or adopted, and drops the rest.
     fn save_records(&mut self) {
         let keep: HashSet<String> = self.videos.iter().filter(|v| v.on_disk).map(|v| v.entry.id.clone()).chain(self.kept.keys().cloned()).collect();
@@ -4151,7 +4204,7 @@ mod tests {
 
         assert!(file_in_use);
         assert_eq!(ctl.target.as_ref().map(|t| t.index), Some(2), "went back to video 0");
-        assert!(ctl.strays.contains(&ctl.cache.join("c.mp4")), "the on-air file was not left for the next pass");
+        assert!(ctl.strays.iter().any(|s| s.path == ctl.cache.join("c.mp4")), "the on-air file was not left for the next pass");
     }
 
     #[test]
@@ -5052,6 +5105,103 @@ mod tests {
 
         let r = ctl.records.get("zz").expect("the probe left no record");
         assert_eq!((r.info.as_ref().and_then(|i| i.height), r.client.as_deref()), (Some(1080), None));
+    }
+
+    /// Four 10 MiB videos on disk, each with a small file in the cache folder, a 25 MB budget, on air at `view`.
+    fn full_cache_ctl(name: &str, view: usize) -> TestCtl {
+        let mut ctl = test_ctl(name, &["a", "b", "c", "d"]);
+        ctl.settings.cache_budget_mb = 25;
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        for i in 0..4 {
+            std::fs::write(ctl.file_of(i), [0u8; 8]).unwrap();
+            let v = &mut ctl.videos[i];
+            (v.on_disk, v.disk_bytes, v.bytes) = (true, 10 * 1_048_576, Some(10 * 1_048_576));
+        }
+        on_air(&mut ctl, view, 0.0);
+        ctl
+    }
+
+    fn deletion_of<'a>(ctl: &'a Ctl, id: &str) -> &'a Deletion {
+        ctl.deletions.iter().find(|d| d.id == id).unwrap_or_else(|| panic!("no deletion of {id}"))
+    }
+
+    #[test]
+    fn a_played_video_is_deleted_as_played() {
+        let mut ctl = full_cache_ctl("del-played", 1);
+
+        ctl.cache_work();
+
+        assert_eq!(deletion_of(&ctl, "a").reason, "played");
+        let row = csv_rows(&ctl, "deletes").into_iter().find(|r| r.contains(",a,")).unwrap();
+        assert!(row.ends_with(",played"), "{row}");
+    }
+
+    #[test]
+    fn a_file_outside_the_look_ahead_that_did_not_air_is_deleted_as_outside_the_look_ahead() {
+        let mut ctl = full_cache_ctl("del-outside", 1);
+
+        ctl.cache_work();
+
+        let d = deletion_of(&ctl, "d");
+        assert_eq!((d.reason, d.bytes, d.title.as_str()), ("outside-look-ahead", 10 * 1_048_576, "d"));
+    }
+
+    #[test]
+    fn a_file_a_switch_drops_is_deleted_as_no_longer_in_a_playlist() {
+        let mut ctl = test_ctl("del-switch", &[]);
+        ctl.settings.playlist_id = "PLa".into();
+        save_playlist(&ctl, "PLa", &["a", "b", "c"]);
+        ctl.on_playlist("PLa".into(), Err("bot check".into()));
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("b.mp4"), [0u8; 8]).unwrap();
+        (ctl.videos[1].on_disk, ctl.videos[1].disk_bytes) = (true, 8);
+
+        ctl.on_playlist("PLa".into(), entries(&["a", "x", "c"]));
+
+        assert!(!ctl.cache.join("b.mp4").exists());
+        assert_eq!((deletion_of(&ctl, "b").reason, deletion_of(&ctl, "b").bytes), ("not-in-playlist", 8));
+    }
+
+    #[test]
+    fn an_unclaimed_kept_file_is_deleted_as_no_longer_in_a_playlist() {
+        let mut ctl = test_ctl("del-kept", &[]);
+        write_config(&ctl, &["PLa"]);
+        (ctl.settings.playlist_id, ctl.settings.playlist_ids) = ("PLa".into(), vec!["PLa".into()]);
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("zz.mp4"), [0u8; 8]).unwrap();
+        ctl.kept.insert("zz".into(), 8);
+
+        ctl.on_playlist("PLa".into(), entries(&["a"]));
+
+        assert!(!ctl.cache.join("zz.mp4").exists());
+        assert_eq!((deletion_of(&ctl, "zz").reason, deletion_of(&ctl, "zz").bytes), ("not-in-playlist", 8));
+    }
+
+    #[test]
+    fn a_file_that_fails_before_its_first_frame_is_deleted_as_unreadable() {
+        let mut ctl = test_ctl("del-unreadable", &["a", "b"]);
+        std::fs::create_dir_all(&ctl.cache).unwrap();
+        std::fs::write(ctl.cache.join("b.mp4"), [0u8; 64]).unwrap();
+        (ctl.videos[1].on_disk, ctl.videos[1].disk_bytes) = (true, 64);
+        ctl.feeder_seq = 7;
+        ctl.live = Some(Feeder { seq: 7, child: Arc::new(Mutex::new(exited_child())), index: 1, source: Source::File, start_pos: 30.0, offset: BASE, started: Instant::now(), filler: false, expire: None });
+
+        ctl.on_feeder_exit(7, Some(1), 0);
+
+        assert_eq!((deletion_of(&ctl, "b").reason, deletion_of(&ctl, "b").bytes), ("unreadable", 64));
+    }
+
+    #[test]
+    fn only_the_last_20_deletions_are_kept_newest_first() {
+        let mut ctl = test_ctl("del-cap", &["a"]);
+
+        for n in 0..25 {
+            ctl.note_deletion(&format!("v{n}"), "t", 1, String::new(), "played");
+        }
+
+        assert_eq!(ctl.deletions.len(), 20);
+        assert_eq!(ctl.deletions[0].id, "v24");
+        assert_eq!(csv_rows(&ctl, "deletes").len(), 25, "the CSV keeps every deletion");
     }
 
     /// What the control process would send back after reading `v` through the shared types.

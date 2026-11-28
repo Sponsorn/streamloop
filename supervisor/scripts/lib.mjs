@@ -112,9 +112,14 @@ export function resumeErrorSec(pView, startPos) {
   return Math.abs(Number(pView) - Number(startPos));
 }
 
-/** A deleted file must have been fully watched (pView at or past the end of its last airing),
- *  or never aired this generation (blank end) and not be on air at the moment of deletion. */
+/** Deletion reasons that are playout's, and a blank one from before the supervisor named them. */
+const PLAYOUT = new Set(['', 'played', 'outside-look-ahead']);
+
+/** A file deleted by playout must have been fully watched (pView at or past the end of its last
+ *  airing), or never aired this generation (blank end) and not be on air at the moment of deletion.
+ *  A file a switch dropped or one that could not be read is not judged. */
 export function deletionOk(row, onAirId) {
+  if (!PLAYOUT.has(row.reason ?? '')) return true;
   if (row.fileEndTimeline === '' || row.fileEndTimeline == null) return row.id !== onAirId;
   return Number(row.pView) >= Number(row.fileEndTimeline);
 }
