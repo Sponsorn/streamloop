@@ -213,6 +213,9 @@ pub struct CacheFile {
     pub fps: Option<f64>,
     #[serde(deserialize_with = "lenient")]
     pub vcodec: Option<String>,
+    /// The file's size over the video's length.
+    #[serde(deserialize_with = "lenient")]
+    pub kbps: Option<u64>,
     #[serde(deserialize_with = "lenient")]
     pub format: Option<String>,
     #[serde(deserialize_with = "lenient")]

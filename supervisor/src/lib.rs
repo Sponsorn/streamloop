@@ -1272,6 +1272,7 @@ impl Ctl {
     fn tick(&mut self) {
         let now = Instant::now();
         self.sample_cpu();
+        self.scan_cache();
         if self.deadline.is_some_and(|d| now >= d) && !self.stopping {
             self.logs.event("info", "deadline", json!({"hours": self.args.dev.hours}));
             self.shutdown();
@@ -1638,7 +1639,8 @@ impl Ctl {
         }
     }
 
-    fn periodic(&mut self) {
+    /// The cache's size and the GET /cache report, once a second, encoder or not.
+    fn scan_cache(&mut self) {
         if self.last_scan.elapsed() >= Duration::from_secs(1) {
             self.last_scan = Instant::now();
             self.cache_bytes = std::fs::read_dir(&self.cache).map(|d| d.filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0);
@@ -1646,6 +1648,9 @@ impl Ctl {
             let report = self.cache_report();
             *self.cache_snapshot.lock().unwrap() = report;
         }
+    }
+
+    fn periodic(&mut self) {
         let (index, pos, source) = self.view();
         self.note_list_change(index, &source);
         let switching = self.target.as_ref().is_some_and(|t| t.reason != "normal") || self.step != "none" || source == Source::Slate || self.enc.child.is_none() || self.view_timeline() < self.ring_settled_at;
@@ -2370,10 +2375,10 @@ impl Ctl {
             let list = self.list_of(i);
             let state = if i == view {
                 "on-air"
-            } else if ahead == rules::Ahead::NoRoom {
-                "waiting-for-room"
             } else if downloading == Some(i) {
                 "downloading"
+            } else if ahead == rules::Ahead::NoRoom {
+                "waiting-for-room"
             } else if v.on_disk {
                 "cached"
             } else if v.skipped {
@@ -2414,14 +2419,17 @@ impl Ctl {
         let win: Vec<usize> = rows.iter().filter(|r| r.1 == rules::Ahead::Window).map(|r| r.0).collect();
         let first = self.first_download();
         let pick = self.next_pick(&win, first);
+        let retry = rows.iter().enumerate().filter_map(|(k, &(i, _))| Some((self.videos[i].dl_retry_at.filter(|_| self.videos[i].dl_failed)?, k, i))).min();
+        // With nothing else to fetch, a pause holds back the failed video's next try.
+        let held = pick.or(retry.map(|r| r.2));
         let now = Instant::now();
         if let Some(wait) = rules::download_wait(self.downloading.is_some(), self.sizing, now, self.dl_after, self.cookie_after, self.breaker.open) {
             return match wait {
                 rules::DownloadWait::Downloading => self.named_next("downloading", None, self.downloading.as_ref().map(|d| d.0)),
                 rules::DownloadWait::SizeLookup => self.named_next("size-lookup", None, pick),
-                rules::DownloadWait::AfterFailure => self.named_next("after-failure", Some(iso_at(self.dl_after)), pick),
-                rules::DownloadWait::Cookies => self.named_next("cookies", Some(iso_at(self.cookie_after)), pick),
-                rules::DownloadWait::YoutubePaused => self.named_next("youtube-paused", self.breaker_retry_iso(), pick),
+                rules::DownloadWait::AfterFailure => self.named_next("after-failure", Some(iso_at(self.dl_after)), held),
+                rules::DownloadWait::Cookies => self.named_next("cookies", Some(iso_at(self.cookie_after)), held),
+                rules::DownloadWait::YoutubePaused => self.named_next("youtube-paused", self.breaker_retry_iso(), held),
             };
         }
         if let Some(i) = pick {
@@ -2433,7 +2441,6 @@ impl Ctl {
             };
         }
         let at_of = |k: usize, key: &str| videos[k][key].as_str().map(String::from);
-        let retry = rows.iter().enumerate().filter_map(|(k, &(i, _))| Some((self.videos[i].dl_retry_at.filter(|_| self.videos[i].dl_failed)?, k, i))).min();
         if let Some((_, k, i)) = retry {
             return self.named_next("retry", at_of(k, "retryAt"), Some(i));
         }
@@ -2444,6 +2451,8 @@ impl Ctl {
     }
 
     fn named_next(&self, when: &str, at: Option<String>, video: Option<usize>) -> Value {
+        // A download keeps its index until its job ends, also after a reload shrank the ring.
+        let video = video.filter(|&i| i < self.videos.len());
         let list = video.map(|i| self.list_of(i));
         let v = video.map(|i| &self.videos[i]);
         json!({
@@ -5419,6 +5428,55 @@ mod tests {
 
         assert_eq!((report["next"]["when"].as_str(), report["next"]["id"].as_str()), (Some("retry"), Some("c")));
         assert_eq!(report["next"]["at"], report["videos"][2]["retryAt"]);
+    }
+
+    #[test]
+    fn cache_report_names_no_video_for_a_download_past_a_ring_that_shrank() {
+        // A reload dropped the list whose video downloads; the job ends a moment later.
+        let mut ctl = look_ahead_ctl("report-shrunk");
+        ctl.downloading = Some((6, 10.0, Arc::new(AtomicBool::new(true))));
+        ctl.videos.truncate(3);
+
+        let report = ctl.cache_report();
+
+        assert_eq!((report["next"]["when"].as_str(), report["next"]["id"].clone()), (Some("downloading"), Value::Null));
+    }
+
+    #[test]
+    fn cache_report_names_the_failed_video_while_youtube_is_paused() {
+        let mut ctl = test_ctl("report-paused-failed", &["a", "b", "c", "d"]);
+        ctl.settings.cache_budget_mb = 1000;
+        for v in &mut ctl.ctl.videos {
+            (v.on_disk, v.disk_bytes, v.bytes) = (true, MB10, Some(MB10));
+        }
+        (ctl.videos[2].on_disk, ctl.videos[2].dl_failed, ctl.videos[2].dl_retry_at) = (false, true, Some(Instant::now() + Duration::from_secs(120)));
+        (ctl.breaker.open, ctl.breaker.retry_at) = (true, ctl.now_s() + 600.0);
+        on_air(&mut ctl, 0, 0.0);
+
+        let report = ctl.cache_report();
+
+        assert_eq!((report["next"]["when"].as_str(), report["next"]["id"].as_str()), (Some("youtube-paused"), Some("c")));
+    }
+
+    #[test]
+    fn cache_report_shows_a_video_downloading_past_the_budget_as_downloading() {
+        // The video on air from its URL is fetched first, whether it fits or not.
+        let mut ctl = look_ahead_ctl("report-downloading-no-room");
+        ctl.downloading = Some((5, 10.0, Arc::new(AtomicBool::new(false))));
+
+        let report = ctl.cache_report();
+
+        assert_eq!(states(&report)[5], ("f".to_string(), "downloading".to_string()));
+    }
+
+    #[test]
+    fn the_cache_report_is_refreshed_while_no_encoder_runs() {
+        let mut ctl = look_ahead_ctl("report-no-encoder");
+        ctl.last_scan = Instant::now() - Duration::from_secs(2);
+
+        ctl.tick();
+
+        assert_eq!(ctl.cache_snapshot.lock().unwrap()["videos"].as_array().map(Vec::len), Some(6));
     }
 
     #[test]

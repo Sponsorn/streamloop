@@ -17,7 +17,8 @@ use crate::{
     app::AppHandle,
     dashboard::TabView,
     logic::admin::{
-        format_quality, format_rate, format_size, local_date_time, local_hm, local_hms,
+        format_bitrate, format_quality, format_rate, format_size, local_date_time, local_hm,
+        local_hms,
     },
     theme::{BORDER, MUTED, TEXT, YELLOW},
     widgets::section,
@@ -175,10 +176,18 @@ impl CacheView {
             .child(title_cell().child(Label::new(self.title(v))))
             .child(state_cell().child(Label::new(state_text(v))))
             .child(size_cell().child(Label::new(v.bytes.map_or("-".into(), format_size))))
-            .child(quality_cell().child(match file {
-                Some(f) => Label::new(format_quality(f)).text_color(rgb(quality_colour(f))),
-                None => Label::new("-"),
-            }))
+            .child(
+                quality_cell().child(match file {
+                    Some(f) => {
+                        div()
+                            .child(Label::new(format_quality(f)).text_color(rgb(quality_colour(f))))
+                            .children(f.kbps.map(|kbps| {
+                                Label::new(format_bitrate(kbps)).text_color(rgb(MUTED))
+                            }))
+                    }
+                    None => div().child(Label::new("-")),
+                }),
+            )
             .child(short_cell().child(Label::new(text(file.and_then(|f| f.format.as_ref())))))
             .child(client_cell().child(Label::new(text(file.and_then(|f| f.client.as_ref())))))
             .child(
@@ -225,22 +234,22 @@ fn head_line(report: &CacheReport) -> String {
     )
 }
 
-/// What the downloader does next. A wait that names no video has nothing left to fetch.
+/// What the downloader does next.
 fn next_line(next: Option<&CacheNext>) -> String {
     let Some(next) = next else {
         return NOTHING_NEXT.into();
     };
+    let at = next.at.as_deref().map(local_hm);
+    let at_or = |with: String, without: String| at.as_ref().map_or(without, |_| with);
+    let time = at.clone().unwrap_or_default();
     let title = next
         .title
         .clone()
         .filter(|t| !t.is_empty())
         .or_else(|| next.id.clone());
     let Some(title) = title else {
-        return NOTHING_NEXT.into();
+        return wait_line(&next.when, at.as_deref());
     };
-    let at = next.at.as_deref().map(local_hm);
-    let at_or = |with: String, without: String| at.as_ref().map_or(without, |_| with);
-    let time = at.clone().unwrap_or_default();
     match next.when.as_str() {
         "now" => format!("Next download: {title}, starting now."),
         "downloading" => format!("Downloading {title}."),
@@ -262,6 +271,22 @@ fn next_line(next: Option<&CacheNext>) -> String {
             format!("Next download: {title}, when there is room, about {time}."),
             format!("Next download: {title}, when there is room."),
         ),
+        _ => NOTHING_NEXT.into(),
+    }
+}
+
+/// A wait while no video is left to fetch: the pause still shows, since it holds back the next try.
+/// `time` is the local `HH:MM` it ends, when known.
+fn wait_line(when: &str, time: Option<&str>) -> String {
+    match (when, time) {
+        ("downloading", _) => "Downloading.".into(),
+        ("youtube-paused", Some(time)) => format!("YouTube lookups are paused until {time}."),
+        ("youtube-paused", None) => "YouTube lookups are paused.".into(),
+        ("after-failure", Some(time)) => {
+            format!("Downloads wait until {time}, after a failed try.")
+        }
+        ("after-failure", None) => "Downloads wait after a failed try.".into(),
+        ("cookies", _) => "Downloads wait until the browser's cookies can be read.".into(),
         _ => NOTHING_NEXT.into(),
     }
 }
@@ -582,11 +607,43 @@ mod tests {
             "Main VODs: Alpha".to_string(),
             "1080p30 h264".to_string(),
             "137+140".to_string(),
+            "4.0 Mb/s".to_string(),
             "mweb".to_string(),
             local_date_time(FINISHED_AT),
         ];
         let missing: Vec<_> = want.iter().filter(|w| !texts.contains(w)).collect();
         assert!(missing.is_empty(), "missing {missing:?} in {texts:?}");
+    }
+
+    #[test]
+    fn a_wait_that_names_no_video_still_says_why() {
+        let wait = |when: &str, at: Option<&str>| CacheNext {
+            when: when.into(),
+            at: at.map(str::to_string),
+            ..CacheNext::default()
+        };
+
+        let lines = [
+            next_line(Some(&wait("youtube-paused", Some(RETRY_AT)))),
+            next_line(Some(&wait("after-failure", Some(RETRY_AT)))),
+            next_line(Some(&wait("cookies", None))),
+            next_line(Some(&wait("downloading", None))),
+            next_line(Some(&wait("nothing", None))),
+        ];
+
+        assert_eq!(
+            lines,
+            [
+                format!("YouTube lookups are paused until {}.", local_hm(RETRY_AT)),
+                format!(
+                    "Downloads wait until {}, after a failed try.",
+                    local_hm(RETRY_AT)
+                ),
+                "Downloads wait until the browser's cookies can be read.".to_string(),
+                "Downloading.".to_string(),
+                NOTHING_NEXT.to_string(),
+            ]
+        );
     }
 
     #[gpui::test]

@@ -114,6 +114,15 @@ pub fn format_rate(bps: f64) -> String {
     }
 }
 
+/// A file's average bitrate: Mb/s with one decimal from 1 Mb/s up, else whole kb/s.
+pub fn format_bitrate(kbps: u64) -> String {
+    if kbps >= 1000 {
+        format!("{:.1} Mb/s", kbps as f64 / 1000.0)
+    } else {
+        format!("{kbps} kb/s")
+    }
+}
+
 /// `1080p30 h264`: the height with the frame rate, then the codec, each a `-` when unknown.
 pub fn format_quality(f: &CacheFile) -> String {
     let resolution = f.height.map_or("-".to_string(), |h| {
@@ -608,6 +617,12 @@ mod tests {
         assert_eq!(format_rate(2_411_725.0), "2.3 MB/s");
         assert_eq!(format_rate(524_288.0), "512 KB/s");
         assert_eq!(format_rate(491.18), "491 B/s");
+    }
+
+    #[test]
+    fn bitrate_reads_in_mb_or_kb_per_second() {
+        assert_eq!(format_bitrate(4123), "4.1 Mb/s");
+        assert_eq!(format_bitrate(850), "850 kb/s");
     }
 
     #[test]
