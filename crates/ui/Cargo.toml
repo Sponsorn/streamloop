@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # `component` is gpui-component; `assets` is the icon set its controls draw.
-gpui-kit = { version = "=0.9.0", default-features = false, features = ["component", "assets"] }
+gpui-kit = { version = "=0.11.0", default-features = false, features = ["component", "assets"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
@@ -22,14 +22,14 @@ async-channel = "2"
 anyhow = "1"
 sha2 = "0.11.1"
 # Only the process list, for the command lines of running cmd.exe.
-sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 # The single-instance mutex and show event, the foreground right for the first app, the tray's icon images
 # and the tray hint's balloon.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # The tray icon and its menu, on GPUI's main thread. The defaults are Linux's GTK and xdo.
-tray-icon = { version = "0.24.2", default-features = false }
+tray-icon = { version = "0.27.0", default-features = false }
 
 [dev-dependencies]
-gpui-kit = { version = "=0.9.0", default-features = false, features = ["component", "assets", "test-support"] }
+gpui-kit = { version = "=0.11.0", default-features = false, features = ["component", "assets", "test-support"] }
