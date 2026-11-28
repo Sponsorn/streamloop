@@ -60,6 +60,8 @@ const STEP_LABELS: [&str; STEPS] = [
 
 /// admin.js `runVerification` reads the status this often while it waits for the stream.
 const LIVE_CHECK_EVERY: Duration = Duration::from_secs(2);
+/// After a live verdict the wizard opens the dashboard by itself this much later.
+const AUTO_DASHBOARD_AFTER: Duration = Duration::from_secs(5);
 
 /// The Finish checklist in page order: index.html's `wiz-chk-config`, `-key` and `-live`.
 const CONFIG: usize = 0;
@@ -143,6 +145,10 @@ pub struct WizardView {
     followed: Followed,
     /// Finish's saves and live wait; dropping the wizard stops them.
     _finish: Option<Task<()>>,
+    /// Whole seconds left until the dashboard opens by itself; only after a live verdict.
+    countdown: Option<u64>,
+    /// The countdown; dropping the wizard, or a click on the next button, ends it.
+    _auto_dashboard: Option<Task<()>>,
 }
 
 impl WizardView {
@@ -182,6 +188,8 @@ impl WizardView {
             scroll: ScrollHandle::new(),
             followed: Followed::default(),
             _finish: None,
+            countdown: None,
+            _auto_dashboard: None,
         };
         view.load_config(cx);
         view.go_to(1, window, cx);
@@ -243,6 +251,8 @@ impl WizardView {
             return;
         }
         if self.finished {
+            self._auto_dashboard = None;
+            self.countdown = None;
             self.app.show_dashboard(cx);
             return;
         }
@@ -637,6 +647,7 @@ impl WizardView {
                 if verdict == Verdict::Live {
                     this.marks[LIVE] = Mark::Passed;
                     this.status = "The stream is live.".into();
+                    this.count_down_to_the_dashboard(cx);
                 } else {
                     this.marks[LIVE] = Mark::Failed;
                     let why = stream
@@ -647,6 +658,28 @@ impl WizardView {
                         format!("{why} You can fix this later from the dashboard.").into();
                 }
                 this.finish(cx);
+            })
+            .ok();
+        }));
+    }
+
+    /// Counts `AUTO_DASHBOARD_AFTER` down in whole seconds under the status, then opens the dashboard as the next
+    /// button does.
+    fn count_down_to_the_dashboard(&mut self, cx: &mut Context<Self>) {
+        self._auto_dashboard = Some(cx.spawn(async move |this, cx| {
+            for left in (1..=AUTO_DASHBOARD_AFTER.as_secs()).rev() {
+                let shown = this.update(cx, |this, cx| {
+                    this.countdown = Some(left);
+                    cx.notify();
+                });
+                if shown.is_err() {
+                    return;
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+            this.update(cx, |this, cx| {
+                this.countdown = None;
+                this.app.show_dashboard(cx);
             })
             .ok();
         }));
@@ -992,7 +1025,12 @@ impl WizardView {
                                 .text_size(px(13.))
                                 .text_color(rgb(MUTED)),
                         )
-                    }),
+                    })
+                    .children(self.countdown.map(|left| {
+                        Label::new(format!("Opening the dashboard in {left} s."))
+                            .text_size(px(13.))
+                            .text_color(rgb(MUTED))
+                    })),
             )
     }
 
@@ -2036,13 +2074,101 @@ mod tests {
             (Some("Go to Dashboard".into()), false)
         );
         let polls = count(&fake, "GET", "/api/status");
-        cx.executor().advance_clock(Duration::from_secs(10));
-        assert_eq!(count(&fake, "GET", "/api/status"), polls);
+        cx.executor().advance_clock(Duration::from_secs(1));
+        assert_eq!(count(&fake, "GET", "/api/status"), polls, "no polls while the wizard counts down");
 
         answer_polls(&fake);
         next(cx, window);
         assert_eq!(app.read_with(cx, |app, _| app.screen()), Screen::Dashboard);
         assert_eq!(count(&fake, "GET", "/api/events"), 1);
+    }
+
+    #[gpui::test]
+    fn a_live_verdict_counts_down_and_opens_the_dashboard_by_itself(cx: &mut TestAppContext) {
+        // Arrange
+        let (fake, window, app, view) = open_wizard(cx, first_run_config());
+        walk_to_finish(cx, window, &view);
+        fake.reply("GET", "/api/status", Ok(stream_json("live", None)));
+        answer_polls(&fake);
+        fake.reply("GET", "/api/status", Ok(stream_json("live", None)));
+        next(cx, window);
+
+        // Act: the verdict comes 2 s after Finish
+        cx.executor().advance_clock(Duration::from_secs(2));
+        let at_5 = shows(cx, window, "Opening the dashboard in 5 s.");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        let at_4 = shows(cx, window, "Opening the dashboard in 4 s.");
+        cx.executor().advance_clock(Duration::from_secs(3));
+        let before_the_end = app.read_with(cx, |app, _| app.screen());
+        cx.executor().advance_clock(Duration::from_secs(1));
+
+        // Assert
+        assert!(at_5);
+        assert!(at_4);
+        assert_eq!(before_the_end, Screen::Wizard);
+        assert_eq!(app.read_with(cx, |app, _| app.screen()), Screen::Dashboard);
+    }
+
+    #[gpui::test]
+    fn a_click_during_the_countdown_opens_the_dashboard_once(cx: &mut TestAppContext) {
+        // Arrange
+        let (fake, window, app, view) = open_wizard(cx, first_run_config());
+        walk_to_finish(cx, window, &view);
+        fake.reply("GET", "/api/status", Ok(stream_json("live", None)));
+        next(cx, window);
+        // The verdict comes at 2 s; 1 s of the countdown is left here.
+        cx.executor().advance_clock(Duration::from_secs(6));
+        answer_polls(&fake);
+
+        // Act: past the countdown's end, before the dashboard's own next poll
+        next(cx, window);
+        let at_click = app.read_with(cx, |app, _| app.screen());
+        cx.executor().advance_clock(Duration::from_millis(1500));
+
+        // Assert
+        assert_eq!(at_click, Screen::Dashboard);
+        assert_eq!(count(&fake, "GET", "/api/events"), 1, "the end of the 5 s opens nothing more");
+    }
+
+    #[gpui::test]
+    fn a_not_live_verdict_waits_for_a_click_with_no_countdown(cx: &mut TestAppContext) {
+        // Arrange
+        let (fake, window, app, view) = open_wizard(cx, first_run_config());
+        walk_to_finish(cx, window, &view);
+        fake.reply("GET", "/api/status", Ok(stream_json("off-air", Some(NOT_ANSWERING))));
+
+        // Act
+        next(cx, window);
+        cx.executor().advance_clock(Duration::from_secs(17));
+        cx.executor().advance_clock(Duration::from_secs(10));
+        let text = painted(cx, window);
+
+        // Assert
+        assert_eq!(app.read_with(cx, |app, _| app.screen()), Screen::Wizard);
+        assert!(text.contains(&format!("{NOT_ANSWERING}{LATER}")));
+        assert!(!text.iter().any(|t| t.starts_with("Opening the dashboard")));
+    }
+
+    #[gpui::test]
+    fn a_key_not_set_end_waits_for_a_click_with_no_countdown(cx: &mut TestAppContext) {
+        // Arrange
+        let (fake, window, app, view) = open_wizard(cx, first_run_config());
+        fake.reply(
+            "POST",
+            "/api/stream-key",
+            Err(ApiError::Server("Could not protect the key".into())),
+        );
+        walk_to_finish(cx, window, &view);
+
+        // Act
+        next(cx, window);
+        cx.executor().advance_clock(Duration::from_secs(10));
+        let text = painted(cx, window);
+
+        // Assert
+        assert_eq!(app.read_with(cx, |app, _| app.screen()), Screen::Wizard);
+        assert!(text.iter().any(|t| t.ends_with("You can set the key later in Settings.")));
+        assert!(!text.iter().any(|t| t.starts_with("Opening the dashboard")));
     }
 
     #[gpui::test]
