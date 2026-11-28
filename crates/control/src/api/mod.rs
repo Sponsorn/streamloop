@@ -3,6 +3,7 @@
 //! routes of `api.ts`, one file per group.
 
 mod autostart;
+mod cache;
 mod config;
 mod logs;
 mod misc;
@@ -273,6 +274,7 @@ pub fn router(state: Arc<AppState>, port: u16) -> Router {
         .route("/status", get(status::status))
         .route("/state", get(status::now_playing))
         .route("/events", get(status::events))
+        .route("/cache", get(cache::report))
         .route("/config", get(config::read).post(config::save))
         .route("/stream-key", post(stream_key::set))
         .route("/autostart", get(autostart::read).post(autostart::set))

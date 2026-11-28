@@ -104,8 +104,8 @@ Back to 3.x: close 2.x and OBS, start 3.x's `streamloop.exe`, press Start. Until
 | Module | Responsibility |
 |--------|---------------|
 | `app.rs` | Wiring, the start order, a config save and the supervisor reload after it, shutdown and exit codes (3.0's `index.ts`) |
-| `api/` | The REST routes (`/api/status`, `/api/state`, `/api/events`, `/api/config`, `/api/stream-key`, `/api/player/*`, `/api/stream/stop`, `/api/stream/start`, `/api/playlist/*`, `/api/logs`, `/api/update/*`, `/api/autostart`, `/api/discord/*`, `/api/setup-check`, `/api/yt-dlp/update`, `/api/shutdown`, `/api/quit`), the token check and the browser check |
-| `supervisor_client.rs` | HTTP client for the supervisor (`/status`, `/control`, `/reload`, `/shutdown`); 1 s timeout, never fails; a status that does not parse still gives its `version` and `encoder.alive` |
+| `api/` | The REST routes (`/api/status`, `/api/state`, `/api/events`, `/api/cache`, `/api/config`, `/api/stream-key`, `/api/player/*`, `/api/stream/stop`, `/api/stream/start`, `/api/playlist/*`, `/api/logs`, `/api/update/*`, `/api/autostart`, `/api/discord/*`, `/api/setup-check`, `/api/yt-dlp/update`, `/api/shutdown`, `/api/quit`), the token check and the browser check |
+| `supervisor_client.rs` | HTTP client for the supervisor (`/status`, `/control`, `/reload`, `/shutdown`, `/cache`); 1 s timeout, never fails; a status that does not parse still gives its `version` and `encoder.alive` |
 | `launcher.rs` | Polls `/status` every 2 s, launches the supervisor after 3 misses (backoff 10 s, 30 s, 60 s, 5 min), stays down after Stop stream until Start, across restarts (`ROOT\data\stopped-by-user`); the start holds (`autoStartStream`, or a landing or rollback of a held stream); replaces a supervisor of another version |
 | `setup_check.rs` | The first-run setup check (encoder probe and pick, cache sizing, dependency list, `data\setup-check.json`) and the guard before each launch (no launch while `obs64.exe` runs, the encoder fallback) |
 | `events.rs` | Tails the supervisor's events file; maps each event to timeline text and an optional Discord alert; one alert per outage |

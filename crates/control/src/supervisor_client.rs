@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use streamloop_common::api::{ControlCmd, ControlRequest, EncoderStatus, ReloadRequest, SupervisorStatus};
+use streamloop_common::api::{CacheReport, ControlCmd, ControlRequest, EncoderStatus, ReloadRequest, SupervisorStatus};
 
 use crate::http::{Http, HttpError, HttpErrorKind, HttpRequest};
 
@@ -41,6 +41,11 @@ pub trait SupervisorApi: Send + Sync {
     async fn control(&self, cmd: ControlCmd, index: Option<u32>, reason: Option<String>, id: Option<String>) -> ControlResult;
     async fn reload(&self, req: ReloadRequest) -> ReloadResult;
     async fn shutdown(&self) -> bool;
+    /// `GET /cache`. `None` when the supervisor does not answer, answers non-200 (a 3.1.x one has no such
+    /// route) or sends something that is not a report.
+    async fn cache(&self) -> Option<CacheReport> {
+        None
+    }
 }
 
 pub struct SupervisorClient {
@@ -146,6 +151,14 @@ impl SupervisorApi for SupervisorClient {
     async fn shutdown(&self) -> bool {
         matches!(self.call("/shutdown", Some(b"{}".to_vec())).await, Ok(a) if a.status == 200)
     }
+
+    async fn cache(&self) -> Option<CacheReport> {
+        let answer = self.call("/cache", None).await.ok()?;
+        if answer.status != 200 {
+            return None;
+        }
+        CacheReport::deserialize(Value::Object(answer.json?)).ok()
+    }
 }
 
 /// `version` and `encoder.alive`, each only when it has the type this side expects.
@@ -174,7 +187,7 @@ pub mod fake {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use streamloop_common::api::{ControlCmd, ReloadRequest, SupervisorStatus};
+    use streamloop_common::api::{CacheReport, ControlCmd, ReloadRequest, SupervisorStatus};
     use tokio::sync::Notify;
 
     use super::{ControlResult, ReloadResult, SupervisorApi};
@@ -185,10 +198,12 @@ pub mod fake {
         Control { cmd: ControlCmd, index: Option<u32>, reason: Option<String>, id: Option<String> },
         Reload(ReloadRequest),
         Shutdown,
+        Cache,
     }
 
     pub struct FakeSupervisor {
         status: Mutex<Option<SupervisorStatus>>,
+        cache: Mutex<Option<CacheReport>>,
         control_result: Mutex<ControlResult>,
         reload_result: Mutex<ReloadResult>,
         shutdown_result: Mutex<bool>,
@@ -202,6 +217,7 @@ pub mod fake {
         fn default() -> Self {
             Self {
                 status: Mutex::new(None),
+                cache: Mutex::new(None),
                 control_result: Mutex::new(ControlResult { ok: true, ..ControlResult::default() }),
                 reload_result: Mutex::new(ReloadResult { ok: true, ..ReloadResult::default() }),
                 shutdown_result: Mutex::new(true),
@@ -221,6 +237,11 @@ pub mod fake {
         /// `None` makes `status()` answer as an unreachable supervisor does.
         pub fn set_status(&self, status: Option<SupervisorStatus>) {
             *self.status.lock().unwrap() = status;
+        }
+
+        /// `None` makes `cache()` answer as a supervisor without the route does.
+        pub fn set_cache(&self, c: Option<CacheReport>) {
+            *self.cache.lock().unwrap() = c;
         }
 
         pub fn set_control_result(&self, r: ControlResult) {
@@ -291,6 +312,11 @@ pub mod fake {
                 self.set_status(None);
             }
             *self.shutdown_result.lock().unwrap()
+        }
+
+        async fn cache(&self) -> Option<CacheReport> {
+            self.enter(Call::Cache).await;
+            self.cache.lock().unwrap().clone()
         }
     }
 }

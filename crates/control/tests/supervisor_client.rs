@@ -350,6 +350,60 @@ async fn shutdown_is_true_on_200_and_false_on_failure() {
     assert_eq!(sent_body(&http, 0), "{}");
 }
 
+// cache
+
+const CACHE_REPORT: &str = r#"{
+  "cacheBytes": 2048, "budgetBytes": 4096,
+  "next": { "when": "now", "at": null, "index": 1, "playlistId": "PL1", "id": "b", "title": "B" },
+  "videos": [
+    { "index": 0, "playlistId": "PL1", "id": "a", "title": "A", "duration": 100, "state": "on-air", "source": "file", "bytes": 2048, "lookedUp": true },
+    { "index": 1, "playlistId": "PL1", "id": "b", "title": "B", "duration": 90, "state": "queued", "source": null, "bytes": 1024, "lookedUp": true }
+  ],
+  "deletions": []
+}"#;
+
+#[tokio::test]
+async fn cache_reads_the_supervisors_report() {
+    // Arrange
+    let (http, client) = answering(200, CACHE_REPORT);
+    // Act
+    let report = client.cache().await.expect("a report");
+    // Assert
+    let ids: Vec<_> = report.videos.iter().map(|v| v.id.clone().unwrap_or_default()).collect();
+    assert_eq!((ids, report.cache_bytes, report.next.and_then(|n| n.when)), (vec!["a".to_string(), "b".to_string()], Some(2048), Some("now".to_string())));
+    assert_eq!((http.requests()[0].method.as_str(), http.requests()[0].url.as_str()), ("GET", "http://127.0.0.1:4417/cache"));
+}
+
+#[tokio::test]
+async fn cache_is_none_when_the_supervisor_has_no_cache_route() {
+    // Arrange
+    let (_http, client) = answering(404, r#"{"error":"Not found"}"#);
+    // Act
+    let report = client.cache().await;
+    // Assert
+    assert!(report.is_none());
+}
+
+#[tokio::test]
+async fn cache_is_none_when_nothing_answers() {
+    // Arrange
+    let client = failing(HttpError::connect("ECONNREFUSED", "refused"));
+    // Act
+    let report = client.cache().await;
+    // Assert
+    assert!(report.is_none());
+}
+
+#[tokio::test]
+async fn cache_is_none_when_the_body_is_not_a_report() {
+    // Arrange
+    let (_http, client) = answering(200, r#"{"videos": "not a list"}"#);
+    // Act
+    let report = client.cache().await;
+    // Assert
+    assert!(report.is_none());
+}
+
 // wire parity with the Node backend
 
 #[tokio::test]

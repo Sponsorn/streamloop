@@ -240,6 +240,54 @@ async fn events_returns_the_timeline() {
     assert!(entries[0]["timestamp"].is_string());
 }
 
+// GET /cache.
+
+#[tokio::test]
+async fn cache_passes_on_the_supervisors_report() {
+    // Arrange
+    let rig = Rig::new();
+    let report = json!({
+        "cacheBytes": 2048, "budgetBytes": 4096,
+        "next": { "when": "room", "at": "2026-11-28T10:00:00.000Z", "index": 1, "playlistId": "PL1", "id": "b", "title": "B" },
+        "videos": [
+            { "index": 0, "playlistId": "PL1", "id": "a", "title": "A", "duration": 100.0, "state": "on-air", "source": "file", "bytes": 2048, "lookedUp": true,
+              "download": null, "retryAt": null, "roomAt": null, "file": { "width": 1920, "height": 1080, "fps": 30.0, "vcodec": "h264", "acodec": "aac", "kbps": 2500, "format": "137+140", "client": "mweb", "finishedAt": "2026-11-28T09:14:02.000Z" } },
+            { "index": 1, "playlistId": "PL1", "id": "b", "title": "B", "duration": 90.0, "state": "waiting-for-room", "source": null, "bytes": 1024, "lookedUp": true,
+              "download": null, "retryAt": null, "roomAt": "2026-11-28T10:00:00.000Z", "file": null }
+        ],
+        "deletions": [{ "at": "2026-11-28T09:00:00.000Z", "id": "z", "title": "Z", "bytes": 5, "reason": "played" }]
+    });
+    rig.sup.set_cache(Some(serde_json::from_value(report.clone()).unwrap()));
+    // Act
+    let reply = get(&rig.app(), "/cache").await;
+    // Assert
+    assert_eq!((reply.status, reply.json()), (StatusCode::OK, json!({ "cache": report })));
+}
+
+#[tokio::test]
+async fn cache_is_null_when_no_supervisor_answers() {
+    // Arrange
+    let rig = Rig::new();
+    // Act
+    let reply = get(&rig.app(), "/cache").await;
+    // Assert
+    assert_eq!((reply.status, reply.json()), (StatusCode::OK, json!({ "cache": null })));
+    assert_eq!(rig.sup.calls(), vec![Call::Cache]);
+}
+
+#[tokio::test]
+async fn cache_is_refused_to_a_browser() {
+    // Arrange
+    let rig = Rig::new();
+    rig.sup.set_cache(Some(Default::default()));
+    let req = Request::builder().uri("/api/cache").header("origin", "http://example.com").body(Body::empty()).unwrap();
+    // Act
+    let reply = call(&rig.app(), req).await;
+    // Assert
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert!(rig.sup.calls().is_empty());
+}
+
 // POST /stream-key.
 
 #[tokio::test]
