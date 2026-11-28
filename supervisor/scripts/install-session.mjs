@@ -26,12 +26,21 @@
 //   move          v3.0.5 from GitHub (checksum checked) live with a dummy key, Stop, window closed, the full
 //                 ZIP extracted over it: config, key and timeline kept, the 3.0 leftovers gone. Then again
 //                 with the 3.0.5 supervisor left streaming: the new control process replaces it.
+//   from312       v3.1.2 from GitHub (checksum checked), its own updater landing this exe, built as the next minor
+//                 version (3.2.0 and 3.2.1 for a 3.1.x N), three times, each in a fresh v3.1.2 install: at the planned
+//                 break, by Update Now on air, and by Update Now while stopped. After each, the new control process
+//                 under v3.1.2's START.bat (word `restart`) writes to START.bat's output, keeps the supervisor the
+//                 landing launched and opens no app or window. A StreamLoop.vbs planted as 3.1.2 wrote it becomes the
+//                 Run value under the test key, and one that Task Manager disabled stays disabled. v2.3.8's own
+//                 stream guard, under v2.3.8's Node (its ZIP from GitHub, checksum checked), reads the refusing
+//                 4417 as streaming, then as not streaming after Stop. v3.1.2's /api/autostart is never called: it
+//                 has no test switches and would write the real Startup folder.
 //   faults        the stage 5 gate's fault checks through POST /debug/fault (STREAMLOOP_DEBUG_FAULTS=1).
 //   all           every run above in that order. build: only the test builds.
 // N is dist\'s build (package.json's version); `npm run build:release` first, and again after a change to
-// the crates, START.bat or the dashboard. N+1 to N+4 count up N's patch number, and the two broken
-// N+1 builds are N+1 with the test-supervisor-fails or test-control-fails feature, each built by cargo
-// into its own target\install-session\<id>\. The release list (STREAMLOOP_TEST_RELEASES) carries each
+// the crates, START.bat or the dashboard. N+1 to N+4 count up N's patch number, the two broken
+// N+1 builds are N+1 with the test-supervisor-fails or test-control-fails feature, and from312's two count up
+// N's minor number; cargo builds each into its own target\install-session\<id>\. The release list (STREAMLOOP_TEST_RELEASES) carries each
 // release's ZIP, exe and exe checksum; the exe and its checksum are served on
 // 127.0.0.1:8791, and the ZIP is never fetched. Discord posts go to a catcher on 127.0.0.1:8790.
 // Start it from PowerShell: a job that refuses breakaway (the Bash tool's) puts the supervisor in it.
@@ -43,9 +52,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, rea
 import { createHash } from 'node:crypto';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
-import { dailyFiles, EVENTS, PLAYLIST, redact, exeMode, autostartSandbox } from './lib.mjs';
+import { dailyFiles, EVENTS, PLAYLIST, redact, exeMode, autostartSandbox, testKeyDeleteArgs, testValueAddArgs } from './lib.mjs';
 import {
   spawn, run, KEY, INGEST, READ_URL, SUP, sleep, iso, Stop, useOut, note, waitFor, startBat, nodeUp, api, nodeStatus, supStatus, waitLive,
   packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
@@ -53,6 +62,7 @@ import {
   VARIANTS, exeName, ASSET_PORT, buildVariants, writeReleaseList, assetHost, TAR,
   installCensus, windowCensus, closeWindows, windowsOf, fullScreenApp, foregroundGate, foregroundNow, runCommandParts, verdictOf, SKIPPED,
   opensItsWindow, cameToTheFront, endsOnTheQuitLine, startApp, explorerEnv, regValue, regKeyExists, realAutostart, rawRequest, token,
+  checksumOf, guardVerdict,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
@@ -97,7 +107,18 @@ const BREAK_AT_S = 300;
 /** The confirmation window (landing.rs CONFIRM_WITHIN). */
 const CONFIRM_MS = 180_000;
 const V305_TAG = 'v3.0.5';
-const V305_URL = `https://github.com/Sponsorn/streamloop/releases/download/${V305_TAG}/streamloop-${V305_TAG}`;
+/** The released 3.1.x whose own updater lands this exe in the from312 run. */
+const V312 = '3.1.2';
+const V312_CACHE = join(RESULTS, 'v312-zip');
+/** The 2.x release whose stream guard and Node the from312 run takes. */
+const V238_TAG = 'v2.3.8';
+const V238_CACHE = join(RESULTS, 'v238-zip');
+/** v2.3.8 extracted for its stream guard only; nothing of it starts but its Node, and the run removes it. */
+const S2 = join(tmpdir(), 'sl3 install 2x');
+/** This exe, built as the next minor version, which v3.1.2 lands. */
+const [VM0, VM1] = ['next-minor', 'next-minor-1'].map((id) => VARIANTS[id].version);
+/** Task Manager's disable of StreamLoop.vbs: 3, three zeroes, then a FILETIME. */
+const VBS_OFF_HEX = '030000001032547698badc01';
 /** What the control process removes at every start (spec: Moving from 3.0). */
 const LEFTOVERS_30 = ['app/src', 'app/node_modules', 'app/package.json', 'app/package-lock.json', 'app/tsconfig.json', 'app/node-version.txt',
   'supervisor/streamloop-supervisor.exe', '_update_tmp', '_update_old', 'START.bat.new', '_apply_launcher.bat'];
@@ -105,7 +126,7 @@ const LEFTOVERS_30 = ['app/src', 'app/node_modules', 'app/package.json', 'app/pa
 /** The 3.0 token server's folders; the control process removes them once supervisor\streamloop-pot.exe is installed. */
 const TOKEN_FALLBACK = ['pot', 'node'];
 
-const RUNS = { install: runInstall, app: runApp, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, faults: runFaults };
+const RUNS = { install: runInstall, app: runApp, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, from312: runFrom312, faults: runFaults };
 
 const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
 const readText = (file) => { try { return readFileSync(file, 'utf8'); } catch { return null; } };
@@ -177,15 +198,17 @@ let bat = null;
 let secondBat = null;
 let API_PORT = 7654;
 
-/** Extracts the full ZIP, starts its START.bat hidden and takes it live with the wizard's calls. */
-async function install(r, { env = {}, label, updates = false }) {
-  const i = r.install = { zip: basename(DIST_ZIP), bytes: statSync(DIST_ZIP).size, sha256: sha256File(DIST_ZIP) };
-  i.extractMs = await extract(DIST_ZIP, S);
-  KNOWN_EXES.set(sha256File(EXE), VERSION);
+/** Extracts the full ZIP (dist's, or `zip` of release `version`), runs `before` on the extracted install, starts its
+ *  START.bat hidden and takes it live with the wizard's calls. `fromApp: false` starts START.bat as by hand. */
+async function install(r, { env = {}, label, updates = false, zip = DIST_ZIP, version = VERSION, before = null, fromApp = true }) {
+  const i = r.install = { zip: basename(zip), bytes: statSync(zip).size, sha256: sha256File(zip) };
+  i.extractMs = await extract(zip, S);
+  KNOWN_EXES.set(sha256File(EXE), version);
   i.configShipped = existsSync(CONFIG);
   quietConfig(join(ROOT, 'app', 'config.example.json'), { port: API_PORT, autoUpdateCheck: updates });
+  if (before) await before();
   const t0 = Date.now();
-  bat = startBat(ROOT, label, env);
+  bat = startBat(ROOT, label, env, { fromApp });
   i.controlUpMs = await nodeUp(`${label} first start`);
   i.configCreated = existsSync(CONFIG);
   const first = await nodeStatus();
@@ -1378,18 +1401,24 @@ async function runRollbackBat(r) {
 
 // the move from 3.0.5
 
-/** v3.0.5 from its GitHub release, read-only, checked against its .sha256 asset. */
-async function v305Zip(r) {
-  mkdirSync(V305_CACHE, { recursive: true });
-  const zip = join(V305_CACHE, `streamloop-${V305_TAG}.zip`);
-  const shaText = await (await fetch(`${V305_URL}.sha256`, { signal: AbortSignal.timeout(30_000) })).text();
-  const want = shaText.trim().split(/\s+/)[0].toLowerCase();
-  if (!existsSync(zip) || sha256File(zip) !== want) {
-    const res = await fetch(`${V305_URL}.zip`, { signal: AbortSignal.timeout(600_000) });
+/** The full ZIP of the project's GitHub release `tag`, read-only, kept in `cache` and checked against the release's
+ *  .sha256 asset. A copy that already matches is not fetched again. */
+async function releaseZip(tag, cache) {
+  const base = `https://github.com/Sponsorn/streamloop/releases/download/${tag}/streamloop-${tag}`;
+  mkdirSync(cache, { recursive: true });
+  const zip = join(cache, `streamloop-${tag}.zip`);
+  const want = checksumOf(await (await fetch(`${base}.sha256`, { signal: AbortSignal.timeout(30_000) })).text());
+  if (want !== null && (!existsSync(zip) || sha256File(zip) !== want)) {
+    const res = await fetch(`${base}.zip`, { signal: AbortSignal.timeout(600_000) });
     writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
   }
-  const got = sha256File(zip);
-  r.v305 = { url: `${V305_URL}.zip`, bytes: statSync(zip).size, sha256: got, expected: want, match: got === want };
+  const got = existsSync(zip) ? sha256File(zip) : null;
+  return { zip, facts: { url: `${base}.zip`, bytes: got === null ? null : statSync(zip).size, sha256: got, expected: want, match: want !== null && got === want } };
+}
+
+async function v305Zip(r) {
+  const { zip, facts } = await releaseZip(V305_TAG, V305_CACHE);
+  r.v305 = facts;
   if (!r.v305.match) throw new Stop('v3.0.5 checksum mismatch');
   return zip;
 }
@@ -1557,6 +1586,251 @@ async function heldFilesCompare(failedLines) {
   });
   rmSync(dir, { recursive: true, force: true });
   return out;
+}
+
+// from v3.1.2: the released control process lands this exe
+
+const VBS_FILE = join(sandbox.startupDir, 'StreamLoop.vbs');
+const testApproved = () => regValue(`${sandbox.key}\\StartupApproved\\Run`, 'StreamLoop');
+
+/** The test key emptied and no StreamLoop.vbs in the test Startup folder, so one part's autostart proves nothing for
+ *  the next. */
+async function clearTestAutostart() {
+  const args = testKeyDeleteArgs(sandbox.key);
+  if (!args) throw new Stop(`${sandbox.key} is not a test key of this harness`);
+  await run('reg.exe', args);
+  rmSync(VBS_FILE, { force: true });
+}
+
+/** Task Manager's disable of StreamLoop.vbs, under the test key's StartupApproved\StartupFolder. */
+async function disableVbsAsTaskManager() {
+  const args = testValueAddArgs(sandbox.key, 'StartupApproved\\StartupFolder', 'StreamLoop.vbs', VBS_OFF_HEX);
+  if (!args) throw new Stop(`${sandbox.key} is not a test key of this harness`);
+  const res = await run('reg.exe', args, { encoding: 'utf8' });
+  if (res.status !== 0) throw new Stop(`reg add under the test key failed: ${res.stderr}`);
+}
+
+/** A fresh v3.1.2 install from `zip`, live, running the tested ZIP's yt-dlp as the move run does. With a full-screen
+ *  app in front (`windowTest` false) START.bat says the app started it, so a start that wrongly opens a window cannot
+ *  open it over that app, and the window checks are SKIPPED. `plant` runs on the extracted install. */
+async function install312(r, zip, part, { env, updates, plant = null }) {
+  const windowTest = await gate(r, `from312 ${part}: a start that must open no window`);
+  await install(r, { env, label: `from312-${part}`, updates, zip, version: V312, fromApp: !windowTest, before: async () => {
+    const ytdlp = await run(TAR, ['-xf', DIST_ZIP, '-C', S, 'streamloop/yt-dlp/yt-dlp.exe'], { timeout: 120_000 });
+    if (ytdlp.status !== 0) throw new Stop(`tar could not take yt-dlp.exe from ${DIST_ZIP}: ${ytdlp.stderr}`);
+    if (plant) await plant();
+  } });
+  const s = await supStatus();
+  const i = { ...r.install, windowTest, exeVersion: await exeVersion(), supervisorVersion: s?.version ?? null, controlVersion: (await updStatus())?.currentVersion ?? null };
+  i.checks = { v312Live: i.exeVersion === V312 && i.supervisorVersion === V312 && i.controlVersion === V312 };
+  note(`from312 ${part}: v3.1.2 live`, i);
+  return i;
+}
+
+/** After a landing from v3.1.2, what only this exe's first start under v3.1.2's START.bat shows: the new control
+ *  process's confirmation line in START.bat's output (the harness's START.bat writes to a file, which the exe keeps as
+ *  its output), one supervisor launch since `from` whose supervisor still streams, and no shown window of the install. */
+async function newExeChecks(part, from, to, windowTest, launchedBy) {
+  const consoleText = readText(join(runOut, `console-from312-${part}.log`)) ?? '';
+  const launched = eventsSince(from, ['launched']);
+  const snap = await installSnapshot();
+  const tl = (await timeline()).map((e) => e.message);
+  const supervisors = snap.roles.supervisors.map((p) => p.ProcessId);
+  const x = { launched: launched.map(briefEvent), supervisors, windows: snap.windows, consoleTail: consoleText.trim().split(/\r?\n/).slice(-6) };
+  x.checks = {
+    newControlProcessWritesToStartBatsOutput: consoleText.includes(`INFO: The update came up {"version":"${to}"}`),
+    [launchedBy]: launched.length === 1 && supervisors.length === 1 && launched[0].pid === supervisors[0] && !tl.some((m) => m.startsWith('Restarting the supervisor')),
+    noWindow: windowTest ? snap.windows.length === 0 : SKIPPED,
+  };
+  note(`from312 ${part}: the new exe after the landing`, x);
+  return x;
+}
+
+/** Waits for the check to offer `id`, then for its exe staged. */
+async function offerAndStage(id) {
+  const v = VARIANTS[id].version;
+  const offered = await waitFor(`the check to offer ${v}`, async () => {
+    const c = (await api('POST', '/update/check')).json;
+    if (c?.latestVersion === v && c.updateAvailable) return c;
+    await sleep(10_000);
+    return null;
+  }, 120_000, 0);
+  return { offered: offered.value !== null, staged: await waitStaged(id, 120_000) };
+}
+
+/** 2.x's own stream guard (src/server/stream-guard.ts) under v2.3.8's Node and tsx, from its app folder as 2.x runs. */
+async function guard2x(root2) {
+  const code = 'import(process.env.MOD).then(async (m) => { console.log(JSON.stringify({ streaming: await m.streamloop3IsStreaming() })); process.exit(0); })';
+  const mod = pathToFileURL(join(root2, 'app', 'src', 'server', 'stream-guard.ts')).href;
+  const res = await run(join(root2, 'node', 'node.exe'), [join(root2, 'app', 'node_modules', 'tsx', 'dist', 'cli.mjs'), '-e', code],
+    { cwd: join(root2, 'app'), encoding: 'utf8', timeout: 60_000, env: { ...process.env, MOD: mod } });
+  return { status: res.status, streaming: guardVerdict(res.stdout), stderr: String(res.stderr ?? '').trim().slice(0, 500) };
+}
+
+/** 2.x's stream guard against this exe's 4417, which refuses browsers: streaming while it streams, not after Stop.
+ *  Only v2.3.8's Node runs, from its extracted ZIP `zip2`; no 2.x install starts and no OBS. */
+async function guardCheck(zip2) {
+  const g = { extractMs: await extract(zip2, S2) };
+  try {
+    const root2 = existsSync(join(S2, 'streamloop', 'app')) ? join(S2, 'streamloop') : S2;
+    g.encoderAlive = (await supStatus())?.encoder?.alive ?? null;
+    g.whileStreaming = await guard2x(root2);
+    g.stop = (await api('POST', '/stream/stop')).status;
+    g.supervisorGoneMs = (await waitFor('the supervisor to exit after Stop', async () => ((await cores()).length === 0 ? true : null), 60_000, 500)).ms;
+    g.afterStop = await guard2x(root2);
+  } finally {
+    rmSync(S2, { recursive: true, force: true, maxRetries: 5, retryDelay: 1000 });
+  }
+  g.removed = !existsSync(S2);
+  g.checks = {
+    readsStreamingWhileItStreams: g.encoderAlive === true && g.whileStreaming.streaming === true,
+    readsNotStreamingAfterStop: g.stop === 200 && g.supervisorGoneMs !== null && g.afterStop.streaming === false,
+    extractRemoved: g.removed,
+  };
+  note('2.x\'s stream guard against 4417', g);
+  return g;
+}
+
+/** v3.1.2's own updater lands this exe at the planned break, by Update Now on air and by Update Now while stopped,
+ *  each from a fresh v3.1.2 install. */
+async function runFrom312(r) {
+  const { zip, facts } = await releaseZip(`v${V312}`, V312_CACHE);
+  r.v312 = facts;
+  if (!facts.match) throw new Stop('v3.1.2 checksum mismatch');
+  const v238 = await releaseZip(V238_TAG, V238_CACHE);
+  r.v238 = v238.facts;
+  if (!v238.facts.match) throw new Stop('v2.3.8 checksum mismatch');
+  const expected = `"${EXE}" ui --tray`;
+
+  // At the planned break, with this install's StreamLoop.vbs planted as 3.1.2 wrote it.
+  await clearTestAutostart();
+  const a = r.break = {};
+  const envA = { STREAMLOOP_TEST_RELEASES: writeReleases('from312-break', ['next-minor']), STREAMLOOP_TEST_BREAK_AT_S: String(BREAK_AT_S) };
+  a.install = await install312(r, zip, 'break', { env: envA, updates: true, plant: () => writeVbs(join(ROOT, 'START.bat')) });
+  const wA = r.watch = startWatch();
+  const awA = r.appWatch = startAppWatch();
+  a.staged = await waitStaged('next-minor');
+  a.vbsBefore = { file: existsSync(VBS_FILE), value: await runValue() };
+  const beforeA = await snapshot();
+  const landingA = await onAirLanding(r, wA, startProbe(), VM0, 'from312-break', beforeA);
+  const tStartA = when(wA, 'state', wA.t0, (v) => v?.to === VM0 && v.result === 'running' && v.step !== 'download');
+  a.newExe = await newExeChecks('break', tStartA ?? wA.t0, VM0, a.install.windowTest, 'keptTheSupervisorTheLandingLaunched');
+  const movedA = await waitFor('the Run value from StreamLoop.vbs', async () => ((await runValue()) === expected && !existsSync(VBS_FILE) ? true : null), 30_000, 1000);
+  a.vbsAfter = { file: existsSync(VBS_FILE), value: await runValue(), approved: await testApproved() };
+  a.guard = await guardCheck(v238.zip);
+  await endWatch(wA);
+  await endAppWatch(awA);
+  a.apps = awA.apps.size;
+  a.checks = {
+    ...a.install.checks,
+    stagedBeforeTheBreak: a.staged.stagedSha256Matches && a.staged.uptimeS !== null && a.staged.uptimeS < BREAK_AT_S,
+    onlyTheExeFetched: fetchedOnlyTheExe(a.staged.fetched, 'next-minor'),
+    landedAtTheBreak: landingA.times.uptimeAtLandingS !== null && landingA.times.uptimeAtLandingS >= BREAK_AT_S && landingA.times.uptimeAtLandingS < BREAK_AT_S + 30,
+    ...landingA.checks,
+    ...a.newExe.checks,
+    noApp: a.install.windowTest ? a.apps === 0 : SKIPPED,
+    vbsPlantedBeforeTheLanding: a.vbsBefore.file && a.vbsBefore.value === null,
+    vbsBecameTheRunValue: movedA.value === true && a.vbsAfter.approved === null,
+    ...Object.fromEntries(Object.entries(a.guard.checks).map(([k, v]) => [`guard2x.${k}`, v])),
+  };
+  Object.assign(a, { landing: landingA });
+  await endInstall(r, 'break');
+
+  // By Update Now on air, with a StreamLoop.vbs that Task Manager disabled.
+  resetReader();
+  await clearTestAutostart();
+  const b = r.updateNow = {};
+  const envB = { STREAMLOOP_TEST_RELEASES: writeReleases('from312-update-now', ['next-minor', 'next-minor-1']) };
+  b.install = await install312(r, zip, 'update-now', { env: envB, updates: false, plant: async () => {
+    writeVbs(join(ROOT, 'START.bat'));
+    await disableVbsAsTaskManager();
+  } });
+  const wB = r.watch = startWatch();
+  const awB = r.appWatch = startAppWatch();
+  b.stage = await offerAndStage('next-minor-1');
+  const beforeB = await snapshot();
+  const probeB = startProbe();
+  const tApply = Date.now();
+  const apply = await api('POST', '/update/apply');
+  b.apply = { status: apply.status, body: apply.json };
+  const landingB = await onAirLanding(r, wB, probeB, VM1, 'from312-update-now', beforeB);
+  const tStartB = wB.rows.find((x) => x.t >= tApply && x.kind === 'state' && x.v?.to === VM1 && x.v.result === 'running' && x.v.step !== 'download')?.t ?? null;
+  b.applyToLandingMs = rel(tStartB, tApply);
+  b.newExe = await newExeChecks('update-now', tStartB ?? tApply, VM1, b.install.windowTest, 'keptTheSupervisorTheLandingLaunched');
+  await waitFor('the Run value from StreamLoop.vbs', async () => ((await runValue()) === expected && !existsSync(VBS_FILE) ? true : null), 30_000, 1000);
+  // Only the new control process's: v3.1.2's /api/autostart would write the real Startup folder.
+  const runs = (await updStatus())?.currentVersion ?? null;
+  b.autostart = { controlVersion: runs, read: runs === VM1 ? (await api('GET', '/autostart')).json : null, value: await runValue(), approved: await testApproved(), file: existsSync(VBS_FILE) };
+  await endWatch(wB);
+  await endAppWatch(awB);
+  b.apps = awB.apps.size;
+  b.checks = {
+    ...b.install.checks,
+    offered: b.stage.offered,
+    staged: b.stage.staged.stagedSha256Matches,
+    applyAnswered: apply.status === 200 && apply.json?.ok === true,
+    landedAtOnce: tStartB !== null && tStartB - tApply < 30_000,
+    ...landingB.checks,
+    ...b.newExe.checks,
+    noApp: b.install.windowTest ? b.apps === 0 : SKIPPED,
+    disabledVbsBecameADisabledRunValue: b.autostart.value === expected && !b.autostart.file && b.autostart.approved === VBS_OFF_HEX
+      && b.autostart.read?.enabled === false && b.autostart.read?.thisInstall === true,
+  };
+  Object.assign(b, { landing: landingB });
+  await endInstall(r, 'update-now');
+
+  // By Update Now while stopped from the dashboard: nothing launches until Start.
+  resetReader();
+  await clearTestAutostart();
+  const c = r.held = {};
+  const envC = { STREAMLOOP_TEST_RELEASES: writeReleases('from312-held', ['next-minor', 'next-minor-1']) };
+  c.install = await install312(r, zip, 'held', { env: envC, updates: false });
+  const wC = r.watch = startWatch();
+  const awC = r.appWatch = startAppWatch();
+  c.stop = (await api('POST', '/stream/stop')).status;
+  c.supervisorExitMs = (await waitFor('the supervisor to exit after Stop', async () => ((await cores()).length === 0 ? true : null), 60_000, 500)).ms;
+  c.stage = await offerAndStage('next-minor-1');
+  let applyC = null;
+  const h = await heldLanding(wC, VM1, 'from312-held', async () => {
+    const t = Date.now();
+    applyC = await api('POST', '/update/apply');
+    return t;
+  });
+  Object.assign(c, { apply: applyC && { status: applyC.status, body: applyC.json } }, h.summary);
+  c.discord = messagesSince(h.tFrom - 10_000);
+  c.newExe = await newExeChecks('held', h.L.tResult ?? Date.now(), VM1, c.install.windowTest, 'theStartLaunchedOneSupervisor');
+  await endWatch(wC);
+  await endAppWatch(awC);
+  c.apps = awC.apps.size;
+  c.checks = {
+    ...c.install.checks,
+    stopped: c.stop === 200 && c.supervisorExitMs !== null,
+    offered: c.stage.offered,
+    staged: c.stage.staged.stagedSha256Matches,
+    applyAnswered: applyC?.status === 200 && applyC.json?.ok === true,
+    landedAtOnce: h.L.tStart !== null && h.L.tStart - h.tFrom < 30_000,
+    ...h.checks,
+    discordGotStaysStopped: c.discord.includes(`Recovery action: **Installing StreamLoop ${VM1}. The stream stays stopped.**`),
+    noCriticalAlert: !c.discord.some((m) => m.startsWith('**CRITICAL:**')),
+    ...c.newExe.checks,
+    noApp: c.install.windowTest ? c.apps === 0 : SKIPPED,
+  };
+
+  r.figures = {
+    break: { uptimeAtLandingS: landingA.times.uptimeAtLandingS, newVersionLiveS: (landingA.times.newVersionLiveMs ?? NaN) / 1000, confirmedS: (landingA.times.resultMs ?? NaN) / 1000,
+      offAirS: landingA.gap.maxWallGapMs / 1000, reconnects: landingA.gap.readerReconnects },
+    updateNow: { applyToLandingS: (b.applyToLandingMs ?? NaN) / 1000, newVersionLiveS: (landingB.times.newVersionLiveMs ?? NaN) / 1000, confirmedS: (landingB.times.resultMs ?? NaN) / 1000,
+      offAirS: landingB.gap.maxWallGapMs / 1000, reconnects: landingB.gap.readerReconnects },
+    held: { landingToConfirmedS: (c.landing.resultMs ?? NaN) / 1000, startToLiveS: (c.start.startToLiveMs ?? NaN) / 1000 },
+    guard2x: { whileStreaming: a.guard.whileStreaming.streaming, afterStop: a.guard.afterStop.streaming },
+  };
+  r.checks = {
+    v312Verified: r.v312.match,
+    v238Verified: r.v238.match,
+    ...Object.fromEntries(Object.entries(a.checks).map(([k, v]) => [`break.${k}`, v])),
+    ...Object.fromEntries(Object.entries(b.checks).map(([k, v]) => [`updateNow.${k}`, v])),
+    ...Object.fromEntries(Object.entries(c.checks).map(([k, v]) => [`held.${k}`, v])),
+  };
 }
 
 // the stage 5 gate's fault checks, unchanged, against this install
@@ -1910,7 +2184,7 @@ function endSession() {
       mediamtx: mediamtx ? all.filter((p) => p.Name === 'mediamtx.exe' && String(p.ExecutablePath).toLowerCase() === tools).map((p) => p.ProcessId) : [],
       readers: all.filter((p) => p.Name === 'ffprobe.exe' && (p.CommandLine ?? '').includes(READ_URL)).map((p) => p.ProcessId),
     };
-    summary.installRemoved = !existsSync(S);
+    summary.installRemoved = !existsSync(S) && !existsSync(S2);
     // The test key and Startup folder go; the user's own Run value and Startup folder must read as before.
     sandbox.cleanup();
     summary.autostart = { testKey: sandbox.key, testKeyGone: !(await regKeyExists(sandbox.key)), testStartupDirGone: !existsSync(sandbox.startupDir), before: autostartBefore, after: await realAutostart() };
@@ -1946,7 +2220,7 @@ if (arg === 'build') process.exit(0);
 // Read only, and again at the end.
 const autostartBefore = await realAutostart();
 
-const swept = await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
+const swept = await sweepLeftovers({ dirs: [S, S2], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
 if (swept.found.length || swept.removed.length) note('swept what an earlier run left', swept);
 // 7654 is shared with other sessions: another API port when it is taken, unless a StreamLoop backend holds it.

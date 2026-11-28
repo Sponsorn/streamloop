@@ -459,8 +459,9 @@ export async function regKeyExists(subkey) {
   return String(r.stdout).trim() === 'True';
 }
 
-/** The user's own autostart entries, read only: StreamLoop under Run and StartupApproved\Run, the Startup folder's
- *  files and the Run key's value names. Runs must leave this text as it was. */
+/** The user's own autostart entries, read only: StreamLoop under Run and StartupApproved\Run, StreamLoop.vbs under
+ *  StartupApproved\StartupFolder, the Startup folder's files and the Run key's value names. Runs must leave this text
+ *  as it was. */
 export async function realAutostart() {
   const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $run = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
@@ -468,8 +469,11 @@ $approved = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Star
 $v = (Get-ItemProperty -LiteralPath $run -Name StreamLoop -ErrorAction SilentlyContinue).StreamLoop
 $a = (Get-ItemProperty -LiteralPath $approved -Name StreamLoop -ErrorAction SilentlyContinue).StreamLoop
 if ($a -is [byte[]]) { $a = ($a | ForEach-Object { $_.ToString('x2') }) -join '' }
+$folder = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder'
+$f = (Get-ItemProperty -LiteralPath $folder -Name 'StreamLoop.vbs' -ErrorAction SilentlyContinue).'StreamLoop.vbs'
+if ($f -is [byte[]]) { $f = ($f | ForEach-Object { $_.ToString('x2') }) -join '' }
 $dir = [Environment]::GetFolderPath('Startup')
-$lines = @("Run\\StreamLoop: $v", "StartupApproved\\Run\\StreamLoop: $a", "Startup folder: $dir")
+$lines = @("Run\\StreamLoop: $v", "StartupApproved\\Run\\StreamLoop: $a", "StartupApproved\\StartupFolder\\StreamLoop.vbs: $f", "Startup folder: $dir")
 $lines += Get-ChildItem -LiteralPath $dir -Force | ForEach-Object { "  $($_.Name) $($_.Length) $($_.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:ss'))" }
 $lines += 'Run values: ' + ((Get-Item -LiteralPath $run).Property -join ', ')
 [Console]::Out.Write(($lines -join [char]10))`;
@@ -602,8 +606,8 @@ for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, () => void inte
 
 // The test releases, shared by install-session.mjs and crates/ui/scripts/ui-session.mjs
 
-/** The test builds after release `version`: N+1 to N+4 and the two broken N+1s. A dev version counts from its
- *  release number. */
+/** The test builds after release `version`: N+1 to N+4 and the two broken N+1s, and the next minor version's
+ *  .0 and .1, which a released install lands in the `from312` run. A dev version counts from its release number. */
 export function variantsAfter(version) {
   const [major, minor, patch] = version.split('-')[0].split('.').map(Number);
   const v = (k) => `${major}.${minor}.${patch + k}`;
@@ -614,7 +618,24 @@ export function variantsAfter(version) {
     n2: { version: v(2) },
     n3: { version: v(3) },
     n4: { version: v(4) },
+    'next-minor': { version: `${major}.${minor + 1}.0` },
+    'next-minor-1': { version: `${major}.${minor + 1}.1` },
   };
+}
+
+/** The SHA-256 in a release's `.sha256` file (`<hash>  <file>`), or null when the text holds none. */
+export function checksumOf(text) {
+  const first = String(text ?? '').trim().split(/\s+/)[0].toLowerCase();
+  return /^[0-9a-f]{64}$/.test(first) ? first : null;
+}
+
+/** What 2.x's stream guard printed as its last line, `{"streaming":true|false}`; null when it printed no verdict. */
+export function guardVerdict(stdout) {
+  const last = String(stdout ?? '').trim().split(/\r?\n/).at(-1) ?? '';
+  try {
+    const v = JSON.parse(last).streaming;
+    return typeof v === 'boolean' ? v : null;
+  } catch { return null; }
 }
 /** Above package.json's version, which names dist\'s build. */
 export const VARIANTS = variantsAfter(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version);

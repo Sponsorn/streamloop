@@ -231,6 +231,16 @@ export function testKeyDeleteArgs(key) {
   return ['delete', String.raw`HKCU\Software\StreamLoopTest-` + key.slice(TEST_KEY_PREFIX.length), '/f'];
 }
 
+/** The `reg add` arguments for a REG_BINARY `name` of `hex` bytes under `sub` of a key this harness made, as Task
+ *  Manager writes its flags; `null` for any other key, a `sub` that climbs out of it, or bytes that are not hex. */
+export function testValueAddArgs(key, sub, name, hex) {
+  if (!testKeyDeleteArgs(key)) return null;
+  const parts = String(sub ?? '').split('\\');
+  if (parts.some((p) => !/^[A-Za-z][A-Za-z0-9 ]*$/.test(p))) return null;
+  if (typeof name !== 'string' || !/^[A-Za-z0-9 .]+$/.test(name) || !/^([0-9a-f]{2})+$/i.test(String(hex ?? ''))) return null;
+  return ['add', `HKCU\\${key}\\${parts.join('\\')}`, '/v', name, '/t', 'REG_BINARY', '/d', hex, '/f'];
+}
+
 /** Points every control process the script starts at a random test key and a temp Startup folder
  *  (STREAMLOOP_TEST_AUTOSTART_KEY, STREAMLOOP_TEST_STARTUP_DIR), deleted when the script exits.
  *  Call it before the first child process starts. */
