@@ -473,28 +473,80 @@ pub fn ring_jump(index: i64, s: &Span) -> Result<i64, String> {
     }
 }
 
-/// Videos worth having on disk, walking forward from the viewer within the budget. The viewer's
-/// own video always counts; the one just behind never does; an unknown size ends the walk.
-pub fn window(view: usize, sizes: &[Option<u64>], skipped: &[bool], budget: u64) -> Vec<usize> {
+/// Where a video stands in the walk from the viewer through the look-ahead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ahead {
+    /// Worth having on disk.
+    Window,
+    /// Skipped or failed: the walk goes on past it.
+    SteppedOver,
+    /// The first video the budget has no room for; the walk ends here.
+    NoRoom,
+}
+
+/// The walk from the viewer within the budget. The viewer's own video always counts; the one just
+/// behind never does; an unknown size ends the walk inside the window.
+pub fn look_ahead(view: usize, sizes: &[Option<u64>], stepped: &[bool], budget: u64) -> Vec<(usize, Ahead)> {
     let n = sizes.len();
     let mut out = vec![];
     let mut total = 0;
     for d in 0..n.saturating_sub(1).max(1) {
         let i = (view + d) % n;
-        if d > 0 && skipped[i] {
+        if d > 0 && stepped[i] {
+            out.push((i, Ahead::SteppedOver));
             continue;
         }
         let Some(size) = sizes[i] else {
-            out.push(i);
+            out.push((i, Ahead::Window));
             break;
         };
         if d > 0 && total + size > budget {
+            out.push((i, Ahead::NoRoom));
             break;
         }
         total += size;
-        out.push(i);
+        out.push((i, Ahead::Window));
     }
     out
+}
+
+/// Videos worth having on disk: the look-ahead's `Window` entries.
+pub fn window(view: usize, sizes: &[Option<u64>], skipped: &[bool], budget: u64) -> Vec<usize> {
+    look_ahead(view, sizes, skipped, budget).into_iter().filter(|r| r.1 == Ahead::Window).map(|r| r.0).collect()
+}
+
+/// Seconds until the viewer reaches the first position from which `waiting` fits in the window,
+/// with the sizes known now. None when a duration on the way is unknown.
+pub fn room_in_s(view: usize, pos: f64, waiting: usize, sizes: &[Option<u64>], stepped: &[bool], budget: u64, durations: &[Option<f64>]) -> Option<f64> {
+    let n = sizes.len();
+    (1..n).map(|k| (view + k) % n).find(|&v| window(v, sizes, stepped, budget).contains(&waiting)).and_then(|v| until_needed_s(view, pos, v, durations))
+}
+
+/// Why no download or size lookup may start now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DownloadWait {
+    Downloading,
+    SizeLookup,
+    /// The pause after a failed try.
+    AfterFailure,
+    /// The pause after yt-dlp could not read the browser's cookies.
+    Cookies,
+    YoutubePaused,
+}
+
+/// The gates before a download job, in the order the cache pass checks them; None when one may go.
+pub fn download_wait(downloading: bool, sizing: bool, now: std::time::Instant, dl_after: std::time::Instant, cookie_after: std::time::Instant, breaker_open: bool) -> Option<DownloadWait> {
+    if downloading {
+        Some(DownloadWait::Downloading)
+    } else if sizing {
+        Some(DownloadWait::SizeLookup)
+    } else if now < dl_after.max(cookie_after) {
+        Some(if cookie_after >= dl_after { DownloadWait::Cookies } else { DownloadWait::AfterFailure })
+    } else if breaker_open {
+        Some(DownloadWait::YoutubePaused)
+    } else {
+        None
+    }
 }
 
 /// A file goes once it is outside the window, unless a feeder reads it.
@@ -1097,5 +1149,104 @@ mod tests {
 
         assert_eq!(ring_jump(3, &b), Err("index 3 out of range 0..2".to_string()));
         assert_eq!(ring_jump(-1, &b), Err("index -1 out of range 0..2".to_string()));
+    }
+
+    fn tens(n: usize) -> Vec<Option<u64>> {
+        vec![Some(10); n]
+    }
+
+    #[test]
+    fn look_ahead_marks_stepped_over_videos_and_ends_at_the_first_that_does_not_fit() {
+        let stepped = [false, false, true, false, false];
+
+        let rows = look_ahead(0, &tens(5), &stepped, 25);
+
+        assert_eq!(rows, [(0, Ahead::Window), (1, Ahead::Window), (2, Ahead::SteppedOver), (3, Ahead::NoRoom)]);
+    }
+
+    #[test]
+    fn look_ahead_ends_at_an_unknown_size_and_keeps_it_in_the_window() {
+        let rows = look_ahead(0, &[Some(10), None, Some(10)], &[false; 3], 100);
+
+        assert_eq!(rows, [(0, Ahead::Window), (1, Ahead::Window)]);
+    }
+
+    #[test]
+    fn look_ahead_lists_a_one_video_ring_once() {
+        let rows = look_ahead(0, &[Some(10)], &[false], 0);
+
+        assert_eq!(rows, [(0, Ahead::Window)]);
+    }
+
+    #[test]
+    fn look_ahead_never_lists_a_video_twice_when_the_whole_ring_fits() {
+        let rows = look_ahead(0, &tens(4), &[false; 4], 1000);
+
+        let indexes: Vec<usize> = rows.iter().map(|r| r.0).collect();
+        assert_eq!(indexes, [0, 1, 2], "the video behind the viewer never counts");
+    }
+
+    #[test]
+    fn window_is_the_look_ahead_without_stepped_over_and_no_room_videos() {
+        let cases: [(Vec<Option<u64>>, Vec<bool>, u64); 4] = [
+            (tens(5), vec![false, false, true, false, false], 25),
+            (vec![Some(10), None, Some(10)], vec![false; 3], 100),
+            (vec![Some(10)], vec![false], 0),
+            (tens(4), vec![false; 4], 1000),
+        ];
+
+        for (sizes, stepped, budget) in cases {
+            let only_window: Vec<usize> = look_ahead(0, &sizes, &stepped, budget).into_iter().filter(|r| r.1 == Ahead::Window).map(|r| r.0).collect();
+
+            assert_eq!(window(0, &sizes, &stepped, budget), only_window, "{sizes:?} {stepped:?} {budget}");
+        }
+    }
+
+    #[test]
+    fn room_comes_at_the_next_video_change_when_that_frees_enough() {
+        let durations = [Some(100.0); 5];
+
+        let room = room_in_s(0, 30.0, 2, &tens(5), &[false; 5], 25, &durations);
+
+        assert_eq!(room, Some(70.0));
+    }
+
+    #[test]
+    fn room_can_take_more_than_one_video_change() {
+        let sizes = [Some(10), Some(10), Some(20), Some(10), Some(10)];
+
+        let room = room_in_s(0, 30.0, 2, &sizes, &[false; 5], 25, &[Some(100.0); 5]);
+
+        assert_eq!(room, Some(170.0));
+    }
+
+    #[test]
+    fn room_is_unknown_when_a_duration_on_the_way_is_unknown() {
+        let durations = [None, Some(100.0), Some(100.0), Some(100.0), Some(100.0)];
+
+        let room = room_in_s(0, 30.0, 2, &tens(5), &[false; 5], 25, &durations);
+
+        assert_eq!(room, None);
+    }
+
+    #[test]
+    fn room_never_loops_on_a_one_video_ring() {
+        let room = room_in_s(0, 0.0, 0, &[Some(10)], &[false], 0, &[Some(100.0)]);
+
+        assert_eq!(room, None, "a one-video ring has no other viewer position to wait for");
+    }
+
+    #[test]
+    fn download_wait_follows_cache_works_order() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let (past, soon, later) = (now - Duration::from_secs(1), now + Duration::from_secs(5), now + Duration::from_secs(60));
+
+        assert_eq!(download_wait(true, true, now, soon, later, true), Some(DownloadWait::Downloading));
+        assert_eq!(download_wait(false, true, now, soon, later, true), Some(DownloadWait::SizeLookup));
+        assert_eq!(download_wait(false, false, now, soon, past, true), Some(DownloadWait::AfterFailure));
+        assert_eq!(download_wait(false, false, now, soon, later, true), Some(DownloadWait::Cookies));
+        assert_eq!(download_wait(false, false, now, past, past, true), Some(DownloadWait::YoutubePaused));
+        assert_eq!(download_wait(false, false, now, past, past, false), None);
     }
 }

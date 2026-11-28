@@ -1537,7 +1537,7 @@ impl Ctl {
         }
 
         // Dispatch one job when the downloader is idle.
-        if self.downloading.is_some() || self.sizing || Instant::now() < self.dl_after.max(self.cookie_after) || self.breaker.open {
+        if rules::download_wait(self.downloading.is_some(), self.sizing, Instant::now(), self.dl_after, self.cookie_after, self.breaker.open).is_some() {
             return;
         }
         let on_disk: Vec<bool> = self.videos.iter().map(|v| v.on_disk).collect();
