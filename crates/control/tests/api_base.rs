@@ -27,7 +27,6 @@ fn app() -> Router {
 struct Reply {
     status: StatusCode,
     content_type: String,
-    location: Option<String>,
     body: String,
 }
 
@@ -36,9 +35,8 @@ async fn call(app: Router, mut req: Request<Body>) -> Reply {
     let res = app.oneshot(req).await.unwrap();
     let status = res.status();
     let content_type = res.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
-    let location = res.headers().get(header::LOCATION).map(|v| v.to_str().unwrap().to_string());
     let body = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
-    Reply { status, content_type, location, body }
+    Reply { status, content_type, body }
 }
 
 async fn call_raw(app: Router, req: Request<Body>) -> Reply {
@@ -46,7 +44,7 @@ async fn call_raw(app: Router, req: Request<Body>) -> Reply {
     let status = res.status();
     let content_type = res.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
     let body = String::from_utf8_lossy(&res.into_body().collect().await.unwrap().to_bytes()).into_owned();
-    Reply { status, content_type, location: None, body }
+    Reply { status, content_type, body }
 }
 
 fn post_echo(content_type: Option<&str>, token: Option<&str>, body: &str) -> Request<Body> {
