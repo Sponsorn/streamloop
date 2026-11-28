@@ -161,26 +161,28 @@ pub fn install_root(flag: Option<&Path>, exe_dir: &Path, env_root: Option<&Path>
 mod tests {
     use super::*;
 
-    fn scratch(name: &str, with_app: bool) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sl-common-paths-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(if with_app { d.join("app") } else { d.clone() }).unwrap();
+    fn scratch(name: &str, with_app: bool) -> tempfile::TempDir {
+        let d = tempfile::Builder::new().prefix(&format!("sl-common-paths-{name}-")).tempdir().unwrap();
+        if with_app {
+            std::fs::create_dir(d.path().join("app")).unwrap();
+        }
         d
     }
 
-    fn ytdlp_folder(name: &str, files: &[&str]) -> PathBuf {
-        let dir = scratch(&format!("ytdlp-{name}"), false).join("yt-dlp");
+    fn ytdlp_folder(name: &str, files: &[&str]) -> (tempfile::TempDir, PathBuf) {
+        let root = scratch(&format!("ytdlp-{name}"), false);
+        let dir = root.path().join("yt-dlp");
         std::fs::create_dir_all(&dir).unwrap();
         for file in files {
             std::fs::write(dir.join(file), file).unwrap();
         }
-        dir.join("yt-dlp.exe")
+        (root, dir.join("yt-dlp.exe"))
     }
 
     #[test]
     fn yt_dlp_runs_from_the_shipped_exe_until_an_update_made_a_copy() {
         // Arrange
-        let base = ytdlp_folder("shipped", &["yt-dlp.exe", "deno.exe"]);
+        let (_dir, base) = ytdlp_folder("shipped", &["yt-dlp.exe", "deno.exe"]);
         // Act
         let exe = ytdlp_to_run(&base);
         // Assert
@@ -190,7 +192,7 @@ mod tests {
     #[test]
     fn yt_dlp_runs_from_the_newest_copy_by_version_not_by_name() {
         // Arrange
-        let base = ytdlp_folder("newest", &["yt-dlp.exe", "yt-dlp-2026.11.3.exe", "yt-dlp-2026.11.24.232653.exe", "yt-dlp-2026.11.24.exe"]);
+        let (_dir, base) = ytdlp_folder("newest", &["yt-dlp.exe", "yt-dlp-2026.11.3.exe", "yt-dlp-2026.11.24.232653.exe", "yt-dlp-2026.11.24.exe"]);
         // Act
         let exe = ytdlp_to_run(&base);
         let copies = ytdlp_copies(&base);
@@ -203,7 +205,7 @@ mod tests {
     #[test]
     fn the_update_work_copy_and_yt_dlp_leftovers_are_never_run() {
         // Arrange
-        let base = ytdlp_folder("leftovers", &["yt-dlp.exe", "yt-dlp-update.exe", "yt-dlp-2026.11.30.exe.old", "yt-dlp-2026.11.30.exe.new", "yt-dlp-.exe"]);
+        let (_dir, base) = ytdlp_folder("leftovers", &["yt-dlp.exe", "yt-dlp-update.exe", "yt-dlp-2026.11.30.exe.old", "yt-dlp-2026.11.30.exe.new", "yt-dlp-.exe"]);
         // Act
         let exe = ytdlp_to_run(&base);
         // Assert
@@ -326,44 +328,40 @@ mod tests {
     #[test]
     fn install_root_is_the_exe_folder_when_it_holds_app() {
         // Arrange
-        let exe_dir = scratch("exe", true);
+        let tmp = scratch("exe", true);
         // Act: the exe's folder beats STREAMLOOP_ROOT
-        let r = install_root(None, &exe_dir, Some(Path::new("R:/env"))).unwrap();
+        let r = install_root(None, tmp.path(), Some(Path::new("R:/env"))).unwrap();
         // Assert
-        assert_eq!(r, Root { dir: exe_dir.clone(), from_exe: true });
-        std::fs::remove_dir_all(&exe_dir).unwrap();
+        assert_eq!(r, Root { dir: tmp.path().to_path_buf(), from_exe: true });
     }
 
     #[test]
     fn install_root_takes_the_flag_before_the_exe_folder() {
         // Arrange
-        let exe_dir = scratch("flag", true);
+        let tmp = scratch("flag", true);
         // Act
-        let r = install_root(Some(Path::new("R:/flag")), &exe_dir, Some(Path::new("R:/env"))).unwrap();
+        let r = install_root(Some(Path::new("R:/flag")), tmp.path(), Some(Path::new("R:/env"))).unwrap();
         // Assert
         assert_eq!(r, Root { dir: PathBuf::from("R:/flag"), from_exe: false });
-        std::fs::remove_dir_all(&exe_dir).unwrap();
     }
 
     #[test]
     fn install_root_falls_back_to_the_environment() {
         // Arrange: an exe folder without app\
-        let exe_dir = scratch("env", false);
+        let tmp = scratch("env", false);
         // Act
-        let r = install_root(None, &exe_dir, Some(Path::new("R:/env"))).unwrap();
+        let r = install_root(None, tmp.path(), Some(Path::new("R:/env"))).unwrap();
         // Assert
         assert_eq!(r, Root { dir: PathBuf::from("R:/env"), from_exe: false });
-        std::fs::remove_dir_all(&exe_dir).unwrap();
     }
 
     #[test]
     fn install_root_without_any_source_is_an_error() {
         // Arrange
-        let exe_dir = scratch("none", false);
+        let tmp = scratch("none", false);
         // Act
-        let e = install_root(None, &exe_dir, None).unwrap_err();
+        let e = install_root(None, tmp.path(), None).unwrap_err();
         // Assert
         assert_eq!(e, "No install root: run streamloop.exe from the install folder, or pass --root.");
-        std::fs::remove_dir_all(&exe_dir).unwrap();
     }
 }

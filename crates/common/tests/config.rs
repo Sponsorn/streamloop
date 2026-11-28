@@ -75,19 +75,51 @@ const WRITTEN_BY_3_0: &str = r#"{
   "ytdlCookiesFromBrowser": "firefox"
 }"#;
 
+/// A path in a fresh temp folder; the folder is removed when this drops.
+struct Scratch {
+    path: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// A fresh, empty folder for one test.
-fn dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sl-common-config-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn dir(name: &str) -> Scratch {
+    let tmp = tempfile::Builder::new().prefix(&format!("sl-common-config-{name}-")).tempdir().unwrap();
+    Scratch { path: tmp.path().to_path_buf(), _dir: tmp }
 }
 
 /// `config.json` in a fresh folder holding `json` written compact.
-fn config_file(name: &str, json: &Json) -> PathBuf {
-    let path = dir(name).join("config.json");
+fn config_file(name: &str, json: &Json) -> Scratch {
+    let Scratch { path, _dir } = dir(name);
+    let path = path.join("config.json");
     std::fs::write(&path, json.to_string()).unwrap();
-    path
+    Scratch { path, _dir }
+}
+
+#[test]
+fn a_test_folder_is_removed_when_its_test_ends() {
+    // Arrange
+    let folder = {
+        let path = config_file("ends", &base());
+        assert!(path.is_file());
+        // Act: the test ends
+        path.parent().unwrap().to_path_buf()
+    };
+
+    // Assert
+    assert!(!folder.exists(), "{} was left behind", folder.display());
 }
 
 fn on_disk(path: &Path) -> Json {
@@ -236,7 +268,8 @@ fn errors_on_missing_required_fields() {
 #[test]
 fn errors_on_a_file_that_does_not_exist() {
     // Arrange
-    let path = dir("nonexistent").join("nested").join("config.json");
+    let d = dir("nonexistent");
+    let path = d.join("nested").join("config.json");
 
     // Act
     let e = config::load(&path).unwrap_err();
@@ -633,7 +666,8 @@ fn keeps_unknown_supervisor_keys_through_load_and_save() {
 #[test]
 fn a_3_0_x_config_loads_with_every_value_as_written_and_leaves_the_file_untouched() {
     // Arrange
-    let path = dir("written-by-3-0").join("config.json");
+    let d = dir("written-by-3-0");
+    let path = d.join("config.json");
     std::fs::write(&path, WRITTEN_BY_3_0).unwrap();
 
     // Act
@@ -705,7 +739,8 @@ fn a_3_0_x_config_loads_with_every_value_as_written_and_leaves_the_file_untouche
 #[test]
 fn a_3_0_x_config_changes_only_the_saved_field_on_a_save() {
     // Arrange
-    let path = dir("written-by-3-0-save").join("config.json");
+    let d = dir("written-by-3-0-save");
+    let path = d.join("config.json");
     std::fs::write(&path, WRITTEN_BY_3_0).unwrap();
 
     // Act
@@ -827,7 +862,8 @@ fn matches_every_config_fixture() {
 #[test]
 fn a_byte_order_mark_is_skipped() {
     // Arrange
-    let path = dir("bom").join("config.json");
+    let d = dir("bom");
+    let path = d.join("config.json");
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
     bytes.extend_from_slice(br#"{"playlists":[{"id":"PLbom"}]}"#);
     std::fs::write(&path, &bytes).unwrap();
@@ -866,7 +902,8 @@ fn a_3_0_5_config_gains_auto_start_stream_in_one_write() {
     let key_line = line_holding(written, "\"autoStartStream\"");
     let before = written.replacen(&key_line, "", 1);
     assert!(!before.contains("autoStartStream"));
-    let path = dir("written-by-3-0-5").join("config.json");
+    let d = dir("written-by-3-0-5");
+    let path = d.join("config.json");
     std::fs::write(&path, &before).unwrap();
 
     // Act
@@ -891,7 +928,8 @@ fn a_config_written_by_3_0_x_with_auto_start_stream_loads_without_a_write() {
     // Arrange: the full example as a current install holds it.
     let case: Json = serde_json::from_str(&std::fs::read_to_string(fixture_dir().join("creates-config-json-from-the-full-example.json")).unwrap()).unwrap();
     let text = case["after"].as_str().unwrap();
-    let path = dir("written-with-auto-start").join("config.json");
+    let d = dir("written-with-auto-start");
+    let path = d.join("config.json");
     std::fs::write(&path, text).unwrap();
     let stamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
@@ -1010,7 +1048,8 @@ fn reads_the_port_without_writing_config_json() {
 #[test]
 fn reads_the_port_after_a_byte_order_mark() {
     // Arrange: Notepad writes one
-    let path = dir("read-port-bom").join("config.json");
+    let d = dir("read-port-bom");
+    let path = d.join("config.json");
     std::fs::write(&path, b"\xEF\xBB\xBF{\"port\": 7700}").unwrap();
 
     // Act
@@ -1023,7 +1062,8 @@ fn reads_the_port_after_a_byte_order_mark() {
 #[test]
 fn reads_a_port_written_as_a_whole_float_as_the_schema_does() {
     // Arrange
-    let path = dir("read-port-float").join("config.json");
+    let d = dir("read-port-float");
+    let path = d.join("config.json");
     std::fs::write(&path, "{\"port\": 7655.0}").unwrap();
 
     // Act
