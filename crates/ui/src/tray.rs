@@ -10,8 +10,9 @@ use gpui::{App, AppContext, Task};
 
 use crate::{
     api::{ApiError, client::Client, types::Status},
+    app,
     logic::{Level, StreamLine, status_line},
-    start::RETRYING,
+    start::{self, HINT_AFTER, RETRYING, StartedBat},
 };
 
 /// The app's name, first in every tooltip and the tray hint's title.
@@ -31,10 +32,15 @@ pub enum TrayColour {
     Grey,
 }
 
-/// Ok → Green, Warn → Amber, Err → Red, Muted → Grey; no answer yet → Grey; a server that cannot be reached → Red.
-pub fn colour(line: Option<&StreamLine>, reachable: bool) -> TrayColour {
+/// Ok → Green, Warn → Amber, Err → Red, Muted → Grey; a server that cannot be reached → Red. Before the first
+/// answer Grey, or Red once Connecting's `hint` is due.
+pub fn colour(line: Option<&StreamLine>, reachable: bool, hint: Option<&str>) -> TrayColour {
     let Some(line) = line else {
-        return TrayColour::Grey;
+        return if hint.is_some() {
+            TrayColour::Red
+        } else {
+            TrayColour::Grey
+        };
     };
     if !reachable {
         return TrayColour::Red;
@@ -49,8 +55,13 @@ pub fn colour(line: Option<&StreamLine>, reachable: bool) -> TrayColour {
 
 /// "StreamLoop: WORD", then a line break and the reason when there is one. Windows shows at most 127
 /// UTF-16 units, so a longer reason is cut at its last space that leaves room for "…", and "…" is added.
-/// Before the first answer "StreamLoop"; when StreamLoop does not answer, Connecting's retry line.
-pub fn tooltip(line: Option<&StreamLine>, reachable: bool) -> String {
+/// Before the first answer "StreamLoop", or below it Connecting's `hint` once it is due, cut the same way; when
+/// StreamLoop does not answer, Connecting's retry line.
+pub fn tooltip(line: Option<&StreamLine>, reachable: bool, hint: Option<&str>) -> String {
+    if let (None, Some(hint)) = (line, hint) {
+        let room = TOOLTIP_UNITS.saturating_sub(units(NAME) + 1);
+        return format!("{NAME}\n{}", fit(hint, room));
+    }
     if !reachable {
         return format!("{NAME}\n{RETRYING}");
     }
@@ -125,14 +136,17 @@ struct Feed {
     line: Option<StreamLine>,
     unreachable: bool,
     closed_poll: Option<Task<()>>,
+    /// Connecting's hint, once it is due with no answer yet this run.
+    hint: Option<String>,
+    hint_due: Option<Task<()>>,
 }
 
 impl Feed {
     fn show(&mut self) {
         let reachable = !self.unreachable;
-        let line = self.line.as_ref();
+        let (line, hint) = (self.line.as_ref(), self.hint.as_deref());
         if let Some(output) = &mut self.output {
-            output.show(colour(line, reachable), &tooltip(line, reachable));
+            output.show(colour(line, reachable, hint), &tooltip(line, reachable, hint));
         }
     }
 }
@@ -147,22 +161,53 @@ impl TrayFeed {
 
     /// Drops the tray icon, which takes it off the taskbar, and stops the poll.
     pub fn detach(&self) {
-        let (output, poll) = {
+        let (output, poll, hint_due) = {
             let mut feed = self.0.borrow_mut();
-            (feed.output.take(), feed.closed_poll.take())
+            (feed.output.take(), feed.closed_poll.take(), feed.hint_due.take())
         };
-        drop((output, poll));
+        drop((output, poll, hint_due));
     }
 
-    /// StreamLoop answered, and its stream shows as `line`.
+    /// Whether there is a tray icon to show anything on.
+    pub fn has_icon(&self) -> bool {
+        self.0.borrow().output.is_some()
+    }
+
+    /// This app started `START.bat` as `started` says. Until StreamLoop first answers, the icon turns red when
+    /// Connecting's hint is due, with the hint as its tooltip, whether a window is open or not.
+    pub fn started_bat(&self, started: &StartedBat, cx: &mut App) {
+        let due_in = HINT_AFTER.saturating_sub(app::since(started, cx));
+        let hint = start::did_not_start(&started.root);
+        // Weak: the feed owns this task, which must not keep the feed alive.
+        let feed: Weak<RefCell<Feed>> = Rc::downgrade(&self.0);
+        let due = cx.spawn(async move |cx| {
+            cx.background_executor().timer(due_in).await;
+            if let Some(feed) = feed.upgrade() {
+                let mut feed = feed.borrow_mut();
+                if feed.line.is_none() {
+                    feed.hint = Some(hint);
+                    feed.show();
+                }
+            }
+        });
+        self.0.borrow_mut().hint_due = Some(due);
+    }
+
+    /// StreamLoop answered, and its stream shows as `line`. The first answer ends Connecting's hint.
     pub fn answered(&self, line: StreamLine) {
-        let mut feed = self.0.borrow_mut();
-        feed.line = Some(line);
-        feed.unreachable = false;
-        feed.show();
+        let hint_due = {
+            let mut feed = self.0.borrow_mut();
+            feed.line = Some(line);
+            feed.unreachable = false;
+            feed.hint = None;
+            feed.show();
+            feed.hint_due.take()
+        };
+        drop(hint_due);
     }
 
-    /// StreamLoop did not answer. Before the first answer of the run the icon stays grey.
+    /// StreamLoop did not answer. Before the first answer of the run the icon stays grey, until Connecting's
+    /// hint is due.
     pub fn unreachable(&self) {
         let mut feed = self.0.borrow_mut();
         feed.unreachable = true;
@@ -182,16 +227,13 @@ impl TrayFeed {
 
     /// Polls `GET /api/status` at once and then every 5 s, until `stop_polling`. After a reconnect, an answer after
     /// polls that found nothing, it reads `GET /api/update/status` once and hands `on_reconnect` the version.
-    /// Without a tray icon there is nothing to feed, so nothing polls.
+    /// It polls without a tray icon too, since the app follows an update from the reconnect.
     pub fn poll_while_closed(
         &self,
         client: Client,
         on_reconnect: impl Fn(&TrayFeed, Option<&str>, &mut App) + 'static,
         cx: &mut App,
     ) {
-        if self.0.borrow().output.is_none() {
-            return;
-        }
         // Weak: the feed owns this task, which must not keep the feed alive.
         let feed: Weak<RefCell<Feed>> = Rc::downgrade(&self.0);
         let poll = cx.spawn(async move |cx| {
@@ -476,7 +518,7 @@ mod tests {
         ];
 
         // Act
-        let colours = lines.each_ref().map(|l| colour(Some(l), true));
+        let colours = lines.each_ref().map(|l| colour(Some(l), true, None));
 
         // Assert
         assert_eq!(
@@ -493,8 +535,8 @@ mod tests {
     #[test]
     fn grey_before_the_first_answer() {
         // Act
-        let (waiting, failing) = (colour(None, true), colour(None, false));
-        let tip = tooltip(None, true);
+        let (waiting, failing) = (colour(None, true, None), colour(None, false, None));
+        let tip = tooltip(None, true, None);
 
         // Assert
         assert_eq!((waiting, failing), (TrayColour::Grey, TrayColour::Grey));
@@ -507,12 +549,57 @@ mod tests {
         let live = line("Live", Level::Ok, None);
 
         // Act
-        let shown = colour(Some(&live), false);
-        let tips = [tooltip(Some(&live), false), tooltip(None, false)];
+        let shown = colour(Some(&live), false, None);
+        let tips = [tooltip(Some(&live), false, None), tooltip(None, false, None)];
 
         // Assert
         assert_eq!(shown, TrayColour::Red);
         assert_eq!(tips, [RETRY_TIP, RETRY_TIP]);
+    }
+
+    #[test]
+    fn red_with_connecting_s_hint_before_the_first_answer() {
+        // Arrange
+        let hint = r"StreamLoop did not start. Double-click START.bat in C:\SL to see why.";
+
+        // Act
+        let shown = colour(None, false, Some(hint));
+        let tip = tooltip(None, false, Some(hint));
+
+        // Assert
+        assert_eq!(shown, TrayColour::Red);
+        assert_eq!(
+            tip,
+            "StreamLoop\nStreamLoop did not start. Double-click START.bat in C:\\SL to see why."
+        );
+    }
+
+    #[test]
+    fn an_answer_outranks_connecting_s_hint() {
+        // Arrange
+        let (live, hint) = (line("Live", Level::Ok, None), "StreamLoop did not start.");
+
+        // Act
+        let answered = (colour(Some(&live), true, Some(hint)), tooltip(Some(&live), true, Some(hint)));
+        let lost = (colour(Some(&live), false, Some(hint)), tooltip(Some(&live), false, Some(hint)));
+
+        // Assert
+        assert_eq!(answered, (TrayColour::Green, "StreamLoop: Live".to_string()));
+        assert_eq!(lost, (TrayColour::Red, RETRY_TIP.to_string()));
+    }
+
+    #[test]
+    fn a_hint_with_a_long_root_is_cut_at_a_word_within_127_characters() {
+        // Arrange
+        let hint = crate::start::did_not_start(std::path::Path::new(
+            r"C:\Users\Emma Ö\Documents\StreamLoop installs\the one on the second drive\streamloop",
+        ));
+
+        // Act
+        let tip = tooltip(None, false, Some(&hint));
+
+        // Assert
+        assert_cut_at_a_word(&tip, &format!("StreamLoop\n{hint}"));
     }
 
     #[test]
@@ -522,7 +609,7 @@ mod tests {
         let off_air = line("Off air", Level::Err, Some("The encoder is not running."));
 
         // Act
-        let tips = [tooltip(Some(&live), true), tooltip(Some(&off_air), true)];
+        let tips = [tooltip(Some(&live), true, None), tooltip(Some(&off_air), true, None)];
 
         // Assert
         assert_eq!(
@@ -566,7 +653,7 @@ mod tests {
         ];
 
         // Act
-        let tips = lines.each_ref().map(|l| tooltip(Some(l), true));
+        let tips = lines.each_ref().map(|l| tooltip(Some(l), true, None));
 
         // Assert
         assert_cut_at_a_word(&tips[0], &format!("StreamLoop: Off air\n{plain}"));
@@ -587,7 +674,7 @@ mod tests {
         let off_air = line("Off air", Level::Err, Some(&long_word));
 
         // Act
-        let tip = tooltip(Some(&off_air), true);
+        let tip = tooltip(Some(&off_air), true, None);
 
         // Assert
         assert_eq!(tip.encode_utf16().count(), 127);

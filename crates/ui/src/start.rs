@@ -117,17 +117,22 @@ impl Connecting {
     }
 }
 
+/// Connecting's hint, which the tray icon's tooltip shows too.
+pub fn did_not_start(root: &Path) -> String {
+    format!(
+        "StreamLoop did not start. Double-click START.bat in {} to see why.",
+        root.display()
+    )
+}
+
 /// `since_start` counts from the app's start of `START.bat`.
 pub fn connecting(started_bat: bool, since_start: Duration, root: Option<&Path>) -> Connecting {
     if !started_bat {
         return Connecting::Retrying;
     }
-    let hint = root.filter(|_| since_start >= HINT_AFTER).map(|root| {
-        format!(
-            "StreamLoop did not start. Double-click START.bat in {} to see why.",
-            root.display()
-        )
-    });
+    let hint = root
+        .filter(|_| since_start >= HINT_AFTER)
+        .map(did_not_start);
     Connecting::Starting { hint }
 }
 

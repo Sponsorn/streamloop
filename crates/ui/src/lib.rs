@@ -22,6 +22,7 @@ pub mod start;
 mod test_support;
 pub mod theme;
 pub mod tray;
+pub mod ui_log;
 pub mod update;
 pub mod videos;
 pub mod webhooks;
@@ -29,7 +30,12 @@ pub mod widgets;
 pub mod window_state;
 pub mod wizard;
 
-use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Entity, Global, Pixels, QuitMode, Render,
@@ -44,7 +50,7 @@ use crate::{
     follow::{Detach, Spawn},
     instance::{Claim, Instance},
     start::StartedBat,
-    tray::{Tray, TrayEvent, TrayFeed},
+    tray::{Tray, TrayEvent, TrayFeed, TrayOutput},
     window_state::{DEFAULT_SIZE, MIN_SIZE, WindowState},
 };
 
@@ -57,13 +63,14 @@ const OPEN_SETTLES_IN: Duration = Duration::from_secs(2);
 const SAVE_AFTER_MOVE: Duration = Duration::from_secs(1);
 
 /// What `streamloop.exe ui` was asked for. `root` is absolute; `follow` is the version an update restart
-/// started this app to follow.
+/// started this app to follow; `log_dir` holds `ui.log`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiOptions {
     pub root: Option<PathBuf>,
     pub port: Option<u16>,
     pub tray: bool,
     pub follow: Option<String>,
+    pub log_dir: Option<PathBuf>,
 }
 
 /// What outlives a window. R3's `AppHandle` is the window's own.
@@ -159,6 +166,7 @@ pub fn run(opts: UiOptions) {
     });
     let shell = Shell::new(Client(api), &opts);
     let tray_only = opts.tray;
+    let log_dir = opts.log_dir.clone();
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
@@ -167,10 +175,8 @@ pub fn run(opts: UiOptions) {
             theme::init(cx);
             set_started_bat(cx, started_bat);
             let events = shell.clone();
-            // Without its icon the app still runs: a second start shows the window.
-            if let Ok(tray) = Tray::new(cx, move |event, cx| on_tray_event(event, cx, &events)) {
-                shell.tray.attach(Box::new(tray));
-            }
+            let tray = Tray::new(cx, move |event, cx| on_tray_event(event, cx, &events));
+            attach_tray(&shell, tray, log_dir.as_deref());
             begin(cx, &shell, tray_only);
             serve_show_signal(cx, shell, show_rx);
             cx.activate(true);
@@ -178,8 +184,30 @@ pub fn run(opts: UiOptions) {
     drop(instance);
 }
 
-/// Opens the window, or with `--tray` only polls for the tray icon.
+/// The tray icon, or a line in `ui.log` in `log_dir` saying why there is none. Without its icon the app still
+/// runs: a second start shows the window, and the closed-window poll still follows an update.
+pub(crate) fn attach_tray(
+    shell: &Shell,
+    tray: anyhow::Result<impl TrayOutput + 'static>,
+    log_dir: Option<&Path>,
+) {
+    match tray {
+        Ok(tray) => shell.tray.attach(Box::new(tray)),
+        Err(err) => {
+            if let Some(dir) = log_dir {
+                let line = format!("The tray icon could not be made: {err}");
+                ui_log::append(dir, &ui_log::stamped(&line));
+            }
+        }
+    }
+}
+
+/// Opens the window, or with `--tray` only polls for the tray icon. When this app started `START.bat`, the
+/// tray icon counts to Connecting's hint from here, with the window open or not.
 pub(crate) fn begin(cx: &mut App, shell: &Shell, tray_only: bool) {
+    if let Some(started) = cx.try_global::<Starting>().and_then(|s| s.0.clone()) {
+        shell.tray.started_bat(&started, cx);
+    }
     if tray_only {
         poll_while_closed(shell, cx);
     } else {
@@ -294,11 +322,13 @@ pub fn save_window_state(cx: &mut App) {
 
 /// The window's close button, Alt+F4 and the taskbar's Close. GPUI removes the window and Windows' own close is
 /// refused: on gpui-pre 0.3.11 that path leaks about 26 MB per close. The app goes on in the tray, which says so
-/// the first time in an install.
+/// the first time in an install; without a tray icon the hint waits for a close that has one.
 pub(crate) fn close_main_window(window: &mut Window, cx: &mut App) -> bool {
     let first_close = main_window(cx).is_some_and(|main| {
-        let first = !main.state.tray_hint_shown;
-        main.state.tray_hint_shown = true;
+        let first = main.shell.tray.has_icon() && !main.state.tray_hint_shown;
+        if first {
+            main.state.tray_hint_shown = true;
+        }
         first
     });
     remember(window, cx);
@@ -547,12 +577,12 @@ mod tests {
 
         // Act
         close(cx, window);
-        let polled = count(&fake, "GET", "/api/status");
+        let polled = count(&fake, "GET", "/api/events");
         cx.executor().advance_clock(Duration::from_secs(10));
 
         // Assert
         assert!(cx.windows().is_empty(), "the window's close callback removed it");
-        assert_eq!(count(&fake, "GET", "/api/status"), polled, "the closed window polls no more");
+        assert_eq!(count(&fake, "GET", "/api/events"), polled, "the closed window's dashboard polls no more");
         assert_eq!(
             window_state::load(&path),
             WindowState {
@@ -875,6 +905,153 @@ mod tests {
         assert!(cx.windows().is_empty());
         assert_eq!(at_start, TrayColour::Green);
         assert_eq!(count(&fake, "GET", "/api/status"), 2);
+    }
+
+    const SL4: &str = r"C:\Temp\sl4 Ö (x)";
+    const RETRY_TIP: &str = "StreamLoop\nCan't reach StreamLoop. Retrying...";
+    const HINT_TIP: &str =
+        "StreamLoop\nStreamLoop did not start. Double-click START.bat in C:\\Temp\\sl4 Ö (x) to see why.";
+
+    /// The app started START.bat in SL4 just now, as `run` records it.
+    fn started_bat_now(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let at_ms = crate::app::now_ms(cx);
+            set_started_bat(
+                cx,
+                Some(StartedBat {
+                    root: PathBuf::from(SL4),
+                    at_ms,
+                }),
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_tray_start_turns_red_with_the_hint_30_s_after_it_started_start_bat(
+        cx: &mut TestAppContext,
+    ) {
+        // Arrange: nothing answers
+        let fake = FakeApi::new();
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        let shell = test_support::shell(fake);
+        let tray = record_tray(&shell);
+        started_bat_now(cx);
+
+        // Act
+        cx.update(|cx| begin(cx, &shell, true));
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(29));
+        let at_29_s = (tray.borrow().now().0, tray.borrow().now().1.to_string());
+        cx.executor().advance_clock(Duration::from_secs(1));
+
+        // Assert
+        assert_eq!(at_29_s, (TrayColour::Grey, RETRY_TIP.to_string()));
+        assert_eq!(tray.borrow().now(), (TrayColour::Red, HINT_TIP));
+    }
+
+    #[gpui::test]
+    fn the_tray_turns_red_with_the_hint_while_the_window_is_closed(cx: &mut TestAppContext) {
+        // Arrange: the window opened on Connecting and closed
+        let fake = FakeApi::new();
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        let shell = test_support::shell(fake);
+        let tray = record_tray(&shell);
+        cx.update(gpui_kit::init);
+        cx.update(crate::theme::init);
+        started_bat_now(cx);
+        cx.update(|cx| begin(cx, &shell, false));
+        cx.run_until_parked();
+        let window = cx.windows()[0];
+        close(cx, window);
+
+        // Act
+        cx.executor().advance_clock(Duration::from_secs(30));
+
+        // Assert
+        assert_eq!(tray.borrow().now(), (TrayColour::Red, HINT_TIP));
+    }
+
+    #[gpui::test]
+    fn the_first_answer_ends_the_start_hint(cx: &mut TestAppContext) {
+        // Arrange: red with the hint
+        let fake = FakeApi::new();
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        let shell = test_support::shell(fake.clone());
+        let tray = record_tray(&shell);
+        started_bat_now(cx);
+        cx.update(|cx| begin(cx, &shell, true));
+        cx.executor().advance_clock(Duration::from_secs(30));
+
+        // Act
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+        let live = (tray.borrow().now().0, tray.borrow().now().1.to_string());
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+
+        // Assert
+        assert_eq!(live, (TrayColour::Green, "StreamLoop: Live".to_string()));
+        assert_eq!(tray.borrow().now(), (TrayColour::Red, RETRY_TIP));
+    }
+
+    #[gpui::test]
+    fn an_app_that_did_not_start_start_bat_stays_grey_until_the_first_answer(
+        cx: &mut TestAppContext,
+    ) {
+        // Arrange
+        let fake = FakeApi::new();
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        let shell = test_support::shell(fake);
+        let tray = record_tray(&shell);
+
+        // Act
+        cx.update(|cx| begin(cx, &shell, true));
+        cx.executor().advance_clock(Duration::from_secs(120));
+
+        // Assert
+        assert_eq!(tray.borrow().now(), (TrayColour::Grey, RETRY_TIP));
+    }
+
+    #[gpui::test]
+    fn closing_without_a_tray_icon_leaves_the_tray_hint_for_a_later_close(
+        cx: &mut TestAppContext,
+    ) {
+        // Arrange: no tray icon
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        let dir = StateDir::new("hint-no-icon");
+        let path = dir.file();
+        let shell = saving_to(fake, &path);
+        let (_, window) = open_shell(cx, &shell, None);
+
+        // Act
+        close(cx, window);
+
+        // Assert
+        assert!(!window_state::load(&path).tray_hint_shown);
+    }
+
+    #[test]
+    fn a_tray_icon_that_could_not_be_made_is_written_to_ui_log() {
+        // Arrange
+        let dir = std::env::temp_dir().join(format!("sl-ui-tray-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let shell = test_support::shell(FakeApi::new());
+        let failed: anyhow::Result<crate::tray::Tray> =
+            Err(anyhow::anyhow!("the shell refused the icon"));
+
+        // Act
+        attach_tray(&shell, failed, Some(&dir));
+
+        // Assert
+        let log = std::fs::read_to_string(dir.join("ui.log")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            log.trim_end()
+                .ends_with("The tray icon could not be made: the shell refused the icon"),
+            "{log:?}"
+        );
+        assert!(!shell.tray.has_icon());
     }
 
     #[gpui::test]

@@ -55,7 +55,8 @@ icon shows the stream:
 
   green   live
   amber   starting, recovering or installing an update
-  red     off air, or StreamLoop no longer answers
+  red     off air, StreamLoop no longer answers, or it did not start
+          within 30 seconds
   grey    stopped, or StreamLoop has not answered yet
 
 Point at the icon for the state and the reason. Click it, or

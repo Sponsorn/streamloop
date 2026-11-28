@@ -49,7 +49,7 @@ pub fn now_ms(cx: &App) -> i64 {
 }
 
 /// How long ago this app started `START.bat`.
-fn since(started: &StartedBat, cx: &App) -> Duration {
+pub(crate) fn since(started: &StartedBat, cx: &App) -> Duration {
     Duration::from_millis(now_ms(cx).saturating_sub(started.at_ms).max(0) as u64)
 }
 

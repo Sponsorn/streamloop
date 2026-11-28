@@ -6990,7 +6990,6 @@ checksum = "d08889ec5408683408db66ad89e0e1f93dff55c73a4ccc71c427d5b277ee47e6"
 name = "streamloop"
 version = "3.1.2"
 dependencies = [
- "chrono",
  "serde_json",
  "streamloop-common",
  "streamloop-control",

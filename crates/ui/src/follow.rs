@@ -299,6 +299,31 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_closed_window_follows_without_a_tray_icon(cx: &mut TestAppContext) {
+        // Arrange: no tray icon, and the window closed while the control process ran this app's version
+        let fake = FakeApi::new();
+        answer_polls(&fake);
+        control_runs(&fake, OWN);
+        let dir = StateDir::new("follow-no-icon");
+        let f = follower(fake.clone(), &dir, false);
+        f.shell.tray.detach();
+        let (_, window) = open_shell(cx, &f.shell, None);
+        close(cx, window);
+
+        // Act: the control process is away for the update, then answers on 3.2.1
+        fake.reply("GET", "/api/status", Err(ApiError::Unreachable));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+        control_runs(&fake, "3.2.1");
+        fake.reply("GET", "/api/status", Ok(status_json("live", false)));
+        cx.executor().advance_clock(CLOSED_POLL_EVERY);
+
+        // Assert
+        let spawned = f.spawned.borrow();
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].args, ["detach", "ui", "--follow", "3.2.1", "--tray"]);
+    }
+
+    #[gpui::test]
     fn a_follow_passes_on_the_port_the_app_was_given(cx: &mut TestAppContext) {
         // Arrange
         let fake = FakeApi::new();

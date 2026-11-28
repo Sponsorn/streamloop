@@ -1,17 +1,11 @@
 //! `streamloop.exe ui`: the window. Argument parsing, the working folder and the panic log live here; the window is `streamloop_ui`.
 
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use streamloop_common::paths::{install_root, Layout};
-use streamloop_ui::UiOptions;
+use streamloop_ui::{ui_log, UiOptions};
 
 const USAGE: &str = "Usage: streamloop.exe ui [--root DIR] [--port N] [--tray] [--follow V]";
-const LOG: &str = "ui.log";
-const ROLL_PAST: u64 = 1024 * 1024;
 const EXIT_USAGE: i32 = 64;
 
 #[derive(Debug, PartialEq)]
@@ -59,7 +53,7 @@ pub fn ui_main(args: Vec<String>) -> i32 {
         Ok(parsed) => parsed,
         Err(usage) => {
             if let Some(dir) = &log_dir {
-                append_log(dir, &usage);
+                ui_log::append(dir, &usage);
             }
             return EXIT_USAGE;
         }
@@ -68,7 +62,7 @@ pub fn ui_main(args: Vec<String>) -> i32 {
         // A browser opened for a link starts here, so it never holds a folder inside the install.
         let _ = std::env::set_current_dir(&dir);
     }
-    if let Some(dir) = log_dir {
+    if let Some(dir) = log_dir.clone() {
         log_panics(dir);
     }
     streamloop_ui::run(UiOptions {
@@ -76,6 +70,7 @@ pub fn ui_main(args: Vec<String>) -> i32 {
         port: parsed.port,
         tray: parsed.tray,
         follow: parsed.follow,
+        log_dir,
     });
     0
 }
@@ -88,21 +83,9 @@ fn full_path(dir: PathBuf) -> PathBuf {
 fn log_panics(dir: PathBuf) {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        append_log(&dir, &format!("{} {info}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+        ui_log::append(&dir, &ui_log::stamped(&info.to_string()));
         default_hook(info);
     }));
-}
-
-/// Appends `line` to `ui.log` in `dir`, first moving a log past 1 MB to `.old`.
-fn append_log(dir: &Path, line: &str) {
-    let _ = fs::create_dir_all(dir);
-    let path = dir.join(LOG);
-    if fs::metadata(&path).is_ok_and(|m| m.len() > ROLL_PAST) {
-        let _ = fs::rename(&path, dir.join(format!("{LOG}.old")));
-    }
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(file, "{line}");
-    }
 }
 
 #[cfg(test)]
@@ -188,26 +171,5 @@ mod tests {
         // Assert
         assert_eq!(relative, cwd.join("dev").join("root"));
         assert_eq!(trailing.as_os_str(), r"C:\SL");
-    }
-
-    #[test]
-    fn rolls_the_log_to_old_past_one_megabyte() {
-        // Arrange
-        let dir = std::env::temp_dir().join(format!("streamloop-ui-log-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("ui.log");
-        let old = dir.join("ui.log.old");
-        append_log(&dir, "first");
-        assert_eq!(std::fs::read_to_string(&log).unwrap(), "first\n");
-        assert!(!old.exists());
-        std::fs::write(&log, vec![b'x'; 1024 * 1024 + 1]).unwrap();
-
-        // Act
-        append_log(&dir, "second");
-
-        // Assert
-        assert_eq!(std::fs::read_to_string(&log).unwrap(), "second\n");
-        assert_eq!(std::fs::metadata(&old).unwrap().len(), 1024 * 1024 + 1);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
