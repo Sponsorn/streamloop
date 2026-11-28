@@ -149,7 +149,7 @@ impl CacheView {
             .child(size_cell().child(Label::new("Size")))
             .child(quality_cell().child(Label::new("Quality")))
             .child(short_cell().child(Label::new("Format")))
-            .child(short_cell().child(Label::new("Client")))
+            .child(client_cell().child(Label::new("Client")))
             .child(time_cell().child(Label::new("Downloaded")));
         div()
             .id("cache-table")
@@ -180,7 +180,7 @@ impl CacheView {
                 None => Label::new("-"),
             }))
             .child(short_cell().child(Label::new(text(file.and_then(|f| f.format.as_ref())))))
-            .child(short_cell().child(Label::new(text(file.and_then(|f| f.client.as_ref())))))
+            .child(client_cell().child(Label::new(text(file.and_then(|f| f.client.as_ref())))))
             .child(
                 time_cell().child(Label::new(
                     file.and_then(|f| f.finished_at.as_deref())
@@ -359,7 +359,7 @@ fn title_cell() -> Div {
 }
 
 fn state_cell() -> Div {
-    cell().flex_none().w(px(210.))
+    cell().flex_none().w(px(190.))
 }
 
 fn size_cell() -> Div {
@@ -372,6 +372,11 @@ fn quality_cell() -> Div {
 
 fn short_cell() -> Div {
     cell().flex_none().w(px(72.))
+}
+
+/// Wide enough for `web_embedded` on one line.
+fn client_cell() -> Div {
+    cell().flex_none().w(px(112.))
 }
 
 fn time_cell() -> Div {

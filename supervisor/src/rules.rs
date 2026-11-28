@@ -552,6 +552,12 @@ pub fn download_wait(downloading: bool, sizing: bool, now: std::time::Instant, d
     }
 }
 
+/// Whether a download's progress line goes to the control loop: a new part, a move of a percent
+/// point either way since the last one sent, or the end. `sent` is the last (percent, part) sent.
+pub fn progress_due(sent: (f64, u32), percent: f64, part: u32) -> bool {
+    part != sent.1 || (percent - sent.0).abs() >= 1.0 || percent >= 100.0
+}
+
 /// A file goes once it is outside the window, unless a feeder reads it.
 pub fn deletable(i: usize, win: &[usize], view: usize, fed: Option<usize>) -> bool {
     i != view && Some(i) != fed && !win.contains(&i)
@@ -1237,6 +1243,16 @@ mod tests {
         let room = room_in_s(0, 0.0, 0, &[Some(10)], &[false], 0, &[Some(100.0)]);
 
         assert_eq!(room, None, "a one-video ring has no other viewer position to wait for");
+    }
+
+    #[test]
+    fn download_progress_follows_an_hls_estimate_that_falls_from_100() {
+        // yt-dlp's first HLS line is 100 % of the first fragment, then the estimate grows.
+        let first = (100.0, 1);
+
+        let due = [progress_due(first, 6.5, 1), progress_due((6.5, 1), 6.9, 1), progress_due((6.5, 1), 7.5, 1), progress_due((7.5, 1), 0.0, 2)];
+
+        assert_eq!(due, [true, false, true, true]);
     }
 
     #[test]

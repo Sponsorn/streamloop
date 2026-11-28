@@ -2715,14 +2715,13 @@ fn downloader(jobs: Receiver<Job>, yt: Arc<Ytdlp>, logs: Logs, tx: Sender<Msg>, 
                 let started = Instant::now();
                 let file = cache.join(format!("{id}.mp4"));
                 let mut track = ytdlp::DownloadTrack::default();
-                // At most one message per percent point of each part, and one when a part starts.
                 let mut sent = (-1.0, 0);
                 let out = yt.download(&client, &id, &file, hd, &logs, &cancel, |_| {}, |line| {
                     if !track.line(line) {
                         return;
                     }
                     let p = track.progress.unwrap_or_default();
-                    if track.part != sent.1 || p.percent - sent.0 >= 1.0 || p.percent >= 100.0 {
+                    if rules::progress_due(sent, p.percent, track.part) {
                         sent = (p.percent, track.part);
                         let _ = tx.send(Msg::DlProgress { index, percent: p.percent, speed_bps: p.speed_bps, eta_s: p.eta_s, part: track.part, parts: track.parts });
                     }

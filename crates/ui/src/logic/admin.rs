@@ -102,13 +102,15 @@ pub fn format_size(n: u64) -> String {
     }
 }
 
-/// Bytes a second: MB with one decimal from 1 MB/s up, else whole KB.
+/// Bytes a second: MB with one decimal from 1 MB/s up, whole KB from 1 KB/s, else whole bytes.
 pub fn format_rate(bps: f64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
     if bps >= MB {
         format!("{:.1} MB/s", bps / MB)
-    } else {
+    } else if bps >= 1024.0 {
         format!("{:.0} KB/s", bps / 1024.0)
+    } else {
+        format!("{bps:.0} B/s")
     }
 }
 
@@ -605,6 +607,7 @@ mod tests {
     fn rate_reads_in_mb_or_kb_per_second() {
         assert_eq!(format_rate(2_411_725.0), "2.3 MB/s");
         assert_eq!(format_rate(524_288.0), "512 KB/s");
+        assert_eq!(format_rate(491.18), "491 B/s");
     }
 
     #[test]
