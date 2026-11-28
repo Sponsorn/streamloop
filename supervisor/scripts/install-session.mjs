@@ -4,16 +4,25 @@
 // Runs, each in a fresh install at %TEMP%\sl3 install Ö\streamloop that is removed at its end:
 //   install       the full ZIP's START.bat, first run, setup check, key, config, live; the key in no
 //                 install file; a second START.bat window exits 2 and changes nothing.
+//   app           the app as a user starts it, the spec's actions: streamloop.exe started as Explorer does
+//                 starts START.bat hidden and the wizard's calls take it live (A1); a second start brings its
+//                 window forward (A2); START.bat by hand opens one window, none after a crash restart, and an app
+//                 started in its 10 s wait starts no second START.bat (A11); autostart on writes the Run value,
+//                 its command as logon runs it gives the tray only (A9, A10); StreamLoop.vbs moves to the value
+//                 (A18); forged Host and Origin get 403 on 7654 and 4417, /admin 404 (A15, A16); Quit leaves nothing
+//                 (A7); a start after it goes live (A8).
 //   update        N live; the first check stages N+1 and it lands at the planned break (encoder uptime
 //                 STREAMLOOP_TEST_BREAK_AT_S=300); then, with autoStartStream off, Update Now to N+2 on air;
 //                 then N+3 stopped from the dashboard and N+4 waiting for Start, each landing without starting
 //                 the stream and confirmed by `streamloop.exe check`. Changing routes are probed for 409
-//                 throughout, and must be answered so by the new control process while it confirms.
+//                 throughout, and must be answered so by the new control process while it confirms. The app
+//                 follows each landing, with its window open for N+1 and closed after.
 //   rollback      N+1 whose supervisor mode exits at start: the new control process answers 409 while it
-//                 confirms, rolls back within 180 s, and the next planned break leaves that version alone.
+//                 confirms, rolls back within 180 s, and the next planned break leaves that version alone. The
+//                 app follows onto N+1 and back to N.
 //   rollback-bat  N+1 whose control mode exits at start: START.bat puts N back, N reports it in the timeline
 //                 and as one critical, N replaces N+1's supervisor (version rule), and the next planned break
-//                 leaves that version alone.
+//                 leaves that version alone. The app stays on N.
 //   move          v3.0.5 from GitHub (checksum checked) live with a dummy key, Stop, window closed, the full
 //                 ZIP extracted over it: config, key and timeline kept, the 3.0 leftovers gone. Then again
 //                 with the 3.0.5 supervisor left streaming: the new control process replaces it.
@@ -26,9 +35,11 @@
 // release's ZIP, exe and exe checksum; the exe and its checksum are served on
 // 127.0.0.1:8791, and the ZIP is never fetched. Discord posts go to a catcher on 127.0.0.1:8790.
 // Start it from PowerShell: a job that refuses breakaway (the Bash tool's) puts the supervisor in it.
-// Each run prints PASS or FAIL and writes supervisor\results\install\<run>\results.json.
+// Each run prints PASS, FAIL or SKIPPED and writes supervisor\results\install\<run>\results.json. SKIPPED means
+// no check failed but one was skipped: a step that opens or activates a window waits while a full-screen app is
+// in front, and after 30 min skips that step.
 // Ctrl+C or Ctrl+Break tears the run down; a start after a killed run first sweeps what it left.
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync, copyFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync, copyFileSync, appendFileSync, renameSync, openSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -40,11 +51,13 @@ import {
   packets, reconnects, runReader, stopReader, resetReader, gapStats, noDrop, sha256File, hashTree, grepTree, extract, extractOver, quietConfig, portOpen,
   allProcesses, under, runningFrom, killAll, sweepLeftovers, onInterrupt, interrupted, quickStop, tempFolders, useApiPort,
   VARIANTS, exeName, ASSET_PORT, buildVariants, writeReleaseList, assetHost, TAR,
+  installCensus, windowCensus, closeWindows, windowsOf, fullScreenApp, foregroundGate, runCommandParts, verdictOf, SKIPPED,
+  startApp, explorerEnv, regValue, regKeyExists, realAutostart, rawRequest, token,
 } from './install-kit.mjs';
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url));
 // Autostart goes to a test key and a temp Startup folder, never the user's own entries.
-autostartSandbox('install');
+const sandbox = autostartSandbox('install');
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const [V1, V2, V3, V4] = ['n1', 'n2', 'n3', 'n4'].map((id) => VARIANTS[id].version);
 const DIST = join(REPO, 'dist');
@@ -69,6 +82,15 @@ const LANDED = join(UPDATE_DIR, 'landed');
 const ROLLED_BACK = join(DATA, 'update-rolled-back');
 const STATE_FILE = join(DATA, 'update-state.json');
 const WAITING = join(DATA, 'waiting-for-start');
+const STOPPED_MARKER = join(DATA, 'stopped-by-user');
+const TIMELINE_DIR = join(ROOT, 'app', 'logs');
+/** The control process's quit line (crates/control/src/app.rs QUIT_LINE). */
+const QUIT_LINE = 'Quitting StreamLoop. The stream goes off air.';
+const REFUSED = 'Forbidden: requests from a browser are refused';
+/** How soon after the new control process answers the app must run the version it reports. */
+const FOLLOW_WITHIN_MS = 10_000;
+/** How long the control process retries removing a held streamloop.exe.old after the confirmation. */
+const OLD_GONE_WITHIN_MS = 120_000;
 const CATCHER_PORT = 8790;
 const WEBHOOK = `http://127.0.0.1:${CATCHER_PORT}/webhook/install`;
 const BREAK_AT_S = 300;
@@ -83,7 +105,7 @@ const LEFTOVERS_30 = ['app/src', 'app/node_modules', 'app/package.json', 'app/pa
 /** The 3.0 token server's folders; the control process removes them once supervisor\streamloop-pot.exe is installed. */
 const TOKEN_FALLBACK = ['pot', 'node'];
 
-const RUNS = { install: runInstall, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, faults: runFaults };
+const RUNS = { install: runInstall, app: runApp, update: runUpdate, rollback: runRollback, 'rollback-bat': runRollbackBat, move: runMove, faults: runFaults };
 
 const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch { return null; } };
 const readText = (file) => { try { return readFileSync(file, 'utf8'); } catch { return null; } };
@@ -159,6 +181,7 @@ let API_PORT = 7654;
 async function install(r, { env = {}, label, updates = false }) {
   const i = r.install = { zip: basename(DIST_ZIP), bytes: statSync(DIST_ZIP).size, sha256: sha256File(DIST_ZIP) };
   i.extractMs = await extract(DIST_ZIP, S);
+  KNOWN_EXES.set(sha256File(EXE), VERSION);
   i.configShipped = existsSync(CONFIG);
   quietConfig(join(ROOT, 'app', 'config.example.json'), { port: API_PORT, autoUpdateCheck: updates });
   const t0 = Date.now();
@@ -218,6 +241,20 @@ const fileFlags = () => ({ old: existsSync(EXE_OLD), bad: existsSync(EXE_BAD), u
 
 // watching an update: every loop records a value only when it changes, with the time
 
+/** SHA-256 of each exe a run can install, with its version: the installed N and the test builds. */
+const KNOWN_EXES = new Map();
+/** streamloop.exe's file identity (its file index) and the version of the exe behind it, hashed once per file. */
+const exeVersions = new Map();
+function exeIdentity() {
+  let ino;
+  try { ino = String(statSync(EXE, { bigint: true }).ino); } catch { return null; }
+  if (!exeVersions.has(ino)) {
+    // A file half way through a rename cannot be read; the next look hashes it.
+    try { exeVersions.set(ino, KNOWN_EXES.get(sha256File(EXE)) ?? null); } catch { return { ino, version: null }; }
+  }
+  return { ino, version: exeVersions.get(ino) };
+}
+
 function startWatch() {
   const w = { t0: Date.now(), rows: [], uptimes: [], stop: false };
   const push = (kind, v) => {
@@ -230,6 +267,7 @@ function startWatch() {
       const st = readJson(STATE_FILE);
       push('state', st ? { step: st.step, result: st.result, to: st.to, reason: st.reason ?? null } : null);
       push('files', fileFlags());
+      push('exe', exeIdentity());
     }),
     loop(async () => {
       const s = await supQuick();
@@ -351,8 +389,9 @@ async function followLanding(w, to, { from = w.t0, onAir = true, label }) {
   return { tStart, tResult, result, uptimeAtStart: uptimeBefore(w, tStart), onAir };
 }
 
-/** The checks every on-air landing shares, with the stream gap the reader saw. */
-async function onAirLanding(r, w, probe, to, label, before) {
+/** The checks every on-air landing shares, with the stream gap the reader saw. With `app` ({ ctx, windowOpen }),
+ *  also that the app follows (`appFollowed`) and that streamloop.exe.old goes. */
+async function onAirLanding(r, w, probe, to, label, before, app = null) {
   const L = await followLanding(w, to, { label });
   const tLive = await waitFor(`${to} on air (${label})`, async () => when(w, 'sup', L.tStart, (v) => v?.version === to && v.alive === true), 120_000, 500);
   const live = await waitLive(`live on ${to} (${label})`, 120_000);
@@ -385,9 +424,260 @@ async function onAirLanding(r, w, probe, to, label, before) {
     discordGotInstalling: said.includes(`Recovery action: **Installing StreamLoop ${to}. The stream restarts.**`),
     noCriticalAlert: !said.some((m) => m.startsWith('**CRITICAL:**')),
   };
+  if (app) {
+    x.app = await appFollowed(w, app.ctx, { from: tNewControl, version: to, label, windowOpen: app.windowOpen });
+    x.old = oldGone(w, L.tStart, to);
+    Object.assign(x.checks, x.app.checks, { oldGoneWithin2MinOfTheConfirmation: x.old.ok });
+  }
   note(`${label}: landing of ${to}`, x);
   return x;
 }
+
+// the app: started as Explorer starts it, followed across updates, and the windows it shows
+
+/** A step that opens or activates a window waits while a full-screen app is in front; false when it was skipped. */
+async function gate(r, label) {
+  const g = await foregroundGate({ label });
+  (r.gates ??= []).push({ label, state: g.state, waitedMs: g.waitedMs, looks: g.looks, foreground: g.foreground });
+  if (g.state === SKIPPED) note(`${label}: SKIPPED, a full-screen app stayed in front for 30 min`, g.foreground);
+  return g.state !== SKIPPED;
+}
+/** A check that needs a window on screen: SKIPPED when its gate skipped the window. */
+const onScreen = (shown, value) => (shown ? Boolean(value) : SKIPPED);
+
+/** streamloop.exe started as Explorer starts it, with `env` added to the harness's environment. */
+async function openApp(label, args = [], env = {}, exe = EXE) {
+  const t = Date.now();
+  const pid = await startApp(exe, args, explorerEnv(env));
+  note(`app started (${label})`, { pid, args });
+  if (pid === null) throw new Stop(`the app did not start (${label})`);
+  return { pid, t };
+}
+
+/** The install's processes by role, and the shown windows they own; a console host counts as its client's. */
+async function installSnapshot() {
+  const all = await allProcesses();
+  const inst = under(all, [S], IN_TEMP);
+  const pids = inst.map((p) => p.ProcessId);
+  const hosts = all.filter((p) => /^(conhost|openconsole)\.exe$/i.test(p.Name ?? '') && pids.includes(p.ParentProcessId)).map((p) => p.ProcessId);
+  const roles = installCensus(inst);
+  const census = await windowCensus();
+  const windows = windowsOf(census, [...pids, ...hosts])
+    .map((w) => ({ hwnd: w.hwnd, pid: w.pid, title: w.title, className: w.className, owner: inst.find((p) => p.ProcessId === w.pid)?.Name ?? 'console host' }));
+  const fg = census.foreground;
+  return {
+    t: Date.now(), counts: roles.counts, roles, appPids: roles.apps.map((p) => p.ProcessId), windows,
+    foreground: fg && { pid: fg.pid, name: fg.name, title: fg.title }, censusError: census.error ?? null,
+  };
+}
+/** A snapshot as the results keep it. */
+const snapBrief = (s) => ({ counts: s.counts, appPids: s.appPids, apps: s.roles.apps.map((p) => ({ pid: p.ProcessId, created: p.created, cmd: p.CommandLine })),
+  startBats: s.roles.startBats.map((p) => p.ProcessId), controls: s.roles.controls.map((p) => p.ProcessId), supervisors: s.roles.supervisors.map((p) => p.ProcessId),
+  windows: s.windows, foreground: s.foreground, censusError: s.censusError });
+const appWindows = (snap, pid) => snap.windows.filter((w) => w.pid === pid);
+/** One app, one START.bat, one control process, one supervisor. */
+const oneOfEach = (s) => s.counts.apps === 1 && s.counts.startBats === 1 && s.counts.controls === 1 && s.counts.supervisors === 1;
+
+/** POST /api/quit as the app sends it: its token in X-API-Token and no body (crates/ui/src/api/http.rs). */
+async function quitAsTheApp() {
+  const tok = (await getJson('/token', 2000))?.token ?? token;
+  try {
+    const res = await fetch(`${apiBase}/quit`, { method: 'POST', headers: { 'X-API-Token': tok }, signal: AbortSignal.timeout(10_000) });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch { /* not json */ }
+    return { status: res.status, json };
+  } catch (err) { return { status: 0, json: null, error: String(err) }; }
+}
+
+/** Quit, then the app, which a quit from the harness does not reach: the app's own Quit waits for the port to close
+ *  and exits, so the harness ends it once the port has closed. Answers when nothing of the install runs. */
+async function quitAndEnd(label) {
+  const t = Date.now();
+  const quit = await quitAsTheApp();
+  const closed = await waitFor(`the port to close (${label})`, async () => ((await portOpen(API_PORT)) ? null : true), 60_000, 1000);
+  const tClosed = Date.now();
+  const apps = installCensus(await underS()).apps.map((p) => p.ProcessId);
+  for (const pid of apps) await run('taskkill', ['/F', '/PID', String(pid)]);
+  const gone = await waitFor(`nothing of the install left (${label})`, async () => ((await underS()).some((p) => /^(streamloop|cmd)\.exe$/i.test(p.Name ?? '')) ? null : true), 60_000, 1000);
+  const tGone = Date.now();
+  await waitFor(`no process of the install (${label})`, async () => ((await underS()).length === 0 ? true : null), 30_000, 1000);
+  const x = { quit: quit.status, body: quit.json, portClosedMs: closed.value ? tClosed - t : null, endedApps: apps, noStreamloopOrCmdMs: gone.value ? tGone - t : null };
+  note(`quit (${label})`, x);
+  return x;
+}
+
+/** The control process exits 75 (STREAMLOOP_TEST_HOOKS) and START.bat starts it again. */
+async function restartControl(label) {
+  const res = await api('POST', '/test/exit-75');
+  await waitFor(`the control process to exit (${label})`, async () => (!(await getJson('/token', 1000)) ? true : null), 30_000, 250);
+  await nodeUp(label, 60_000);
+  return res.status;
+}
+
+/** Every app process of the install, sampled about once a second: PID, start time, command line, last seen. */
+function startAppWatch() {
+  const a = { t0: Date.now(), apps: new Map(), samples: [], stop: false };
+  a.done = (async () => {
+    while (!a.stop) {
+      const apps = installCensus(await underS()).apps;
+      const t = Date.now();
+      for (const p of apps) {
+        const key = `${p.ProcessId}@${p.created}`;
+        const x = a.apps.get(key) ?? { pid: p.ProcessId, created: p.created, cmd: p.CommandLine, firstSeen: t };
+        x.lastSeen = t;
+        a.apps.set(key, x);
+      }
+      a.samples.push({ t, pids: apps.map((p) => p.ProcessId) });
+      for (let i = 0; i < 4 && !a.stop; i += 1) await sleep(250);
+    }
+  })();
+  return a;
+}
+async function endAppWatch(a) {
+  if (!a) return null;
+  a.stop = true;
+  await a.done;
+  return a;
+}
+const aliveApps = (aw) => aw.samples.at(-1)?.pids ?? [];
+
+/** While a full-screen app is in front, the app's window goes to the tray (WM_CLOSE, as its close button), so no
+ *  window that follows an update opens over it. A window check after such a close is SKIPPED. */
+function startWindowGuard(aw) {
+  const g = { closes: [], stop: false };
+  g.done = (async () => {
+    while (!g.stop) {
+      const c = await windowCensus();
+      const mine = windowsOf(c, aliveApps(aw));
+      if (mine.length && fullScreenApp(c.foreground)) {
+        await closeWindows(mine.map((x) => x.hwnd));
+        g.closes.push({ t: Date.now(), at: iso(), foreground: c.foreground.name, windows: mine.length });
+        note('a full-screen app is in front: the app\'s window went to the tray', g.closes.at(-1));
+      }
+      for (let i = 0; i < 10 && !g.stop; i += 1) await sleep(500);
+    }
+  })();
+  return g;
+}
+async function endWindowGuard(g) {
+  if (!g) return null;
+  g.stop = true;
+  await g.done;
+  return g;
+}
+
+/** Posts WM_CLOSE to the app's windows, as their close button does: the window goes, the app stays in the tray. */
+async function closeAppWindow(pids) {
+  const c = await windowCensus();
+  const mine = windowsOf(c, pids);
+  const after = mine.length ? await closeWindows(mine.map((x) => x.hwnd)) : c;
+  const apps = installCensus(await underS()).apps.map((p) => p.ProcessId);
+  const x = { closed: mine.length, left: windowsOf(after, pids).length, pids, apps };
+  x.ok = mine.length > 0 && x.left === 0 && pids.length > 0 && pids.every((p) => apps.includes(p));
+  note('the app\'s window closed to the tray', x);
+  return x;
+}
+
+/** The app of an update run, started before the landing: with its window when the gate let it (`shown`), else in
+ *  the tray; its watch, and the window guard while it has a window. Call after startWatch. */
+async function appBeforeTheLanding(r, label, shown, env) {
+  const aw = startAppWatch();
+  const app = await openApp(label, shown ? [] : ['--tray'], env);
+  const seen = await waitFor(`the app of ${label}`, async () => (aliveApps(aw).includes(app.pid) ? true : null), 20_000, 500);
+  const guard = shown ? startWindowGuard(aw) : null;
+  r.appWatch = aw;
+  r.guard = guard;
+  r.appStart = { pid: app.pid, shown, seenMs: seen.ms };
+  return { aw, shown, guard, pid: app.pid, started: seen.value === true };
+}
+
+/** The version of the exe an app started from: streamloop.exe's file at the app's start. */
+function appVersion(w, a) {
+  const row = valueAt(w, 'exe', a.created);
+  return row?.version ?? (a.created < w.t0 ? VERSION : null);
+}
+
+/** The app after a landing or rollback: within 10 s of `from` (the control process of `version` first answering)
+ *  the install's one app runs from that version's exe; a follower names it in `--follow`, or with `follows: false`
+ *  the app from before stays. `windowOpen`: with its window (SKIPPED when taken away), or none and `--tray`. */
+async function appFollowed(w, ctx, { from, version, label, follows = true, windowOpen }) {
+  const { aw, shown, guard } = ctx;
+  const a = from === null ? null : [...aw.apps.values()].sort((x, y) => x.created - y.created)
+    .find((x) => appVersion(w, x) === version && x.lastSeen >= from) ?? null;
+  const readyMs = a ? Math.max(0, a.created - from) : null;
+  const follow = /--follow\s+(\S+)/.exec(a?.cmd ?? '')?.[1] ?? null;
+  const tray = /--tray\b/.test(a?.cmd ?? '');
+  // The app it replaced quits right after starting it.
+  const settleAt = a ? Math.max(from + FOLLOW_WITHIN_MS, a.created + 5000) : null;
+  const settled = settleAt === null ? null : (aw.samples.find((s) => s.t >= settleAt) ?? aw.samples.at(-1))?.pids ?? null;
+  const snap = await installSnapshot();
+  const windows = a ? appWindows(snap, a.pid).length : 0;
+  const u = await updStatus();
+  const exeNow = await exeVersion();
+  const windowTaken = !shown || (guard?.closes.length ?? 0) > 0;
+  const x = { label, from: from === null ? null : iso(from), version, pid: a?.pid ?? null, created: a ? iso(a.created) : null, readyMs, follow, tray, cmd: a?.cmd ?? null,
+    appsWhenSettled: settled, appsNow: snap.appPids, windows, currentVersion: u?.currentVersion ?? null, exeVersion: exeNow };
+  const check = {
+    runsTheVersionWithin10s: a !== null && readyMs <= FOLLOW_WITHIN_MS,
+    isTheOnlyApp: a !== null && JSON.stringify(settled) === JSON.stringify([a.pid]),
+    matchesExeAndControlProcess: a !== null && version === exeNow && version === u?.currentVersion,
+    ...(follows ? { followedNamingTheVersion: a !== null && a.created >= from - 1000 && follow === version } : { stayedTheSameApp: a !== null && a.created < from }),
+  };
+  if (windowOpen === true) check.windowOpen = windowTaken ? SKIPPED : !tray && windows > 0;
+  else if (windowOpen === false) check.noWindow = windows === 0 && (!follows || tray);
+  x.checks = Object.fromEntries(Object.entries(check).map(([k, v]) => [`app.${k}`, v]));
+  note(`the app after ${label}`, x);
+  return x;
+}
+
+/** streamloop.exe.old gone within 2 minutes of the confirmation of `to`, which retries a removal the app held up. */
+function oldGone(w, tStart, to) {
+  const tOk = when(w, 'state', tStart, (v) => v?.to === to && v.result === 'ok');
+  const tGone = tOk === null ? null : when(w, 'files', tOk, (v) => v && !v.old);
+  return { confirmedMs: rel(tOk, tStart), oldGoneAfterConfirmMs: rel(tGone, tOk), ok: tGone !== null && tGone - tOk <= OLD_GONE_WITHIN_MS };
+}
+
+/** streamloop.exe.bad renamed to a temp name and back, then opened for writing. A rename works on an exe a
+ *  process runs from; a write-open does not, so the second shows that START.bat's next delete would work. */
+function badProbe() {
+  if (!existsSync(EXE_BAD)) return { exists: false, ok: false };
+  const tmp = `${EXE_BAD}.probe`;
+  const x = { exists: true, renamed: false, back: false, writable: false, error: null };
+  try {
+    renameSync(EXE_BAD, tmp);
+    x.renamed = true;
+    renameSync(tmp, EXE_BAD);
+    x.back = true;
+  } catch (err) { x.error = err.code ?? String(err); }
+  if (x.renamed && !x.back) { try { renameSync(tmp, EXE_BAD); x.back = true; } catch { /* reported */ } }
+  try { closeSync(openSync(EXE_BAD, 'r+')); x.writable = true; } catch (err) { x.error ??= err.code ?? String(err); }
+  x.ok = x.renamed && x.back && x.writable;
+  return x;
+}
+async function badNotHeld(label) {
+  const r = await waitFor(`nothing holding streamloop.exe.bad (${label})`, async () => { const x = badProbe(); return x.ok ? x : null; }, 30_000, 1000);
+  const x = r.value ?? badProbe();
+  note(`streamloop.exe.bad (${label})`, x);
+  return x;
+}
+
+/** Writes StreamLoop.vbs into the test Startup folder as 3.1 wrote it: UTF-16LE with a BOM. */
+function writeVbs(bat) {
+  const text = `Set WshShell = CreateObject("WScript.Shell")\r\nWshShell.Run """${bat}""", 1, False`;
+  writeFileSync(join(sandbox.startupDir, 'StreamLoop.vbs'), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]));
+}
+const runValue = () => regValue(`${sandbox.key}\\Run`, 'StreamLoop');
+
+/** The timeline's messages on disk, oldest first, read once the control process has exited. */
+function timelineOnDisk() {
+  if (!existsSync(TIMELINE_DIR)) return [];
+  const files = readdirSync(TIMELINE_DIR).filter((n) => /^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(n)).sort();
+  return files.flatMap((n) => readFileSync(join(TIMELINE_DIR, n), 'utf8').split(/\r?\n/).filter(Boolean))
+    .map((l) => { try { return JSON.parse(l).message ?? null; } catch { return null; } });
+}
+/** The supervisor's own report of its exit, which the events tail may still add after the quit line. */
+const SUPERVISOR_SHUT_DOWN = 'Supervisor shut down';
 
 // runs
 
@@ -440,19 +730,277 @@ async function runInstall(r) {
   };
 }
 
+/** The spec's A1, A2, A11, A9 and A10, A18, A15 and A16, A7 and A8, every app started as Explorer starts it.
+ *  Every control process gets the test autostart key and Startup folder through the environment. */
+async function runApp(r) {
+  // exit-75 restarts the control process for A18
+  const env = { STREAMLOOP_TEST_HOOKS: '1' };
+  const a = r.app = {};
+  const c = {};
+  r.install = { zip: basename(DIST_ZIP), sha256: sha256File(DIST_ZIP), extractMs: await extract(DIST_ZIP, S) };
+  quietConfig(join(ROOT, 'app', 'config.example.json'), { port: API_PORT });
+  // The app reads its port from config.json, which the first start writes from the example; on another port than
+  // 7654 it must be there before the app starts.
+  if (API_PORT !== 7654) copyFileSync(join(ROOT, 'app', 'config.example.json'), CONFIG);
+  const expected = `"${EXE}" ui --tray`;
+
+  // A1: double-clicked with nothing running. The app starts START.bat hidden, and the wizard's calls take it live.
+  const shown1 = await gate(r, 'A1');
+  const t1 = Date.now();
+  const app1 = await openApp('A1', shown1 ? [] : ['--tray'], env);
+  const x1 = a.A1 = { pid: app1.pid, shown: shown1 };
+  x1.apiUpMs = await nodeUp('A1: the control process the app started', 60_000);
+  x1.firstRun = (await nodeStatus())?.firstRun ?? null;
+  await wizard(x1);
+  const live1 = await waitLive('A1 live after the wizard');
+  x1.wizardToLiveMs = live1.ms;
+  x1.startToLiveMs = Date.now() - t1;
+  runReader();
+  await sleep(15_000);
+  const s1 = await installSnapshot();
+  x1.snapshot = snapBrief(s1);
+  x1.reader = gapStats(Date.now() - 12_000, Date.now());
+  Object.assign(c, {
+    'A1.oneOfEach': oneOfEach(s1) && s1.appPids[0] === app1.pid,
+    'A1.apiAnswers': x1.apiUpMs !== null,
+    'A1.wizardTakesItLive': x1.firstRun === true && x1.keyStatus === 200 && x1.saveStatus === 200 && live1.value !== null && noDrop(x1.reader),
+    'A1.windowsOnlyTheApps': onScreen(shown1, appWindows(s1, app1.pid).length > 0 && s1.windows.every((w) => w.pid === app1.pid)),
+  });
+
+  // A2: a second start brings the window forward and exits.
+  const shown2 = shown1 && await gate(r, 'A2');
+  if (shown2) {
+    const second = await openApp('A2', [], env);
+    const gone = await waitFor('the second app to exit', async () => (!(await underS()).some((p) => p.ProcessId === second.pid) ? true : null), 20_000, 500);
+    const front = await waitFor('the app\'s window in front', async () => ((await windowCensus()).foreground?.pid === app1.pid ? true : null), 10_000, 500);
+    const s2 = await installSnapshot();
+    a.A2 = { secondPid: second.pid, secondExitMs: gone.ms, inFrontMs: front.ms, snapshot: snapBrief(s2) };
+    c['A2.oneAppProcess'] = gone.value === true && JSON.stringify(s2.appPids) === JSON.stringify([app1.pid]);
+    c['A2.windowInFront'] = front.value === true;
+  } else {
+    a.A2 = { skipped: true };
+    c['A2.oneAppProcess'] = SKIPPED;
+    c['A2.windowInFront'] = SKIPPED;
+  }
+
+  // A11: START.bat by hand opens one window at its first start, and none after a crash restart.
+  a.beforeA11 = await quitAndEnd('before A11');
+  const shown11 = await gate(r, 'A11');
+  bat = startBat(ROOT, 'by-hand', env, { fromApp: !shown11 });
+  const x11 = a.A11 = { shown: shown11 };
+  x11.apiUpMs = await nodeUp('A11 START.bat by hand');
+  const live11 = await waitLive('A11 live');
+  // With the window skipped, the app comes from the tray instead, so the rest of A11 still has one.
+  if (!shown11) await openApp('A11 (tray)', ['--tray'], env);
+  const opened = await waitFor('the app at START.bat\'s first start', async () => {
+    const s = await installSnapshot();
+    return s.counts.apps === 1 && (!shown11 || appWindows(s, s.appPids[0]).length > 0) ? s : null;
+  }, 30_000, 1000);
+  const s11 = opened.value ?? await installSnapshot();
+  const app11 = s11.roles.apps[0] ?? null;
+  x11.first = snapBrief(s11);
+  // Closed to the tray first, so a window seen after the crash restart is one the restart opened.
+  x11.closed = shown11 && app11 ? await closeAppWindow([app11.ProcessId]) : null;
+  const ctl1 = s11.roles.controls[0]?.ProcessId ?? null;
+  const tKill1 = Date.now();
+  if (ctl1 !== null) await run('taskkill', ['/F', '/PID', String(ctl1)]);
+  await waitFor('the port to close after the kill', async () => ((await portOpen(API_PORT)) ? null : true), 15_000, 250);
+  await nodeUp('A11 after the crash restart', 60_000);
+  x11.crashToApiMs = Date.now() - tKill1;
+  await sleep(15_000);
+  const s11b = await installSnapshot();
+  x11.afterCrash = snapBrief(s11b);
+  Object.assign(c, {
+    'A11.oneWindowAtTheFirstStart': onScreen(shown11, opened.value !== null && app11 !== null && appWindows(s11, app11.ProcessId).length > 0
+      && / ui --root /.test(app11.CommandLine ?? '') && live11.value !== null),
+    'A11.closedWindowLeavesTheAppInTheTray': onScreen(shown11, x11.closed?.ok),
+    'A11.noWindowAfterTheCrashRestart': app11 !== null && JSON.stringify(s11b.appPids) === JSON.stringify([app11.ProcessId])
+      && s11b.roles.apps.every((p) => p.created < tKill1) && appWindows(s11b, app11.ProcessId).length === 0
+      && s11b.counts.controls === 1 && s11b.roles.controls[0].ProcessId !== ctl1 && bat.exitCode === null,
+  });
+
+  // Review focus 3: the app started inside START.bat's 10 s wait after a crash starts no second START.bat.
+  const shownRf = await gate(r, 'A11 app in START.bat\'s wait');
+  if (app11) await run('taskkill', ['/F', '/PID', String(app11.ProcessId)]);
+  const ctl2 = s11b.roles.controls[0]?.ProcessId ?? null;
+  const tKill2 = Date.now();
+  if (ctl2 !== null) await run('taskkill', ['/F', '/PID', String(ctl2)]);
+  await waitFor('the port to close after the second kill', async () => ((await portOpen(API_PORT)) ? null : true), 15_000, 250);
+  const inWait = await openApp('A11 in the wait', shownRf ? [] : ['--tray'], env);
+  await sleep(30_000);
+  const sRf = await installSnapshot();
+  x11.inWait = { pid: inWait.pid, startedAfterKillMs: inWait.t - tKill2, snapshot: snapBrief(sRf) };
+  // The app came up before START.bat started the control process again, so it found nothing answering.
+  c['A11.appInTheWaitStartsNoSecondStartBat'] = inWait.t - tKill2 < 10_000 && oneOfEach(sRf) && sRf.appPids[0] === inWait.pid
+    && sRf.roles.startBats[0].ProcessId === bat.pid && bat.exitCode === null && sRf.roles.apps[0].created < sRf.roles.controls[0].created;
+
+  // A9 and A10: autostart on writes the Run value; its command as logon runs it gives the tray and the stream.
+  const on = await api('POST', '/autostart', { enabled: true });
+  const readOn = (await api('GET', '/autostart')).json;
+  const valueOn = await runValue();
+  a.A9 = { on: on.status, read: readOn, value: valueOn, expected };
+  c['A9.valueForThisInstall'] = on.status === 200 && valueOn === expected && readOn?.enabled === true && readOn?.thisInstall === true;
+  a.beforeA10 = await quitAndEnd('before A10');
+  const shown10 = await gate(r, 'A10');
+  const parts = runCommandParts(valueOn);
+  const x10 = a.A10 = { parts };
+  const t10 = Date.now();
+  if (shown10 && parts) {
+    const logon = await openApp('A10 as logon', parts.args, env, parts.exe);
+    x10.pid = logon.pid;
+    x10.apiUpMs = await nodeUp('A10 after the logon start', 60_000);
+    const live10 = await waitLive('A10 live');
+    x10.startToLiveMs = live10.value ? Date.now() - t10 : null;
+    await sleep(10_000);
+    const s10 = await installSnapshot();
+    x10.snapshot = snapBrief(s10);
+    c['A10.trayOnlyAndTheStreamUp'] = oneOfEach(s10) && s10.appPids[0] === logon.pid && /\bui --tray\b/.test(s10.roles.apps[0].CommandLine ?? '')
+      && s10.windows.length === 0 && live10.value !== null;
+  } else {
+    x10.skipped = true;
+    c['A10.trayOnlyAndTheStreamUp'] = parts ? SKIPPED : false;
+    bat = startBat(ROOT, 'after-A10', env);
+    await nodeUp('after A10 (skipped)', 60_000);
+    await waitLive('live after A10 (skipped)');
+  }
+  const off = await api('POST', '/autostart', { enabled: false });
+  const valueOff = await runValue();
+  const readOff = (await api('GET', '/autostart')).json;
+  a.A9.off = { status: off.status, value: valueOff, read: readOff };
+  c['A9.offRemovesTheValue'] = off.status === 200 && valueOff === null && readOff?.enabled === false;
+
+  // A18: a StreamLoop.vbs of this install becomes the Run value at the next start; another install's stays.
+  const vbs = join(sandbox.startupDir, 'StreamLoop.vbs');
+  writeVbs(join(ROOT, 'START.bat'));
+  const x18 = a.A18 = { thisRestart: await restartControl('A18 with this install\'s StreamLoop.vbs') };
+  const moved = await waitFor('the Run value from StreamLoop.vbs', async () => ((await runValue()) === expected && !existsSync(vbs) ? true : null), 20_000, 1000);
+  x18.thisInstall = { value: await runValue(), vbsLeft: existsSync(vbs) };
+  const other = join(tmpdir(), 'sl3 other install', 'streamloop', 'START.bat');
+  writeVbs(other);
+  const otherSha = sha256File(vbs);
+  x18.otherRestart = await restartControl('A18 with another install\'s StreamLoop.vbs');
+  await sleep(10_000);
+  x18.otherInstall = { value: await runValue(), vbsLeft: existsSync(vbs), sameBytes: existsSync(vbs) && sha256File(vbs) === otherSha };
+  c['A18.thisInstallsVbsBecomesTheValue'] = x18.thisRestart === 200 && moved.value === true;
+  c['A18.anotherInstallsVbsStays'] = x18.otherRestart === 200 && x18.otherInstall.sameBytes && x18.otherInstall.value === expected;
+  rmSync(vbs, { force: true });
+  x18.offAfter = (await api('POST', '/autostart', { enabled: false })).status;
+  x18.valueAfter = await runValue();
+
+  // A15 and A16: a foreign Host, no Host or any Origin is refused on 7654 and 4417, before routing and the token.
+  await waitLive('live before A15');
+  const supsBefore = (await cores()).map((p) => p.ProcessId);
+  const tok = (await getJson('/token', 2000))?.token ?? token;
+  const evil = 'http://evil.example';
+  const forged = [
+    { name: '7654 foreign Host', port: API_PORT, path: '/api/token', headers: { Host: `evil.example:${API_PORT}` } },
+    { name: '7654 Origin', port: API_PORT, path: '/api/token', headers: { Origin: evil } },
+    { name: '7654 no Host', port: API_PORT, path: '/api/token', noHost: true },
+    { name: '7654 Origin on Stop with the token', port: API_PORT, method: 'POST', path: '/api/stream/stop', headers: { Origin: evil, 'X-API-Token': tok, 'Content-Type': 'application/json' }, body: '{}' },
+    { name: '4417 foreign Host', port: 4417, path: '/status', headers: { Host: 'evil.example:4417' } },
+    { name: '4417 Origin', port: 4417, path: '/status', headers: { Origin: evil } },
+    { name: '4417 no Host', port: 4417, path: '/status', noHost: true },
+    { name: '4417 Origin on shutdown', port: 4417, method: 'POST', path: '/shutdown', headers: { Origin: evil } },
+    { name: '4417 foreign Host on shutdown', port: 4417, method: 'POST', path: '/shutdown', headers: { Host: 'evil.example:4417' } },
+  ];
+  const tA15 = Date.now();
+  const refused = [];
+  for (const f of forged) {
+    const res = await rawRequest(f);
+    let error = null;
+    try { error = JSON.parse(res.body).error ?? null; } catch { /* not json */ }
+    refused.push({ name: f.name, status: res.status, error });
+  }
+  const plain = [
+    await rawRequest({ port: API_PORT, path: '/api/token' }),
+    await rawRequest({ port: API_PORT, path: '/api/token', headers: { Host: `localhost:${API_PORT}` } }),
+    await rawRequest({ port: 4417, path: '/status' }),
+  ].map((x) => x.status);
+  const admin = await rawRequest({ port: API_PORT, path: '/admin' });
+  await sleep(10_000);
+  const supsAfter = (await cores()).map((p) => p.ProcessId);
+  const sup = await supStatus();
+  a.A15 = { refused, plain, admin: admin.status, supsBefore, supsAfter, encoderAlive: sup?.encoder?.alive ?? null, gap: gapStats(tA15 - 2000, Date.now()), stream: (await nodeStatus())?.stream?.state ?? null };
+  Object.assign(c, {
+    'A15.refusedWith403': refused.every((x) => x.status === 403 && x.error === REFUSED),
+    'A15.loopbackHostsAnswer': plain.every((s) => s === 200),
+    'A15.supervisorStillStreams': supsBefore.length === 1 && JSON.stringify(supsAfter) === JSON.stringify(supsBefore) && sup?.encoder?.alive === true
+      && a.A15.stream === 'live' && noDrop(a.A15.gap),
+    'A16.adminIs404': admin.status === 404,
+  });
+
+  // A7: Quit, as the app sends it: within 60 s nothing of the install runs; the timeline ends on the quit line.
+  const tQuit = Date.now();
+  const x7 = a.A7 = { quit: await quitAsTheApp() };
+  const closed = await waitFor('the port to close after Quit', async () => ((await portOpen(API_PORT)) ? null : true), 60_000, 1000);
+  x7.portClosedMs = closed.value ? Date.now() - tQuit : null;
+  // The app's own Quit waits for the port to close, then exits; this quit came from the harness, so the harness
+  // ends the app at that point instead.
+  x7.appsEndedByTheHarness = installCensus(await underS()).apps.map((p) => p.ProcessId);
+  for (const pid of x7.appsEndedByTheHarness) await run('taskkill', ['/F', '/PID', String(pid)]);
+  const left = await waitFor('no streamloop.exe or cmd.exe of the install', async () => ((await underS()).some((p) => /^(streamloop|cmd)\.exe$/i.test(p.Name ?? '')) ? null : true),
+    Math.max(1000, tQuit + 60_000 - Date.now()), 1000);
+  x7.nothingLeftMs = left.value ? Date.now() - tQuit : null;
+  x7.left = (await underS()).map((p) => `${p.Name} ${p.ProcessId}`);
+  const tl7 = timelineOnDisk();
+  const quitAt = tl7.lastIndexOf(QUIT_LINE);
+  x7.timelineFromTheQuitLine = quitAt < 0 ? [] : tl7.slice(quitAt);
+  x7.stoppedMarker = existsSync(STOPPED_MARKER);
+  x7.discord = messagesSince(tQuit - 1000).filter((m) => m.includes('Quitting'));
+  Object.assign(c, {
+    'A7.quitAnswersOk': x7.quit.status === 200 && x7.quit.json?.ok === true,
+    'A7.nothingLeftWithin60s': left.value === true && x7.nothingLeftMs <= 60_000,
+    'A7.timelineEndsOnTheQuitLine': quitAt >= 0 && x7.timelineFromTheQuitLine.slice(1).every((m) => m === SUPERVISOR_SHUT_DOWN),
+    'A7.discordGotTheQuitLine': x7.discord.includes(`Recovery action: **${QUIT_LINE}**`),
+    'A7.noStoppedMarker': x7.stoppedMarker === false,
+  });
+
+  // A8: started again after Quit, live with autoStartStream on.
+  await waitFor('no process of the install', async () => ((await underS()).length === 0 ? true : null), 30_000, 1000);
+  const shown8 = await gate(r, 'A8');
+  const t8 = Date.now();
+  const app8 = await openApp('A8', shown8 ? [] : ['--tray'], env);
+  const x8 = a.A8 = { pid: app8.pid, shown: shown8 };
+  x8.apiUpMs = await nodeUp('A8 after Quit', 60_000);
+  const live8 = await waitLive('A8 live with autoStartStream on');
+  x8.startToLiveMs = live8.value ? Date.now() - t8 : null;
+  await sleep(10_000);
+  const s8 = await installSnapshot();
+  x8.snapshot = snapBrief(s8);
+  x8.autoStartStream = readJson(CONFIG)?.autoStartStream ?? null;
+  Object.assign(c, {
+    'A8.liveWithAutoStartOn': live8.value !== null && x8.autoStartStream !== false,
+    'A8.oneOfEach': oneOfEach(s8) && s8.appPids[0] === app8.pid,
+    'A8.windowsOnlyTheApps': onScreen(shown8, appWindows(s8, app8.pid).length > 0 && s8.windows.every((w) => w.pid === app8.pid)),
+  });
+
+  r.figures = {
+    A1: { apiUpS: x1.apiUpMs / 1000, wizardToLiveS: x1.wizardToLiveMs / 1000, startToLiveS: x1.startToLiveMs / 1000, windows: s1.windows.length },
+    A2: a.A2.skipped ? 'skipped' : { secondExitS: a.A2.secondExitMs / 1000, inFrontS: a.A2.inFrontMs / 1000 },
+    A11: { crashToApiS: x11.crashToApiMs / 1000, appStartedAfterKillS: x11.inWait.startedAfterKillMs / 1000 },
+    A10: x10.skipped ? 'skipped' : { startToLiveS: x10.startToLiveMs / 1000 },
+    A7: { portClosedS: x7.portClosedMs / 1000, nothingLeftS: x7.nothingLeftMs / 1000 },
+    A8: { startToLiveS: x8.startToLiveMs / 1000 },
+  };
+  r.checks = c;
+}
+
 /** N+1 at the planned break, N+2 by Update Now, N+3 while stopped from the dashboard, N+4 while waiting for Start. */
 async function runUpdate(r) {
   const releases = (ids) => writeReleases('update', ids);
   const env = { STREAMLOOP_TEST_RELEASES: releases(['n1']), STREAMLOOP_TEST_BREAK_AT_S: String(BREAK_AT_S) };
+  // Before the install, so a wait for a full-screen app cannot run past the planned break.
+  const shown = await gate(r, 'update: the app');
   await install(r, { env, label: 'update', updates: true });
   const w = startWatch();
   r.watch = w;
+  const ctx = await appBeforeTheLanding(r, 'update', shown, env);
 
-  // The first check stages N+1, and it lands at 300 s of encoder uptime.
+  // The first check stages N+1, and it lands at 300 s of encoder uptime, with the app's window open.
   const staged = await waitStaged('n1');
   const before = await snapshot();
   const probe = startProbe();
-  const b = await onAirLanding(r, w, probe, V1, 'break', before);
+  const b = await onAirLanding(r, w, probe, V1, 'break', before, { ctx, windowOpen: true });
   r.break = { staged, before, ...b };
   r.break.checks = {
     stagedBeforeTheBreak: staged.stagedSha256Matches && staged.uptimeS !== null && staged.uptimeS < BREAK_AT_S,
@@ -476,11 +1024,13 @@ async function runUpdate(r) {
   }, 120_000, 0);
   // autoStartStream off: an on-air landing still relaunches the supervisor.
   const autoOff = await api('POST', '/config', { autoStartStream: false });
+  // From here the app's window is closed: the app follows N+2 to N+4 in the tray.
+  r.windowClosed = ctx.shown && !ctx.guard?.closes.length ? await closeAppWindow(aliveApps(ctx.aw)) : null;
   const before3 = await snapshot();
   const probe3 = startProbe();
   const tApply = Date.now();
   const apply = await api('POST', '/update/apply');
-  const n = await onAirLanding(r, w, probe3, V2, 'update-now', before3);
+  const n = await onAirLanding(r, w, probe3, V2, 'update-now', before3, { ctx, windowOpen: false });
   r.updateNow = { check: checked.value, autoStartStreamOff: { status: autoOff.status, inConfig: readJson(CONFIG)?.autoStartStream ?? null }, apply: { status: apply.status, body: apply.json }, applyToLandingMs: null, before: before3, ...n };
   const landingAt = w.rows.find((x) => x.t >= tApply && x.kind === 'state' && x.v?.to === V2 && x.v.result === 'running' && x.v.step !== 'download')?.t ?? null;
   r.updateNow.applyToLandingMs = rel(landingAt, tApply);
@@ -510,7 +1060,7 @@ async function runUpdate(r) {
       return null;
     }, 120_000, 0);
     return tCheck;
-  });
+  }, { ctx, windowOpen: false });
   r.held = { stop: stop.status, supervisorExitMs: down.ms, offered: offered?.value?.latestVersion ?? null, ...h.summary };
   r.held.checks = {
     stopped: stop.status === 200 && down.value === true,
@@ -540,7 +1090,7 @@ async function runUpdate(r) {
     const t = Date.now();
     applyW = await api('POST', '/update/apply');
     return t;
-  });
+  }, { ctx, windowOpen: false });
   Object.assign(wt, { apply: applyW && { status: applyW.status, body: applyW.json } }, hw.summary);
   wt.checks = {
     waitingBeforeTheLanding: wt.before.stream?.state === 'stopped' && wt.before.stream?.reason === 'Ready to stream. Press Start.' && wt.before.launcher === 'ready' && wt.before.cores === 0,
@@ -551,6 +1101,8 @@ async function runUpdate(r) {
     stillWaitingAfter: hw.after.stream === 'stopped' && hw.after.reason === 'Ready to stream. Press Start.' && hw.after.launcher === 'ready',
   };
   await endWatch(w);
+  await endAppWatch(ctx.aw);
+  await endWindowGuard(ctx.guard);
 
   r.figures = {
     breakGapS: r.break.gap.maxWallGapMs / 1000, breakReconnects: r.break.gap.readerReconnects, breakUptimeAtLandingS: r.break.times.uptimeAtLandingS,
@@ -558,8 +1110,13 @@ async function runUpdate(r) {
     updateNowGapS: r.updateNow.gap.maxWallGapMs / 1000, updateNowReconnects: r.updateNow.gap.readerReconnects, updateNowApplyToLandingS: (r.updateNow.applyToLandingMs ?? NaN) / 1000,
     stoppedLandingToConfirmedS: (r.held.landing.resultMs ?? NaN) / 1000, waitingLandingToConfirmedS: (r.waiting.landing.resultMs ?? NaN) / 1000,
     probes409: { break: r.break.probe.duringByVersion, updateNow: r.updateNow.probe.duringByVersion, stopped: r.held.probe.duringByVersion, waiting: r.waiting.probe.duringByVersion },
+    appFollowS: { break: r.break.app.readyMs / 1000, updateNow: r.updateNow.app.readyMs / 1000, stopped: r.held.app.readyMs / 1000, waiting: r.waiting.app.readyMs / 1000 },
+    oldGoneAfterConfirmS: { break: r.break.old.oldGoneAfterConfirmMs / 1000, updateNow: r.updateNow.old.oldGoneAfterConfirmMs / 1000, stopped: r.held.old.oldGoneAfterConfirmMs / 1000, waiting: r.waiting.old.oldGoneAfterConfirmMs / 1000 },
   };
   r.checks = {
+    'app.started': ctx.started,
+    // null when the gate or the window guard had closed it already
+    'app.windowClosedToTheTray': r.windowClosed === null ? SKIPPED : r.windowClosed.ok,
     ...Object.fromEntries(Object.entries(r.break.checks).map(([k, v]) => [`break.${k}`, v])),
     ...Object.fromEntries(Object.entries(r.updateNow.checks).map(([k, v]) => [`updateNow.${k}`, v])),
     ...Object.fromEntries(Object.entries(r.held.checks).map(([k, v]) => [`stopped.${k}`, v])),
@@ -569,8 +1126,9 @@ async function runUpdate(r) {
 
 /** A landing that starts nothing (stopped from the dashboard, or waiting for Start). `land` starts
  *  it and returns the time to count from. No supervisor may run, `streamloop.exe check` confirms it, and the new
- *  control process answers changing routes with 409 while it does; then Start takes it live. */
-async function heldLanding(w, to, label, land) {
+ *  control process answers changing routes with 409 while it does; then Start takes it live. With `app`, as in
+ *  `onAirLanding`. */
+async function heldLanding(w, to, label, land, app = null) {
   const samples = [];
   let sampling = true;
   const t0 = Date.now();
@@ -611,6 +1169,13 @@ async function heldLanding(w, to, label, land) {
     timelineSaysItStaysStopped: tl.includes(`Installing StreamLoop ${to}. The stream stays stopped.`) && !tl.includes(`Installing StreamLoop ${to}. The stream restarts.`),
     startTakesItLive: start.status === 200 && liveAgain.value !== null && s?.version === to,
   };
+  if (app) {
+    const tOld = when(w, 'control', L.tStart, (v) => v === null);
+    const tNew = tOld === null ? null : when(w, 'control', tOld, (v) => v?.current === to);
+    summary.app = await appFollowed(w, app.ctx, { from: tNew, version: to, label, windowOpen: app.windowOpen });
+    summary.old = oldGone(w, L.tStart, to);
+    Object.assign(checks, summary.app.checks, { oldGoneWithin2MinOfTheConfirmation: summary.old.ok });
+  }
   note(`${label}: landing of ${to}`, { ...summary, checks });
   return { tFrom, L, after, summary, checks };
 }
@@ -642,13 +1207,26 @@ async function nextBreakLeavesItAlone(id, liveFrom) {
 /** N+1's supervisor exits at start; the new control process rolls back within 180 s. */
 async function runRollback(r) {
   const env = { STREAMLOOP_TEST_RELEASES: writeReleases('rollback', ['n1-supervisor-fails']), STREAMLOOP_TEST_BREAK_AT_S: String(BREAK_AT_S) };
+  const shown = await gate(r, 'rollback: the app');
   await install(r, { env, label: 'rollback', updates: true });
   const w = startWatch();
   r.watch = w;
+  const ctx = await appBeforeTheLanding(r, 'rollback', shown, env);
   const staged = await waitStaged('n1-supervisor-fails');
   const before = await snapshot();
   // through the landing and the 180 s that N+1's control process confirms
   const probe = startProbe();
+  // The app follows onto N+1 within 10 s of N+1's control process answering, and is looked at while it runs.
+  const ontoN1 = (async () => {
+    const t = await waitFor(`${V1}'s control process`, async () => {
+      const ts = when(w, 'state', w.t0, (v) => v?.to === V1 && v.result === 'running' && v.step !== 'download');
+      const tg = ts === null ? null : when(w, 'control', ts, (v) => v === null);
+      return tg === null ? null : when(w, 'control', tg, (v) => v?.current === V1);
+    }, (BREAK_AT_S + 300) * 1000, 500);
+    if (t.value === null) return null;
+    await sleep(Math.max(0, t.value + FOLLOW_WITHIN_MS + 5000 - Date.now()));
+    return appFollowed(w, ctx, { from: t.value, version: V1, label: `the landing of ${V1}`, windowOpen: true });
+  })();
   const L = await followLanding(w, V1, { label: 'rollback' });
   const tOldGone = when(w, 'control', L.tStart, (v) => v === null);
   const tN1 = tOldGone === null ? null : when(w, 'control', tOldGone, (v) => v?.current === V1);
@@ -659,6 +1237,12 @@ async function runRollback(r) {
   await sleep(20_000);
   const p = await endProbe(probe, { by: V1 });
   const after = await snapshot();
+  // ...and back onto N within 10 s of N's control process answering; nothing then holds streamloop.exe.bad.
+  const tN1Gone = tN1 === null ? null : when(w, 'control', tN1, (v) => v === null);
+  const tNBack = tN1Gone === null ? null : when(w, 'control', tN1Gone, (v) => v?.current === VERSION);
+  const appOntoN1 = await ontoN1;
+  const appBackToN = await appFollowed(w, ctx, { from: tNBack, version: VERSION, label: `the rollback to ${VERSION}`, windowOpen: true });
+  const badHeld = await badNotHeld('after the rollback by the control process');
   const rolled = readJson(ROLLED_BACK);
   const bad = existsSync(EXE_BAD) ? sha256File(EXE_BAD) : null;
   const tl = (await timeline()).map((e) => e.message);
@@ -670,12 +1254,19 @@ async function runRollback(r) {
     after, rolledBack: rolled, badSha256: bad, criticals, timeline: tl.slice(-12), probe: p,
     gap: gapStats(L.tStart - 5000, (back.value ?? Date.now()) + 15_000), steadyAfter: gapStats(Date.now() - 15_000, Date.now()),
   };
+  r.rollback.app = { ontoN1: appOntoN1, backToN: appBackToN, bad: badHeld };
   note('rollback by the control process', r.rollback);
   r.nextBreak = await nextBreakLeavesItAlone('n1-supervisor-fails', back.value ?? Date.now());
   await endWatch(w);
+  await endAppWatch(ctx.aw);
+  await endWindowGuard(ctx.guard);
   r.figures = { rollbackS: (r.rollback.landing.liveOnNMs ?? NaN) / 1000, swapBackAfterN1ControlS: (r.rollback.landing.swapBackAfterN1ControlMs ?? NaN) / 1000, offAirS: r.rollback.gap.maxWallGapMs / 1000,
-    probes409: p.duringByVersion };
+    probes409: p.duringByVersion, appOntoN1S: (appOntoN1?.readyMs ?? NaN) / 1000, appBackToNS: (appBackToN.readyMs ?? NaN) / 1000 };
   r.checks = {
+    'app.started': ctx.started,
+    ...Object.fromEntries(Object.entries(appOntoN1?.checks ?? { 'app.runsTheVersionWithin10s': false }).map(([k, v]) => [`ontoN1.${k}`, v])),
+    ...Object.fromEntries(Object.entries(appBackToN.checks).map(([k, v]) => [`backToN.${k}`, v])),
+    badNotHeldAfterTheAppFollowedBack: badHeld.ok,
     staged: staged.stagedSha256Matches,
     landedAtTheBreak: L.uptimeAtStart !== null && L.uptimeAtStart >= BREAK_AT_S && L.uptimeAtStart < BREAK_AT_S + 30,
     n1ControlRan: tN1 !== null,
@@ -696,9 +1287,11 @@ async function runRollback(r) {
 /** N+1's control mode exits at start; START.bat puts N back and N replaces N+1's supervisor. */
 async function runRollbackBat(r) {
   const env = { STREAMLOOP_TEST_RELEASES: writeReleases('rollback-bat', ['n1-control-fails']), STREAMLOOP_TEST_BREAK_AT_S: String(BREAK_AT_S) };
+  const shown = await gate(r, 'rollback-bat: the app');
   await install(r, { env, label: 'rollback-bat', updates: true });
   const w = startWatch();
   r.watch = w;
+  const ctx = await appBeforeTheLanding(r, 'rollback-bat', shown, env);
   const staged = await waitStaged('n1-control-fails');
   const before = await snapshot();
   const started = await waitFor(`the landing of ${V1}`, async () => when(w, 'state', w.t0, (v) => v?.to === V1 && v.result === 'running'), (BREAK_AT_S + 240) * 1000, 250);
@@ -720,6 +1313,10 @@ async function runRollbackBat(r) {
   const live = await waitLive(`live on ${VERSION} after START.bat's rollback`, 180_000);
   await sleep(20_000);
   const after = await snapshot();
+  // N+1's control process never answered, so the app from before stays; N replaced N+1's supervisor, so nothing
+  // holds streamloop.exe.bad.
+  const appStays = await appFollowed(w, ctx, { from: tNControl.value, version: VERSION, label: 'START.bat\'s rollback', follows: false, windowOpen: true });
+  const badHeld = await badNotHeld('after START.bat\'s rollback');
   const rolled = readJson(ROLLED_BACK);
   const consoleText = readText(consoleFile) ?? '';
   const tl = (await timeline()).map((e) => e.message);
@@ -734,12 +1331,18 @@ async function runRollbackBat(r) {
     badSha256: existsSync(EXE_BAD) ? sha256File(EXE_BAD) : null, gap: gapStats(tStart - 5000, (tN1Sup ?? tStart) + 15_000), replaceGap: gapStats(tNControl.value ?? tRecover, (back.value ?? Date.now()) + 15_000), steadyAfter: gapStats(Date.now() - 15_000, Date.now()),
     criticals: criticalsSince(tStart - 10_000),
   };
+  r.rollbackBat.app = { stays: appStays, bad: badHeld };
   note('rollback by START.bat', r.rollbackBat);
   r.nextBreak = await nextBreakLeavesItAlone('n1-control-fails', back.value ?? Date.now());
   await endWatch(w);
+  await endAppWatch(ctx.aw);
+  await endWindowGuard(ctx.guard);
   r.figures = { rollbackS: (r.rollbackBat.liveOnNMs ?? NaN) / 1000, recoverLineS: (r.rollbackBat.recoverSeenMs ?? NaN) / 1000, versionRuleS: (r.rollbackBat.replaceMs ?? NaN) / 1000,
     landingGapS: r.rollbackBat.gap.maxWallGapMs / 1000, replaceGapS: r.rollbackBat.replaceGap.maxWallGapMs / 1000 };
   r.checks = {
+    'app.started': ctx.started,
+    ...appStays.checks,
+    badNotHeldAfterStartBatsRollback: badHeld.ok,
     staged: staged.stagedSha256Matches,
     landedAtTheBreak: r.rollbackBat.uptimeAtLandingS !== null && r.rollbackBat.uptimeAtLandingS >= BREAK_AT_S && r.rollbackBat.uptimeAtLandingS < BREAK_AT_S + 30,
     n1SupervisorCameUp: n1Sup.value?.length === 1,
@@ -1191,15 +1794,20 @@ let mediamtx = null;
 
 function judge(r) {
   if (r.endedAt) return;
-  r.failedChecks = Object.entries(r.checks ?? {}).filter(([, v]) => !v).map(([k]) => k);
   r.cleanupOk = (r.cleanups ?? []).every((c) => c.ok) && (r.cleanups ?? []).length > 0;
-  r.pass = !r.failed && r.checks !== undefined && r.failedChecks.length === 0 && r.cleanupOk;
+  const v = verdictOf(r.checks, { stopped: Boolean(r.failed), cleanupOk: r.cleanupOk });
+  Object.assign(r, { verdict: v.verdict, failedChecks: v.failedChecks, skippedChecks: v.skippedChecks, pass: v.verdict === 'PASS' });
   r.endedAt = iso();
-  const plain = { ...r, watch: r.watch ? { rows: r.watch.rows, uptimes: r.watch.uptimes.length } : undefined };
+  const plain = {
+    ...r,
+    watch: r.watch ? { rows: r.watch.rows, uptimes: r.watch.uptimes.length } : undefined,
+    appWatch: r.appWatch ? { apps: [...r.appWatch.apps.values()].map((x) => ({ ...x, created: iso(x.created) })), samples: r.appWatch.samples.length } : undefined,
+    guard: r.guard ? { closes: r.guard.closes } : undefined,
+  };
   writeFileSync(join(OUT_ROOT, r.run, 'results.json'), redact(JSON.stringify(plain, null, 2), KEY));
-  for (const [k, v] of Object.entries(r.checks ?? {})) note(`check ${v ? 'ok  ' : 'FAIL'} ${k}`);
-  note(`${r.run}: ${r.pass ? 'PASS' : 'FAIL'}`, { failedChecks: r.failedChecks, failed: r.failed?.split('\n')[0], figures: r.figures ?? null, cleanup: r.cleanupOk });
-  summary.runs[r.run] = { pass: r.pass, failedChecks: r.failedChecks, failed: r.failed?.split('\n')[0] ?? null, figures: r.figures ?? null };
+  for (const [k, x] of Object.entries(r.checks ?? {})) note(`check ${x === SKIPPED ? 'SKIP' : x ? 'ok  ' : 'FAIL'} ${k}`);
+  note(`${r.run}: ${r.verdict}`, { failedChecks: r.failedChecks, skippedChecks: r.skippedChecks, failed: r.failed?.split('\n')[0], figures: r.figures ?? null, cleanup: r.cleanupOk });
+  summary.runs[r.run] = { verdict: r.verdict, pass: r.pass, failedChecks: r.failedChecks, skippedChecks: r.skippedChecks, failed: r.failed?.split('\n')[0] ?? null, figures: r.figures ?? null };
 }
 
 async function runOne(name) {
@@ -1225,6 +1833,8 @@ async function runOne(name) {
     note('run stopped', { error: r.failed });
   }
   await endWatch(r.watch);
+  await endAppWatch(r.appWatch);
+  await endWindowGuard(r.guard);
   if (!r.cleanups?.some((c) => c.part === null)) await endInstall(r);
   current = null;
   judge(r);
@@ -1284,11 +1894,18 @@ function endSession() {
       readers: all.filter((p) => p.Name === 'ffprobe.exe' && (p.CommandLine ?? '').includes(READ_URL)).map((p) => p.ProcessId),
     };
     summary.installRemoved = !existsSync(S);
-    summary.clean = summary.installRemoved && Object.values(summary.leftovers).every((l) => l.length === 0);
+    // The test key and Startup folder go; the user's own Run value and Startup folder must read as before.
+    sandbox.cleanup();
+    summary.autostart = { testKey: sandbox.key, testKeyGone: !(await regKeyExists(sandbox.key)), testStartupDirGone: !existsSync(sandbox.startupDir), before: autostartBefore, after: await realAutostart() };
+    summary.autostart.realUnchanged = summary.autostart.before === summary.autostart.after;
+    summary.clean = summary.installRemoved && Object.values(summary.leftovers).every((l) => l.length === 0)
+      && summary.autostart.testKeyGone && summary.autostart.testStartupDirGone && summary.autostart.realUnchanged;
     summary.interrupted = interrupted();
     writeFileSync(join(OUT_ROOT, 'summary.json'), JSON.stringify(summary, null, 2));
-    for (const [name, x] of Object.entries(summary.runs)) console.log(`${name}: ${x.blocked ? 'BLOCKED' : x.pass ? 'PASS' : 'FAIL'}${x.failedChecks?.length ? ` failed: ${x.failedChecks.join(', ')}` : ''}${x.failed ? ` stopped: ${x.failed}` : ''} ${JSON.stringify(x.figures ?? {})}`);
-    note('session end', { clean: summary.clean, leftovers: summary.leftovers, installRemoved: summary.installRemoved });
+    for (const [name, x] of Object.entries(summary.runs)) {
+      console.log(`${name}: ${x.blocked ? 'BLOCKED' : x.verdict}${x.failedChecks?.length ? ` failed: ${x.failedChecks.join(', ')}` : ''}${x.skippedChecks?.length ? ` skipped: ${x.skippedChecks.join(', ')}` : ''}${x.failed ? ` stopped: ${x.failed}` : ''} ${JSON.stringify(x.figures ?? {})}`);
+    }
+    note('session end', { clean: summary.clean, leftovers: summary.leftovers, installRemoved: summary.installRemoved, autostart: { ...summary.autostart, before: undefined, after: undefined } });
     return summary.clean;
   })();
   return sessionEnd;
@@ -1307,7 +1924,10 @@ if (stale.length) { note('dist is older than the code it is built from: npm run 
 if ((await exeVersion(DIST_EXE)) !== VERSION) { note(`dist's exe does not print ${VERSION}`); process.exit(2); }
 BUILT = await buildVariants({ repo: REPO, serve: SERVE }).catch((err) => { note('the test builds failed', { error: String(err?.message ?? err) }); process.exit(2); });
 summary.builds = BUILT;
+for (const b of Object.values(BUILT)) KNOWN_EXES.set(b.sha256, b.version);
 if (arg === 'build') process.exit(0);
+// Read only, and again at the end.
+const autostartBefore = await realAutostart();
 
 const swept = await sweepLeftovers({ dirs: [S], ascii: IN_TEMP, mediamtx: join(TOOLS, 'mediamtx.exe') });
 if (swept.owner) { note('BLOCKED: the install folder belongs to a harness that is still running', swept); process.exit(3); }
@@ -1332,6 +1952,8 @@ onInterrupt(async (signal) => {
   if (r) {
     r.failed ??= `interrupted by ${signal}`;
     await endWatch(r.watch);
+    await endAppWatch(r.appWatch);
+    await endWindowGuard(r.guard);
     await endInstall(r, null, true);
     judge(r);
   }
@@ -1353,4 +1975,5 @@ for (const name of names) {
 }
 const clean = await endSession();
 if (interrupted()) process.exit(130);
+// A run with a skipped check is no pass.
 process.exit(names.every((n) => summary.runs[n]?.pass) && clean ? 0 : 1);

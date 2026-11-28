@@ -1,5 +1,28 @@
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'vitest';
-import { variantsAfter } from './install-kit.mjs';
+import { variantsAfter, grepTree } from './install-kit.mjs';
+
+describe('grepTree', () => {
+  test('skips a file that goes between the listing and the read, as a finished download part does', () => {
+    // Arrange
+    const dir = mkdtempSync(join(tmpdir(), 'sl-grep-'));
+    writeFileSync(join(dir, 'config.json'), 'live_TESTKEY');
+    writeFileSync(join(dir, 'video.mp4.ytdl'), 'part');
+    const read = (p) => {
+      if (p.endsWith('.ytdl')) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${p}'`), { code: 'ENOENT' });
+      return readFileSync(p);
+    };
+
+    // Act
+    const g = grepTree(dir, 'live_TESTKEY', { read });
+    rmSync(dir, { recursive: true, force: true });
+
+    // Assert
+    expect(g).toEqual({ files: 1, hits: ['config.json'] });
+  });
+});
 
 describe('variantsAfter', () => {
   test('numbers the test builds above the release under test', () => {

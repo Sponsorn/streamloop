@@ -1,11 +1,13 @@
 // Helpers shared by install-session.mjs and R3's ui-session.mjs: an install started
 // from its own START.bat, its control process's API (Node's in a 3.0 install), the RTMP reader, file
-// hashes, the interrupt teardown and the sweep of what a killed harness left. Every child is spawned hidden.
+// hashes, the interrupt teardown and the sweep of what a killed harness left. Every child is spawned hidden,
+// except the app, which startApp() starts as Explorer does. The process and window censuses, the foreground
+// gate and the autostart reads serve the app's runs.
 // useOut() names the results folder that note(), the console logs and requests.jsonl go to.
 import * as cp from 'node:child_process';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, appendFileSync, readdirSync, openSync, closeSync, existsSync, statSync, copyFileSync, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, relative, basename } from 'node:path';
+import { join, relative, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
@@ -62,13 +64,15 @@ export async function waitFor(what, fn, timeoutMs, everyMs = 1000) {
   }
 }
 
+/** PATH without the Chocolatey ffmpeg, so the install can only find its own tools. */
+const pathNoFfmpeg = () => (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
+
 // One START.bat in a hidden cmd. Its console output goes to a file; stdin is NUL, so its
 // `pause` lines return at once. STREAMLOOP_FROM_APP=1 says an app started it, so the control process opens no
 // window of its own at its first start; a run that tests that window passes `{ fromApp: false }`.
 export function startBat(root, label, extraEnv = {}, { fromApp = true } = {}) {
   const log = openSync(join(OUT, `console-${label}.log`), 'a');
-  const pathNoFfmpeg = (process.env.PATH ?? '').split(';').filter((d) => !/chocolatey\\bin|ffmpeg/i.test(d)).join(';');
-  const env = { ...process.env, PATH: pathNoFfmpeg, ...extraEnv };
+  const env = { ...process.env, PATH: pathNoFfmpeg(), ...extraEnv };
   if (fromApp) env.STREAMLOOP_FROM_APP ??= '1';
   else delete env.STREAMLOOP_FROM_APP;
   const child = spawn('cmd.exe', ['/d', '/s', '/c', `""${join(root, 'START.bat')}""`], {
@@ -190,14 +194,21 @@ export function hashTree(dir) {
   return { files, sha256: h.digest('hex') };
 }
 export const sha256File = (f) => createHash('sha256').update(readFileSync(f)).digest('hex');
-export function grepTree(dir, needle) {
+/** The files under `dir` that hold `needle`. A live install renames and deletes files as it goes (yt-dlp's
+ *  `.ytdl` parts), so a file gone by the time it is read is skipped and not counted. */
+export function grepTree(dir, needle, { read = readFileSync } = {}) {
   const hits = [];
   let files = 0;
   const walk = (d) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.isFile()) { files += 1; if (readFileSync(p).includes(needle)) hits.push(relative(dir, p)); }
+      else if (e.isFile()) {
+        let bytes;
+        try { bytes = read(p); } catch (err) { if (err?.code === 'ENOENT') continue; throw err; }
+        files += 1;
+        if (bytes.includes(needle)) hits.push(relative(dir, p));
+      }
     }
   };
   if (existsSync(dir)) walk(dir);
@@ -241,11 +252,231 @@ export async function allProcesses() {
   const r = await run('powershell', ['-NoProfile', '-Command',
     '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | ConvertTo-Json -Compress'],
     { encoding: 'utf8' });
-  try {
-    const v = JSON.parse(r.stdout || '[]');
-    // ConvertTo-Json writes a date as "/Date(<ms>)/".
-    return withModes((Array.isArray(v) ? v : [v]).map((p) => ({ ...p, created: Number(/\d+/.exec(String(p.CreationDate))?.[0] ?? 0) })));
-  } catch { return []; }
+  return parseProcessCensus(r.stdout);
+}
+
+/** `Get-CimInstance Win32_Process | Select-Object ... | ConvertTo-Json` as `allProcesses` reads it: an array, the
+ *  single object PowerShell writes for one process, or nothing. ConvertTo-Json writes a date as "/Date(<ms>)/". */
+export function parseProcessCensus(text) {
+  const body = String(text ?? '').replace(/^﻿/, '').trim();
+  let v = null;
+  try { v = JSON.parse(body); } catch { return []; }
+  if (v === null || typeof v !== 'object') return [];
+  return withModes((Array.isArray(v) ? v : [v]).map((p) => ({ ...p, created: Number(/\d+/.exec(String(p.CreationDate))?.[0] ?? 0) })));
+}
+
+/** An install's processes by role. `counts` holds the four a running StreamLoop has one each of. */
+export function installCensus(procs) {
+  const exe = (mode) => procs.filter((p) => String(p.Name ?? '').toLowerCase() === 'streamloop.exe' && (p.mode ?? exeMode(p.CommandLine)) === mode);
+  const startBats = procs.filter((p) => String(p.Name ?? '').toLowerCase() === 'cmd.exe' && /\bstart\.bat\b/i.test(p.CommandLine ?? ''));
+  const c = {
+    apps: exe('ui'), detaches: exe('detach'), startBats, controls: exe('control'), supervisors: exe('supervisor'), launches: exe('launch'), checks: exe('check'),
+  };
+  return { ...c, counts: { apps: c.apps.length, startBats: c.startBats.length, controls: c.controls.length, supervisors: c.supervisors.length } };
+}
+
+// The window census, through a PowerShell script: EnumWindows for the visible top-level windows and their owners,
+// and the foreground window with its monitor. Nothing here activates a window or sends input.
+
+const WINDOW_TYPES = String.raw`using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class SlWindows {
+  public class Info { public long Hwnd; public uint Pid; public string Title; public string ClassName; public int Left, Top, Right, Bottom; public bool Cloaked; public int MonLeft, MonTop, MonRight, MonBottom; }
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+  [DllImport("user32.dll")] static extern bool GetMonitorInfoW(IntPtr m, ref MONITORINFO mi);
+  [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
+  static Info Describe(IntPtr h) {
+    var i = new Info();
+    i.Hwnd = h.ToInt64();
+    uint pid; GetWindowThreadProcessId(h, out pid); i.Pid = pid;
+    var title = new StringBuilder(512); GetWindowTextW(h, title, title.Capacity); i.Title = title.ToString();
+    var cls = new StringBuilder(256); GetClassNameW(h, cls, cls.Capacity); i.ClassName = cls.ToString();
+    RECT r; if (GetWindowRect(h, out r)) { i.Left = r.Left; i.Top = r.Top; i.Right = r.Right; i.Bottom = r.Bottom; }
+    int cloaked; i.Cloaked = DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0;
+    var mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+    if (GetMonitorInfoW(MonitorFromWindow(h, 2), ref mi)) { i.MonLeft = mi.rcMonitor.Left; i.MonTop = mi.rcMonitor.Top; i.MonRight = mi.rcMonitor.Right; i.MonBottom = mi.rcMonitor.Bottom; }
+    return i;
+  }
+  public static List<Info> Visible() { var list = new List<Info>(); EnumWindows((h, l) => { if (IsWindowVisible(h)) list.Add(Describe(h)); return true; }, IntPtr.Zero); return list; }
+  public static Info Foreground() { var h = GetForegroundWindow(); return h == IntPtr.Zero ? null : Describe(h); }
+  public static bool Close(long h) { return PostMessageW(new IntPtr(h), 0x0010, IntPtr.Zero, IntPtr.Zero); }
+}`;
+
+/** The census script; it first posts WM_CLOSE to each of `close`. */
+function windowScript(close = []) {
+  return [
+    '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
+    `Add-Type -TypeDefinition @'\n${WINDOW_TYPES}\n'@`,
+    ...close.map((h) => `[void][SlWindows]::Close(${Number(h)})`),
+    ...(close.length ? ['Start-Sleep -Milliseconds 1500'] : []),
+    '$fg = [SlWindows]::Foreground()',
+    '$name = $null',
+    'if ($fg) { $p = Get-Process -Id $fg.Pid -ErrorAction SilentlyContinue; if ($p) { $name = $p.ProcessName } }',
+    '[ordered]@{ foreground = $fg; foregroundName = $name; windows = @([SlWindows]::Visible()) } | ConvertTo-Json -Depth 3 -Compress',
+  ].join('\n');
+}
+const encoded = (script) => Buffer.from(script, 'utf16le').toString('base64');
+
+/** The foreground window (with its process `name`) and every visible top-level window. */
+export async function windowCensus() {
+  const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(windowScript())], { encoding: 'utf8', timeout: 60_000 });
+  return parseWindowCensus(r.stdout);
+}
+/** Posts WM_CLOSE to each window, as its close button does, and answers the census 1.5 s later. */
+export async function closeWindows(hwnds) {
+  const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(windowScript(hwnds))], { encoding: 'utf8', timeout: 60_000 });
+  return parseWindowCensus(r.stdout);
+}
+
+/** What the census script prints. A census that is not JSON comes back empty, with the text as `error`. */
+export function parseWindowCensus(text) {
+  const body = String(text ?? '').replace(/^﻿/, '').trim();
+  let v = null;
+  try { v = JSON.parse(body); } catch { return { foreground: null, windows: [], error: body.slice(0, 300) }; }
+  const one = (w) => (w && typeof w === 'object' ? {
+    hwnd: Number(w.Hwnd), pid: Number(w.Pid), title: w.Title ?? '', className: w.ClassName ?? '', cloaked: Boolean(w.Cloaked),
+    rect: { left: w.Left, top: w.Top, right: w.Right, bottom: w.Bottom }, monitor: { left: w.MonLeft, top: w.MonTop, right: w.MonRight, bottom: w.MonBottom },
+  } : null);
+  const list = v?.windows == null ? [] : [v.windows].flat();
+  const fg = one(v?.foreground);
+  return { foreground: fg && { ...fg, name: v.foregroundName ?? null }, windows: list.map(one).filter(Boolean) };
+}
+
+/** The shown windows (visible and not cloaked) whose owner is one of `pids`. */
+export const windowsOf = (census, pids) => census.windows.filter((w) => !w.cloaked && pids.includes(w.pid));
+
+const SHELL_PROCESSES = new Set(['explorer', 'lockapp']);
+const SHELL_CLASSES = new Set(['Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd']);
+/** A foreground window that covers its whole monitor and is not Explorer, the desktop or the lock screen. */
+export function fullScreenApp(fg) {
+  if (!fg || fg.cloaked) return false;
+  if (SHELL_PROCESSES.has(String(fg.name ?? '').toLowerCase()) || SHELL_CLASSES.has(fg.className)) return false;
+  const { rect: r, monitor: m } = fg;
+  if (!(m?.right > m?.left && m?.bottom > m?.top)) return false;
+  return r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom;
+}
+
+/** What owns the foreground now, for `foregroundGate`. */
+export async function foregroundNow() {
+  const fg = (await windowCensus()).foreground;
+  return { fullScreen: fullScreenApp(fg), name: fg?.name ?? null, title: fg?.title ?? null };
+}
+
+export const SKIPPED = 'SKIPPED';
+/** Before a step that opens or activates a window, whose Alt and SetForegroundWindow must never land on a game:
+ *  while a full-screen app is in front this looks again every 30 s, and after 30 min answers SKIPPED. */
+export async function foregroundGate({ label, probe = foregroundNow, wait = sleep, now = Date.now, limitMs = 30 * 60_000, everyMs = 30_000, say = note }) {
+  const t0 = now();
+  let looks = 0;
+  for (;;) {
+    const f = await probe();
+    looks += 1;
+    const waitedMs = now() - t0;
+    if (!f.fullScreen) return { state: 'clear', waitedMs, looks, foreground: f };
+    if (waitedMs >= limitMs) return { state: SKIPPED, waitedMs, looks, foreground: f };
+    say(`${label} waits: a full-screen app is in front (${f.name ?? 'unknown'}); looking again in ${everyMs / 1000} s`);
+    await wait(everyMs);
+  }
+}
+
+/** The exe and the arguments of a Run value such as `"ROOT\streamloop.exe" ui --tray`; null for no value. */
+export function runCommandParts(value) {
+  const v = String(value ?? '').trim();
+  if (!v) return null;
+  const [, exe, rest] = /^"([^"]*)"\s*(.*)$/.exec(v) ?? /^(\S+)\s*(.*)$/.exec(v);
+  return { exe, args: rest.split(/\s+/).filter(Boolean) };
+}
+
+/** A run's verdict from its checks: FAIL on a failed check, a stop, a failed cleanup or no checks at all;
+ *  SKIPPED when a check was skipped and none failed, so a skip never reads as a plain PASS. */
+export function verdictOf(checks, { stopped = false, cleanupOk = true } = {}) {
+  const entries = Object.entries(checks ?? {});
+  const skippedChecks = entries.filter(([, v]) => v === SKIPPED).map(([k]) => k);
+  const failedChecks = entries.filter(([, v]) => v !== SKIPPED && !v).map(([k]) => k);
+  const verdict = stopped || checks == null || failedChecks.length > 0 || !cleanupOk ? 'FAIL' : skippedChecks.length > 0 ? SKIPPED : 'PASS';
+  return { verdict, failedChecks, skippedChecks };
+}
+
+/** The environment Explorer would give the app: no STREAMLOOP_START (which would make it the control process) and
+ *  no STREAMLOOP_FROM_APP. */
+export function explorerEnv(extra = {}) {
+  const env = { ...process.env, PATH: pathNoFfmpeg(), ...extra };
+  for (const k of Object.keys(env)) if (/^STREAMLOOP_(START|FROM_APP)$/i.test(k)) delete env[k];
+  return env;
+}
+/** Starts `exe` as Explorer does, through PowerShell's Start-Process (ShellExecute): no console, its own folder as
+ *  the working folder, `env` as its environment. Answers its PID, or null when it did not start. */
+export async function startApp(exe, args = [], env = explorerEnv()) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const list = args.length ? ` -ArgumentList ${args.map(q).join(',')}` : '';
+  const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Start-Process -FilePath ${q(exe)} -WorkingDirectory ${q(dirname(exe))}${list} -PassThru).Id`], { env, encoding: 'utf8', timeout: 60_000 });
+  const pid = Number(String(r.stdout).trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** A value under HKCU, read only: a string, a REG_BINARY as hex, or null when it is not there. */
+export async function regValue(subkey, name) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$v = Get-ItemProperty -LiteralPath ${q(`HKCU:\\${subkey}`)} -Name ${q(name)} -ErrorAction SilentlyContinue
+if ($null -eq $v) { [Console]::Out.Write('<none>') } else { $x = $v.${q(name)}; if ($x -is [byte[]]) { $x = ($x | ForEach-Object { $_.ToString('x2') }) -join '' }; [Console]::Out.Write([string]$x) }`;
+  const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(script)], { encoding: 'utf8', timeout: 60_000 });
+  const out = String(r.stdout ?? '').replace(/^﻿/, '');
+  return out === '<none>' ? null : out;
+}
+/** Whether HKCU\`subkey` exists, read only. */
+export async function regKeyExists(subkey) {
+  const q = `'${`HKCU:\\${subkey}`.replace(/'/g, "''")}'`;
+  const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(`[Console]::Out.Write([string](Test-Path -LiteralPath ${q}))`)], { encoding: 'utf8', timeout: 60_000 });
+  return String(r.stdout).trim() === 'True';
+}
+
+/** The user's own autostart entries, read only: StreamLoop under Run and StartupApproved\Run, the Startup folder's
+ *  files and the Run key's value names. Runs must leave this text as it was. */
+export async function realAutostart() {
+  const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$run = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+$approved = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run'
+$v = (Get-ItemProperty -LiteralPath $run -Name StreamLoop -ErrorAction SilentlyContinue).StreamLoop
+$a = (Get-ItemProperty -LiteralPath $approved -Name StreamLoop -ErrorAction SilentlyContinue).StreamLoop
+if ($a -is [byte[]]) { $a = ($a | ForEach-Object { $_.ToString('x2') }) -join '' }
+$dir = [Environment]::GetFolderPath('Startup')
+$lines = @("Run\\StreamLoop: $v", "StartupApproved\\Run\\StreamLoop: $a", "Startup folder: $dir")
+$lines += Get-ChildItem -LiteralPath $dir -Force | ForEach-Object { "  $($_.Name) $($_.Length) $($_.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:ss'))" }
+$lines += 'Run values: ' + ((Get-Item -LiteralPath $run).Property -join ', ')
+[Console]::Out.Write(($lines -join [char]10))`;
+  const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(script)], { encoding: 'utf8', timeout: 60_000 });
+  return String(r.stdout ?? '').replace(/^﻿/, '');
+}
+
+/** One HTTP request through node:http, which sends the Host and Origin it is given (fetch replaces a Host header
+ *  with the URL's). `noHost` sends none. Answers the status and the body, status 0 when nothing answered. */
+export function rawRequest({ port, method = 'GET', path, headers = {}, body = null, noHost = false, timeoutMs = 5000 }) {
+  return new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, method, path, headers, setHost: !noHost, timeout: timeoutMs }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: text }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timed out')));
+    req.on('error', (err) => resolve({ status: 0, body: String(err) }));
+    if (body !== null) req.write(body);
+    req.end();
+  });
 }
 /** The processes whose exe or command line names one of `dirs`; `ascii` also matches, in case a command
  *  line comes back in another codepage. */
