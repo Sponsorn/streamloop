@@ -328,7 +328,7 @@ async fn stream_key_never_reaches_a_log_line() {
     let rig = Rig::new();
     let logs = captured_logs();
     let app = rig.app_with(|d| d.protect = Arc::new(streamloop_common::secret::protect));
-    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("fetch failed".into()), code: Some("ECONNREFUSED".into()) });
+    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("fetch failed".into()), code: Some("ECONNREFUSED".into()), unanswered: true });
     // Act
     let r = post(&app, "/stream-key", json!({ "key": KEY })).await;
     // Assert
@@ -405,7 +405,7 @@ async fn config_masks_an_empty_secret_as_empty() {
 async fn config_ignores_a_stream_key_in_the_body_applies_and_reloads() {
     // Arrange
     let rig = Rig::new();
-    rig.sup.set_reload_result(ReloadResult { ok: true, restart_required: true, error: None, code: None });
+    rig.sup.set_reload_result(ReloadResult { ok: true, restart_required: true, error: None, code: None, unanswered: false });
     // Act
     let r = post(&rig.app(), "/config", json!({ "supervisor": { "encoder": "h264_amf", "streamKeyProtected": "other", "streamKeySet": false } })).await;
     let body = r.json();
@@ -439,7 +439,7 @@ async fn config_keeps_masked_secrets_when_the_dashboard_sends_them_back() {
 async fn config_reports_a_failed_reload() {
     // Arrange
     let rig = Rig::new();
-    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("fetch failed".into()), code: Some("ECONNREFUSED".into()) });
+    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("fetch failed".into()), code: Some("ECONNREFUSED".into()), unanswered: true });
     // Act
     let body = post(&rig.app(), "/config", json!({ "twitchChannel": "x" })).await.json();
     // Assert
@@ -453,12 +453,70 @@ async fn config_reports_a_failed_reload() {
 async fn config_gives_a_null_reload_error_code_when_the_supervisor_answered_with_an_error() {
     // Arrange
     let rig = Rig::new();
-    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("bad config".into()), code: None });
+    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("bad config".into()), code: None, unanswered: false });
     // Act
     let body = post(&rig.app(), "/config", json!({ "twitchChannel": "x" })).await.json();
     // Assert
     assert_eq!(body["reloadError"], "bad config");
     assert!(body["reloadErrorCode"].is_null());
+}
+
+/// A reload that got no answer within the client's 1 s, as on Windows when nothing listens on 4417.
+fn unanswered_reload() -> ReloadResult {
+    ReloadResult { ok: false, restart_required: false, error: Some("The operation was aborted due to timeout".into()), code: None, unanswered: true }
+}
+
+#[tokio::test]
+async fn config_reports_no_reload_error_when_no_supervisor_is_up_to_reload() {
+    let rows = [
+        ("a first run, which starts no launcher", LauncherState::Starting, false),
+        ("stopped from the dashboard", LauncherState::StoppedByUser, true),
+        ("stopped while the old supervisor still answered the last poll", LauncherState::Running, true),
+        ("waiting for Start", LauncherState::Ready, false),
+        ("down, before the relaunch", LauncherState::Down, false),
+        ("missing", LauncherState::Missing, false),
+    ];
+    for (name, launcher, stopped) in rows {
+        // Arrange
+        let rig = Rig::new();
+        rig.launcher.set_state(launcher);
+        rig.launcher.set_stopped(stopped);
+        rig.sup.set_reload_result(unanswered_reload());
+        // Act
+        let r = post(&rig.app(), "/config", json!({ "supervisor": { "cacheBudgetMb": 4096 } })).await;
+        let body = r.json();
+        // Assert
+        assert_eq!(r.status, StatusCode::OK, "{name}: {}", r.body);
+        assert_eq!(reloads(&rig), [ReloadRequest::default()], "{name}: the reload is still asked for");
+        assert!(body["reloadError"].is_null(), "{name}: {}", r.body);
+        assert!(body["reloadErrorCode"].is_null(), "{name}: {}", r.body);
+        assert_eq!(body["restartRequired"], false, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn config_reports_a_reload_no_supervisor_answered_while_one_is_up() {
+    // Arrange: the launcher's polls find a supervisor
+    let rig = Rig::new();
+    rig.launcher.set_state(LauncherState::Running);
+    rig.sup.set_reload_result(unanswered_reload());
+    // Act
+    let body = post(&rig.app(), "/config", json!({ "twitchChannel": "x" })).await.json();
+    // Assert
+    assert_eq!(body["reloadError"], "The operation was aborted due to timeout");
+    assert!(body["reloadErrorCode"].is_null());
+}
+
+#[tokio::test]
+async fn config_reports_an_error_the_supervisor_answered_with_before_the_launcher_has_seen_it() {
+    // Arrange: just launched, and not yet polled
+    let rig = Rig::new();
+    rig.launcher.set_state(LauncherState::Starting);
+    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("bad config".into()), code: None, unanswered: false });
+    // Act
+    let body = post(&rig.app(), "/config", json!({ "twitchChannel": "x" })).await.json();
+    // Assert
+    assert_eq!(body["reloadError"], "bad config");
 }
 
 #[tokio::test]
@@ -880,7 +938,7 @@ async fn playlist_switch_reports_a_refused_switch() {
     // Arrange
     let rig = Rig::new();
     on_air(&rig, json!("PLaaa"));
-    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("playlist PLbbb is not in config.json".into()), code: None });
+    rig.sup.set_reload_result(ReloadResult { ok: false, restart_required: false, error: Some("playlist PLbbb is not in config.json".into()), code: None, unanswered: false });
     // Act
     let r = post(&rig.app(), "/playlist/switch", json!({ "playlistIndex": 1 })).await;
     // Assert

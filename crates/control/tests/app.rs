@@ -24,7 +24,7 @@ use streamloop_control::autostart_store::AutostartStore;
 use streamloop_control::leftovers::remove_3_0_leftovers;
 use streamloop_control::runner::{FakeRunner, RunOutput};
 use streamloop_control::supervisor_client::fake::{Call, FakeSupervisor};
-use streamloop_control::supervisor_client::SupervisorApi;
+use streamloop_control::supervisor_client::{ReloadResult, SupervisorApi};
 use support::captured_logs;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, Semaphore};
@@ -376,6 +376,50 @@ async fn a_first_run_starts_nothing_until_a_playlist_is_saved() {
     assert_eq!(saved.status(), 200);
     assert_eq!(polls_on_first_run, 0, "a first run must not start the launcher");
     assert!(rig.spawner.0.lock().unwrap().is_empty(), "the supervisor answers, so nothing is spawned");
+    drop(app);
+}
+
+/// A reload that got no answer within the client's 1 s, as on Windows when nothing listens on 4417.
+fn unanswered_reload() -> ReloadResult {
+    ReloadResult { ok: false, restart_required: false, error: Some("The operation was aborted due to timeout".into()), code: None, unanswered: true }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_run_save_reports_no_reload_error_since_no_supervisor_runs() {
+    // Arrange: the wizard's system check saves its settings before Finish launches any supervisor
+    let rig = Rig::new("PLxxxxxxxxxxxxxxxx");
+    rig.sup.set_status(None);
+    rig.sup.set_reload_result(unanswered_reload());
+    let app = rig.start().await;
+
+    // Act
+    let saved = json_of(rig.post("/api/config", json!({ "supervisor": { "cacheBudgetMb": 4096 } })).await).await;
+
+    // Assert
+    assert_eq!(saved["ok"], true, "{saved}");
+    assert!(saved["reloadError"].is_null(), "{saved}");
+    assert!(saved["reloadErrorCode"].is_null(), "{saved}");
+    assert!(rig.sup.calls().iter().any(|c| matches!(c, Call::Reload(_))), "the reload is still asked for");
+    drop(app);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_reports_a_reload_the_attached_supervisor_did_not_answer() {
+    // Arrange: the launcher has attached to a supervisor, which then answers no reload
+    let rig = Rig::new("PLrealplaylist001");
+    let app = rig.start().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while rig.get("/api/status").await["launcher"] != "running" {
+        assert!(tokio::time::Instant::now() < deadline, "the launcher never attached");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    rig.sup.set_reload_result(unanswered_reload());
+
+    // Act
+    let saved = json_of(rig.post("/api/config", json!({ "twitchChannel": "other" })).await).await;
+
+    // Assert
+    assert_eq!(saved["reloadError"], "The operation was aborted due to timeout", "{saved}");
     drop(app);
 }
 

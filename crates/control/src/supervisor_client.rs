@@ -29,6 +29,8 @@ pub struct ReloadResult {
     pub error: Option<String>,
     /// The socket code of a failed connection, `ECONNREFUSED` when nothing listens.
     pub code: Option<String>,
+    /// No answer came: the connection failed or nothing answered within the timeout.
+    pub unanswered: bool,
 }
 
 #[async_trait]
@@ -131,12 +133,12 @@ impl SupervisorApi for SupervisorClient {
                     HttpErrorKind::Connect { code } => Some(code.clone()),
                     _ => None,
                 };
-                ReloadResult { ok: false, restart_required: false, error: Some(error_text(&e)), code }
+                ReloadResult { ok: false, restart_required: false, error: Some(error_text(&e)), code, unanswered: true }
             }
-            Ok(a) if a.status != 200 => ReloadResult { ok: false, restart_required: false, error: Some(a.error_text()), code: None },
+            Ok(a) if a.status != 200 => ReloadResult { ok: false, restart_required: false, error: Some(a.error_text()), code: None, unanswered: false },
             Ok(a) => {
                 let restart_required = a.json.as_ref().and_then(|j| j.get("restartRequired")) == Some(&serde_json::Value::Bool(true));
-                ReloadResult { ok: true, restart_required, error: None, code: None }
+                ReloadResult { ok: true, restart_required, error: None, code: None, unanswered: false }
             }
         }
     }

@@ -551,7 +551,7 @@ impl WizardView {
             let saved = this.update_in(cx, |this, window, cx| {
                 let ok = match saved {
                     Ok(saved) => {
-                        // A refused reload is expected here: the supervisor is not up yet on a first save.
+                        // No supervisor is up yet on a first save, so the control process reports no reload error.
                         reload_warning(&this.app, &saved, cx);
                         // Cleared only now, so a Retry after a failed save sends the key again.
                         if key_ok {
@@ -1307,11 +1307,11 @@ mod tests {
         config
     }
 
-    /// `POST /api/config`'s answer on a first run: no supervisor runs yet, so the reload is refused.
+    /// `POST /api/config`'s answer on a first run: no supervisor runs yet, so there is none to reload.
     fn first_save_json() -> Value {
         json!({
             "ok": true, "config": first_run_config(), "restartRequired": false,
-            "reloadError": "connect ECONNREFUSED 127.0.0.1:4417", "reloadErrorCode": "ECONNREFUSED"
+            "reloadError": null, "reloadErrorCode": null
         })
     }
 
